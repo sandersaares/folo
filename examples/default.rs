@@ -24,8 +24,5 @@ fn main() {
         println!("2 + 2 = {}", result);
     });
 
-    // TODO: The above is scheduling work that does not expose its return value. What mechanisms
-    // do we need to expose the return value once ready?
-
     engine.run();
 }
