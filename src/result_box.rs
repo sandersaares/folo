@@ -63,9 +63,6 @@ impl<R> ResultBox<R> {
             TaskResult::Awaiting(_) => {
                 // This is permitted by the Future API contract, in which case only the waker
                 // from the most recent poll should be woken up when the result is available.
-                println!(
-                    "JoinHandle polled again before result is ready. Ignoring duplicate poll."
-                );
                 *self_result = TaskResult::Awaiting(waker.clone());
                 None
             }

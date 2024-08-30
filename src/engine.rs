@@ -58,7 +58,7 @@ impl Engine {
         }
     }
 
-    pub fn enqueue<F, R>(&mut self, future: F) -> LocalJoinHandle<R>
+    pub fn enqueue<F, R>(&mut self, future: F) -> JoinHandle<R>
     where
         F: Future<Output = R> + 'static,
         R: 'static,
@@ -75,7 +75,7 @@ impl Engine {
 
         self.active.push_back(Box::new(task));
 
-        LocalJoinHandle {
+        JoinHandle {
             result: result_clone,
         }
     }
@@ -136,14 +136,16 @@ impl !Send for Engine {}
 #[negative_impl]
 impl !Sync for Engine {}
 
-// TODO: LocalJoinHandle + JoinHandle
-
-/// Allows a unit of work to be awaited and its result to be observed.
-pub struct LocalJoinHandle<R> {
+/// Allows a unit of work to be awaited and its result to be observed on the same thread as it is
+/// scheduled on. The engine only supports local joins, although the executor may support remote
+/// joins by proxying the result through a channel (see `Executor::enqueue()`).
+/// 
+/// Awaiting this is optional - the task will continue even if you drop the join handle.
+pub struct JoinHandle<R> {
     result: Rc<ResultBox<R>>,
 }
 
-impl<R> Future for LocalJoinHandle<R> {
+impl<R> Future for JoinHandle<R> {
     type Output = R;
 
     fn poll(self: Pin<&mut Self>, cx: &mut task::Context<'_>) -> task::Poll<Self::Output> {
@@ -155,9 +157,9 @@ impl<R> Future for LocalJoinHandle<R> {
 }
 
 #[negative_impl]
-impl<R> !Send for LocalJoinHandle<R> {}
+impl<R> !Send for JoinHandle<R> {}
 #[negative_impl]
-impl<R> !Sync for LocalJoinHandle<R> {}
+impl<R> !Sync for JoinHandle<R> {}
 
 /// We deal with tasks through an abstraction because we want to erase the type of the result,
 /// which only matters for the join handle connected to the task.
