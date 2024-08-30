@@ -1,13 +1,15 @@
 use std::{
-    cell::RefCell,
     collections::{BTreeSet, VecDeque},
     future::Future,
-    mem,
     pin::Pin,
     rc::Rc,
     sync::{Arc, Mutex},
-    task::{self, Wake, Waker},
+    task::{self, Wake},
 };
+
+use negative_impl::negative_impl;
+
+use crate::result_box::ResultBox;
 
 // When we accept futures into the executor, we need to pin them before using them. Pinning
 // implies that the future itself lives in some place that will not change, although we can
@@ -40,6 +42,7 @@ pub struct Engine {
     //
     // TODO: Ewww, a set implies allocations from foreign thread are permissible (because wakers
     // are thread-safe, so we may be woken up by who knows what). We need an alloc-free mechanism.
+    // We probably need to make our tasks Arc instead of Box, so awakening becomes updating a flag.
     awakened: Arc<Mutex<BTreeSet<usize>>>,
 
     next_task_id: usize,
@@ -55,7 +58,7 @@ impl Engine {
         }
     }
 
-    pub fn enqueue<F, R>(&mut self, future: F) -> JoinHandle<R>
+    pub fn enqueue<F, R>(&mut self, future: F) -> LocalJoinHandle<R>
     where
         F: Future<Output = R> + 'static,
         R: 'static,
@@ -72,7 +75,7 @@ impl Engine {
 
         self.active.push_back(Box::new(task));
 
-        JoinHandle {
+        LocalJoinHandle {
             result: result_clone,
         }
     }
@@ -128,70 +131,46 @@ impl Default for Engine {
     }
 }
 
+#[negative_impl]
+impl !Send for Engine {}
+#[negative_impl]
+impl !Sync for Engine {}
+
+// TODO: LocalJoinHandle + JoinHandle
+
 /// Allows a unit of work to be awaited and its result to be observed.
-pub struct JoinHandle<R> {
-    result: Rc<RefCell<TaskResult<R>>>,
+pub struct LocalJoinHandle<R> {
+    result: Rc<ResultBox<R>>,
 }
 
-impl<R> Future for JoinHandle<R> {
+impl<R> Future for LocalJoinHandle<R> {
     type Output = R;
 
     fn poll(self: Pin<&mut Self>, cx: &mut task::Context<'_>) -> task::Poll<Self::Output> {
-        let mut result = self.result.borrow_mut();
-
-        match &*result {
-            TaskResult::Pending => {
-                *result = TaskResult::Awaiting(cx.waker().clone());
-                task::Poll::Pending
-            }
-            TaskResult::Awaiting(_) => {
-                // This is permitted by the Future API contract. We can only hope that the waker
-                // is the same waker because we are not going to re-register it if it is not.
-                println!(
-                    "JoinHandle polled again before result is ready. Ignoring duplicate poll."
-                );
-                task::Poll::Pending
-            }
-            TaskResult::Ready(_) => {
-                let result = mem::replace(&mut *result, TaskResult::Consumed);
-
-                match result {
-                    TaskResult::Ready(result) => task::Poll::Ready(result),
-                    _ => unreachable!(),
-                }
-            }
-            TaskResult::Consumed => {
-                // We do not want to keep a copy of the result around, so we can only return it once.
-                panic!("JoinHandle polled after result was already consumed.");
-            }
+        match self.result.poll(cx.waker()) {
+            Some(result) => task::Poll::Ready(result),
+            None => task::Poll::Pending,
         }
     }
 }
 
+#[negative_impl]
+impl<R> !Send for LocalJoinHandle<R> {}
+#[negative_impl]
+impl<R> !Sync for LocalJoinHandle<R> {}
+
+/// We deal with tasks through an abstraction because we want to erase the type of the result,
+/// which only matters for the join handle connected to the task.
 trait Task {
     fn id(&self) -> usize;
     fn poll(&mut self) -> task::Poll<()>;
-}
-
-enum TaskResult<T> {
-    // The task has not completed and nobody has started awaiting for the result yet.
-    Pending,
-
-    // The task has not completed but someone is awaiting the result.
-    Awaiting(Waker),
-
-    // The task has completed and the result is ready for consumption.
-    Ready(T),
-
-    // The task has completed and the result has been consumed.
-    Consumed,
 }
 
 struct MyTask<R> {
     id: usize,
     future: Pin<Box<dyn Future<Output = R>>>,
     waker: Arc<MyWaker>,
-    result: Rc<RefCell<TaskResult<R>>>,
+    result: Rc<ResultBox<R>>,
 }
 
 impl<R> MyTask<R> {
@@ -200,31 +179,12 @@ impl<R> MyTask<R> {
             id,
             future,
             waker,
-            result: Rc::new(RefCell::new(TaskResult::Pending)),
+            result: Rc::new(ResultBox::new()),
         }
     }
 
     fn set_result(&mut self, result: R) {
-        let mut self_result = self.result.borrow_mut();
-
-        // Temporarily shove Pending in there so we can move the old value out and have easy life.
-        let old_result = mem::replace(&mut *self_result, TaskResult::Pending);
-
-        match old_result {
-            TaskResult::Pending => {
-                *self_result = TaskResult::Ready(result);
-            }
-            TaskResult::Awaiting(waker) => {
-                *self_result = TaskResult::Ready(result);
-                waker.wake();
-            }
-            TaskResult::Ready(_) => {
-                panic!("Result already set.");
-            }
-            TaskResult::Consumed => {
-                panic!("Result already consumed.");
-            }
-        }
+        self.result.set(result);
     }
 }
 
