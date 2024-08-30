@@ -38,8 +38,8 @@ pub struct Engine {
     // The awakened set contains all the tasks that have been woken up and need to be moved back to
     // the active set. Note that our wakers may be called from any thread, so this must be guarded.
     //
-    // TODO: Ewww, a set implies allocations from foreign thread are permissible. We need an alloc-
-    // free awakening mechanism.
+    // TODO: Ewww, a set implies allocations from foreign thread are permissible (because wakers
+    // are thread-safe, so we may be woken up by who knows what). We need an alloc-free mechanism.
     awakened: Arc<Mutex<BTreeSet<usize>>>,
 
     next_task_id: usize,
