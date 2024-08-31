@@ -3,9 +3,11 @@ name = "folo"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
-license-file.workspace = true
+license.workspace = true
 description.workspace = true
 readme.workspace = true
+repository.workspace = true
+categories.workspace = true
 
 [lib]
 crate-type = ["lib"]

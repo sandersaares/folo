@@ -1,17 +1,15 @@
 [workspace]
 members = [
-    "crates/folo",
+    "crates/*",
 ]
-default-members = [
-    "crates/folo",
-]
-
 resolver = "2"
 
 [workspace.package]
 edition = "2021"
 authors = ["Sander Saares <sander@saares.eu>"]
-license-file = "LICENSE"
+license = "MIT"
 description = "Runtime engine for Rust services"
 readme = "Readme.md"
 version = "0.1.0-pre"
+repository = "https://github.com/sandersaares/folo"
+categories = ["asynchronous", "concurrency"]
