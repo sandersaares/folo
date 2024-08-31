@@ -1,14 +1,17 @@
-[package]
-name = "folo"
-version = "0.1.0"
-edition = "2021"
+[workspace]
+members = [
+    "crates/folo",
+]
+default-members = [
+    "crates/folo",
+]
 
-[dependencies]
-futures = { version = "0.3.30", default-features = false, features = [
-    "std",
-    "alloc",
-] }
-negative-impl = "0.1.6"
-oneshot = "0.1.8"
-pin-project = "1.1.5"
-thiserror = "1.0.63"
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+authors = ["Sander Saares <sander@saares.eu>"]
+license-file = "LICENSE"
+description = "Runtime engine for Rust services"
+readme = "Readme.md"
+version = "0.1.0-pre"
