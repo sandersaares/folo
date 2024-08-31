@@ -6,6 +6,7 @@ use std::{future::Future, pin::Pin, rc::Rc, task};
 /// scheduled on.
 ///
 /// Awaiting this is optional - the task will continue even if you drop the join handle.
+#[derive(Debug)]
 pub struct LocalJoinHandle<R> {
     result: Rc<LocalResultBox<R>>,
 }
@@ -27,6 +28,7 @@ impl<R> Future for LocalJoinHandle<R> {
     }
 }
 
+// Perhaps already implied but let's be super explicit here.
 #[negative_impl]
 impl<R> !Send for LocalJoinHandle<R> {}
 #[negative_impl]

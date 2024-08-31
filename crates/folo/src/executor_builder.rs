@@ -14,6 +14,7 @@ use std::{
 // works with multiple threads. We do not yet care about actually using threads optimally.
 const ASYNC_WORKER_COUNT: usize = 2;
 
+#[derive(Debug)]
 pub struct ExecutorBuilder {}
 
 impl ExecutorBuilder {
@@ -82,6 +83,7 @@ impl Default for ExecutorBuilder {
 }
 
 /// A signal that the executor has been initialized and agents are permitted to start.
+#[derive(Debug)]
 struct AgentStartCommand {
     executor_client: Arc<ExecutorClient>,
 }

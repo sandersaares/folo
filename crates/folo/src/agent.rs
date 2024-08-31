@@ -3,7 +3,13 @@ use crate::{
     local_task::LocalTask,
     LocalErasedTask, LocalJoinHandle, RemoteErasedTask,
 };
-use std::{cell::RefCell, collections::VecDeque, future::Future, sync::mpsc};
+use std::{
+    cell::RefCell,
+    collections::VecDeque,
+    fmt::{self, Debug, Formatter},
+    future::Future,
+    sync::mpsc,
+};
 
 /// Coordinates the operations of the Folo executor on a single thread. There may be different
 /// types of agents assigned to different threads (e.g. async worker versus sync worker).
@@ -105,6 +111,15 @@ impl Agent {
     }
 }
 
+impl Debug for Agent {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Agent")
+            .field("command_rx", &self.command_rx)
+            .field("engine", &self.engine)
+            .finish()
+    }
+}
+
 pub enum AgentCommand {
     EnqueueTask {
         erased_task: RemoteErasedTask,
@@ -115,6 +130,15 @@ pub enum AgentCommand {
     /// this is not necessarily called at process termination time when cleanup is not needed (e.g.
     /// it may be one of many test executors used in a test run by different unit tests).
     Terminate,
+}
+
+impl Debug for AgentCommand {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EnqueueTask { .. } => write!(f, "EnqueueTask"),
+            Self::Terminate => write!(f, "Terminate"),
+        }
+    }
 }
 
 #[derive(Debug, Eq, PartialEq)]

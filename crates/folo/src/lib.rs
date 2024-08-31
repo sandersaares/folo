@@ -3,7 +3,6 @@ mod async_task_engine;
 mod constants;
 mod current_agent;
 mod current_executor;
-mod entrypoint_result_box;
 mod executor;
 mod executor_builder;
 mod executor_client;
@@ -17,7 +16,6 @@ mod remote_result_box;
 mod remote_task;
 mod types;
 
-pub use entrypoint_result_box::*;
 pub use executor_builder::*;
 pub use executor_client::*;
 pub use functions::*;

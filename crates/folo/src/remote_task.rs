@@ -11,6 +11,7 @@ use std::{future::Future, pin::Pin, sync::Arc, task};
 ///
 /// Compare with `LocalTask` which is the single-threaded variant of this.
 #[pin_project]
+#[derive(Debug)]
 pub(crate) struct RemoteTask<F, R>
 where
     F: Future<Output = R> + Send + 'static,

@@ -1,6 +1,7 @@
-use std::{mem, sync::Mutex, task::Waker};
 use crate::constants;
+use std::{mem, sync::Mutex, task::Waker};
 
+#[derive(Debug)]
 enum TaskResult<R> {
     // The task has not completed and nobody has started awaiting for the result yet.
     Pending,
@@ -18,6 +19,7 @@ enum TaskResult<R> {
 /// A box that holds the result of a task, optionally waking up a future when the result is ready.
 ///
 /// This is the thread-safe variant of the type. See `LocalResultBox` for a single-threaded variant.
+#[derive(Debug)]
 pub(crate) struct RemoteResultBox<R> {
     result: Mutex<TaskResult<R>>,
 }

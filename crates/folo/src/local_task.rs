@@ -1,4 +1,5 @@
 use crate::{local_result_box::LocalResultBox, LocalJoinHandle};
+use negative_impl::negative_impl;
 use pin_project::pin_project;
 use std::{future::Future, pin::Pin, rc::Rc, task};
 
@@ -11,6 +12,7 @@ use std::{future::Future, pin::Pin, rc::Rc, task};
 ///
 /// Compare with `RemoteTask` which is the multithreaded variant of this.
 #[pin_project]
+#[derive(Debug)]
 pub(crate) struct LocalTask<F, R>
 where
     F: Future<Output = R> + 'static,
@@ -60,4 +62,20 @@ where
             task::Poll::Pending => task::Poll::Pending,
         }
     }
+}
+
+// Perhaps already implied but let's be super explicit here.
+#[negative_impl]
+impl<F, R> !Send for LocalTask<F, R>
+where
+    F: Future<Output = R> + 'static,
+    R: 'static,
+{
+}
+#[negative_impl]
+impl<F, R> !Sync for LocalTask<F, R>
+where
+    F: Future<Output = R> + 'static,
+    R: 'static,
+{
 }

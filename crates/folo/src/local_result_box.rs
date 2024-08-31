@@ -1,5 +1,8 @@
 use std::{cell::RefCell, mem, task::Waker};
 
+use negative_impl::negative_impl;
+
+#[derive(Debug)]
 enum TaskResult<R> {
     // The task has not completed and nobody has started awaiting for the result yet.
     Pending,
@@ -17,6 +20,7 @@ enum TaskResult<R> {
 /// A box that holds the result of a task, optionally waking up a future when the result is ready.
 ///
 /// This is the single-threaded variant of the type. See `RemoteResultBox` for a thread-safe variant.
+#[derive(Debug)]
 pub(crate) struct LocalResultBox<R> {
     result: RefCell<TaskResult<R>>,
 }
@@ -84,3 +88,9 @@ impl<R> LocalResultBox<R> {
         }
     }
 }
+
+// Perhaps already implied but let's be super explicit here.
+#[negative_impl]
+impl<R> !Send for LocalResultBox<R> {}
+#[negative_impl]
+impl<R> !Sync for LocalResultBox<R> {}

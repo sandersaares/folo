@@ -1,6 +1,7 @@
 use crate::agent::AgentCommand;
 use std::{sync::mpsc, thread};
 
+#[derive(Debug)]
 pub(crate) struct Executor {
     pub agent_command_txs: Box<[mpsc::Sender<AgentCommand>]>,
 

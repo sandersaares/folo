@@ -9,6 +9,7 @@ use std::{future::Future, pin::Pin, sync::Arc, task};
 /// always going to be the case.
 ///
 /// Awaiting this is optional - the task will continue even if you drop the join handle.
+#[derive(Debug)]
 pub struct RemoteJoinHandle<R>
 where
     R: Send + 'static,
@@ -81,6 +82,7 @@ where
     }
 }
 
+#[derive(Debug)]
 enum ImplementationModel<R> {
     // We are wrapping a `LocalJoinHandle`, which will send the result via oneshot channel.
     LocalJoinHandle { result_rx: oneshot::Receiver<R> },

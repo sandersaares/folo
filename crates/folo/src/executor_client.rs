@@ -5,6 +5,7 @@ use std::{cell::Cell, future::Future, sync::Mutex, thread};
 /// the current thread.
 ///
 /// This type is thread-safe.
+#[derive(Debug)]
 pub struct ExecutorClient {
     // This is a silly implementation of a thread-safe executor client because it uses a global
     // mutex to do any work. A better implementation would avoid locking and make each thread have

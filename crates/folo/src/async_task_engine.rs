@@ -1,14 +1,15 @@
+use crate::LocalErasedTask;
 use negative_impl::negative_impl;
 use std::{
     collections::{BTreeSet, VecDeque},
+    fmt::{self, Debug, Formatter},
     sync::{Arc, Mutex},
     task::{self, Wake},
 };
 
-use crate::LocalErasedTask;
-
 /// The engine incrementally executes async tasks on a single thread when polled. It is not active
 /// on its own and requires an external actor to poll it to make progress.
+#[derive(Debug)]
 pub struct AsyncTaskEngine {
     // The active set contains all the futures we want to poll. This is where all futures start.
     active: VecDeque<Task>,
@@ -49,7 +50,10 @@ impl AsyncTaskEngine {
         let task = Task::new(
             self.next_task_id,
             erased_task,
-            Arc::new(MyWaker::new(self.next_task_id, Arc::clone(&self.awakened))),
+            Arc::new(TaskWaker::new(
+                self.next_task_id,
+                Arc::clone(&self.awakened),
+            )),
         );
 
         self.next_task_id += 1;
@@ -111,6 +115,7 @@ impl !Send for AsyncTaskEngine {}
 impl !Sync for AsyncTaskEngine {}
 
 /// The result of executing one cycle of the async task engine.
+#[derive(Debug, PartialEq, Eq)]
 pub enum CycleResult {
     /// The cycle was completed and we are ready to start the next cycle immediately.
     Continue,
@@ -123,11 +128,11 @@ pub enum CycleResult {
 struct Task {
     id: usize,
     erased_task: LocalErasedTask,
-    waker: Arc<MyWaker>,
+    waker: Arc<TaskWaker>,
 }
 
 impl Task {
-    fn new(id: usize, erased_task: LocalErasedTask, waker: Arc<MyWaker>) -> Self {
+    fn new(id: usize, erased_task: LocalErasedTask, waker: Arc<TaskWaker>) -> Self {
         Self {
             id,
             erased_task,
@@ -144,20 +149,37 @@ impl Task {
     }
 }
 
-struct MyWaker {
+impl Debug for Task {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Task")
+            .field("id", &self.id)
+            .field("waker", &self.waker)
+            .finish()
+    }
+}
+
+struct TaskWaker {
     task_id: usize,
     awakened: Arc<Mutex<BTreeSet<usize>>>,
 }
 
-impl Wake for MyWaker {
+impl Wake for TaskWaker {
     fn wake(self: Arc<Self>) {
-        println!("waking up task {}", self.task_id);
         self.awakened.lock().unwrap().insert(self.task_id);
     }
 }
 
-impl MyWaker {
+impl TaskWaker {
     fn new(task_id: usize, awakened: Arc<Mutex<BTreeSet<usize>>>) -> Self {
         Self { task_id, awakened }
+    }
+}
+
+impl Debug for TaskWaker {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TaskWaker")
+            .field("task_id", &self.task_id)
+            .field("awakened", &self.awakened)
+            .finish()
     }
 }
