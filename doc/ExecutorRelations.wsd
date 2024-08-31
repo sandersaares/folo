@@ -1,0 +1,44 @@
+@startuml
+
+actor "User code" as User
+
+rectangle "functions.rs" as Functions
+
+User --> Functions
+
+database "CURRENT_EXECUTOR" as CurrentExecutor
+
+package "Executor-owned thread" {
+    database "CURRENT_AGENT" as CurrentAgent
+    rectangle "Executor agent" as Agent
+    rectangle "Async worker" as Async
+    rectangle "Async task engine" as AsyncEngine
+
+    CurrentAgent -> Agent
+    Agent -> Async
+    Async -> AsyncEngine : Poll
+
+    rectangle "I/O driver" as IO
+    Async -up-> IO : Poll
+
+    rectangle "Timer driver" as Timers
+    Async -up-> Timers : Poll
+
+    rectangle "Task" as Task
+
+    AsyncEngine -up-> Task : Poll
+    Task -left-> User
+
+    rectangle "Command queue" as AgentTask
+    Agent --> AgentTask : Read
+}
+
+Functions --> CurrentExecutor
+Functions -> CurrentAgent
+
+rectangle "Executor client" as ExecutorClient
+
+CurrentExecutor -> ExecutorClient
+ExecutorClient -up-> AgentTask : Command
+
+@enduml

@@ -1,4 +1,4 @@
-use std::{cell::RefCell, mem, task::Waker};
+use std::{mem, sync::Mutex, task::Waker};
 
 enum TaskResult<R> {
     // The task has not completed and nobody has started awaiting for the result yet.
@@ -15,19 +15,21 @@ enum TaskResult<R> {
 }
 
 /// A box that holds the result of a task, optionally waking up a future when the result is ready.
-pub(crate) struct ResultBox<R> {
-    result: RefCell<TaskResult<R>>,
+///
+/// This is the thread-safe variant of the type. See `LocalResultBox` for a single-threaded variant.
+pub(crate) struct RemoteResultBox<R> {
+    result: Mutex<TaskResult<R>>,
 }
 
-impl<R> ResultBox<R> {
+impl<R> RemoteResultBox<R> {
     pub fn new() -> Self {
         Self {
-            result: RefCell::new(TaskResult::Pending),
+            result: Mutex::new(TaskResult::Pending),
         }
     }
 
     pub fn set(&self, result: R) {
-        let mut self_result = self.result.borrow_mut();
+        let mut self_result = self.result.lock().expect("poisoned lock");
 
         match &*self_result {
             TaskResult::Pending => {
@@ -36,16 +38,18 @@ impl<R> ResultBox<R> {
             TaskResult::Awaiting(_) => {
                 let existing_result = mem::replace(&mut *self_result, TaskResult::Ready(result));
 
+                println!("result set, waking up task that was waiting for result");
+
                 match existing_result {
                     TaskResult::Awaiting(waker) => waker.wake(),
                     _ => unreachable!("we are re-matching an already matched pattern"),
                 }
             }
             TaskResult::Ready(_) => {
-                panic!("Result already set.");
+                panic!("result already set");
             }
             TaskResult::Consumed => {
-                panic!("Result already consumed.");
+                panic!("result already consumed");
             }
         }
     }
@@ -53,7 +57,7 @@ impl<R> ResultBox<R> {
     // We expose a poll-like API for getting the result, as the ResultBox is only intended to be
     // read from a future's poll() function (via a join handle).
     pub fn poll(&self, waker: &Waker) -> Option<R> {
-        let mut self_result = self.result.borrow_mut();
+        let mut self_result = self.result.lock().expect("poisoned lock");
 
         match &*self_result {
             TaskResult::Pending => {
@@ -77,7 +81,7 @@ impl<R> ResultBox<R> {
             TaskResult::Consumed => {
                 // We do not want to keep a copy of the result around, so we can only return it once.
                 // The futures API contract allows us to panic in this situation.
-                panic!("JoinHandle polled after result was already consumed.");
+                panic!("ResultBox polled after result was already consumed");
             }
         }
     }

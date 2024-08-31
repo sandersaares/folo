@@ -1,5 +1,5 @@
 [package]
-name = "folf"
+name = "folo"
 version = "0.1.0"
 edition = "2021"
 
@@ -9,3 +9,6 @@ futures = { version = "0.3.30", default-features = false, features = [
     "alloc",
 ] }
 negative-impl = "0.1.6"
+oneshot = "0.1.8"
+pin-project = "1.1.5"
+thiserror = "1.0.63"
