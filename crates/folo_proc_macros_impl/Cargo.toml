@@ -1,0 +1,18 @@
+[package]
+name = "folo_proc_macros_impl"
+description = "Internal dependency of the 'folo' crate - do not reference directly."
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+readme.workspace = true
+repository.workspace = true
+categories.workspace = true
+
+[lib]
+crate-type = ["lib"]
+
+[dependencies]
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["full", "parsing", "extra-traits"] }

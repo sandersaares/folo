@@ -1,0 +1,15 @@
+[package]
+name = "folo_decl_macros"
+description = "Internal dependency of the 'folo' crate - do not reference directly."
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+readme.workspace = true
+repository.workspace = true
+categories.workspace = true
+
+[lib]
+crate-type = ["lib"]
+
+[dependencies]

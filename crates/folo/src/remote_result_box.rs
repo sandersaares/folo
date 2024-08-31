@@ -1,4 +1,5 @@
 use std::{mem, sync::Mutex, task::Waker};
+use crate::constants;
 
 enum TaskResult<R> {
     // The task has not completed and nobody has started awaiting for the result yet.
@@ -29,7 +30,7 @@ impl<R> RemoteResultBox<R> {
     }
 
     pub fn set(&self, result: R) {
-        let mut self_result = self.result.lock().expect("poisoned lock");
+        let mut self_result = self.result.lock().expect(constants::POISONED_LOCK);
 
         match &*self_result {
             TaskResult::Pending => {
@@ -57,7 +58,7 @@ impl<R> RemoteResultBox<R> {
     // We expose a poll-like API for getting the result, as the ResultBox is only intended to be
     // read from a future's poll() function (via a join handle).
     pub fn poll(&self, waker: &Waker) -> Option<R> {
-        let mut self_result = self.result.lock().expect("poisoned lock");
+        let mut self_result = self.result.lock().expect(constants::POISONED_LOCK);
 
         match &*self_result {
             TaskResult::Pending => {

@@ -1,4 +1,4 @@
-use crate::{agent::AgentCommand, executor::Executor, remote_task::RemoteTask, RemoteJoinHandle};
+use crate::{agent::AgentCommand, constants, executor::Executor, remote_task::RemoteTask, RemoteJoinHandle};
 use std::{cell::Cell, future::Future, sync::Mutex, thread};
 
 /// The multithreaded entry point for the Folo executor, used for operations that affect more than
@@ -28,7 +28,7 @@ impl ExecutorClient {
         let task = RemoteTask::new(future);
         let join_handle = task.join_handle();
 
-        let executor = self.executor.lock().expect("poisoned lock");
+        let executor = self.executor.lock().expect(constants::POISONED_LOCK);
         let worker_index = random_worker_index(executor.agent_command_txs.len());
 
         println!("spawning task on worker {}", worker_index);
@@ -46,7 +46,7 @@ impl ExecutorClient {
     ///
     /// This returns immediately. To wait for the executor to stop, use `wait()`.
     pub fn stop(&self) {
-        let executor = self.executor.lock().expect("poisoned lock");
+        let executor = self.executor.lock().expect(constants::POISONED_LOCK);
 
         println!("stopping executor");
 
@@ -75,7 +75,7 @@ impl ExecutorClient {
     }
 
     fn get_join_handles(&self) -> Box<[thread::JoinHandle<()>]> {
-        let mut executor = self.executor.lock().expect("poisoned lock");
+        let mut executor = self.executor.lock().expect(constants::POISONED_LOCK);
 
         executor
             .agent_join_handles

@@ -1,0 +1,1 @@
+pub const POISONED_LOCK: &str = "poisoned lock";
