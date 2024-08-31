@@ -32,8 +32,6 @@ impl ExecutorClient {
         let executor = self.executor.lock().expect(constants::POISONED_LOCK);
         let worker_index = random_worker_index(executor.agent_command_txs.len());
 
-        println!("spawning task on worker {}", worker_index);
-
         executor.agent_command_txs[worker_index]
             .send(AgentCommand::EnqueueTask {
                 erased_task: Box::pin(task),
@@ -48,8 +46,6 @@ impl ExecutorClient {
     /// This returns immediately. To wait for the executor to stop, use `wait()`.
     pub fn stop(&self) {
         let executor = self.executor.lock().expect(constants::POISONED_LOCK);
-
-        println!("stopping executor");
 
         for tx in &executor.agent_command_txs {
             tx.send(AgentCommand::Terminate)
@@ -66,13 +62,9 @@ impl ExecutorClient {
     pub fn wait(&self) {
         let join_handles = self.get_join_handles();
 
-        println!("waiting for executor to stop");
-
         for join_handle in join_handles {
             join_handle.join().expect("worker thread panicked");
         }
-
-        println!("executor has stopped");
     }
 
     fn get_join_handles(&self) -> Box<[thread::JoinHandle<()>]> {

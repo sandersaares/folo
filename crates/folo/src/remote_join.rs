@@ -22,7 +22,6 @@ where
     R: Send + 'static,
 {
     pub(crate) fn new(result: Arc<RemoteResultBox<R>>) -> Self {
-        println!("remote join handle created from remote result box");
 
         Self {
             model: ImplementationModel::RemoteTask { result },
@@ -30,8 +29,6 @@ where
     }
 
     pub(crate) fn from_local(local: LocalJoinHandle<R>) -> Self {
-        println!("remote join handle created from local join handle");
-
         // We add a new task to await the result on the current thread, after which we publish
         // it in a thread-safe manner to whoever wants to consume this object.
 
@@ -39,8 +36,6 @@ where
 
         _ = crate::spawn(async {
             let result = local.await;
-
-            println!("local join handle completed, publishing remote result");
 
             // If the join handle was dropped, this will return an error, which is fine.
             _ = tx.send(result);
@@ -59,8 +54,6 @@ where
     type Output = R;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut task::Context<'_>) -> task::Poll<Self::Output> {
-        println!("remote join handle polled");
-
         match &mut self.model {
             ImplementationModel::LocalJoinHandle { ref mut result_rx } => {
                 match result_rx.poll_unpin(cx) {

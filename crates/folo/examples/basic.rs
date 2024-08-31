@@ -18,8 +18,6 @@ async fn main() -> Result<(), Box<dyn Error + Send + 'static>> {
     yield1.await;
     yield2.await;
 
-    println!("Both yields awaited.");
-
     let result = mathematics.await;
 
     println!("2 + 2 = {}", result);

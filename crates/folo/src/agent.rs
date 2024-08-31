@@ -51,8 +51,6 @@ impl Agent {
         F: Future<Output = R> + 'static,
         R: 'static,
     {
-        println!("agent received local spawn request");
-
         let task = LocalTask::new(future);
         let join_handle = task.join_handle();
 
@@ -64,7 +62,6 @@ impl Agent {
     pub fn run(&self) {
         loop {
             if self.process_commands() == ProcessCommandsResult::Terminate {
-                println!("agent terminating");
                 break;
             }
 
@@ -72,7 +69,6 @@ impl Agent {
             // TODO: Process timers.
 
             while let Some(erased_task) = self.new_tasks.borrow_mut().pop_front() {
-                println!("agent enqueuing new task");
                 self.engine.borrow_mut().enqueue_erased(erased_task);
             }
 
@@ -91,7 +87,6 @@ impl Agent {
         loop {
             match self.command_rx.try_recv() {
                 Ok(AgentCommand::EnqueueTask { erased_task }) => {
-                    println!("agent received remote spawn request");
                     self.new_tasks.borrow_mut().push_back(erased_task);
                 }
                 Ok(AgentCommand::Terminate) => {

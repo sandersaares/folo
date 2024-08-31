@@ -41,8 +41,6 @@ impl<R> RemoteResultBox<R> {
             TaskResult::Awaiting(_) => {
                 let existing_result = mem::replace(&mut *self_result, TaskResult::Ready(result));
 
-                println!("result set, waking up task that was waiting for result");
-
                 match existing_result {
                     TaskResult::Awaiting(waker) => waker.wake(),
                     _ => unreachable!("we are re-matching an already matched pattern"),

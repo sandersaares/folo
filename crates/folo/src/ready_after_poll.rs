@@ -12,10 +12,8 @@ impl Future for ReadyAfterPoll {
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut task::Context<'_>) -> task::Poll<Self::Output> {
         if self.first_poll_completed {
-            println!("Nth poll completed.");
             task::Poll::Ready(())
         } else {
-            println!("First poll completed.");
             self.first_poll_completed = true;
             cx.waker().wake_by_ref();
             task::Poll::Pending
