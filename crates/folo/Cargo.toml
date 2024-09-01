@@ -15,20 +15,26 @@ crate-type = ["lib"]
 [dependencies]
 folo_decl_macros = { path = "../folo_decl_macros", version = "0.1.0-main" }
 folo_proc_macros = { path = "../folo_proc_macros", version = "0.1.0-main" }
-futures = { version = "0.3", default-features = false, features = [
+futures = { version = "0", default-features = false, features = [
     "std",
     "alloc",
 ] }
-negative-impl = "0.1"
-oneshot = "0.1"
+negative-impl = "0"
+oneshot = "0"
 pin-project = "1"
 thiserror = "1"
-tracing = "0.1"
+tracing = "0"
+windows = { version = "0", features = [
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_Threading",
+] }
 
 [dev-dependencies]
-criterion = { version = "0.5", features = ["async_futures", "async_tokio"] }
+criterion = { version = "0", features = ["async_futures", "async_tokio"] }
 tokio = { version = "1", features = ["rt-multi-thread"] }
-tracing-subscriber = "0.3"
+tracing-subscriber = "0"
 
 [[bench]]
 name = "spawning"
