@@ -1,4 +1,4 @@
-use crate::local_result_box::LocalResultBox;
+use crate::runtime::local_result_box::LocalResultBox;
 use negative_impl::negative_impl;
 use std::{future::Future, pin::Pin, rc::Rc, task};
 

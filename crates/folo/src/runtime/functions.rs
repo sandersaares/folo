@@ -1,6 +1,6 @@
 //! Top-level free functions that can be called to manipulate the Folo runtime.
 
-use crate::{
+use crate::runtime::{
     current_agent, current_executor, ready_after_poll::ReadyAfterPoll, LocalJoinHandle,
     RemoteJoinHandle,
 };

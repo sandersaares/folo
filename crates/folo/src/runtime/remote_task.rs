@@ -1,4 +1,4 @@
-use crate::{remote_result_box::RemoteResultBox, RemoteJoinHandle};
+use crate::runtime::{remote_result_box::RemoteResultBox, RemoteJoinHandle};
 use pin_project::pin_project;
 use std::{future::Future, pin::Pin, sync::Arc, task};
 

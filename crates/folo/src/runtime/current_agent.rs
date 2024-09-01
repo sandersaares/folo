@@ -1,4 +1,4 @@
-use crate::agent::Agent;
+use crate::runtime::agent::Agent;
 use std::{cell::RefCell, rc::Rc};
 
 /// Gets the current thread's agent for the Folo executor.

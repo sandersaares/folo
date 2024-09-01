@@ -1,6 +1,5 @@
-use std::{cell::RefCell, mem, task::Waker};
-
 use negative_impl::negative_impl;
+use std::{cell::RefCell, mem, task::Waker};
 
 #[derive(Debug)]
 enum TaskResult<R> {
