@@ -5,6 +5,7 @@ use crate::{
     ExecutorClient,
 };
 use std::{
+    fmt::{self, Debug, Formatter},
     rc::Rc,
     sync::{mpsc, Arc},
     thread,
@@ -14,12 +15,21 @@ use std::{
 // works with multiple threads. We do not yet care about actually using threads optimally.
 const ASYNC_WORKER_COUNT: usize = 2;
 
-#[derive(Debug)]
-pub struct ExecutorBuilder {}
+pub struct ExecutorBuilder {
+    worker_init: Option<Arc<dyn Fn() + Send + Sync + 'static>>,
+}
 
 impl ExecutorBuilder {
     pub fn new() -> Self {
-        Self {}
+        Self { worker_init: None }
+    }
+
+    pub fn worker_init<F>(mut self, f: F) -> Self
+    where
+        F: Fn() + Send + Sync + 'static,
+    {
+        self.worker_init = Some(Arc::new(f));
+        self
     }
 
     pub fn build(self) -> Result<Arc<ExecutorClient>> {
@@ -27,13 +37,19 @@ impl ExecutorBuilder {
         let mut command_txs = Vec::with_capacity(ASYNC_WORKER_COUNT);
         let mut start_txs = Vec::with_capacity(ASYNC_WORKER_COUNT);
 
+        let worker_init = self.worker_init.unwrap_or(Arc::new(|| {}));
+
         for _ in 0..ASYNC_WORKER_COUNT {
             let (command_tx, command_rx) = mpsc::channel::<AgentCommand>();
             let (start_tx, start_rx) = oneshot::channel::<AgentStartCommand>();
             start_txs.push(start_tx);
             command_txs.push(command_tx);
 
+            let worker_init = worker_init.clone();
+
             let join_handle = thread::spawn(move || {
+                (worker_init)();
+
                 // We first wait for the startup signal, which indicates that all agents have been
                 // created and registered with the executor, and the executor is ready to be used.
                 let start = start_rx
@@ -79,6 +95,12 @@ impl ExecutorBuilder {
 impl Default for ExecutorBuilder {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl Debug for ExecutorBuilder {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ExecutorBuilder").finish()
     }
 }
 

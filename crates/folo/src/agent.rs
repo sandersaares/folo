@@ -1,14 +1,12 @@
+use tracing::{event, Level};
+
 use crate::{
     async_task_engine::{AsyncTaskEngine, CycleResult},
     local_task::LocalTask,
     LocalErasedTask, LocalJoinHandle, RemoteErasedTask,
 };
 use std::{
-    cell::RefCell,
-    collections::VecDeque,
-    fmt::{self, Debug, Formatter},
-    future::Future,
-    sync::mpsc,
+    any::type_name, cell::RefCell, collections::VecDeque, fmt::{self, Debug, Formatter}, future::Future, sync::mpsc
 };
 
 /// Coordinates the operations of the Folo executor on a single thread. There may be different
@@ -51,6 +49,9 @@ impl Agent {
         F: Future<Output = R> + 'static,
         R: 'static,
     {
+        let future_type = type_name::<F>();
+        event!(Level::TRACE, key = "Agent::spawn", future_type);
+
         let task = LocalTask::new(future);
         let join_handle = task.join_handle();
 
@@ -60,8 +61,11 @@ impl Agent {
     }
 
     pub fn run(&self) {
+        event!(Level::TRACE, "Started");
+
         loop {
             if self.process_commands() == ProcessCommandsResult::Terminate {
+                event!(Level::TRACE, "Terminating");
                 break;
             }
 

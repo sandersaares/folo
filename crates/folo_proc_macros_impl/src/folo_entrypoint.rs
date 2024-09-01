@@ -1,4 +1,5 @@
 use crate::util::token_stream_and_error;
+use darling::{ast::NestedMeta, FromMeta};
 use proc_macro2::TokenStream;
 use quote::quote;
 use syn::ItemFn;
@@ -9,23 +10,37 @@ pub enum EntrypointType {
     Test,
 }
 
+#[derive(Debug, FromMeta)]
+struct EntrypointOptions {
+    /// Function to call before starting the runtime, e.g. to do global telemetry setup or similar.
+    /// Note that this is called for each test in test code, so be careful what you use it for. In
+    /// general, this only makes sense for the `main()` entrypoint.
+    global_init_fn: Option<syn::Ident>,
+
+    /// Function to call on each worker thread before starting the runtime, e.g. to do per-thread
+    /// telemetry setup. This is the preferred way to do "global" setup, as the thread state can be
+    /// initialized for each test. Note that the thread that called the entrypoint is parked and
+    /// not used for running tasks, so this function is not called on the entrypoint thread.
+    worker_init_fn: Option<syn::Ident>,
+}
+
+impl EntrypointOptions {
+    fn parse(attr: TokenStream) -> syn::Result<Self> {
+        let attr_args = NestedMeta::parse_meta_list(attr)?;
+        Ok(EntrypointOptions::from_list(&attr_args)?)
+    }
+}
+
 /// Implements the Folo entrypoint macro for both types of entry points (main and test functions).
 pub fn entrypoint(
     attr: TokenStream,
     input: TokenStream,
     entrypoint_type: EntrypointType,
 ) -> TokenStream {
-    if !attr.is_empty() {
-        return token_stream_and_error(
-            input,
-            syn::Error::new_spanned(attr, "this macro does not accept any arguments"),
-        );
-    }
-
     let item_ast = syn::parse2::<ItemFn>(input.clone());
 
     let result = match item_ast {
-        Ok(item) => core(item, entrypoint_type),
+        Ok(item) => core(item, entrypoint_type, attr),
         Err(e) => Err(e),
     };
 
@@ -35,7 +50,13 @@ pub fn entrypoint(
     }
 }
 
-fn core(mut item: ItemFn, entrypoint_type: EntrypointType) -> Result<TokenStream, syn::Error> {
+fn core(
+    mut item: ItemFn,
+    entrypoint_type: EntrypointType,
+    attr: TokenStream,
+) -> Result<TokenStream, syn::Error> {
+    let options = EntrypointOptions::parse(attr)?;
+
     let sig = &mut item.sig;
 
     // We do not "care" but the IDE might not understand what is happening without "async".
@@ -60,12 +81,31 @@ fn core(mut item: ItemFn, entrypoint_type: EntrypointType) -> Result<TokenStream
         EntrypointType::Test => quote! { #[test] },
     };
 
+    let global_init = match options.global_init_fn {
+        Some(ident) => quote! {
+            #ident();
+        },
+        None => quote! {},
+    };
+
+    let worker_init = match options.worker_init_fn {
+        Some(ident) => quote! {
+            .worker_init(move || { #ident(); })
+        },
+        None => quote! {},
+    };
+
     Ok(match &sig.output {
         syn::ReturnType::Default => quote! {
             #(#attrs)*
             #test_attr
             #vis #sig {
-                let executor = ::folo::ExecutorBuilder::new().build().unwrap();
+                #global_init
+
+                let executor = ::folo::ExecutorBuilder::new()
+                    #worker_init
+                    .build()
+                    .unwrap();
                 let executor_clone = ::std::sync::Arc::clone(&executor);
 
                 executor.spawn_on_any(async move {
@@ -81,7 +121,12 @@ fn core(mut item: ItemFn, entrypoint_type: EntrypointType) -> Result<TokenStream
                 #(#attrs)*
                 #test_attr
                 #vis #sig {
-                    let executor = ::folo::ExecutorBuilder::new().build().unwrap();
+                    #global_init
+
+                    let executor = ::folo::ExecutorBuilder::new()
+                        #worker_init
+                        .build()
+                        .unwrap();
                     let executor_clone = ::std::sync::Arc::clone(&executor);
 
                     let result_rx = ::std::sync::Arc::new(::std::sync::Mutex::new(Option::<#ty>::None));
@@ -133,7 +178,9 @@ mod tests {
 
         let expected = quote! {
             fn main() {
-                let executor = ::folo::ExecutorBuilder::new().build().unwrap();
+                let executor = ::folo::ExecutorBuilder::new()
+                    .build()
+                    .unwrap();
                 let executor_clone = ::std::sync::Arc::clone(&executor);
 
                 executor.spawn_on_any(async move {
@@ -167,7 +214,9 @@ mod tests {
 
         let expected = quote! {
             fn main() -> Result<(), Box<dyn std::error::Error + Send + 'static> > {
-                let executor = ::folo::ExecutorBuilder::new().build().unwrap();
+                let executor = ::folo::ExecutorBuilder::new()
+                    .build()
+                    .unwrap();
                 let executor_clone = ::std::sync::Arc::clone(&executor);
 
                 let result_rx = ::std::sync::Arc::new(::std::sync::Mutex::new(Option::<Result<(), Box<dyn std::error::Error + Send + 'static> > >::None));
@@ -218,5 +267,48 @@ mod tests {
             input,
             EntrypointType::Main,
         )));
+    }
+
+    #[test]
+    fn main_with_init_functions() {
+        let attr = parse_quote! {
+            global_init_fn = setup_global,
+            worker_init_fn = setup_worker,
+        };
+
+        let input = parse_quote! {
+            async fn main() {
+                println!("Hello, world!");
+                yield_now().await;
+            }
+        };
+
+        let expected = quote! {
+            fn main() {
+                setup_global();
+
+                let executor = ::folo::ExecutorBuilder::new()
+                    .worker_init(move || { setup_worker(); } )
+                    .build()
+                    .unwrap();
+                let executor_clone = ::std::sync::Arc::clone(&executor);
+
+                executor.spawn_on_any(async move {
+                    (async move {
+                        println!("Hello, world!");
+                        yield_now().await;
+                    }).await;
+
+                    executor_clone.stop();
+                });
+
+                executor.wait();
+            }
+        };
+
+        assert_eq!(
+            entrypoint(attr, input, EntrypointType::Main).to_string(),
+            expected.to_string()
+        );
     }
 }

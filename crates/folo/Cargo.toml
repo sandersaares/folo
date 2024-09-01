@@ -15,11 +15,15 @@ crate-type = ["lib"]
 [dependencies]
 folo_decl_macros = { path = "../folo_decl_macros", version = "0.1.0-main" }
 folo_proc_macros = { path = "../folo_proc_macros", version = "0.1.0-main" }
-futures = { version = "0.3.30", default-features = false, features = [
+futures = { version = "0.3", default-features = false, features = [
     "std",
     "alloc",
 ] }
-negative-impl = "0.1.6"
-oneshot = "0.1.8"
-pin-project = "1.1.5"
-thiserror = "1.0.63"
+negative-impl = "0.1"
+oneshot = "0.1"
+pin-project = "1"
+thiserror = "1"
+tracing = "0.1"
+
+[dev-dependencies]
+tracing-subscriber = "0.3"
