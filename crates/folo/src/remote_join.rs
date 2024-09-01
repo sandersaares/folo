@@ -4,9 +4,7 @@ use std::{future::Future, pin::Pin, sync::Arc, task};
 
 /// Allows a unit of work to be awaited and its result to be observed on any thread.
 ///
-/// You can convert a `LocalJoinHandle` into a `RemoteJoinHandle` using `Into::into`. Note that this
-/// requires you to already be on the thread where the `LocalJoinHandle` was created, which is not
-/// always going to be the case.
+/// You can convert a `LocalJoinHandle` into a `RemoteJoinHandle` using `Into::into`.
 ///
 /// Awaiting this is optional - the task will continue even if you drop the join handle.
 #[derive(Debug)]
@@ -31,6 +29,10 @@ where
     pub(crate) fn from_local(local: LocalJoinHandle<R>) -> Self {
         // We add a new task to await the result on the current thread, after which we publish
         // it in a thread-safe manner to whoever wants to consume this object.
+
+        // TODO: This is probably not the most efficient way to do this, what with spawning
+        // a new task here and allocating a channel and so forth. We could probably improve this
+        // with some "direct wiring" between the two endpoints. Worry about it later - it works.
 
         let (tx, rx) = oneshot::channel::<R>();
 
