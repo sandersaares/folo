@@ -17,13 +17,18 @@ const ASYNC_WORKER_COUNT: usize = 2;
 
 pub struct ExecutorBuilder {
     worker_init: Option<Arc<dyn Fn() + Send + Sync + 'static>>,
+    ad_hoc_entrypoint: bool,
 }
 
 impl ExecutorBuilder {
     pub fn new() -> Self {
-        Self { worker_init: None }
+        Self {
+            worker_init: None,
+            ad_hoc_entrypoint: false,
+        }
     }
 
+    /// Registers a function to call when initializing every created worker thread.
     pub fn worker_init<F>(mut self, f: F) -> Self
     where
         F: Fn() + Send + Sync + 'static,
@@ -32,7 +37,28 @@ impl ExecutorBuilder {
         self
     }
 
+    /// Registers the Folo executor as the owner of the entrypoint thread. This may be useful for
+    /// interoperability purposes when using custom entry points (such as benchmarking logic).
+    ///
+    /// In the scenarios where this is set, we are often using the executor in a transient manner,
+    /// for example for every benchmark iteration. Because of this, when this is enabled, the
+    /// builder first checks if an executor is already registered on the current thread and returns
+    /// that instead of creating a new one. Note that in this case, all other builder options are
+    /// ignored - it is assumed that you are calling the same builder multiple times with the same
+    /// configuration.
+    pub fn ad_hoc_entrypoint(mut self) -> Self {
+        self.ad_hoc_entrypoint = true;
+        self
+    }
+
     pub fn build(self) -> Result<Arc<ExecutorClient>> {
+        if self.ad_hoc_entrypoint {
+            // With ad-hoc entrypoints we reuse the executor if it is already set.
+            if let Some(executor) = current_executor::try_get() {
+                return Ok(executor);
+            }
+        }
+
         let mut join_handles = Vec::with_capacity(ASYNC_WORKER_COUNT);
         let mut command_txs = Vec::with_capacity(ASYNC_WORKER_COUNT);
         let mut start_txs = Vec::with_capacity(ASYNC_WORKER_COUNT);
@@ -78,6 +104,15 @@ impl ExecutorBuilder {
         };
 
         let client = Arc::new(ExecutorClient::new(executor));
+
+        // In most cases, the entrypoint thread is merely parked. However, for interoperability
+        // purposes, the caller may wish to register the Folo executor as the owner of the
+        // entrypoint thread, as well. This allows custom entrypoint logic to execute code
+        // that calls `spawn_on_any()` to schedule work on the Folo executor, while not being truly
+        // on a Folo owned thread.
+        if self.ad_hoc_entrypoint {
+            current_executor::set(Arc::clone(&client));
+        }
 
         // Tell all the agents to start.
         for tx in start_txs {

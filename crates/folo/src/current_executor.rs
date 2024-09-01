@@ -16,6 +16,11 @@ pub fn get() -> Arc<ExecutorClient> {
     })
 }
 
+/// Optionally gets the executor client for the Folo executor that owns the current thread.
+pub fn try_get() -> Option<Arc<ExecutorClient>> {
+    CURRENT_EXECUTOR.with_borrow(|current_executor| current_executor.clone())
+}
+
 pub fn set(executor: Arc<ExecutorClient>) {
     CURRENT_EXECUTOR.with_borrow_mut(|current_executor| {
         if current_executor.is_some() {

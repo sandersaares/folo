@@ -26,4 +26,10 @@ thiserror = "1"
 tracing = "0.1"
 
 [dev-dependencies]
+criterion = { version = "0.5", features = ["async_futures", "async_tokio"] }
+tokio = { version = "1", features = ["rt-multi-thread"] }
 tracing-subscriber = "0.3"
+
+[[bench]]
+name = "spawning"
+harness = false
