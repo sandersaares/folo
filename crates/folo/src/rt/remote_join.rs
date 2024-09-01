@@ -1,4 +1,4 @@
-use crate::runtime::{remote_result_box::RemoteResultBox, LocalJoinHandle};
+use crate::rt::{remote_result_box::RemoteResultBox, LocalJoinHandle};
 use futures::{channel::oneshot, FutureExt};
 use std::{future::Future, pin::Pin, sync::Arc, task};
 
@@ -35,7 +35,7 @@ where
 
         let (tx, rx) = oneshot::channel::<R>();
 
-        _ = crate::runtime::spawn(async {
+        _ = crate::rt::spawn(async {
             let result = local.await;
 
             // If the join handle was dropped, this will return an error, which is fine.

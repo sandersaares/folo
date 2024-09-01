@@ -102,14 +102,14 @@ fn core(
             #vis #sig {
                 #global_init
 
-                let __entrypoint_executor = ::folo::runtime::ExecutorBuilder::new()
+                let __entrypoint_executor = ::folo::rt::ExecutorBuilder::new()
                     #worker_init
                     .build()
                     .unwrap();
                 let __entrypoint_executor_clone = ::std::sync::Arc::clone(&__entrypoint_executor);
 
                 __entrypoint_executor.spawn_on_any(async move {
-                    let __entrypoint_remote_join: ::folo::runtime::RemoteJoinHandle<_> = ::folo::runtime::spawn(async move {
+                    let __entrypoint_remote_join: ::folo::rt::RemoteJoinHandle<_> = ::folo::rt::spawn(async move {
                         (async move #body).await;
                         __entrypoint_executor_clone.stop();
                     })
@@ -128,7 +128,7 @@ fn core(
                 #vis #sig {
                     #global_init
 
-                    let __entrypoint_executor = ::folo::runtime::ExecutorBuilder::new()
+                    let __entrypoint_executor = ::folo::rt::ExecutorBuilder::new()
                         #worker_init
                         .build()
                         .unwrap();
@@ -138,7 +138,7 @@ fn core(
                     let __entrypoint_result_tx = ::std::sync::Arc::clone(&__entrypoint_result_rx);
 
                     __entrypoint_executor.spawn_on_any(async move {
-                        let __entrypoint_remote_join: ::folo::runtime::RemoteJoinHandle<_> = ::folo::runtime::spawn(async move {
+                        let __entrypoint_remote_join: ::folo::rt::RemoteJoinHandle<_> = ::folo::rt::spawn(async move {
                             let __entrypoint_result = (async move #body).await;
 
                             *__entrypoint_result_tx
@@ -188,13 +188,13 @@ mod tests {
 
         let expected = quote! {
             fn main() {
-                let __entrypoint_executor = ::folo::runtime::ExecutorBuilder::new()
+                let __entrypoint_executor = ::folo::rt::ExecutorBuilder::new()
                     .build()
                     .unwrap();
                 let __entrypoint_executor_clone = ::std::sync::Arc::clone(&__entrypoint_executor);
 
                 __entrypoint_executor.spawn_on_any(async move {
-                    let __entrypoint_remote_join: ::folo::runtime::RemoteJoinHandle<_> = ::folo::runtime::spawn(async move {
+                    let __entrypoint_remote_join: ::folo::rt::RemoteJoinHandle<_> = ::folo::rt::spawn(async move {
                         (async move {
                             println!("Hello, world!");
                             yield_now().await;
@@ -229,7 +229,7 @@ mod tests {
 
         let expected = quote! {
             fn main() -> Result<(), Box<dyn std::error::Error + Send + 'static> > {
-                let __entrypoint_executor = ::folo::runtime::ExecutorBuilder::new()
+                let __entrypoint_executor = ::folo::rt::ExecutorBuilder::new()
                     .build()
                     .unwrap();
                 let __entrypoint_executor_clone = ::std::sync::Arc::clone(&__entrypoint_executor);
@@ -238,7 +238,7 @@ mod tests {
                 let __entrypoint_result_tx = ::std::sync::Arc::clone(&__entrypoint_result_rx);
 
                 __entrypoint_executor.spawn_on_any(async move {
-                    let __entrypoint_remote_join: ::folo::runtime::RemoteJoinHandle<_> = ::folo::runtime::spawn(async move {
+                    let __entrypoint_remote_join: ::folo::rt::RemoteJoinHandle<_> = ::folo::rt::spawn(async move {
                         let __entrypoint_result = (async move {
                             println!("Hello, world!");
                             yield_now().await;
@@ -307,14 +307,14 @@ mod tests {
             fn main() {
                 setup_global();
 
-                let __entrypoint_executor = ::folo::runtime::ExecutorBuilder::new()
+                let __entrypoint_executor = ::folo::rt::ExecutorBuilder::new()
                     .worker_init(move || { setup_worker(); } )
                     .build()
                     .unwrap();
                 let __entrypoint_executor_clone = ::std::sync::Arc::clone(&__entrypoint_executor);
 
                 __entrypoint_executor.spawn_on_any(async move {
-                    let __entrypoint_remote_join: ::folo::runtime::RemoteJoinHandle<_> = ::folo::runtime::spawn(async move {
+                    let __entrypoint_remote_join: ::folo::rt::RemoteJoinHandle<_> = ::folo::rt::spawn(async move {
                         (async move {
                             println!("Hello, world!");
                             yield_now().await;
@@ -349,13 +349,13 @@ mod tests {
         let expected = quote! {
             #[test]
             fn my_test() {
-                let __entrypoint_executor = ::folo::runtime::ExecutorBuilder::new()
+                let __entrypoint_executor = ::folo::rt::ExecutorBuilder::new()
                     .build()
                     .unwrap();
                 let __entrypoint_executor_clone = ::std::sync::Arc::clone(&__entrypoint_executor);
 
                 __entrypoint_executor.spawn_on_any(async move {
-                    let __entrypoint_remote_join: ::folo::runtime::RemoteJoinHandle<_> = ::folo::runtime::spawn(async move {
+                    let __entrypoint_remote_join: ::folo::rt::RemoteJoinHandle<_> = ::folo::rt::spawn(async move {
                         (async move {
                             yield_now().await;
                             assert_eq!(2 + 2, 4);

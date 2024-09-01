@@ -1,5 +1,5 @@
 use criterion::{async_executor::AsyncExecutor, criterion_group, criterion_main, Criterion};
-use folo::runtime::RemoteJoinHandle;
+use folo::rt::RemoteJoinHandle;
 
 criterion_group!(benches, spawn_and_await_many);
 criterion_main!(benches);
@@ -16,12 +16,12 @@ fn spawn_and_await_many(c: &mut Criterion) {
 
     group.bench_function("folo_remote", |b| {
         b.to_async(FoloExecutor).iter(|| {
-            folo::runtime::spawn_on_any(async {
+            folo::rt::spawn_on_any(async {
                 let mut tasks = Vec::with_capacity(MANY_TASK_COUNT);
 
                 for _ in 0..MANY_TASK_COUNT {
-                    tasks.push(folo::runtime::spawn_on_any(async {
-                        folo::runtime::yield_now().await
+                    tasks.push(folo::rt::spawn_on_any(async {
+                        folo::rt::yield_now().await
                     }));
                 }
 
@@ -66,12 +66,12 @@ fn spawn_and_await_many(c: &mut Criterion) {
 
     group.bench_function("folo_local_as_remote", |b| {
         b.to_async(FoloExecutor).iter(|| {
-            folo::runtime::spawn_on_any(async {
+            folo::rt::spawn_on_any(async {
                 let mut tasks = Vec::<RemoteJoinHandle<_>>::with_capacity(MANY_TASK_COUNT);
 
                 for _ in 0..MANY_TASK_COUNT {
                     tasks.push(
-                        folo::runtime::spawn(async { folo::runtime::yield_now().await }).into(),
+                        folo::rt::spawn(async { folo::rt::yield_now().await }).into(),
                     );
                 }
 
@@ -84,13 +84,13 @@ fn spawn_and_await_many(c: &mut Criterion) {
 
     group.bench_function("folo_local", |b| {
         b.to_async(FoloExecutor).iter(|| {
-            folo::runtime::spawn_on_any(async {
-                let root_handle: RemoteJoinHandle<_> = folo::runtime::spawn(async {
+            folo::rt::spawn_on_any(async {
+                let root_handle: RemoteJoinHandle<_> = folo::rt::spawn(async {
                     let mut tasks = Vec::with_capacity(MANY_TASK_COUNT);
 
                     for _ in 0..MANY_TASK_COUNT {
-                        tasks.push(folo::runtime::spawn(async {
-                            folo::runtime::yield_now().await
+                        tasks.push(folo::rt::spawn(async {
+                            folo::rt::yield_now().await
                         }));
                     }
 
@@ -120,7 +120,7 @@ struct FoloExecutor;
 
 impl AsyncExecutor for FoloExecutor {
     fn block_on<T>(&self, future: impl std::future::Future<Output = T>) -> T {
-        _ = folo::runtime::ExecutorBuilder::new()
+        _ = folo::rt::ExecutorBuilder::new()
             // This allows `spawn_on_any()` to work correctly and shovel work to Folo.
             // It also causes the executor to be reused - it is only created on the first build.
             .ad_hoc_entrypoint()

@@ -1,4 +1,4 @@
-use crate::runtime::executor_client::ExecutorClient;
+use crate::rt::executor_client::ExecutorClient;
 use std::{cell::RefCell, sync::Arc};
 
 /// Gets the executor client for the Folo executor that owns the current thread.

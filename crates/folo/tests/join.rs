@@ -1,4 +1,4 @@
-use folo::runtime::{spawn, spawn_on_any, yield_now, ExecutorBuilder, RemoteJoinHandle};
+use folo::rt::{spawn, spawn_on_any, yield_now, ExecutorBuilder, RemoteJoinHandle};
 
 #[test]
 fn remote_join() {

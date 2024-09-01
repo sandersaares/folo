@@ -1,51 +1,52 @@
-use crate::runtime::{remote_result_box::RemoteResultBox, RemoteJoinHandle};
+use crate::rt::{local_result_box::LocalResultBox, LocalJoinHandle};
+use negative_impl::negative_impl;
 use pin_project::pin_project;
-use std::{future::Future, pin::Pin, sync::Arc, task};
+use std::{future::Future, pin::Pin, rc::Rc, task};
 
 /// This is the core essence of a task, relating a future to some result where everything up to and
-/// including consuming the result may take place on a number of different threads.
+/// including consuming the result takes place on a single thread.
 ///
 /// The task is created as soon as its scheduling is requested. After initialization, details of the
 /// task type are erased and it is exposed only as a `dyn Future<Output = ()>` used to progress the
 /// task, pinned as soon as it reaches the async task engine of the worker selected to execute it.
 ///
-/// Compare with `LocalTask` which is the single-threaded variant of this.
+/// Compare with `RemoteTask` which is the multithreaded variant of this.
 #[pin_project]
 #[derive(Debug)]
-pub(crate) struct RemoteTask<F, R>
+pub(crate) struct LocalTask<F, R>
 where
-    F: Future<Output = R> + Send + 'static,
-    R: Send + 'static,
+    F: Future<Output = R> + 'static,
+    R: 'static,
 {
     #[pin]
     future: F,
 
     // This is an Rc because we need to share it both with the task and with the JoinHandle, each
     // of which has an independent lifetime (executor-defined and caller-defined, respectively).
-    result: Arc<RemoteResultBox<R>>,
+    result: Rc<LocalResultBox<R>>,
 }
 
-impl<F, R> RemoteTask<F, R>
+impl<F, R> LocalTask<F, R>
 where
-    F: Future<Output = R> + Send + 'static,
-    R: Send + 'static,
+    F: Future<Output = R> + 'static,
+    R: 'static,
 {
     pub fn new(future: F) -> Self {
         Self {
             future,
-            result: Arc::new(RemoteResultBox::new()),
+            result: Rc::new(LocalResultBox::new()),
         }
     }
 
-    pub fn join_handle(&self) -> RemoteJoinHandle<R> {
-        RemoteJoinHandle::new(Arc::clone(&self.result))
+    pub fn join_handle(&self) -> LocalJoinHandle<R> {
+        LocalJoinHandle::new(Rc::clone(&self.result))
     }
 }
 
-impl<F, R> Future for RemoteTask<F, R>
+impl<F, R> Future for LocalTask<F, R>
 where
-    F: Future<Output = R> + Send + 'static,
-    R: Send + 'static,
+    F: Future<Output = R> + 'static,
+    R: 'static,
 {
     type Output = ();
 
@@ -61,4 +62,20 @@ where
             task::Poll::Pending => task::Poll::Pending,
         }
     }
+}
+
+// Perhaps already implied but let's be super explicit here.
+#[negative_impl]
+impl<F, R> !Send for LocalTask<F, R>
+where
+    F: Future<Output = R> + 'static,
+    R: 'static,
+{
+}
+#[negative_impl]
+impl<F, R> !Sync for LocalTask<F, R>
+where
+    F: Future<Output = R> + 'static,
+    R: 'static,
+{
 }

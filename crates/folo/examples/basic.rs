@@ -1,4 +1,4 @@
-use folo::runtime::{spawn_on_any, yield_now};
+use folo::rt::{spawn_on_any, yield_now};
 use std::{cell::Cell, error::Error};
 use tracing::{event, level_filters::LevelFilter, Level};
 

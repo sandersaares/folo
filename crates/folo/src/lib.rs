@@ -1,5 +1,6 @@
 mod constants;
-pub mod runtime;
+pub mod fs;
+pub mod rt;
 
 /// Marks a `main()` function as the async entry point of an app based on the Folo runtime.
 ///
@@ -15,7 +16,7 @@ pub mod runtime;
 /// Basic usage to activate the Folo runtime for the entry point:
 ///
 /// ```
-/// use folo::runtime::yield_now;
+/// use folo::rt::yield_now;
 /// 
 /// #[folo::main]
 /// async fn main() {
@@ -27,7 +28,7 @@ pub mod runtime;
 /// Usage with custom initialization functions:
 ///
 /// ```
-/// use folo::runtime::yield_now;
+/// use folo::rt::yield_now;
 /// 
 /// fn global_init() {
 ///     // TODO: Set up global state here
