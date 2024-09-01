@@ -109,8 +109,13 @@ fn core(
                 let __entrypoint_executor_clone = ::std::sync::Arc::clone(&__entrypoint_executor);
 
                 __entrypoint_executor.spawn_on_any(async move {
-                    (async move #body).await;
-                    __entrypoint_executor_clone.stop();
+                    let __entrypoint_remote_join: ::folo::RemoteJoinHandle<_> = ::folo::spawn(async move {
+                        (async move #body).await;
+                        __entrypoint_executor_clone.stop();
+                    })
+                    .into();
+                
+                    __entrypoint_remote_join.await;
                 });
 
                 __entrypoint_executor.wait();
@@ -133,13 +138,18 @@ fn core(
                     let __entrypoint_result_tx = ::std::sync::Arc::clone(&__entrypoint_result_rx);
 
                     __entrypoint_executor.spawn_on_any(async move {
-                        let __entrypoint_result = (async move #body).await;
+                        let __entrypoint_remote_join: ::folo::RemoteJoinHandle<_> = ::folo::spawn(async move {
+                            let __entrypoint_result = (async move #body).await;
 
-                        *__entrypoint_result_tx
-                            .lock()
-                            .expect("poisoned lock") = Some(__entrypoint_result);
+                            *__entrypoint_result_tx
+                                .lock()
+                                .expect("poisoned lock") = Some(__entrypoint_result);
 
-                            __entrypoint_executor_clone.stop();
+                                __entrypoint_executor_clone.stop();
+                        })
+                        .into();
+                    
+                        __entrypoint_remote_join.await;
                     });
 
                     // If the test fails, generally we panic from here because we detect that a
@@ -184,12 +194,17 @@ mod tests {
                 let __entrypoint_executor_clone = ::std::sync::Arc::clone(&__entrypoint_executor);
 
                 __entrypoint_executor.spawn_on_any(async move {
-                    (async move {
-                        println!("Hello, world!");
-                        yield_now().await;
-                    }).await;
+                    let __entrypoint_remote_join: ::folo::RemoteJoinHandle<_> = ::folo::spawn(async move {
+                        (async move {
+                            println!("Hello, world!");
+                            yield_now().await;
+                        }).await;
 
-                    __entrypoint_executor_clone.stop();
+                        __entrypoint_executor_clone.stop();
+                    })
+                    .into();
+                
+                    __entrypoint_remote_join.await;
                 });
 
                 __entrypoint_executor.wait();
@@ -223,17 +238,22 @@ mod tests {
                 let __entrypoint_result_tx = ::std::sync::Arc::clone(&__entrypoint_result_rx);
 
                 __entrypoint_executor.spawn_on_any(async move {
-                    let __entrypoint_result = (async move {
-                        println!("Hello, world!");
-                        yield_now().await;
-                        Ok(())
-                    }).await;
+                    let __entrypoint_remote_join: ::folo::RemoteJoinHandle<_> = ::folo::spawn(async move {
+                        let __entrypoint_result = (async move {
+                            println!("Hello, world!");
+                            yield_now().await;
+                            Ok(())
+                        }).await;
 
-                    *__entrypoint_result_tx
-                        .lock()
-                        .expect("poisoned lock") = Some(__entrypoint_result);
+                        *__entrypoint_result_tx
+                            .lock()
+                            .expect("poisoned lock") = Some(__entrypoint_result);
 
                         __entrypoint_executor_clone.stop();
+                    })
+                    .into();
+                
+                    __entrypoint_remote_join.await;
                 });
 
                 __entrypoint_executor.wait();
@@ -294,12 +314,17 @@ mod tests {
                 let __entrypoint_executor_clone = ::std::sync::Arc::clone(&__entrypoint_executor);
 
                 __entrypoint_executor.spawn_on_any(async move {
-                    (async move {
-                        println!("Hello, world!");
-                        yield_now().await;
-                    }).await;
+                    let __entrypoint_remote_join: ::folo::RemoteJoinHandle<_> = ::folo::spawn(async move {
+                        (async move {
+                            println!("Hello, world!");
+                            yield_now().await;
+                        }).await;
 
-                    __entrypoint_executor_clone.stop();
+                        __entrypoint_executor_clone.stop();
+                    })
+                    .into();
+                
+                    __entrypoint_remote_join.await;
                 });
 
                 __entrypoint_executor.wait();
@@ -330,12 +355,17 @@ mod tests {
                 let __entrypoint_executor_clone = ::std::sync::Arc::clone(&__entrypoint_executor);
 
                 __entrypoint_executor.spawn_on_any(async move {
-                    (async move {
-                        yield_now().await;
-                        assert_eq!(2 + 2, 4);
-                    }).await;
+                    let __entrypoint_remote_join: ::folo::RemoteJoinHandle<_> = ::folo::spawn(async move {
+                        (async move {
+                            yield_now().await;
+                            assert_eq!(2 + 2, 4);
+                        }).await;
 
-                    __entrypoint_executor_clone.stop();
+                        __entrypoint_executor_clone.stop();
+                    })
+                    .into();
+                
+                    __entrypoint_remote_join.await;
                 });
 
                 __entrypoint_executor.wait();
