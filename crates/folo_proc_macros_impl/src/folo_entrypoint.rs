@@ -102,18 +102,18 @@ fn core(
             #vis #sig {
                 #global_init
 
-                let executor = ::folo::ExecutorBuilder::new()
+                let __entrypoint_executor = ::folo::ExecutorBuilder::new()
                     #worker_init
                     .build()
                     .unwrap();
-                let executor_clone = ::std::sync::Arc::clone(&executor);
+                let __entrypoint_executor_clone = ::std::sync::Arc::clone(&__entrypoint_executor);
 
-                executor.spawn_on_any(async move {
+                __entrypoint_executor.spawn_on_any(async move {
                     (async move #body).await;
-                    executor_clone.stop();
+                    __entrypoint_executor_clone.stop();
                 });
 
-                executor.wait();
+                __entrypoint_executor.wait();
             }
         },
         syn::ReturnType::Type(_, ty) => {
@@ -123,38 +123,38 @@ fn core(
                 #vis #sig {
                     #global_init
 
-                    let executor = ::folo::ExecutorBuilder::new()
+                    let __entrypoint_executor = ::folo::ExecutorBuilder::new()
                         #worker_init
                         .build()
                         .unwrap();
-                    let executor_clone = ::std::sync::Arc::clone(&executor);
+                    let __entrypoint_executor_clone = ::std::sync::Arc::clone(&__entrypoint_executor);
 
-                    let result_rx = ::std::sync::Arc::new(::std::sync::Mutex::new(Option::<#ty>::None));
-                    let result_tx = ::std::sync::Arc::clone(&result_rx);
+                    let __entrypoint_result_rx = ::std::sync::Arc::new(::std::sync::Mutex::new(Option::<#ty>::None));
+                    let __entrypoint_result_tx = ::std::sync::Arc::clone(&__entrypoint_result_rx);
 
-                    executor.spawn_on_any(async move {
-                        let result = (async move #body).await;
+                    __entrypoint_executor.spawn_on_any(async move {
+                        let __entrypoint_result = (async move #body).await;
 
-                        *result_tx
+                        *__entrypoint_result_tx
                             .lock()
-                            .expect("poisoned lock") = Some(result);
+                            .expect("poisoned lock") = Some(__entrypoint_result);
 
-                        executor_clone.stop();
+                            __entrypoint_executor_clone.stop();
                     });
 
                     // If the test fails, generally we panic from here because we detect that a
                     // worker thread panicked.
-                    executor.wait();
+                    __entrypoint_executor.wait();
 
                     // Reaching this point is highly unlikely if a test fails - at least no
                     // currently known execution path takes us here. Only used for success case.
-                    let result = result_rx
+                    let __entrypoint_result = __entrypoint_result_rx
                         .lock()
                         .expect("posioned lock")
                         .take()
                         .expect("entrypoint terminated before returning result");
 
-                    result
+                        __entrypoint_result
                 }
             }
         }
@@ -178,21 +178,21 @@ mod tests {
 
         let expected = quote! {
             fn main() {
-                let executor = ::folo::ExecutorBuilder::new()
+                let __entrypoint_executor = ::folo::ExecutorBuilder::new()
                     .build()
                     .unwrap();
-                let executor_clone = ::std::sync::Arc::clone(&executor);
+                let __entrypoint_executor_clone = ::std::sync::Arc::clone(&__entrypoint_executor);
 
-                executor.spawn_on_any(async move {
+                __entrypoint_executor.spawn_on_any(async move {
                     (async move {
                         println!("Hello, world!");
                         yield_now().await;
                     }).await;
 
-                    executor_clone.stop();
+                    __entrypoint_executor_clone.stop();
                 });
 
-                executor.wait();
+                __entrypoint_executor.wait();
             }
         };
 
@@ -214,37 +214,37 @@ mod tests {
 
         let expected = quote! {
             fn main() -> Result<(), Box<dyn std::error::Error + Send + 'static> > {
-                let executor = ::folo::ExecutorBuilder::new()
+                let __entrypoint_executor = ::folo::ExecutorBuilder::new()
                     .build()
                     .unwrap();
-                let executor_clone = ::std::sync::Arc::clone(&executor);
+                let __entrypoint_executor_clone = ::std::sync::Arc::clone(&__entrypoint_executor);
 
-                let result_rx = ::std::sync::Arc::new(::std::sync::Mutex::new(Option::<Result<(), Box<dyn std::error::Error + Send + 'static> > >::None));
-                let result_tx = ::std::sync::Arc::clone(&result_rx);
+                let __entrypoint_result_rx = ::std::sync::Arc::new(::std::sync::Mutex::new(Option::<Result<(), Box<dyn std::error::Error + Send + 'static> > >::None));
+                let __entrypoint_result_tx = ::std::sync::Arc::clone(&__entrypoint_result_rx);
 
-                executor.spawn_on_any(async move {
-                    let result = (async move {
+                __entrypoint_executor.spawn_on_any(async move {
+                    let __entrypoint_result = (async move {
                         println!("Hello, world!");
                         yield_now().await;
                         Ok(())
                     }).await;
 
-                    *result_tx
+                    *__entrypoint_result_tx
                         .lock()
-                        .expect("poisoned lock") = Some(result);
+                        .expect("poisoned lock") = Some(__entrypoint_result);
 
-                    executor_clone.stop();
+                        __entrypoint_executor_clone.stop();
                 });
 
-                executor.wait();
+                __entrypoint_executor.wait();
 
-                let result = result_rx
+                let __entrypoint_result = __entrypoint_result_rx
                     .lock()
                     .expect("posioned lock")
                     .take()
                     .expect("entrypoint terminated before returning result");
 
-                result
+                    __entrypoint_result
             }
         };
 
@@ -287,27 +287,63 @@ mod tests {
             fn main() {
                 setup_global();
 
-                let executor = ::folo::ExecutorBuilder::new()
+                let __entrypoint_executor = ::folo::ExecutorBuilder::new()
                     .worker_init(move || { setup_worker(); } )
                     .build()
                     .unwrap();
-                let executor_clone = ::std::sync::Arc::clone(&executor);
+                let __entrypoint_executor_clone = ::std::sync::Arc::clone(&__entrypoint_executor);
 
-                executor.spawn_on_any(async move {
+                __entrypoint_executor.spawn_on_any(async move {
                     (async move {
                         println!("Hello, world!");
                         yield_now().await;
                     }).await;
 
-                    executor_clone.stop();
+                    __entrypoint_executor_clone.stop();
                 });
 
-                executor.wait();
+                __entrypoint_executor.wait();
             }
         };
 
         assert_eq!(
             entrypoint(attr, input, EntrypointType::Main).to_string(),
+            expected.to_string()
+        );
+    }
+
+    #[test]
+    fn test_returns_default() {
+        let input = parse_quote! {
+            async fn my_test() {
+                yield_now().await;
+                assert_eq!(2 + 2, 4);
+            }
+        };
+
+        let expected = quote! {
+            #[test]
+            fn my_test() {
+                let __entrypoint_executor = ::folo::ExecutorBuilder::new()
+                    .build()
+                    .unwrap();
+                let __entrypoint_executor_clone = ::std::sync::Arc::clone(&__entrypoint_executor);
+
+                __entrypoint_executor.spawn_on_any(async move {
+                    (async move {
+                        yield_now().await;
+                        assert_eq!(2 + 2, 4);
+                    }).await;
+
+                    __entrypoint_executor_clone.stop();
+                });
+
+                __entrypoint_executor.wait();
+            }
+        };
+
+        assert_eq!(
+            entrypoint(TokenStream::new(), input, EntrypointType::Test).to_string(),
             expected.to_string()
         );
     }
