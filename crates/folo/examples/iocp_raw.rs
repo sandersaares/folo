@@ -75,6 +75,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Some((&mut overlapped) as *mut _),
             ) {
                 Ok(_) => {
+                    // TODO: It is still allowed to complete synchronously, isn't it?
                     panic!("ReadFile should not return OK - we are in asynchronous mode!");
                 }
                 Err(e) if e.code() == ERROR_IO_PENDING.into() => {
