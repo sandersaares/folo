@@ -1,0 +1,34 @@
+@startuml
+
+package "Executor-owned thread" {
+    actor "User code" as User
+    rectangle "folo::fs" as Api
+
+    User --> Api
+
+    rectangle "Completion port" as Port
+
+    rectangle "IO request" as Request
+
+    rectangle "IO syscall" as IoSyscall
+
+    Api -> Request : Create
+    Request -up-> Port : Bind
+    Request --> IoSyscall : Submit
+
+    database "Operation block:\n* OVERLAPPED\n* buffer\n* extras" as Block
+
+    Request -> Block : Create
+
+    rectangle "IO driver" as Driver
+
+    Driver -left-> Port : Poll
+    Driver --> Block : Inspect
+    Driver --> Request : Complete
+
+    cloud "Block pool" as Pool
+
+    Block - Pool
+}
+
+@enduml
