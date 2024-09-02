@@ -1,10 +1,10 @@
 use tracing::{event, Level};
 
-use crate::rt::{
+use crate::{io, rt::{
     async_task_engine::{AsyncTaskEngine, CycleResult},
     local_task::LocalTask,
     LocalErasedTask, LocalJoinHandle, RemoteErasedTask,
-};
+}};
 use std::{
     any::type_name,
     cell::RefCell,
@@ -20,6 +20,8 @@ pub struct Agent {
     command_rx: mpsc::Receiver<AgentCommand>,
 
     engine: RefCell<AsyncTaskEngine>,
+
+    io: RefCell<io::Driver>,
 
     // Tasks that have been enqueued but have not yet been handed over to the async task engine.
     // Includes both locally queued tasks and tasks enqueued from another thread, which are both
@@ -39,8 +41,14 @@ impl Agent {
         Self {
             command_rx,
             engine: RefCell::new(AsyncTaskEngine::new()),
+            io: RefCell::new(io::Driver::new()),
             new_tasks: RefCell::new(VecDeque::new()),
         }
+    }
+
+    // Ugly passthrorough temporarily.
+    pub fn io(&self) -> &RefCell<io::Driver> {
+        &self.io
     }
 
     /// Spawns a task to execute a future on the current async worker thread.
@@ -73,6 +81,8 @@ impl Agent {
                 event!(Level::TRACE, "Terminating");
                 break;
             }
+
+            self.io.borrow_mut().process_completions();
 
             // TODO: Process IO.
             // TODO: Process timers.

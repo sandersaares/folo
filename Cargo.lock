@@ -270,6 +270,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "windows",
+ "windows-result",
 ]
 
 [[package]]

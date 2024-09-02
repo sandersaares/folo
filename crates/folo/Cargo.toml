@@ -30,6 +30,7 @@ windows = { version = "0", features = [
     "Win32_System_IO",
     "Win32_System_Threading",
 ] }
+windows-result = "0"
 
 [dev-dependencies]
 criterion = { version = "0", features = ["async_futures", "async_tokio"] }

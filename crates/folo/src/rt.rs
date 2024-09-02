@@ -1,13 +1,13 @@
 mod agent;
 mod async_task_engine;
-mod current_agent;
+pub(crate) mod current_agent;
 mod current_executor;
 mod executor;
 mod executor_builder;
 mod executor_client;
 mod functions;
 mod local_join;
-mod local_result_box;
+pub(crate) mod local_result_box;
 mod local_task;
 mod ready_after_poll;
 mod remote_join;
