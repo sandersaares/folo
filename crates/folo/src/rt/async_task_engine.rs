@@ -1,14 +1,16 @@
 use crate::rt::LocalErasedTask;
 use negative_impl::negative_impl;
 use std::{
+    cell::{OnceCell, RefCell},
     collections::VecDeque,
     fmt::{self, Debug, Formatter},
+    mem,
     pin::Pin,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc,
+        Arc, Weak,
     },
-    task::{self, Wake},
+    task::{self, RawWaker, Waker},
 };
 
 /// The engine incrementally executes async tasks on a single thread when polled. It is not active
@@ -16,7 +18,7 @@ use std::{
 #[derive(Debug)]
 pub struct AsyncTaskEngine {
     // The active set contains all the futures we want to poll. This is where all futures start.
-    active: VecDeque<Task>,
+    active: VecDeque<Pin<Arc<Task>>>,
 
     // The inactive set contains all the futures that are sleeping. We will move them back to the
     // active set once a waker notifies us that a future needs to wake up. Note that the wakeup
@@ -24,7 +26,7 @@ pub struct AsyncTaskEngine {
     // of the inactive set immediately before polling it, and be ready to move it back to the active
     // set during the poll if a waker is signaled during a poll. Also implies engine is not locked
     // during a poll, so new activity can occur (not only wakes but also new tasks being added).
-    inactive: VecDeque<Task>,
+    inactive: VecDeque<Pin<Arc<Task>>>,
 }
 
 impl AsyncTaskEngine {
@@ -39,8 +41,7 @@ impl AsyncTaskEngine {
     /// will be made available by the async task engine - it is expected that some other mechanism
     /// is used to observe the result.
     pub fn enqueue_erased(&mut self, erased_task: LocalErasedTask) {
-        let task = Task::new(erased_task);
-        self.active.push_back(task);
+        self.active.push_back(Arc::pin(Task::new(erased_task)));
     }
 
     pub fn execute_cycle(&mut self) -> CycleResult {
@@ -48,7 +49,7 @@ impl AsyncTaskEngine {
         // In the future we should refactor this to a more direct signaling system.
         let mut had_activity = false;
 
-        while let Some(mut task) = self.active.pop_front() {
+        while let Some(task) = self.active.pop_front() {
             had_activity = true;
 
             match task.poll() {
@@ -79,7 +80,7 @@ impl AsyncTaskEngine {
         while index < self.inactive.len() {
             let task = &self.inactive[index];
 
-            if task.waker.consume_awakened() {
+            if task.consume_awakened() {
                 had_activity = true;
 
                 let task = self.inactive.remove(index).unwrap();
@@ -116,24 +117,46 @@ pub enum CycleResult {
 }
 
 struct Task {
-    erased_task: LocalErasedTask,
-    waker: Arc<TaskWaker>,
+    erased_task: RefCell<LocalErasedTask>,
+    awakened: AtomicBool,
+    waker: OnceCell<Waker>,
 }
 
 impl Task {
     fn new(erased_task: LocalErasedTask) -> Self {
         Self {
-            erased_task,
-            waker: Arc::new(TaskWaker::new()),
+            erased_task: RefCell::new(erased_task),
+            awakened: AtomicBool::new(false),
+            waker: OnceCell::new(),
         }
     }
 
-    fn poll(&mut self) -> task::Poll<()> {
-        // TODO: This allocation is gross. To be fixed later (requires unsafe code).
-        let waker = Arc::clone(&self.waker).into();
-        let mut context = task::Context::from_waker(&waker);
+    fn poll(self: &Pin<Arc<Self>>) -> task::Poll<()> {
+        let mut context = task::Context::from_waker(self.waker());
 
-        self.erased_task.as_mut().poll(&mut context)
+        // SAFETY: We are only mut-borrowing in poll() which is only called by the current thread
+        // and never recursively.
+        self.erased_task.borrow_mut().as_mut().poll(&mut context)
+    }
+
+    fn waker<'a>(self: &'a Pin<Arc<Self>>) -> &'a Waker {
+        self.waker.get_or_init(|| {
+            // SAFETY: ???
+            unsafe { Waker::from_raw(self.raw_waker()) }
+        })
+    }
+
+    fn consume_awakened(&self) -> bool {
+        self.awakened.swap(false, Ordering::Relaxed)
+    }
+
+    fn raw_waker(self: &Pin<Arc<Self>>) -> RawWaker {
+        // SAFETY: We are not moving anything, simply extracting a pointer to the pinned value.
+        let inner = unsafe { Pin::into_inner_unchecked(self.clone()) };
+        let weak = Arc::downgrade(&inner);
+        let ptr_to_weak = weak.into_raw();
+
+        RawWaker::new(ptr_to_weak as *const (), &TASK_WAKER_VTABLE)
     }
 }
 
@@ -143,40 +166,58 @@ impl Debug for Task {
     }
 }
 
-#[repr(transparent)]
-struct TaskWaker {
-    awakened: Pin<Arc<AtomicBool>>,
+static TASK_WAKER_VTABLE: task::RawWakerVTable = task::RawWakerVTable::new(
+    waker_clone_waker,
+    waker_wake,
+    waker_wake_by_ref,
+    waker_drop_waker,
+);
+
+fn waker_clone_waker(ptr: *const ()) -> RawWaker {
+    let task = unsafe { resurrect_waker_ptr(ptr) };
+
+    // The existing one we resurrected is still in use! By default if we leave it dangling here it
+    // will be dropped and decrement the ref count, so leak a clone to account for the one we keep.
+    mem::forget(task.clone());
+
+    let ptr = task.into_raw();
+    RawWaker::new(ptr as *const (), &TASK_WAKER_VTABLE)
 }
 
-impl Wake for TaskWaker {
-    fn wake(self: Arc<Self>) {
-        self.awakened.store(true, Ordering::Relaxed)
-    }
+fn waker_wake(ptr: *const ()) {
+    let task = unsafe { resurrect_waker_ptr(ptr) };
+
+    // This one consumes the waker - after we have done our thing, we drop the pointer to clean up.
+
+    let Some(task) = task.upgrade() else {
+        // The task was dropped already - nothing to wake up.
+        return;
+    };
+    task.awakened.store(true, Ordering::Relaxed);
 }
 
-impl TaskWaker {
-    fn new() -> Self {
-        Self {
-            awakened: Pin::new(Arc::new(AtomicBool::new(false))),
-        }
-    }
+fn waker_wake_by_ref(ptr: *const ()) {
+    let task = unsafe { resurrect_waker_ptr(ptr) };
 
-    /// Checks whether the waker has woken up. If so, resets the waker.
-    fn consume_awakened(&self) -> bool {
-        let is_awakened = self.awakened.load(Ordering::Relaxed);
+    // The existing one we resurrected is still in use! By default if we leave it dangling here it
+    // will be dropped and decrement the ref count, so leak a clone to account for the one we keep.
+    mem::forget(task.clone());
 
-        if is_awakened {
-            self.awakened.store(false, Ordering::Relaxed);
-        }
-
-        is_awakened
-    }
+    let Some(task) = task.upgrade() else {
+        // The task was dropped already - nothing to wake up.
+        return;
+    };
+    task.awakened.store(true, Ordering::Relaxed);
 }
 
-impl Debug for TaskWaker {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.debug_struct("TaskWaker")
-            .field("awakened", &self.awakened)
-            .finish()
-    }
+fn waker_drop_waker(ptr: *const ()) {
+    // Resurrect it and immediately drop it to let the ref count decrement.
+    unsafe { resurrect_waker_ptr(ptr) };
+}
+
+/// # Safety
+///
+/// Do not move the value - it is pinned (if it still exists).
+unsafe fn resurrect_waker_ptr(ptr: *const ()) -> Weak<Task> {
+    Weak::from_raw(ptr as *const Task)
 }
