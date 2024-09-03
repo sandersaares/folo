@@ -1,4 +1,6 @@
 mod constants;
+#[cfg(feature = "criterion")]
+pub mod criterion;
 pub mod fs;
 mod io;
 pub mod rt;
@@ -18,7 +20,7 @@ pub mod rt;
 ///
 /// ```
 /// use folo::rt::yield_now;
-/// 
+///
 /// #[folo::main]
 /// async fn main() {
 ///     yield_now().await;
@@ -30,7 +32,7 @@ pub mod rt;
 ///
 /// ```
 /// use folo::rt::yield_now;
-/// 
+///
 /// fn global_init() {
 ///     // TODO: Set up global state here
 /// }

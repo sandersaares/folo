@@ -5,7 +5,7 @@ _default:
     @just --list --unsorted
 
 bench:
-    cargo bench
+    cargo bench --all-features
 
 build PROFILE='dev':
     cargo build --workspace --profile {{ PROFILE }} --all-features --all-targets
