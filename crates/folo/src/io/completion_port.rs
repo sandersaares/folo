@@ -44,9 +44,10 @@ impl CompletionPort {
             CreateIoCompletionPort(**handle, *self.handle, 0, 1)?;
         }
 
-        // We FILE_SKIP_SET_EVENT_ON_HANDLE
-        // Why do we do this: https://devblogs.microsoft.com/oldnewthing/20200221-00/?p=103466/
+        // SAFETY: This means we cannot rely on file handles being secretly treated as events. That
+        // is perfectly fine, because we do not use them as events.
         unsafe {
+            // Why do we do this: https://devblogs.microsoft.com/oldnewthing/20200221-00/?p=103466/
             SetFileCompletionNotificationModes(**handle, FILE_SKIP_SET_EVENT_ON_HANDLE as u8)?;
         }
 
