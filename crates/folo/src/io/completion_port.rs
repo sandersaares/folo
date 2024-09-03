@@ -4,7 +4,8 @@ use windows::{
     core::Owned,
     Win32::{
         Foundation::{HANDLE, INVALID_HANDLE_VALUE},
-        System::IO::CreateIoCompletionPort,
+        Storage::FileSystem::SetFileCompletionNotificationModes,
+        System::{WindowsProgramming::FILE_SKIP_SET_EVENT_ON_HANDLE, IO::CreateIoCompletionPort},
     },
 };
 
@@ -42,6 +43,15 @@ impl CompletionPort {
         unsafe {
             CreateIoCompletionPort(**handle, *self.handle, 0, 1)?;
         }
+
+        // We FILE_SKIP_SET_EVENT_ON_HANDLE
+        // Why do we do this: https://devblogs.microsoft.com/oldnewthing/20200221-00/?p=103466/
+        unsafe {
+            SetFileCompletionNotificationModes(**handle, FILE_SKIP_SET_EVENT_ON_HANDLE as u8)?;
+        }
+
+        // TODO: To support immediate completions, remember to take it out of the deferred queue.
+        // See https://github.com/svens/pal/blob/f84e64eabe1ad7ed872bb27dbc132b8f763251f2/pal/net/__bits/socket_windows.cpp#L108-L112
 
         Ok(())
     }
