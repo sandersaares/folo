@@ -59,7 +59,7 @@ impl Driver {
     ///         })?.await?;
     /// }
     /// ```
-    pub(crate) unsafe fn begin_io(&mut self) -> Operation {
+    pub(crate) unsafe fn begin_operation(&mut self) -> Operation {
         Operation::new()
     }
 

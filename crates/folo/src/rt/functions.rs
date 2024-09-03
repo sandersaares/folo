@@ -16,12 +16,12 @@ where
     F: Future<Output = R> + 'static,
     R: 'static,
 {
-    current_agent::get().spawn(future)
+    current_agent::with(|agent| agent.spawn(future))
 }
 
 /// Spawns a task to execute a future on any worker thread owned by the same Folo runtime
 /// as the current thread. The future is provided by a closure.
-/// 
+///
 /// The future itself does not have to be thread-safe. However, the closure must be.
 ///
 /// # Panics
@@ -33,7 +33,7 @@ where
     F: Future<Output = R> + 'static,
     R: Send + 'static,
 {
-    current_executor::get().spawn_on_any(future_fn)
+    current_executor::with(|executor| executor.spawn_on_any(future_fn))
 }
 
 /// Yields control back to the async task runtime to allow other tasks to run.

@@ -38,10 +38,7 @@ pub async fn read(path: impl AsRef<Path>) -> io::Result<Vec<u8>> {
 
         event!(Level::DEBUG, message = "opened file",);
 
-        current_agent::get()
-            .io()
-            .borrow()
-            .bind_io_primitive(&file)?;
+        current_agent::with_io(|io| io.bind_io_primitive(&file))?;
 
         let mut result = Vec::new();
 
@@ -73,9 +70,9 @@ async fn read_bytes_from_file(file: &Owned<HANDLE>, offset: usize) -> io::Result
     // SAFETY: For safe usage of the I/O driver API, we are required to pass the `overlapped`
     // argument to a native I/O call under all circumstances, to trigger an I/O completion. We do.
     unsafe {
-        let io = current_agent::get().io().borrow_mut().begin_io();
+        let operation = current_agent::with_io(|io| io.begin_operation());
 
-        match io
+        match operation
             .from_offset(offset)
             .apply(|buffer, overlapped| Ok(ReadFile(**file, Some(buffer), None, Some(overlapped))?))
             .await

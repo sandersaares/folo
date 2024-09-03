@@ -1,18 +1,20 @@
 use crate::rt::executor_client::ExecutorClient;
 use std::{cell::RefCell, sync::Arc};
 
-/// Gets the executor client for the Folo executor that owns the current thread.
+/// Executes a closure in the context of the executor client for the Folo executor that owns the
+/// current thread.
 ///
 /// # Panics
 ///
 /// Panics if the current thread is not owned by a Folo executor.
-pub fn get() -> Arc<ExecutorClient> {
+pub fn with<F, R>(f: F) -> R
+where
+    F: FnOnce(&ExecutorClient) -> R,
+{
     CURRENT_EXECUTOR.with_borrow(|current_executor| {
-        Arc::clone(
-            current_executor
-                .as_ref()
-                .expect("this thread is not owned by a Folo executor"),
-        )
+        f(current_executor
+            .as_ref()
+            .expect("this thread is not owned by a Folo executor"))
     })
 }
 
