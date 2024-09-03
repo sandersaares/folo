@@ -6,7 +6,7 @@ use tracing::{event, level_filters::LevelFilter, Level};
 // scheduled on an arbitrary worker thread. Note that any return value must be `Send + 'static`
 // because the code will execute on a different thread from the one that called main().
 #[folo::main(worker_init_fn = init_worker)]
-async fn main() -> Result<(), Box<dyn Error + Send + 'static>> {
+async fn main() -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
     let yield1 = spawn_on_any(yield_now());
     let yield2 = spawn_on_any(yield_now());
 
@@ -26,7 +26,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + 'static>> {
         return Err(Box::new(std::io::Error::new(
             std::io::ErrorKind::Other,
             "Math is broken",
-        )) as Box<dyn Error + Send + 'static>);
+        )));
     }
 
     Ok(())
@@ -60,6 +60,9 @@ fn init_worker() {
         // By default, TRACE is suppressed. We enable it here to see detailed diagnostic info.
         // Without this setting, we could use RUST_LOG to control the log level at runtime but
         // that has less stellar IDE integration so we hardcode it for now.
+        //
+        // NOTE: Enabling trace level logging slows everything way down because tracing is
+        // synchronous (application code is paused while it is slowly written to stdout).
         .with_max_level(LevelFilter::TRACE)
         .finish();
 
