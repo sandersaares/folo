@@ -16,11 +16,11 @@ fn spawn_and_await_many(c: &mut Criterion) {
 
     group.bench_function("folo_remote", |b| {
         b.to_async(FoloExecutor).iter(|| {
-            folo::rt::spawn_on_any(async {
+            folo::rt::spawn_on_any(|| async {
                 let mut tasks = Vec::with_capacity(MANY_TASK_COUNT);
 
                 for _ in 0..MANY_TASK_COUNT {
-                    tasks.push(folo::rt::spawn_on_any(async {
+                    tasks.push(folo::rt::spawn_on_any(|| async {
                         folo::rt::yield_now().await
                     }));
                 }
@@ -66,13 +66,11 @@ fn spawn_and_await_many(c: &mut Criterion) {
 
     group.bench_function("folo_local_as_remote", |b| {
         b.to_async(FoloExecutor).iter(|| {
-            folo::rt::spawn_on_any(async {
+            folo::rt::spawn_on_any(|| async {
                 let mut tasks = Vec::<RemoteJoinHandle<_>>::with_capacity(MANY_TASK_COUNT);
 
                 for _ in 0..MANY_TASK_COUNT {
-                    tasks.push(
-                        folo::rt::spawn(async { folo::rt::yield_now().await }).into(),
-                    );
+                    tasks.push(folo::rt::spawn(async { folo::rt::yield_now().await }).into());
                 }
 
                 for task in tasks {
@@ -84,14 +82,12 @@ fn spawn_and_await_many(c: &mut Criterion) {
 
     group.bench_function("folo_local", |b| {
         b.to_async(FoloExecutor).iter(|| {
-            folo::rt::spawn_on_any(async {
+            folo::rt::spawn_on_any(|| async {
                 let root_handle: RemoteJoinHandle<_> = folo::rt::spawn(async {
                     let mut tasks = Vec::with_capacity(MANY_TASK_COUNT);
 
                     for _ in 0..MANY_TASK_COUNT {
-                        tasks.push(folo::rt::spawn(async {
-                            folo::rt::yield_now().await
-                        }));
+                        tasks.push(folo::rt::spawn(async { folo::rt::yield_now().await }));
                     }
 
                     for task in tasks {
@@ -108,6 +104,7 @@ fn spawn_and_await_many(c: &mut Criterion) {
     group.finish();
 }
 
+// TODO: Make this reusable.
 /// We use a two-fold strategy:
 ///
 /// * For the most part, the executor works "normally" during the benchmark.

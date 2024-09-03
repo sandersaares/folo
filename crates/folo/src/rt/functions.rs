@@ -20,17 +20,20 @@ where
 }
 
 /// Spawns a task to execute a future on any worker thread owned by the same Folo runtime
-/// as the current thread.
+/// as the current thread. The future is provided by a closure.
+/// 
+/// The future itself does not have to be thread-safe. However, the closure must be.
 ///
 /// # Panics
 ///
 /// Panics if the current thread is not owned by a Folo runtime.
-pub fn spawn_on_any<F, R>(future: F) -> RemoteJoinHandle<R>
+pub fn spawn_on_any<FN, F, R>(future_fn: FN) -> RemoteJoinHandle<R>
 where
-    F: Future<Output = R> + Send + 'static,
+    FN: FnOnce() -> F + Send + 'static,
+    F: Future<Output = R> + 'static,
     R: Send + 'static,
 {
-    current_executor::get().spawn_on_any(future)
+    current_executor::get().spawn_on_any(future_fn)
 }
 
 /// Yields control back to the async task runtime to allow other tasks to run.

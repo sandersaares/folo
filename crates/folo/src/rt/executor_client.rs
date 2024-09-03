@@ -23,13 +23,23 @@ impl ExecutorClient {
         }
     }
 
-    /// Spawns a task to execute a future on any worker thread.
-    pub fn spawn_on_any<F, R>(&self, future: F) -> RemoteJoinHandle<R>
+    /// Spawns a task to execute a future on any worker thread, creating the future via closure.
+    pub fn spawn_on_any<FN, F, R>(&self, future_fn: FN) -> RemoteJoinHandle<R>
     where
-        F: Future<Output = R> + Send + 'static,
+        FN: FnOnce() -> F + Send + 'static,
+        F: Future<Output = R> + 'static,
         R: Send + 'static,
     {
-        let task = RemoteTask::new(future);
+        // Just because we are spawning a future on another thread does not mean it has to be a
+        // thread-safe future (although the return value has to be). Therefore, we kajigger it
+        // around via a remote join handle from the same thread, to allow a single-threaded future
+        // to execute, as long as the closure that creates it is thread-safe.
+        let thread_safe_wrapper_future = async {
+            let join_handle: RemoteJoinHandle<R> = crate::rt::spawn(future_fn()).into();
+            join_handle.await
+        };
+
+        let task = RemoteTask::new(thread_safe_wrapper_future);
         let join_handle = task.join_handle();
 
         let executor = self.executor.lock().expect(constants::POISONED_LOCK);

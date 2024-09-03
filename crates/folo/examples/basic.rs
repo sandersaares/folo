@@ -7,8 +7,8 @@ use tracing::{event, level_filters::LevelFilter, Level};
 // because the code will execute on a different thread from the one that called main().
 #[folo::main(worker_init_fn = init_worker)]
 async fn main() -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
-    let yield1 = spawn_on_any(yield_now());
-    let yield2 = spawn_on_any(yield_now());
+    let yield1 = spawn_on_any(yield_now);
+    let yield2 = spawn_on_any(yield_now);
 
     let mathematics = async {
         yield_now().await;

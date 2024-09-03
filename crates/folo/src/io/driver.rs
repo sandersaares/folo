@@ -3,13 +3,8 @@ use std::pin::Pin;
 use windows::{
     core::Owned,
     Win32::{
-        Foundation::{
-            ERROR_IO_PENDING, ERROR_TIMEOUT, HANDLE, NTSTATUS, STATUS_SUCCESS, WAIT_TIMEOUT,
-        },
-        System::{
-            Threading::INFINITE,
-            IO::{GetQueuedCompletionStatusEx, OVERLAPPED, OVERLAPPED_ENTRY},
-        },
+        Foundation::{ERROR_IO_PENDING, HANDLE, NTSTATUS, STATUS_SUCCESS, WAIT_TIMEOUT},
+        System::IO::{GetQueuedCompletionStatusEx, OVERLAPPED, OVERLAPPED_ENTRY},
     },
 };
 use windows_result::HRESULT;
