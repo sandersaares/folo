@@ -121,13 +121,8 @@ fn core(
                 let __entrypoint_executor_clone = ::std::sync::Arc::clone(&__entrypoint_executor);
 
                 __entrypoint_executor.spawn_on_any(|| async move {
-                    let __entrypoint_remote_join: ::folo::rt::RemoteJoinHandle<_> = ::folo::rt::spawn(async move {
-                        #inner_ident().await;
-                        __entrypoint_executor_clone.stop();
-                    })
-                    .into();
-
-                    __entrypoint_remote_join.await;
+                    #inner_ident().await;
+                    __entrypoint_executor_clone.stop();
                 });
 
                 __entrypoint_executor.wait();
@@ -151,18 +146,13 @@ fn core(
                 let __entrypoint_result_tx = ::std::sync::Arc::clone(&__entrypoint_result_rx);
 
                 __entrypoint_executor.spawn_on_any(|| async move {
-                    let __entrypoint_remote_join: ::folo::rt::RemoteJoinHandle<_> = ::folo::rt::spawn(async move {
-                        let __entrypoint_result = #inner_ident().await;
+                    let __entrypoint_result = #inner_ident().await;
 
-                        *__entrypoint_result_tx
-                            .lock()
-                            .expect("poisoned lock") = Some(__entrypoint_result);
+                    *__entrypoint_result_tx
+                        .lock()
+                        .expect("poisoned lock") = Some(__entrypoint_result);
 
-                            __entrypoint_executor_clone.stop();
-                    })
-                    .into();
-
-                    __entrypoint_remote_join.await;
+                        __entrypoint_executor_clone.stop();
                 });
 
                 // If the test fails, generally we panic from here because we detect that a
@@ -208,13 +198,8 @@ mod tests {
                 let __entrypoint_executor_clone = ::std::sync::Arc::clone(&__entrypoint_executor);
 
                 __entrypoint_executor.spawn_on_any(|| async move {
-                    let __entrypoint_remote_join: ::folo::rt::RemoteJoinHandle<_> = ::folo::rt::spawn(async move {
-                        __inner_main().await;
-                        __entrypoint_executor_clone.stop();
-                    })
-                    .into();
-
-                    __entrypoint_remote_join.await;
+                    __inner_main().await;
+                    __entrypoint_executor_clone.stop();
                 });
 
                 __entrypoint_executor.wait();
@@ -253,18 +238,13 @@ mod tests {
                 let __entrypoint_result_tx = ::std::sync::Arc::clone(&__entrypoint_result_rx);
 
                 __entrypoint_executor.spawn_on_any(|| async move {
-                    let __entrypoint_remote_join: ::folo::rt::RemoteJoinHandle<_> = ::folo::rt::spawn(async move {
-                        let __entrypoint_result = __inner_main().await;
+                    let __entrypoint_result = __inner_main().await;
 
-                        *__entrypoint_result_tx
-                            .lock()
-                            .expect("poisoned lock") = Some(__entrypoint_result);
+                    *__entrypoint_result_tx
+                        .lock()
+                        .expect("poisoned lock") = Some(__entrypoint_result);
 
-                        __entrypoint_executor_clone.stop();
-                    })
-                    .into();
-
-                    __entrypoint_remote_join.await;
+                    __entrypoint_executor_clone.stop();
                 });
 
                 __entrypoint_executor.wait();
@@ -331,14 +311,9 @@ mod tests {
                 let __entrypoint_executor_clone = ::std::sync::Arc::clone(&__entrypoint_executor);
 
                 __entrypoint_executor.spawn_on_any(|| async move {
-                    let __entrypoint_remote_join: ::folo::rt::RemoteJoinHandle<_> = ::folo::rt::spawn(async move {
-                        __inner_main().await;
+                    __inner_main().await;
 
-                        __entrypoint_executor_clone.stop();
-                    })
-                    .into();
-
-                    __entrypoint_remote_join.await;
+                    __entrypoint_executor_clone.stop();
                 });
 
                 __entrypoint_executor.wait();
@@ -374,14 +349,9 @@ mod tests {
                 let __entrypoint_executor_clone = ::std::sync::Arc::clone(&__entrypoint_executor);
 
                 __entrypoint_executor.spawn_on_any(|| async move {
-                    let __entrypoint_remote_join: ::folo::rt::RemoteJoinHandle<_> = ::folo::rt::spawn(async move {
-                        __inner_my_test().await;
+                    __inner_my_test().await;
 
-                        __entrypoint_executor_clone.stop();
-                    })
-                    .into();
-
-                    __entrypoint_remote_join.await;
+                    __entrypoint_executor_clone.stop();
                 });
 
                 __entrypoint_executor.wait();
