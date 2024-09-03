@@ -1,7 +1,7 @@
 //! Top-level free functions that can be called to manipulate the Folo runtime.
 
 use crate::rt::{
-    current_agent, current_executor, ready_after_poll::ReadyAfterPoll, LocalJoinHandle,
+    current_agent, current_runtime, ready_after_poll::ReadyAfterPoll, LocalJoinHandle,
     RemoteJoinHandle,
 };
 use std::future::Future;
@@ -33,7 +33,7 @@ where
     F: Future<Output = R> + 'static,
     R: Send + 'static,
 {
-    current_executor::with(|executor| executor.spawn_on_any(future_fn))
+    current_runtime::with(|runtime| runtime.spawn_on_any(future_fn))
 }
 
 /// Yields control back to the async task runtime to allow other tasks to run.

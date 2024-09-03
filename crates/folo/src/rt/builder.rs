@@ -1,8 +1,8 @@
 use crate::rt::{
     agent::{Agent, AgentCommand},
-    current_agent, current_executor,
-    executor::Executor,
-    ExecutorClient,
+    current_agent, current_runtime,
+    runtime::Runtime,
+    RuntimeClient,
 };
 use std::{
     fmt::{self, Debug, Formatter},
@@ -15,12 +15,12 @@ use std::{
 // works with multiple threads. We do not yet care about actually using threads optimally.
 const ASYNC_WORKER_COUNT: usize = 2;
 
-pub struct ExecutorBuilder {
+pub struct RuntimeBuilder {
     worker_init: Option<Arc<dyn Fn() + Send + Sync + 'static>>,
     ad_hoc_entrypoint: bool,
 }
 
-impl ExecutorBuilder {
+impl RuntimeBuilder {
     pub fn new() -> Self {
         Self {
             worker_init: None,
@@ -37,12 +37,12 @@ impl ExecutorBuilder {
         self
     }
 
-    /// Registers the Folo executor as the owner of the entrypoint thread. This may be useful for
+    /// Registers the Folo runtime as the owner of the entrypoint thread. This may be useful for
     /// interoperability purposes when using custom entry points (such as benchmarking logic).
     ///
-    /// In the scenarios where this is set, we are often using the executor in a transient manner,
+    /// In the scenarios where this is set, we are often using the runtime in a transient manner,
     /// for example for every benchmark iteration. Because of this, when this is enabled, the
-    /// builder first checks if an executor is already registered on the current thread and returns
+    /// builder first checks if a runtime is already registered on the current thread and returns
     /// that instead of creating a new one. Note that in this case, all other builder options are
     /// ignored - it is assumed that you are calling the same builder multiple times with the same
     /// configuration.
@@ -51,11 +51,11 @@ impl ExecutorBuilder {
         self
     }
 
-    pub fn build(self) -> Result<Arc<ExecutorClient>> {
+    pub fn build(self) -> Result<Arc<RuntimeClient>> {
         if self.ad_hoc_entrypoint {
-            // With ad-hoc entrypoints we reuse the executor if it is already set.
-            if let Some(executor) = current_executor::try_get() {
-                return Ok(executor);
+            // With ad-hoc entrypoints we reuse the runtime if it is already set.
+            if let Some(runtime) = current_runtime::try_get() {
+                return Ok(runtime);
             }
         }
 
@@ -77,15 +77,15 @@ impl ExecutorBuilder {
                 (worker_init)();
 
                 // We first wait for the startup signal, which indicates that all agents have been
-                // created and registered with the executor, and the executor is ready to be used.
+                // created and registered with the runtime, and the runtime is ready to be used.
                 let start = start_rx
                     .recv()
-                    .expect("executor startup process failed in infallible code");
+                    .expect("runtime startup process failed in infallible code");
 
                 let agent = Rc::new(Agent::new(command_rx));
 
                 current_agent::set(Rc::clone(&agent));
-                current_executor::set(start.executor_client);
+                current_runtime::set(start.runtime_client);
 
                 agent.run();
             });
@@ -93,60 +93,60 @@ impl ExecutorBuilder {
             join_handles.push(join_handle);
         }
 
-        // Now we have all the info we need to construct the executor and client. We do so and then
-        // send a message to all the agents that they are now attached to an executor and can start
+        // Now we have all the info we need to construct the runtime and client. We do so and then
+        // send a message to all the agents that they are now attached to a runtime and can start
         // doing their job.
 
-        // This is just a convenient package the executor client uses to organize things internally.
-        let executor = Executor {
+        // This is just a convenient package the runtime client uses to organize things internally.
+        let runtime = Runtime {
             agent_join_handles: Some(join_handles.into_boxed_slice()),
             agent_command_txs: command_txs.into_boxed_slice(),
         };
 
-        let client = Arc::new(ExecutorClient::new(executor));
+        let client = Arc::new(RuntimeClient::new(runtime));
 
         // In most cases, the entrypoint thread is merely parked. However, for interoperability
-        // purposes, the caller may wish to register the Folo executor as the owner of the
+        // purposes, the caller may wish to register the Folo runtime as the owner of the
         // entrypoint thread, as well. This allows custom entrypoint logic to execute code
-        // that calls `spawn_on_any()` to schedule work on the Folo executor, while not being truly
+        // that calls `spawn_on_any()` to schedule work on the Folo runtime, while not being truly
         // on a Folo owned thread.
         if self.ad_hoc_entrypoint {
-            current_executor::set(Arc::clone(&client));
+            current_runtime::set(Arc::clone(&client));
         }
 
         // Tell all the agents to start.
         for tx in start_txs {
             tx.send(AgentStartCommand {
-                executor_client: Arc::clone(&client),
+                runtime_client: Arc::clone(&client),
             })
-            .expect("executor agent thread failed before it could be started");
+            .expect("runtime agent thread failed before it could be started");
         }
 
-        // All the agents are now running and the executor is ready to be used.
+        // All the agents are now running and the runtime is ready to be used.
         Ok(client)
     }
 }
 
-impl Default for ExecutorBuilder {
+impl Default for RuntimeBuilder {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl Debug for ExecutorBuilder {
+impl Debug for RuntimeBuilder {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ExecutorBuilder").finish()
+        f.debug_struct("RuntimeBuilder").finish()
     }
 }
 
-/// A signal that the executor has been initialized and agents are permitted to start.
+/// A signal that the runtime has been initialized and agents are permitted to start.
 #[derive(Debug)]
 struct AgentStartCommand {
-    executor_client: Arc<ExecutorClient>,
+    runtime_client: Arc<RuntimeClient>,
 }
 
 #[derive(thiserror::Error, Debug)]
-#[error("failed to build the executor for some mysterious reason")]
+#[error("failed to build the runtime for some mysterious reason")]
 pub struct Error {}
 
 pub type Result<T> = std::result::Result<T, Error>;

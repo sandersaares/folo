@@ -1,25 +1,25 @@
 use crate::constants;
 use crate::rt::{
-    agent::AgentCommand, executor::Executor, remote_task::RemoteTask, RemoteJoinHandle,
+    agent::AgentCommand, runtime::Runtime, remote_task::RemoteTask, RemoteJoinHandle,
 };
 use std::{cell::Cell, future::Future, sync::Mutex, thread};
 
-/// The multithreaded entry point for the Folo executor, used for operations that affect more than
+/// The multithreaded entry point for the Folo runtime, used for operations that affect more than
 /// the current thread.
 ///
 /// This type is thread-safe.
 #[derive(Debug)]
-pub struct ExecutorClient {
-    // This is a silly implementation of a thread-safe executor client because it uses a global
+pub struct RuntimeClient {
+    // This is a silly implementation of a thread-safe runtime client because it uses a global
     // mutex to do any work. A better implementation would avoid locking and make each thread have
     // an independently operating client. However, this is a nice and simple starting point.
-    executor: Mutex<Executor>,
+    runtime: Mutex<Runtime>,
 }
 
-impl ExecutorClient {
-    pub(crate) fn new(executor: Executor) -> Self {
+impl RuntimeClient {
+    pub(crate) fn new(runtime: Runtime) -> Self {
         Self {
-            executor: Mutex::new(executor),
+            runtime: Mutex::new(runtime),
         }
     }
 
@@ -42,31 +42,31 @@ impl ExecutorClient {
         let task = RemoteTask::new(thread_safe_wrapper_future);
         let join_handle = task.join_handle();
 
-        let executor = self.executor.lock().expect(constants::POISONED_LOCK);
-        let worker_index = random_worker_index(executor.agent_command_txs.len());
+        let runtime = self.runtime.lock().expect(constants::POISONED_LOCK);
+        let worker_index = random_worker_index(runtime.agent_command_txs.len());
 
-        executor.agent_command_txs[worker_index]
+        runtime.agent_command_txs[worker_index]
             .send(AgentCommand::EnqueueTask {
                 erased_task: Box::pin(task),
             })
-            .expect("executor agent thread terminated unexpectedly");
+            .expect("runtime agent thread terminated unexpectedly");
 
         join_handle
     }
 
-    /// Commands the executor to stop processing tasks and shut down. Safe to call multiple times.
+    /// Commands the runtime to stop processing tasks and shut down. Safe to call multiple times.
     ///
-    /// This returns immediately. To wait for the executor to stop, use `wait()`.
+    /// This returns immediately. To wait for the runtime to stop, use `wait()`.
     pub fn stop(&self) {
-        let executor = self.executor.lock().expect(constants::POISONED_LOCK);
+        let runtime = self.runtime.lock().expect(constants::POISONED_LOCK);
 
-        for tx in &executor.agent_command_txs {
+        for tx in &runtime.agent_command_txs {
             tx.send(AgentCommand::Terminate)
-                .expect("executor agent thread terminated unexpectedly");
+                .expect("runtime agent thread terminated unexpectedly");
         }
     }
 
-    /// Waits for the executor to stop. Blocks the thread until all executor owned threads have
+    /// Waits for the runtime to stop. Blocks the thread until all runtime owned threads have
     /// terminated in response to a call to `stop()`. This can only be called once.
     ///
     /// # Panics
@@ -81,12 +81,12 @@ impl ExecutorClient {
     }
 
     fn get_join_handles(&self) -> Box<[thread::JoinHandle<()>]> {
-        let mut executor = self.executor.lock().expect(constants::POISONED_LOCK);
+        let mut runtime = self.runtime.lock().expect(constants::POISONED_LOCK);
 
-        executor
+        runtime
             .agent_join_handles
             .take()
-            .expect("ExecutorClient::wait() called multiple times")
+            .expect("RuntimeClient::wait() called multiple times")
     }
 }
 

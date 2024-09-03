@@ -18,7 +18,7 @@ pub struct AsyncTaskEngine {
     // active set once a waker notifies us that a future needs to wake up. Note that the wakeup
     // may arrive from within the poll itself, which implies that we need to consider a future part
     // of the inactive set immediately before polling it, and be ready to move it back to the active
-    // set during the poll if a waker is signaled during a poll. Also implies executor is not locked
+    // set during the poll if a waker is signaled during a poll. Also implies engine is not locked
     // during a poll, so new activity can occur (not only wakes but also new tasks being added).
     inactive: VecDeque<Task>,
 

@@ -60,9 +60,9 @@ where
                 match result_rx.poll_unpin(cx) {
                     task::Poll::Ready(Ok(result)) => task::Poll::Ready(result),
                     // An error result may be returned if, for example, the sender was dropped before
-                    // sending. When that may happen is up to the implementation of the executor. For
-                    // example, this may happen when the executor is shutting down and dropping queued
-                    // tasks. We take no strong dependencies here on the design of the executor - if no
+                    // sending. When that may happen is up to the implementation of the runtime. For
+                    // example, this may happen when the runtime is shutting down and dropping queued
+                    // tasks. We take no strong dependencies here on the design of the runtime - if no
                     // result has arrived, we simply treat this as pending forever. The caller is expected
                     // to apply a suitable abandonment timeout if there is a risk of it awaiting forever.
                     task::Poll::Ready(Err(_)) | task::Poll::Pending => task::Poll::Pending,

@@ -1,10 +1,13 @@
 use tracing::{event, Level};
 
-use crate::{io, rt::{
-    async_task_engine::{AsyncTaskEngine, CycleResult},
-    local_task::LocalTask,
-    LocalErasedTask, LocalJoinHandle, RemoteErasedTask,
-}};
+use crate::{
+    io,
+    rt::{
+        async_task_engine::{AsyncTaskEngine, CycleResult},
+        local_task::LocalTask,
+        LocalErasedTask, LocalJoinHandle, RemoteErasedTask,
+    },
+};
 use std::{
     any::type_name,
     cell::RefCell,
@@ -14,7 +17,7 @@ use std::{
     sync::mpsc,
 };
 
-/// Coordinates the operations of the Folo executor on a single thread. There may be different
+/// Coordinates the operations of the Folo runtime on a single thread. There may be different
 /// types of agents assigned to different threads (e.g. async worker versus sync worker).
 pub struct Agent {
     command_rx: mpsc::Receiver<AgentCommand>,
@@ -46,7 +49,6 @@ impl Agent {
         }
     }
 
-    // Ugly passthrorough temporarily.
     pub fn io(&self) -> &RefCell<io::Driver> {
         &self.io
     }
@@ -56,7 +58,7 @@ impl Agent {
     /// # Panics
     ///
     /// Panics if the current thread is not an async worker thread. This is possible because there
-    /// are more types of executor threads than async worker threads - e.g. sync worker threads.
+    /// are more types of runtime threads than async worker threads - e.g. sync worker threads.
     pub fn spawn<F, R>(&self, future: F) -> LocalJoinHandle<R>
     where
         F: Future<Output = R> + 'static,
@@ -115,10 +117,10 @@ impl Agent {
                     return ProcessCommandsResult::Continue;
                 }
                 Err(mpsc::TryRecvError::Disconnected) => {
-                    // Each worker thread holds a reference to the executor client, so this
-                    // should be impossible - the only way to drop the executor is to first
+                    // Each worker thread holds a reference to the runtime client, so this
+                    // should be impossible - the only way to drop the runtime is to first
                     // terminate all the worker threads. Otherwise it runs forever.
-                    unreachable!("executor was dropped before terminating worker threads");
+                    unreachable!("runtime was dropped before terminating worker threads");
                 }
             }
         }
@@ -142,7 +144,7 @@ pub enum AgentCommand {
     /// Shuts down the worker thread immediately, without waiting for any pending operations to
     /// complete. The worker will still perform necessary cleanup to avoid resource leaks, because
     /// this is not necessarily called at process termination time when cleanup is not needed (e.g.
-    /// it may be one of many test executors used in a test run by different unit tests).
+    /// it may be one of many test runtimes used in a test run by different unit tests).
     Terminate,
 }
 

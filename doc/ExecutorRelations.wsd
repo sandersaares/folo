@@ -6,11 +6,11 @@ rectangle "functions.rs" as Functions
 
 User --> Functions
 
-database "CURRENT_EXECUTOR" as CurrentExecutor
+database "CURRENT_RUNTIME" as CurrentRuntime
 
-package "Executor-owned thread" {
+package "Runtime-owned thread" {
     database "CURRENT_AGENT" as CurrentAgent
-    rectangle "Executor agent" as Agent
+    rectangle "Runtime agent" as Agent
     rectangle "Async worker" as Async
     rectangle "Async task engine" as AsyncEngine
 
@@ -33,12 +33,12 @@ package "Executor-owned thread" {
     Agent --> AgentTask : Read
 }
 
-Functions --> CurrentExecutor
+Functions --> CurrentRuntime
 Functions -> CurrentAgent
 
-rectangle "Executor client" as ExecutorClient
+rectangle "Runtime client" as RuntimeClient
 
-CurrentExecutor -> ExecutorClient
-ExecutorClient -up-> AgentTask : Command
+CurrentRuntime -> RuntimeClient
+RuntimeClient -up-> AgentTask : Command
 
 @enduml

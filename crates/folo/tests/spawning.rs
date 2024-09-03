@@ -1,11 +1,11 @@
-use folo::rt::{spawn, spawn_on_any, yield_now, ExecutorBuilder};
+use folo::rt::{spawn, spawn_on_any, yield_now, RuntimeBuilder};
 use std::rc::Rc;
 
 #[test]
 fn spawning() {
     // We use a manually started runtime here to avoid any potential
     // interference from the logic in the entrypoint macro.
-    let folo = ExecutorBuilder::new().build().unwrap();
+    let folo = RuntimeBuilder::new().build().unwrap();
     let folo_clone = folo.clone();
 
     folo.spawn_on_any(|| async move {

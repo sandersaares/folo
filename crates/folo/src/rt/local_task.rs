@@ -22,7 +22,7 @@ where
     future: F,
 
     // This is an Rc because we need to share it both with the task and with the JoinHandle, each
-    // of which has an independent lifetime (executor-defined and caller-defined, respectively).
+    // of which has an independent lifetime (runtime-defined and caller-defined, respectively).
     result: Rc<LocalResultBox<R>>,
 }
 

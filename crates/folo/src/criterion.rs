@@ -1,6 +1,6 @@
 use criterion::async_executor::AsyncExecutor;
 
-/// Enables usage of the Folo executor in Criterion benchmarks.
+/// Enables usage of the Folo runtime in Criterion benchmarks.
 ///
 /// # Special considerations
 ///
@@ -33,9 +33,9 @@ pub struct FoloAdapter {}
 
 impl AsyncExecutor for FoloAdapter {
     fn block_on<T>(&self, future: impl std::future::Future<Output = T>) -> T {
-        _ = crate::rt::ExecutorBuilder::new()
+        _ = crate::rt::RuntimeBuilder::new()
             // This allows `spawn_on_any()` to work correctly and shovel work to Folo.
-            // It also causes the executor to be reused - it is only created on the first build.
+            // It also causes the runtime to be reused - it is only created on the first build.
             .ad_hoc_entrypoint()
             .build()
             .unwrap();
@@ -45,6 +45,6 @@ impl AsyncExecutor for FoloAdapter {
         // threads, nor any `block_on` style API.
         futures::executor::block_on(future)
 
-        // Note that we leave the Folo executor running, so it can be reused.
+        // Note that we leave the Folo runtime running, so it can be reused.
     }
 }
