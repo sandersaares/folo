@@ -20,7 +20,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
 
     let result = mathematics.await;
 
-    event!(Level::INFO, key = "calculated 2 + 2", result);
+    event!(Level::INFO, message = "calculated 2 + 2", result);
 
     if result != 4 {
         return Err(Box::new(std::io::Error::new(

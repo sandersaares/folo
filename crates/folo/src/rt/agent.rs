@@ -65,7 +65,7 @@ impl Agent {
         R: 'static,
     {
         let future_type = type_name::<F>();
-        event!(Level::TRACE, key = "Agent::spawn", future_type);
+        event!(Level::TRACE, message = "Agent::spawn", future_type);
 
         let task = LocalTask::new(future);
         let join_handle = task.join_handle();

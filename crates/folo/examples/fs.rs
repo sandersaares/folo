@@ -15,7 +15,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
         Ok(contents) => {
             event!(
                 Level::INFO,
-                key = "file read completed",
+                message = "file read completed",
                 length = contents.len()
             );
         }
