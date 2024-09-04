@@ -56,9 +56,7 @@ impl<T, const COUNT: usize> PinnedSlab<T, COUNT> {
     }
 
     pub fn get(&self, index: usize) -> Option<&T> {
-        if index >= COUNT {
-            return None;
-        }
+        assert!(index < COUNT, "index out of bounds");
 
         // SAFETY: We did a bounds check and ensured in the ctor that every entry is initialized.
         match unsafe {
@@ -73,9 +71,7 @@ impl<T, const COUNT: usize> PinnedSlab<T, COUNT> {
     }
 
     pub fn get_mut(&mut self, index: usize) -> Option<&mut T> {
-        if index >= COUNT {
-            return None;
-        }
+        assert!(index < COUNT, "index out of bounds");
 
         // SAFETY: We did a bounds check and ensured in the ctor that every entry is initialized.
         match unsafe {
@@ -103,9 +99,7 @@ impl<T, const COUNT: usize> PinnedSlab<T, COUNT> {
     }
 
     pub fn remove(&mut self, index: usize) {
-        if index >= COUNT {
-            return;
-        }
+        assert!(index < COUNT, "index out of bounds");
 
         // SAFETY: We did a bounds check and ensured in the ctor that every entry is initialized.
         let slot = unsafe {
