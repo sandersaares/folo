@@ -1,4 +1,4 @@
-use crate::io;
+use crate::{io, util::PinnedSlabChain};
 use std::{
     cell::RefCell,
     fmt,
@@ -25,13 +25,13 @@ use windows::Win32::{
 /// enough. TODO: Prove it.
 #[derive(Debug)]
 pub(super) struct BlockStore {
-    blocks: RefCell<pinned_slab::Slab<Block>>,
+    blocks: RefCell<PinnedSlabChain<Block>>,
 }
 
 impl BlockStore {
     pub fn new() -> Self {
         Self {
-            blocks: RefCell::new(pinned_slab::Slab::new()),
+            blocks: RefCell::new(PinnedSlabChain::new()),
         }
     }
 
@@ -39,18 +39,9 @@ impl BlockStore {
     pub fn allocate(&self) -> PrepareBlock {
         let mut blocks = self.blocks.borrow_mut();
 
-        let (key, _) = blocks.insert(Block::new());
-
-        // Weird API - we need to call into it again to get a mut reference.
-        // SAFETY: This is unsafe simply because we need to treat the value as pinned (we do).
-        let block = unsafe {
-            blocks
-                .get_mut(key)
-                .expect("we just inserted this block so it must be there")
-        };
-
-        // Weird API - we cannot get the key in advance, so need to inject it after insertion.
-        block.set_key(key);
+        let inserter = blocks.begin_insert();
+        let key = inserter.index();
+        let block = inserter.insert(Block::new(key));
 
         PrepareBlock {
             // SAFETY: We deliberately disconnect from Rust lifetime tracking because the block
@@ -129,7 +120,7 @@ impl ControlNode {
 
 // Rust... puts the slab chunks on the stack?! Before putting them in memory. What? Well, it does.
 // That means if you make a large block, you will overflow the stack before it gets copied to heap.
-const BLOCK_SIZE_BYTES: usize = 128;
+const BLOCK_SIZE_BYTES: usize = 64 * 1024;
 
 /// An I/O block contains the data structures required to communicate with the operating system
 /// and obtain the result of an asynchronous I/O operation.
@@ -168,21 +159,16 @@ struct Block {
 }
 
 impl Block {
-    pub fn new() -> Self {
+    pub fn new(key: BlockKey) -> Self {
         let (result_tx, result_rx) = oneshot::channel();
 
         Self {
             overlapped: OVERLAPPED::default(),
-            // The pinned_slab API contract refuses to give us the key in advance, so... ugly.
-            key: BlockKey::MAX,
+            key,
             buffer: [0; BLOCK_SIZE_BYTES],
             result_tx: Some(result_tx),
             result_rx: Some(result_rx),
         }
-    }
-
-    pub fn set_key(&mut self, key: BlockKey) {
-        self.key = key;
     }
 }
 

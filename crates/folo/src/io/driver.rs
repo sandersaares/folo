@@ -1,3 +1,4 @@
+use crate::io::block::{BlockStore, PrepareBlock};
 use crate::io::{self, CompletionPort};
 use windows::{
     core::Owned,
@@ -7,8 +8,6 @@ use windows::{
     },
 };
 use windows_result::HRESULT;
-
-use super::block::{BlockStore, PrepareBlock};
 
 /// Processes I/O completion operations for a given thread as part of the async worker loop.
 #[derive(Debug)]

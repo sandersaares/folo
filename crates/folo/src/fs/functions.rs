@@ -1,3 +1,4 @@
+use crate::{io, rt::current_agent};
 use std::{ffi::CString, path::Path};
 use tracing::{event, Level};
 use windows::{
@@ -10,8 +11,6 @@ use windows::{
         },
     },
 };
-
-use crate::{io, rt::current_agent};
 
 /// Read the contents of a file to a vector of bytes.
 pub async fn read(path: impl AsRef<Path>) -> io::Result<Vec<u8>> {

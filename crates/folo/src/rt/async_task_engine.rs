@@ -1,4 +1,7 @@
-use crate::rt::LocalErasedTask;
+use crate::{
+    rt::{waker::WakeSignal, LocalErasedTask},
+    util::{PinnedSlab, PinnedSlabChain},
+};
 use negative_impl::negative_impl;
 use std::{
     cell::RefCell,
@@ -7,8 +10,6 @@ use std::{
     task,
 };
 
-use super::waker::WakeSignal;
-
 type Key = usize;
 
 /// The engine incrementally executes async tasks on a single thread when polled. It is not active
@@ -16,7 +17,7 @@ type Key = usize;
 #[derive(Debug)]
 pub struct AsyncTaskEngine {
     // We use a pinned slab here to allocate the tasks in-place and avoid a layer of Arc-indirection.
-    tasks: pinned_slab::Slab<Task>,
+    tasks: PinnedSlabChain<Task>,
 
     // The active set contains all the tasks we want to poll. This is where all futures start.
     active: VecDeque<Key>,
@@ -37,7 +38,7 @@ pub struct AsyncTaskEngine {
 impl AsyncTaskEngine {
     pub fn new() -> Self {
         Self {
-            tasks: pinned_slab::Slab::new(),
+            tasks: PinnedSlabChain::new(),
             active: VecDeque::new(),
             inactive: VecDeque::new(),
             completed: VecDeque::new(),
@@ -51,7 +52,9 @@ impl AsyncTaskEngine {
         let task = Task::new(erased_task);
 
         // We just have a normal `&` to it, but the task is now pinned.
-        let (key, _) = self.tasks.insert(task);
+        let inserter = self.tasks.begin_insert();
+        let key = inserter.index();
+        inserter.insert(task);
 
         self.active.push_back(key);
     }
@@ -64,13 +67,10 @@ impl AsyncTaskEngine {
         while let Some(key) = self.active.pop_front() {
             had_activity = true;
 
-            // SAFETY: This is marked unsafe because it returns a plain reference to a pinned value.
-            // As long as we still treat it as pinned (we do), all is well.
-            let task = unsafe {
-                self.tasks
-                    .get_mut(key)
-                    .expect("if we have the ID for a task, we must also have the task")
-            };
+            let task = self
+                .tasks
+                .get_mut(key)
+                .expect("if we have the ID for a task, we must also have the task");
 
             // SAFETY: Requires `&self` to be pinned, which we guarantee by always keeping the task
             // pinned in the slab.
@@ -106,13 +106,10 @@ impl AsyncTaskEngine {
         while index < self.inactive.len() {
             let key = &self.inactive[index];
 
-            // SAFETY: This is marked unsafe because it returns a plain reference to a pinned value.
-            // As long as we still treat it as pinned (we do), all is well.
-            let task = unsafe {
-                self.tasks
-                    .get_mut(*key)
-                    .expect("if we have the ID for a task, we must also have the task")
-            };
+            let task = self
+                .tasks
+                .get_mut(*key)
+                .expect("if we have the ID for a task, we must also have the task");
 
             // SAFETY: Requires `&self` to be pinned, which we guarantee by always keeping the task
             // pinned in the slab.
@@ -137,11 +134,10 @@ impl AsyncTaskEngine {
         self.completed.retain(|key| {
             // SAFETY: This is marked unsafe because it returns a plain reference to a pinned value.
             // As long as we still treat it as pinned (we do), all is well.
-            let task = unsafe {
-                self.tasks
-                    .get_mut(*key)
-                    .expect("if we have the ID for a task, we must also have the task")
-            };
+            let task = self
+                .tasks
+                .get_mut(*key)
+                .expect("if we have the ID for a task, we must also have the task");
 
             // SAFETY: Requires `&self` to be pinned, which we guarantee by always keeping the task
             // pinned in the slab.
