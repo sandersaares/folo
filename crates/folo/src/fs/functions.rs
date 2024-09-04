@@ -63,7 +63,7 @@ pub async fn read(path: impl AsRef<Path>) -> io::Result<Vec<u8>> {
     // TODO: Review https://devblogs.microsoft.com/oldnewthing/20220425-00/?p=106526
 }
 
-/// Reads a chunk of bytes from a file at a given offset. Returns None if the file is at EOF.
+/// Reads a chunk of bytes from a file at a given offset.
 async fn read_bytes_from_file(
     file: &Owned<HANDLE>,
     offset: usize,
