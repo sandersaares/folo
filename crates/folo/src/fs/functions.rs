@@ -1,5 +1,5 @@
 use crate::{io, rt::current_agent};
-use std::{ffi::CString, path::Path};
+use std::{ffi::CString, ops::ControlFlow, path::Path};
 use tracing::{event, Level};
 use windows::{
     core::{Owned, PCSTR},
@@ -41,10 +41,9 @@ pub async fn read(path: impl AsRef<Path>) -> io::Result<Vec<u8>> {
 
         let mut result = Vec::new();
 
-        while let Some(bytes) = read_bytes_from_file(&file, result.len()).await? {
-            event!(Level::TRACE, message = "read bytes", length = bytes.len());
-            result.extend_from_slice(&bytes);
-        }
+        while read_bytes_from_file(&file, result.len(), &mut result).await?
+            == ControlFlow::Continue(())
+        {}
 
         event!(
             Level::TRACE,
@@ -65,7 +64,11 @@ pub async fn read(path: impl AsRef<Path>) -> io::Result<Vec<u8>> {
 }
 
 /// Reads a chunk of bytes from a file at a given offset. Returns None if the file is at EOF.
-async fn read_bytes_from_file(file: &Owned<HANDLE>, offset: usize) -> io::Result<Option<Vec<u8>>> {
+async fn read_bytes_from_file(
+    file: &Owned<HANDLE>,
+    offset: usize,
+    dest: &mut Vec<u8>,
+) -> io::Result<ControlFlow<()>> {
     let mut operation = current_agent::with_io(|io| io.operation());
     operation.set_offset(offset);
 
@@ -80,9 +83,14 @@ async fn read_bytes_from_file(file: &Owned<HANDLE>, offset: usize) -> io::Result
     match result {
         // The errors here may come from the ReadFile call, or from the IO completion handler.
         // We coalesce errors from both into the single result that we see here.
-        Ok(result) if result.buffer().is_empty() => Ok(None),
-        Ok(result) => Ok(Some(result.buffer().to_vec())),
-        Err(io::Error::External(e)) if e.code() == STATUS_END_OF_FILE.into() => Ok(None),
+        Ok(result) if result.buffer().is_empty() => Ok(ControlFlow::Break(())),
+        Ok(result) => {
+            dest.extend_from_slice(result.buffer());
+            Ok(ControlFlow::Continue(()))
+        }
+        Err(io::Error::External(e)) if e.code() == STATUS_END_OF_FILE.into() => {
+            Ok(ControlFlow::Break(()))
+        }
         Err(e) => Err(e),
     }
 }
