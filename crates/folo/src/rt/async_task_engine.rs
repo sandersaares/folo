@@ -1,39 +1,46 @@
 use crate::rt::LocalErasedTask;
 use negative_impl::negative_impl;
 use std::{
-    cell::{OnceCell, RefCell},
+    cell::RefCell,
     collections::VecDeque,
     fmt::{self, Debug, Formatter},
-    mem,
-    pin::Pin,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc, Weak,
-    },
-    task::{self, RawWaker, Waker},
+    task,
 };
+
+use super::waker::WakeSignal;
+
+type Key = usize;
 
 /// The engine incrementally executes async tasks on a single thread when polled. It is not active
 /// on its own and requires an external actor to poll it to make progress.
 #[derive(Debug)]
 pub struct AsyncTaskEngine {
-    // The active set contains all the futures we want to poll. This is where all futures start.
-    active: VecDeque<Pin<Arc<Task>>>,
+    // We use a pinned slab here to allocate the tasks in-place and avoid a layer of Arc-indirection.
+    tasks: pinned_slab::Slab<Task>,
 
-    // The inactive set contains all the futures that are sleeping. We will move them back to the
-    // active set once a waker notifies us that a future needs to wake up. Note that the wakeup
+    // The active set contains all the tasks we want to poll. This is where all futures start.
+    active: VecDeque<Key>,
+
+    // The inactive set contains all the tasks that are sleeping. We will move them back to the
+    // active set after a waker notifies us that a future needs to wake up. Note that the wakeup
     // may arrive from within the poll itself, which implies that we need to consider a future part
     // of the inactive set immediately before polling it, and be ready to move it back to the active
-    // set during the poll if a waker is signaled during a poll. Also implies engine is not locked
-    // during a poll, so new activity can occur (not only wakes but also new tasks being added).
-    inactive: VecDeque<Pin<Arc<Task>>>,
+    // set during/after the poll if a waker is signaled during a poll. Also implies engine is not'
+    // locked during a poll, so new activity can occur (not only wakes but also new tasks being added).
+    inactive: VecDeque<Key>,
+
+    // These tasks have completed and we are waiting for the wake signals to become inert before we
+    // can remove them from the slab.
+    completed: VecDeque<Key>,
 }
 
 impl AsyncTaskEngine {
     pub fn new() -> Self {
         Self {
+            tasks: pinned_slab::Slab::new(),
             active: VecDeque::new(),
             inactive: VecDeque::new(),
+            completed: VecDeque::new(),
         }
     }
 
@@ -41,7 +48,12 @@ impl AsyncTaskEngine {
     /// will be made available by the async task engine - it is expected that some other mechanism
     /// is used to observe the result.
     pub fn enqueue_erased(&mut self, erased_task: LocalErasedTask) {
-        self.active.push_back(Arc::pin(Task::new(erased_task)));
+        let task = Task::new(erased_task);
+
+        // We just have a normal `&` to it, but the task is now pinned.
+        let (key, _) = self.tasks.insert(task);
+
+        self.active.push_back(key);
     }
 
     pub fn execute_cycle(&mut self) -> CycleResult {
@@ -49,13 +61,25 @@ impl AsyncTaskEngine {
         // In the future we should refactor this to a more direct signaling system.
         let mut had_activity = false;
 
-        while let Some(task) = self.active.pop_front() {
+        while let Some(key) = self.active.pop_front() {
             had_activity = true;
 
-            match task.poll() {
-                task::Poll::Ready(()) => {}
+            // SAFETY: This is marked unsafe because it returns a plain reference to a pinned value.
+            // As long as we still treat it as pinned (we do), all is well.
+            let task = unsafe {
+                self.tasks
+                    .get_mut(key)
+                    .expect("if we have the ID for a task, we must also have the task")
+            };
+
+            // SAFETY: Requires `&self` to be pinned, which we guarantee by always keeping the task
+            // pinned in the slab.
+            match unsafe { task.poll() } {
+                task::Poll::Ready(()) => {
+                    self.completed.push_back(key);
+                }
                 task::Poll::Pending => {
-                    self.inactive.push_back(task);
+                    self.inactive.push_back(key);
                 }
             }
         }
@@ -63,6 +87,8 @@ impl AsyncTaskEngine {
         if self.activate_awakened_tasks() {
             had_activity = true;
         }
+
+        self.drop_completed_tasks();
 
         if had_activity {
             CycleResult::Continue
@@ -78,19 +104,55 @@ impl AsyncTaskEngine {
         let mut index = 0;
 
         while index < self.inactive.len() {
-            let task = &self.inactive[index];
+            let key = &self.inactive[index];
 
-            if task.consume_awakened() {
+            // SAFETY: This is marked unsafe because it returns a plain reference to a pinned value.
+            // As long as we still treat it as pinned (we do), all is well.
+            let task = unsafe {
+                self.tasks
+                    .get_mut(*key)
+                    .expect("if we have the ID for a task, we must also have the task")
+            };
+
+            // SAFETY: Requires `&self` to be pinned, which we guarantee by always keeping the task
+            // pinned in the slab.
+            if unsafe { task.wake_signal.consume_awakened() } {
                 had_activity = true;
 
-                let task = self.inactive.remove(index).unwrap();
-                self.active.push_back(task);
+                let key = self
+                    .inactive
+                    .remove(index)
+                    .expect("key must exist - we just got it from the same data structure");
+
+                self.active.push_back(key);
             } else {
                 index += 1;
             }
         }
 
         had_activity
+    }
+
+    fn drop_completed_tasks(&mut self) {
+        self.completed.retain(|key| {
+            // SAFETY: This is marked unsafe because it returns a plain reference to a pinned value.
+            // As long as we still treat it as pinned (we do), all is well.
+            let task = unsafe {
+                self.tasks
+                    .get_mut(*key)
+                    .expect("if we have the ID for a task, we must also have the task")
+            };
+
+            // SAFETY: Requires `&self` to be pinned, which we guarantee by always keeping the task
+            // pinned in the slab.
+            let is_inert = unsafe { task.wake_signal.is_inert() };
+
+            if is_inert {
+                self.tasks.remove(*key);
+            }
+
+            !is_inert
+        });
     }
 }
 
@@ -118,106 +180,37 @@ pub enum CycleResult {
 
 struct Task {
     erased_task: RefCell<LocalErasedTask>,
-    awakened: AtomicBool,
-    waker: OnceCell<Waker>,
+    wake_signal: WakeSignal,
 }
 
 impl Task {
     fn new(erased_task: LocalErasedTask) -> Self {
         Self {
             erased_task: RefCell::new(erased_task),
-            awakened: AtomicBool::new(false),
-            waker: OnceCell::new(),
+            wake_signal: WakeSignal::new(),
         }
     }
 
-    fn poll(self: &Pin<Arc<Self>>) -> task::Poll<()> {
-        let mut context = task::Context::from_waker(self.waker());
+    /// # Safety
+    ///
+    /// Requires `&self` to be pinned.
+    unsafe fn poll(&self) -> task::Poll<()> {
+        // SAFETY: Requires `&self` to be pinned, which we guarantee by always keeping the task
+        // itself pinned.
+        let waker = unsafe { self.wake_signal.waker() };
+
+        let mut context = task::Context::from_waker(waker);
 
         // SAFETY: We are only mut-borrowing in poll() which is only called by the current thread
         // and never recursively.
         self.erased_task.borrow_mut().as_mut().poll(&mut context)
     }
-
-    fn waker<'a>(self: &'a Pin<Arc<Self>>) -> &'a Waker {
-        self.waker.get_or_init(|| {
-            // SAFETY: ???
-            unsafe { Waker::from_raw(self.raw_waker()) }
-        })
-    }
-
-    fn consume_awakened(&self) -> bool {
-        self.awakened.swap(false, Ordering::Relaxed)
-    }
-
-    fn raw_waker(self: &Pin<Arc<Self>>) -> RawWaker {
-        // SAFETY: We are not moving anything, simply extracting a pointer to the pinned value.
-        let inner = unsafe { Pin::into_inner_unchecked(self.clone()) };
-        let weak = Arc::downgrade(&inner);
-        let ptr_to_weak = weak.into_raw();
-
-        RawWaker::new(ptr_to_weak as *const (), &TASK_WAKER_VTABLE)
-    }
 }
 
 impl Debug for Task {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Task").field("waker", &self.waker).finish()
+        f.debug_struct("Task")
+            .field("wake_signal", &self.wake_signal)
+            .finish()
     }
-}
-
-static TASK_WAKER_VTABLE: task::RawWakerVTable = task::RawWakerVTable::new(
-    waker_clone_waker,
-    waker_wake,
-    waker_wake_by_ref,
-    waker_drop_waker,
-);
-
-fn waker_clone_waker(ptr: *const ()) -> RawWaker {
-    let task = unsafe { resurrect_waker_ptr(ptr) };
-
-    // The existing one we resurrected is still in use! By default if we leave it dangling here it
-    // will be dropped and decrement the ref count, so leak a clone to account for the one we keep.
-    mem::forget(task.clone());
-
-    let ptr = task.into_raw();
-    RawWaker::new(ptr as *const (), &TASK_WAKER_VTABLE)
-}
-
-fn waker_wake(ptr: *const ()) {
-    let task = unsafe { resurrect_waker_ptr(ptr) };
-
-    // This one consumes the waker - after we have done our thing, we drop the pointer to clean up.
-
-    let Some(task) = task.upgrade() else {
-        // The task was dropped already - nothing to wake up.
-        return;
-    };
-    task.awakened.store(true, Ordering::Relaxed);
-}
-
-fn waker_wake_by_ref(ptr: *const ()) {
-    let task = unsafe { resurrect_waker_ptr(ptr) };
-
-    // The existing one we resurrected is still in use! By default if we leave it dangling here it
-    // will be dropped and decrement the ref count, so leak a clone to account for the one we keep.
-    mem::forget(task.clone());
-
-    let Some(task) = task.upgrade() else {
-        // The task was dropped already - nothing to wake up.
-        return;
-    };
-    task.awakened.store(true, Ordering::Relaxed);
-}
-
-fn waker_drop_waker(ptr: *const ()) {
-    // Resurrect it and immediately drop it to let the ref count decrement.
-    unsafe { resurrect_waker_ptr(ptr) };
-}
-
-/// # Safety
-///
-/// Do not move the value - it is pinned (if it still exists).
-unsafe fn resurrect_waker_ptr(ptr: *const ()) -> Weak<Task> {
-    Weak::from_raw(ptr as *const Task)
 }

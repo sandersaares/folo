@@ -14,6 +14,7 @@ mod remote_join;
 mod remote_result_box;
 mod remote_task;
 mod types;
+mod waker;
 
 pub use builder::*;
 pub use runtime_client::*;

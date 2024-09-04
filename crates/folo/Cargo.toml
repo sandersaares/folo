@@ -28,6 +28,7 @@ futures = { version = "0", default-features = false, features = [
 negative-impl = "0"
 oneshot = "0"
 pin-project = "1"
+pinned_slab = "0"
 thiserror = "1"
 tracing = "0"
 windows = { version = "0", features = [
