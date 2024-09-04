@@ -1,3 +1,4 @@
+mod block;
 mod completion_port;
 mod driver;
 mod error;

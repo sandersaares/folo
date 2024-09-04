@@ -67,22 +67,23 @@ pub async fn read(path: impl AsRef<Path>) -> io::Result<Vec<u8>> {
 
 /// Reads a chunk of bytes from a file at a given offset. Returns None if the file is at EOF.
 async fn read_bytes_from_file(file: &Owned<HANDLE>, offset: usize) -> io::Result<Option<Vec<u8>>> {
+    let mut operation = current_agent::with_io(|io| io.operation());
+    operation.set_offset(offset);
+
     // SAFETY: For safe usage of the I/O driver API, we are required to pass the `overlapped`
     // argument to a native I/O call under all circumstances, to trigger an I/O completion. We do.
-    unsafe {
-        let operation = current_agent::with_io(|io| io.operation());
-
-        match operation
-            .from_offset(offset)
+    let result = unsafe {
+        operation
             .begin(|buffer, overlapped| Ok(ReadFile(**file, Some(buffer), None, Some(overlapped))?))
             .await
-        {
-            // The errors here may come from the ReadFile call, or from the IO completion handler.
-            // We coalesce errors from both into the single result that we see here.
-            Ok(result) if result.payload().is_empty() => Ok(None),
-            Ok(result) => Ok(Some(result.payload().to_vec())),
-            Err(io::Error::External(e)) if e.code() == STATUS_END_OF_FILE.into() => Ok(None),
-            Err(e) => Err(e),
-        }
+    };
+
+    match result {
+        // The errors here may come from the ReadFile call, or from the IO completion handler.
+        // We coalesce errors from both into the single result that we see here.
+        Ok(result) if result.buffer().is_empty() => Ok(None),
+        Ok(result) => Ok(Some(result.buffer().to_vec())),
+        Err(io::Error::External(e)) if e.code() == STATUS_END_OF_FILE.into() => Ok(None),
+        Err(e) => Err(e),
     }
 }

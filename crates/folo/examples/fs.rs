@@ -11,7 +11,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
 
     tracing::subscriber::set_global_default(stdout_subscriber)?;
 
-    match folo::fs::read("c:\\Users\\sasaares\\Downloads\\PathOfBuildingCommunity-Setup.exe").await {
+    match folo::fs::read("Cargo.lock").await {
         Ok(contents) => {
             event!(
                 Level::INFO,
