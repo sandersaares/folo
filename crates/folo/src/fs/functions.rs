@@ -6,8 +6,8 @@ use windows::{
     Win32::{
         Foundation::{HANDLE, STATUS_END_OF_FILE},
         Storage::FileSystem::{
-            CreateFileA, ReadFile, FILE_FLAG_OVERLAPPED, FILE_GENERIC_READ, FILE_SHARE_READ,
-            OPEN_EXISTING,
+            CreateFileA, ReadFile, FILE_FLAG_OVERLAPPED, FILE_FLAG_SEQUENTIAL_SCAN,
+            FILE_GENERIC_READ, FILE_SHARE_READ, OPEN_EXISTING,
         },
     },
 };
@@ -31,7 +31,7 @@ pub async fn read(path: impl AsRef<Path>) -> io::Result<Vec<u8>> {
             FILE_SHARE_READ,
             None,
             OPEN_EXISTING,
-            FILE_FLAG_OVERLAPPED,
+            FILE_FLAG_OVERLAPPED | FILE_FLAG_SEQUENTIAL_SCAN,
             None,
         )?);
 

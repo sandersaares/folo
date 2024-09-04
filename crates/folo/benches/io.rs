@@ -4,8 +4,9 @@ use folo::criterion::FoloAdapter;
 criterion_group!(benches, file_io);
 criterion_main!(benches);
 
-const FILE_SIZE: usize = 100 * 1024 * 1024;
+const FILE_SIZE: usize = 10 * 1024 * 1024;
 const FILE_PATH: &str = "testdata.bin";
+const PARALLEL_READS: usize = 10;
 
 fn file_io(c: &mut Criterion) {
     let tokio_local = tokio::runtime::Builder::new_current_thread()
@@ -18,7 +19,7 @@ fn file_io(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("file_io");
 
-    group.bench_function("folo_read_file_to_vec", |b| {
+    group.bench_function("folo_read_file_to_vec_one", |b| {
         b.to_async(FoloAdapter::default()).iter(|| {
             folo::rt::spawn_on_any(|| async {
                 let file = folo::fs::read(FILE_PATH).await.unwrap();
@@ -27,11 +28,45 @@ fn file_io(c: &mut Criterion) {
         });
     });
 
-    group.bench_function("tokio_read_file_to_vec", |b| {
+    group.bench_function("tokio_read_file_to_vec_one", |b| {
         b.to_async(&tokio_local).iter(|| {
             tokio::task::spawn(async {
                 let file = tokio::fs::read(FILE_PATH).await.unwrap();
                 assert_eq!(file.len(), FILE_SIZE);
+            })
+        });
+    });
+
+    group.bench_function("folo_read_file_to_vec_many", |b| {
+        b.to_async(FoloAdapter::default()).iter(|| {
+            folo::rt::spawn_on_any(|| async {
+                let tasks = (0..PARALLEL_READS).map(|_| {
+                    folo::rt::spawn(async {
+                        let file = folo::fs::read(FILE_PATH).await.unwrap();
+                        assert_eq!(file.len(), FILE_SIZE);
+                    })
+                });
+
+                for task in tasks {
+                    task.await;
+                }
+            })
+        });
+    });
+
+    group.bench_function("tokio_read_file_to_vec_many", |b| {
+        b.to_async(&tokio_local).iter(|| {
+            tokio::task::spawn(async {
+                let tasks = (0..PARALLEL_READS).map(|_| {
+                    tokio::task::spawn(async {
+                        let file = tokio::fs::read(FILE_PATH).await.unwrap();
+                        assert_eq!(file.len(), FILE_SIZE);
+                    })
+                });
+
+                for task in tasks {
+                    _ = task.await;
+                }
             })
         });
     });
