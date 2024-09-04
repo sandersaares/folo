@@ -1,8 +1,8 @@
 use crate::rt::LocalErasedTask;
 use negative_impl::negative_impl;
-use slab::Slab;
 use std::{
     cell::{OnceCell, RefCell},
+    collections::VecDeque,
     fmt::{self, Debug, Formatter},
     mem,
     pin::Pin,
@@ -17,19 +17,31 @@ use std::{
 /// on its own and requires an external actor to poll it to make progress.
 #[derive(Debug)]
 pub struct AsyncTaskEngine {
-    tasks: Slab<Pin<Arc<Task>>>,
+    // The active set contains all the futures we want to poll. This is where all futures start.
+    active: VecDeque<Pin<Arc<Task>>>,
+
+    // The inactive set contains all the futures that are sleeping. We will move them back to the
+    // active set once a waker notifies us that a future needs to wake up. Note that the wakeup
+    // may arrive from within the poll itself, which implies that we need to consider a future part
+    // of the inactive set immediately before polling it, and be ready to move it back to the active
+    // set during the poll if a waker is signaled during a poll. Also implies engine is not locked
+    // during a poll, so new activity can occur (not only wakes but also new tasks being added).
+    inactive: VecDeque<Pin<Arc<Task>>>,
 }
 
 impl AsyncTaskEngine {
     pub fn new() -> Self {
-        Self { tasks: Slab::new() }
+        Self {
+            active: VecDeque::new(),
+            inactive: VecDeque::new(),
+        }
     }
 
     /// Enqueues a future whose return type has been erased. It will be polled but no result
     /// will be made available by the async task engine - it is expected that some other mechanism
     /// is used to observe the result.
     pub fn enqueue_erased(&mut self, erased_task: LocalErasedTask) {
-        self.tasks.insert(Arc::pin(Task::new(erased_task)));
+        self.active.push_back(Arc::pin(Task::new(erased_task)));
     }
 
     pub fn execute_cycle(&mut self) -> CycleResult {
@@ -37,25 +49,48 @@ impl AsyncTaskEngine {
         // In the future we should refactor this to a more direct signaling system.
         let mut had_activity = false;
 
-        self.tasks.retain(|_, task| {
-            if !task.consume_awakened() {
-                // Not active, let it lie.
-                return true;
-            }
-
+        while let Some(task) = self.active.pop_front() {
             had_activity = true;
 
             match task.poll() {
-                task::Poll::Ready(()) => false,
-                task::Poll::Pending => true,
+                task::Poll::Ready(()) => {}
+                task::Poll::Pending => {
+                    self.inactive.push_back(task);
+                }
             }
-        });
+        }
+
+        if self.activate_awakened_tasks() {
+            had_activity = true;
+        }
 
         if had_activity {
             CycleResult::Continue
         } else {
             CycleResult::Suspend
         }
+    }
+
+    // Moves any awakened tasks into the active set. Returns whether any tasks were moved.
+    fn activate_awakened_tasks(&mut self) -> bool {
+        let mut had_activity = false;
+
+        let mut index = 0;
+
+        while index < self.inactive.len() {
+            let task = &self.inactive[index];
+
+            if task.consume_awakened() {
+                had_activity = true;
+
+                let task = self.inactive.remove(index).unwrap();
+                self.active.push_back(task);
+            } else {
+                index += 1;
+            }
+        }
+
+        had_activity
     }
 }
 
@@ -83,7 +118,7 @@ pub enum CycleResult {
 
 struct Task {
     erased_task: RefCell<LocalErasedTask>,
-    active: AtomicBool,
+    awakened: AtomicBool,
     waker: OnceCell<Waker>,
 }
 
@@ -91,7 +126,7 @@ impl Task {
     fn new(erased_task: LocalErasedTask) -> Self {
         Self {
             erased_task: RefCell::new(erased_task),
-            active: AtomicBool::new(true),
+            awakened: AtomicBool::new(false),
             waker: OnceCell::new(),
         }
     }
@@ -112,7 +147,7 @@ impl Task {
     }
 
     fn consume_awakened(&self) -> bool {
-        self.active.swap(false, Ordering::Relaxed)
+        self.awakened.swap(false, Ordering::Relaxed)
     }
 
     fn raw_waker(self: &Pin<Arc<Self>>) -> RawWaker {
@@ -127,10 +162,7 @@ impl Task {
 
 impl Debug for Task {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Task")
-            .field("active", &self.active)
-            .field("waker", &self.waker)
-            .finish()
+        f.debug_struct("Task").field("waker", &self.waker).finish()
     }
 }
 
@@ -161,7 +193,7 @@ fn waker_wake(ptr: *const ()) {
         // The task was dropped already - nothing to wake up.
         return;
     };
-    task.active.store(true, Ordering::Relaxed);
+    task.awakened.store(true, Ordering::Relaxed);
 }
 
 fn waker_wake_by_ref(ptr: *const ()) {
@@ -175,7 +207,7 @@ fn waker_wake_by_ref(ptr: *const ()) {
         // The task was dropped already - nothing to wake up.
         return;
     };
-    task.active.store(true, Ordering::Relaxed);
+    task.awakened.store(true, Ordering::Relaxed);
 }
 
 fn waker_drop_waker(ptr: *const ()) {

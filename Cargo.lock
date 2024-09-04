@@ -265,7 +265,6 @@ dependencies = [
  "negative-impl",
  "oneshot",
  "pin-project",
- "slab",
  "thiserror",
  "tokio",
  "tracing",
