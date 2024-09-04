@@ -70,11 +70,11 @@ async fn read_bytes_from_file(file: &Owned<HANDLE>, offset: usize) -> io::Result
     // SAFETY: For safe usage of the I/O driver API, we are required to pass the `overlapped`
     // argument to a native I/O call under all circumstances, to trigger an I/O completion. We do.
     unsafe {
-        let operation = current_agent::with_io(|io| io.begin_operation());
+        let operation = current_agent::with_io(|io| io.operation());
 
         match operation
             .from_offset(offset)
-            .apply(|buffer, overlapped| Ok(ReadFile(**file, Some(buffer), None, Some(overlapped))?))
+            .begin(|buffer, overlapped| Ok(ReadFile(**file, Some(buffer), None, Some(overlapped))?))
             .await
         {
             // The errors here may come from the ReadFile call, or from the IO completion handler.

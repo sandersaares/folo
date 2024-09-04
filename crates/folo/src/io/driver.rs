@@ -29,21 +29,21 @@ impl Driver {
         self.completion_port.bind(handle)
     }
 
-    /// Starts a new I/O operation on any primitive bound to this driver. The typical workflow is:
+    /// Creates a new I/O operation on some primitive bound to this driver. The typical workflow is:
     ///
-    /// 1. Call `begin_io()` to start the I/O operation. This returns a builder.
+    /// 1. Call `operation()` to start the I/O operation.
     /// 1. For seekable I/O primitives, use `.from_offset(1234)` to specify the offset in the file.
-    /// 1. Call `apply()` to obtain the memory buffer to use and an OVERLAPPED block that must be
+    /// 1. Call `begin()` to obtain the memory buffer to use and an OVERLAPPED block that must be
     ///    passed to the native I/O function.
     /// 1. Await the result.
     ///
-    /// Resources are automatically managed by the driver, as long as you ensure that you
+    /// Resources are automatically managed by the driver.
     ///
     /// # Safety
     ///
-    /// You must ensure that you call `.apply()` and pass the `overlapped` pointer to a native I/O
+    /// You must ensure that you call `begin()` and pass the `overlapped` pointer to a native I/O
     /// function. This is necessary to avoid resource leaks. It is too late to change your mind
-    /// in `apply()` - when you call `begin_io()`, you are committed to the I/O operation.
+    /// in `begin()` - when you call `operation()`, you are committed to the I/O operation.
     ///
     /// # Example
     ///
@@ -51,15 +51,15 @@ impl Driver {
     /// // SAFETY: We must make sure we pass `overlapped` to a native I/O function to avoid leaks.
     /// unsafe {
     ///     driver
-    ///         .begin_io()
+    ///         .operation()
     ///         .from_offset(1234)
-    ///         .apply(|buffer, overlapped| {
+    ///         .begin(|buffer, overlapped| {
     ///             // If we were doing a write operation, we would fill the buffer here and shrink to fit.
     ///             ReadFile(file_handle, buffer, overlapped)
     ///         })?.await?;
     /// }
     /// ```
-    pub(crate) unsafe fn begin_operation(&mut self) -> Operation {
+    pub(crate) unsafe fn operation(&mut self) -> Operation {
         Operation::new()
     }
 
@@ -138,7 +138,7 @@ impl Operation {
     /// Executes an I/O operation via the specified callback. The input for the callback is a buffer
     /// to pass to the native I/O function (filling it with data first, if necessary) and a
     /// pre-filled OVERLAPPED object to pass to the native I/O function without modification.
-    pub(crate) async fn apply<F>(self, f: F) -> io::Result<OperationResult>
+    pub(crate) async fn begin<F>(self, f: F) -> io::Result<OperationResult>
     where
         F: FnOnce(&mut [u8], *mut OVERLAPPED) -> io::Result<()>,
     {
