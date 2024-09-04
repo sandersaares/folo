@@ -5,8 +5,9 @@ use std::{
     mem::{self, ManuallyDrop},
     ptr,
 };
+use tracing::{event, Level};
 use windows::Win32::{
-    Foundation::{ERROR_IO_PENDING, NTSTATUS},
+    Foundation::{ERROR_IO_PENDING, NTSTATUS, STATUS_SUCCESS},
     System::IO::{OVERLAPPED, OVERLAPPED_ENTRY},
 };
 
@@ -83,6 +84,30 @@ impl BlockStore {
         }
     }
 
+    /// Converts a block that was never handed over to the operating system into a `CompleteBlock`
+    /// that represents the completed operation. We consume here the original OVERLAPPED that was
+    /// provided to the native I/O function.
+    ///
+    /// This is for use with synchronous I/O operations that complete immediately, without
+    /// triggering a completion notification.
+    unsafe fn complete_immediately(&self, overlapped: *mut OVERLAPPED) -> CompleteBlock {
+        // Transform the *OVERLAPPED back into a &'static Block.
+        let block = &mut *(overlapped as *mut Block);
+
+        let bytes_transferred = block.immediate_bytes_transferred as usize;
+        assert!(bytes_transferred <= block.buffer.len());
+
+        CompleteBlock {
+            // SAFETY: We deliberately disconnect from Rust lifetime tracking because the block
+            // is owned by a hybrid lifetime management logic built on the chain of types below
+            // and the operating system for part of its life cycle.
+            block: mem::transmute(block),
+            control: self.control_node(),
+            length: bytes_transferred,
+            status: STATUS_SUCCESS,
+        }
+    }
+
     fn release(&self, key: BlockKey) {
         assert!(key != BlockKey::MAX);
 
@@ -115,6 +140,10 @@ struct ControlNode {
 impl ControlNode {
     fn release(&mut self, key: BlockKey) {
         self.store.release(key);
+    }
+
+    unsafe fn complete_immediately(&mut self, overlapped: *mut OVERLAPPED) -> CompleteBlock {
+        self.store.complete_immediately(overlapped)
     }
 }
 
@@ -149,8 +178,13 @@ struct Block {
     /// The buffer containing the data affected by the operation.
     buffer: [u8; BLOCK_SIZE_BYTES],
 
-    // Used to operate the control node, which requires us to know our own key.
+    /// Used to operate the control node, which requires us to know our own key.
     key: BlockKey,
+
+    /// If the operation completed immediately (synchronously), this stores the number of bytes
+    /// transferred. Normally getting this information requires a round-trip through the IOCP but
+    /// we expect that for immediate completions this value is set inline.
+    immediate_bytes_transferred: u32,
 
     /// This is where the I/O completion handler will deliver the result of the operation.
     /// Value is cleared when consumed, to make it obvious if any accidental reuse occurs.
@@ -164,8 +198,9 @@ impl Block {
 
         Self {
             overlapped: OVERLAPPED::default(),
-            key,
             buffer: [0; BLOCK_SIZE_BYTES],
+            key,
+            immediate_bytes_transferred: 0,
             result_tx: Some(result_tx),
             result_rx: Some(result_rx),
         }
@@ -177,6 +212,10 @@ impl fmt::Debug for Block {
         f.debug_struct("Block")
             .field("buffer", &self.buffer)
             .field("key", &self.key)
+            .field(
+                "immediate_bytes_transferred",
+                &self.immediate_bytes_transferred,
+            )
             .field("result_tx", &self.result_tx)
             .field("result_rx", &self.result_rx)
             .finish()
@@ -227,15 +266,21 @@ impl PrepareBlock {
     /// Executes an I/O operation, using the specified callback to pass the operation buffer and
     /// OVERLAPPED metadata structure to native OS functions.
     ///
-    /// # Safety
+    /// # Callback arguments
     ///
-    /// You must pass the raw components of the `SealedBlock` to an operating system API after you
-    /// extract them via `.into_buffer_and_overlapped()`. It is fine if the operating system API
-    /// return an error that you pass back from the callback but you must make the call to avoid a
-    /// resource leak - you cannot simply drop the pointer in the callback.
+    /// 1. The buffer to be used for the operation. For reads, just pass it along to a native API.
+    ///    For writes, fill it with data and constrain the size as needed before passing it on.
+    /// 2. The OVERLAPPED structure to be used for the operation. Pass it along to the native API
+    ///    without modification.
+    /// 3. A mutable reference to a variable that is to receive the number of bytes transferred
+    ///    if the I/O operation completes synchronously (i.e. with `Ok(())`). This value is ignored
+    ///    if the I/O operation completes asynchronously (i.e. with `Err(ERROR_IO_PENDING)`).
+    ///
+    /// All arguments are only valid for the duration of the callback. Do not store them, even if
+    /// they claim to have a 'static lifetime! It is a lie!
     pub async unsafe fn begin<F>(self, f: F) -> io::Result<CompleteBlock>
     where
-        F: FnOnce(&'static mut [u8], *mut OVERLAPPED) -> io::Result<()>,
+        F: FnOnce(&'static mut [u8], *mut OVERLAPPED, &mut u32) -> io::Result<()>,
     {
         let result_rx = self
             .block
@@ -243,22 +288,34 @@ impl PrepareBlock {
             .take()
             .expect("block is always expected to have result rx when beginning I/O operation");
 
-        // We clone the control node because we may need to release the block if the callback fails.
+        // We clone the control node because we may need to release the block if the callback fails
+        // or resurrect it immediately if the callback completes synchronously.
         let mut control_node = self.control.clone();
 
         let block_key = self.block.key;
 
-        let (buffer, overlapped) = self.into_buffer_and_overlapped();
+        let (buffer, overlapped, immediate_bytes_transferred) = self.into_callback_arguments();
 
-        match f(buffer, overlapped) {
+        match f(buffer, overlapped, immediate_bytes_transferred) {
             // The operation was started asynchronously. This is what we want to see.
             Err(io::Error::External(e)) if e.code() == ERROR_IO_PENDING.into() => {}
 
-            // The operation completed synchronously. That's also fine, we just pretend it is async.
-            // The IOCP model guarantees that completion callbacks are called even for synchronous
-            // completions.
-            // TODO: Implement immediate completion handling to save a round-trip through the OS.
-            Ok(()) => {}
+            // The operation completed synchronously. This means we will not get a completion
+            // notification and must handle the result inline (because we set a flag saying this
+            // when binding to the completion port).
+            Ok(()) => {
+                let mut block = control_node.complete_immediately(overlapped);
+                let result_tx = block.result_tx();
+                // We ignore the tx return value because the receiver may have dropped already.
+                _ = result_tx.send(Ok(block));
+
+                event!(
+                    Level::TRACE,
+                    message = "I/O operation completed immediately",
+                    key = block_key,
+                    length = immediate_bytes_transferred
+                );
+            }
 
             // Something went wrong. In this case, the operation block was not consumed by the OS.
             // We need to resurrect and free the block ourselves to avoid leaking it forever.
@@ -273,7 +330,7 @@ impl PrepareBlock {
             .expect("no expected code path drops the I/O block without signaling completion result")
     }
 
-    fn into_buffer_and_overlapped(self) -> (&'static mut [u8], *mut OVERLAPPED) {
+    fn into_callback_arguments(self) -> (&'static mut [u8], *mut OVERLAPPED, &'static mut u32) {
         // We do not want to run Drop - this is an intentional cleanupless handover.
         let this = ManuallyDrop::new(self);
 
@@ -283,6 +340,7 @@ impl PrepareBlock {
         (
             &mut block.buffer.as_mut()[0..this.length],
             &mut block.overlapped as *mut _,
+            &mut block.immediate_bytes_transferred,
         )
     }
 }

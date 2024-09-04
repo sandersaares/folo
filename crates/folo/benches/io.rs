@@ -21,7 +21,8 @@ fn file_io(c: &mut Criterion) {
     group.bench_function("folo_read_file_to_vec", |b| {
         b.to_async(FoloAdapter::default()).iter(|| {
             folo::rt::spawn_on_any(|| async {
-                folo::fs::read(FILE_PATH).await.unwrap();
+                let file = folo::fs::read(FILE_PATH).await.unwrap();
+                assert_eq!(file.len(), FILE_SIZE);
             })
         });
     });
@@ -29,7 +30,8 @@ fn file_io(c: &mut Criterion) {
     group.bench_function("tokio_read_file_to_vec", |b| {
         b.to_async(&tokio_local).iter(|| {
             tokio::task::spawn(async {
-                tokio::fs::read(FILE_PATH).await.unwrap();
+                let file = tokio::fs::read(FILE_PATH).await.unwrap();
+                assert_eq!(file.len(), FILE_SIZE);
             })
         });
     });

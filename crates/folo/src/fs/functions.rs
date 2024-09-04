@@ -76,7 +76,14 @@ async fn read_bytes_from_file(
     // argument to a native I/O call under all circumstances, to trigger an I/O completion. We do.
     let result = unsafe {
         operation
-            .begin(|buffer, overlapped| Ok(ReadFile(**file, Some(buffer), None, Some(overlapped))?))
+            .begin(|buffer, overlapped, bytes_transferred_immediately| {
+                Ok(ReadFile(
+                    **file,
+                    Some(buffer),
+                    Some(bytes_transferred_immediately as *mut _),
+                    Some(overlapped),
+                )?)
+            })
             .await
     };
 

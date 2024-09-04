@@ -5,7 +5,12 @@ use windows::{
     Win32::{
         Foundation::{HANDLE, INVALID_HANDLE_VALUE},
         Storage::FileSystem::SetFileCompletionNotificationModes,
-        System::{WindowsProgramming::FILE_SKIP_SET_EVENT_ON_HANDLE, IO::CreateIoCompletionPort},
+        System::{
+            WindowsProgramming::{
+                FILE_SKIP_COMPLETION_PORT_ON_SUCCESS, FILE_SKIP_SET_EVENT_ON_HANDLE,
+            },
+            IO::CreateIoCompletionPort,
+        },
     },
 };
 
@@ -44,15 +49,23 @@ impl CompletionPort {
             CreateIoCompletionPort(**handle, *self.handle, 0, 1)?;
         }
 
-        // SAFETY: This means we cannot rely on file handles being secretly treated as events. That
-        // is perfectly fine, because we do not use them as events.
+        // Why FILE_SKIP_SET_EVENT_ON_HANDLE: https://devblogs.microsoft.com/oldnewthing/20200221-00/?p=103466/
+        //
+        // SAFETY:
+        // * This is overall safe to call even if the handle is invalid, all that can happen is an
+        //   error gets returned.
+        // * This means we cannot rely on file handles being secretly treated as events. That
+        //   is perfectly fine, because we do not use them as events.
+        // * This means we will not get completion notifications for synchronous I/O operations. We
+        //   must handle all synchronous completions inline. That is also fine - we do this in the
+        //   PrepareBlock::apply() method, where we only use the completion port if we get a status
+        //   code with ERROR_IO_PENDING.
         unsafe {
-            // Why do we do this: https://devblogs.microsoft.com/oldnewthing/20200221-00/?p=103466/
-            SetFileCompletionNotificationModes(**handle, FILE_SKIP_SET_EVENT_ON_HANDLE as u8)?;
+            SetFileCompletionNotificationModes(
+                **handle,
+                (FILE_SKIP_SET_EVENT_ON_HANDLE | FILE_SKIP_COMPLETION_PORT_ON_SUCCESS) as u8,
+            )?;
         }
-
-        // TODO: To support immediate completions, remember to take it out of the deferred queue.
-        // See https://github.com/svens/pal/blob/f84e64eabe1ad7ed872bb27dbc132b8f763251f2/pal/net/__bits/socket_windows.cpp#L108-L112
 
         Ok(())
     }
