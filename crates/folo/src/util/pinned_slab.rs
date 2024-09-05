@@ -93,6 +93,8 @@ impl<T, const COUNT: usize> PinnedSlab<T, COUNT> {
     where
         's: 'i,
     {
+        self.integrity_check();
+
         assert!(!self.is_full(), "cannot insert into a full slab");
 
         let next_free_index = self.next_free_index;
@@ -139,6 +141,61 @@ impl<T, const COUNT: usize> PinnedSlab<T, COUNT> {
         }
 
         self.next_free_index = index;
+    }
+
+    pub fn integrity_check(&self) {
+        let mut observed_is_vacant: [Option<bool>; COUNT] = [None; COUNT];
+        let mut observed_next_free_index: [Option<usize>; COUNT] = [None; COUNT];
+
+        for index in 0..COUNT {
+            // SAFETY: We are operating within bounds. We initialized all slots in the ctor. Is OK.
+            match unsafe {
+                self.ptr
+                    .add(index)
+                    .as_ref()
+                    .expect("we expect the resulting pointer to always be valid")
+            } {
+                Entry::Occupied { .. } => observed_is_vacant[index] = Some(false),
+                Entry::Vacant { next_free_index } => {
+                    observed_is_vacant[index] = Some(true);
+                    observed_next_free_index[index] = Some(*next_free_index);
+                }
+            };
+        }
+
+        if self.next_free_index < COUNT && !observed_is_vacant[self.next_free_index].unwrap() {
+            panic!(
+                "self.next_free_index points to an occupied slot: {}",
+                self.next_free_index
+            );
+        }
+
+        for index in 0..COUNT {
+            if !observed_is_vacant[index].unwrap() {
+                continue;
+            }
+
+            let next_free_index = observed_next_free_index[index].unwrap();
+
+            if next_free_index == COUNT {
+                // This is fine - it means the slab became full once we inserted this one.
+                continue;
+            }
+
+            if next_free_index > COUNT {
+                panic!(
+                    "entry {} is vacant but has an out-of-bounds next_free_index beyond COUNT: {}",
+                    index, next_free_index
+                );
+            }
+
+            if !observed_is_vacant[next_free_index].unwrap() {
+                panic!(
+                    "entry {} is vacant but its next_free_index {} points to an occupied slot",
+                    index, next_free_index
+                );
+            }
+        }
     }
 }
 

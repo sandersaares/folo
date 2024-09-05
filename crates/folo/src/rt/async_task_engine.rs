@@ -7,6 +7,7 @@ use std::{
     cell::RefCell,
     collections::VecDeque,
     fmt::{self, Debug, Formatter},
+    pin::Pin,
     task,
 };
 
@@ -114,9 +115,8 @@ impl AsyncTaskEngine {
 
             let task = self.tasks.get_mut(*key);
 
-            // SAFETY: Requires `&self` to be pinned, which we guarantee by always keeping the task
-            // pinned in the slab.
-            if unsafe { task.wake_signal.consume_awakened() } {
+            // TODO: This Pin should ideally move upstream to the slab chain. Does the API allow us?
+            if Pin::new(&task.wake_signal).consume_awakened() {
                 had_activity = true;
 
                 let key = self
@@ -139,9 +139,8 @@ impl AsyncTaskEngine {
             // As long as we still treat it as pinned (we do), all is well.
             let task = self.tasks.get_mut(*key);
 
-            // SAFETY: Requires `&self` to be pinned, which we guarantee by always keeping the task
-            // pinned in the slab.
-            let is_inert = unsafe { task.wake_signal.is_inert() };
+            // TODO: This Pin should ideally move upstream to the slab chain. Does the API allow us?
+            let is_inert = Pin::new(&task.wake_signal).is_inert();
 
             if is_inert {
                 self.tasks.remove(*key);
@@ -191,9 +190,8 @@ impl Task {
     ///
     /// Requires `&self` to be pinned.
     unsafe fn poll(&self) -> task::Poll<()> {
-        // SAFETY: Requires `&self` to be pinned, which we guarantee by always keeping the task
-        // itself pinned.
-        let waker = unsafe { self.wake_signal.waker() };
+        // TODO: This Pin should ideally move upstream to the slab chain. Does the API allow us?
+        let waker = Pin::new(&self.wake_signal).waker();
 
         let mut context = task::Context::from_waker(waker);
 
