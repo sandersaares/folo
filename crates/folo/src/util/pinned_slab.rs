@@ -60,7 +60,7 @@ impl<T, const COUNT: usize> PinnedSlab<T, COUNT> {
     }
 
     pub fn get<'v>(&self, index: usize) -> Ref<'v, T> {
-        assert!(index < COUNT, "index out of bounds");
+        assert!(index < COUNT, "get({index}) index out of bounds");
 
         // SAFETY: We did a bounds check and ensured in the ctor that every entry is initialized.
         match unsafe {
@@ -70,12 +70,12 @@ impl<T, const COUNT: usize> PinnedSlab<T, COUNT> {
                 .expect("we expect the resulting pointer to always be valid")
         } {
             Entry::Occupied { value } => value.borrow(),
-            Entry::Vacant { .. } => panic!("entry at given index does not exist"),
+            Entry::Vacant { .. } => panic!("get({index}) entry was vacant"),
         }
     }
 
     pub fn get_mut<'v>(&mut self, index: usize) -> RefMut<'v, T> {
-        assert!(index < COUNT, "index out of bounds");
+        assert!(index < COUNT, "index {index} out of bounds");
 
         // SAFETY: We did a bounds check and ensured in the ctor that every entry is initialized.
         match unsafe {
@@ -85,7 +85,7 @@ impl<T, const COUNT: usize> PinnedSlab<T, COUNT> {
                 .expect("we expect the resulting pointer to always be valid")
         } {
             Entry::Occupied { ref mut value } => value.borrow_mut(),
-            Entry::Vacant { .. } => panic!("entry at given index does not exist"),
+            Entry::Vacant { .. } => panic!("get_mut({index}) entry was vacant"),
         }
     }
 
@@ -111,7 +111,7 @@ impl<T, const COUNT: usize> PinnedSlab<T, COUNT> {
     }
 
     pub fn remove(&mut self, index: usize) {
-        assert!(index < COUNT, "index out of bounds");
+        assert!(index < COUNT, "remove({index}) index out of bounds");
 
         // SAFETY: We did a bounds check and ensured in the ctor that every entry is initialized.
         let slot = unsafe {
@@ -122,7 +122,7 @@ impl<T, const COUNT: usize> PinnedSlab<T, COUNT> {
         };
 
         if matches!(slot, Entry::Vacant { .. }) {
-            panic!("entry at given index does not exist");
+            panic!("remove({index}) entry was vacant");
         }
 
         // SAFETY: We know the slot is valid, as per above. We want to explicit run the drop logic
@@ -191,12 +191,18 @@ impl<'s, T, const COUNT: usize> PinnedSlabInserter<'s, T, COUNT> {
 
         self.slab.next_free_index = match previous_entry {
             Entry::Vacant { next_free_index } => next_free_index,
-            Entry::Occupied { .. } => panic!("entry was not vacant when we inserted into it"),
+            Entry::Occupied { .. } => panic!(
+                "entry {} was not vacant when we inserted into it",
+                self.index
+            ),
         };
 
         match slot {
             Entry::Occupied { value } => value.borrow_mut(),
-            Entry::Vacant { .. } => panic!("entry was not occupied after we inserted into it"),
+            Entry::Vacant { .. } => panic!(
+                "entry {} was not occupied after we inserted into it",
+                self.index
+            ),
         }
     }
 }
