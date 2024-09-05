@@ -64,6 +64,12 @@ impl AsyncTaskEngine {
         // In the future we should refactor this to a more direct signaling system.
         let mut had_activity = false;
 
+        // There may be tasks that just prior woke up due to I/O activity, so go through the tasks
+        // to activate any we need to activate, ensuring they get processed immediately.
+        if self.activate_awakened_tasks() {
+            had_activity = true;
+        }
+
         while let Some(key) = self.active.pop_front() {
             had_activity = true;
 
@@ -84,7 +90,10 @@ impl AsyncTaskEngine {
             }
         }
 
-        if self.activate_awakened_tasks() {
+        // It may be that some activity within our cycle awakened some tasks, so there may be
+        // more work to do immediately - if so, we ask the caller to continue. We skip this check
+        // if we already know that we need to come back again (as we activate above, as well).
+        if !had_activity && self.activate_awakened_tasks() {
             had_activity = true;
         }
 

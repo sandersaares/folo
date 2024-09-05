@@ -47,13 +47,17 @@ impl Driver {
         self.block_store.allocate()
     }
 
-    /// Process any I/O completion notifications and return their results to the callers.
-    pub(crate) fn process_completions(&mut self) {
+    /// Process any I/O completion notifications and return their results to the callers. If there
+    /// is no queued I/O, we wait up to `max_wait_time_ms` milliseconds for new I/O activity, after
+    /// which we simply return.
+    pub(crate) fn process_completions(&mut self, max_wait_time_ms: u32) {
         let mut completed = vec![OVERLAPPED_ENTRY::default(); 64];
         let mut completed_items: u32 = 0;
 
-        // TODO: should we loop here if there might be more completions to pick up?
-        // Alternatively, should we just take the time to let existing ones be processed first?
+        // We intentionally do not loop here because we want to give the caller the opportunity to
+        // process received I/O as soon as possible. Otherwise we might start taking too small
+        // chunks out of the I/O completion stream. Tuning the batch size above is valuable to make
+        // sure we make best use of each iteration and do not leave too much queued in the OS.
 
         // SAFETY: TODO
         unsafe {
@@ -65,12 +69,20 @@ impl Driver {
                 self.completion_port.handle(),
                 completed.as_mut_slice(),
                 &mut completed_items as *mut _,
-                0,
+                max_wait_time_ms,
                 false,
             ) {
                 Ok(()) => {}
                 // Timeout just means there was nothing to do - no I/O operations completed.
-                Err(e) if e.code() == HRESULT::from_win32(WAIT_TIMEOUT.0) => return,
+                Err(e) if e.code() == HRESULT::from_win32(WAIT_TIMEOUT.0) => {
+                    if max_wait_time_ms == 0 {
+                        POLL_TIMEOUTS.with(|x| x.observe_unit());
+                    } else {
+                        WAIT_TIMEOUTS.with(|x| x.observe_unit());
+                    }
+                    
+                    return;
+                }
                 Err(e) => panic!("unexpected error from GetQueuedCompletionStatusEx: {:?}", e),
             }
 
@@ -101,6 +113,18 @@ thread_local! {
     static ASYNC_COMPLETIONS_DEQUEUED: Event = EventBuilder::new()
         .name("io_async_completions_dequeued")
         .buckets(ASYNC_COMPLETIONS_DEQUEUED_BUCKETS)
+        .build()
+        .unwrap();
+
+    // With sleep time == 0.
+    static POLL_TIMEOUTS: Event = EventBuilder::new()
+        .name("io_async_completions_poll_timeouts")
+        .build()
+        .unwrap();
+
+    // With sleep time != 0.
+    static WAIT_TIMEOUTS: Event = EventBuilder::new()
+        .name("io_async_completions_wait_timeouts")
         .build()
         .unwrap();
 }

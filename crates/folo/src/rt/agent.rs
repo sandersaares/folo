@@ -85,18 +85,61 @@ impl Agent {
     pub fn run(&self) {
         event!(Level::TRACE, "Started");
 
+        // We want to do useful work in this loop as much as possible, yet without burning CPU on
+        // just pinning and waiting for work.
+        //
+        // There are multiple direction from which work can arrive:
+        // * I/O completion arrived on the I/O driver.
+        // * An "enqueue new task" command was received from an arbitrary thread.
+        // * Some task on the current thread enqueued another task.
+        // * A timer expired (not implemented yet).
+        // * A sleeping task was woken up
+        //     If it wakes up due to current thread activity, we can just think of it as a
+        //     consequence of that activity (e.g. I/O completion). However, a task can also be woken
+        //     up by some event on another thread!
+        //
+        // It is not feasible to (cheaply) react immediately to all of these events, so we need to
+        // use periodic polling with some of them. The I/O driver is the most important one, as it
+        // is time-critical and often going to be the main source of incoming work, so we focus on
+        // that as our key driver of work. Therefore, when we have nothing else to do, we will just
+        // go to sleep waiting on the I/O driver to wake us up.
+        //
+        // As a fallback, to ensure that other events are not missed during stretches of time when
+        // there is no I/O activity, we wake up every N milliseconds to check for new work from
+        // other sources.
+        //
+        // Note that our timers are I/O driven, so are not affected by our polling slowness. In
+        // effect, this means that we only react slowly to activity arriving from other threads.
+
+        // If we have any reason to believe that we have non-I/O work to do, we set this to false,
+        // which only dequeues already existing I/O completions and does not wait for new ones.
+        let mut allow_io_sleep = false;
+
         loop {
-            if self.process_commands() == ProcessCommandsResult::Terminate {
-                event!(Level::TRACE, "Terminating");
-
-                if let Some(tx) = &self.metrics_tx {
-                    _ = tx.send(metrics::report_page());
+            match self.process_commands() {
+                ProcessCommandsResult::ContinueAfterCommand => {
+                    // Commands were received. We probably have non-I/O work to do.
+                    allow_io_sleep = false;
                 }
-
-                break;
+                ProcessCommandsResult::ContinueWithoutCommands => {
+                    // No commands received - we have no information saying we have non-I/O work to do.
+                }
+                ProcessCommandsResult::Terminate => {
+                    break;
+                }
             }
 
-            self.io.borrow_mut().process_completions();
+            let io_wait_time_ms = if allow_io_sleep {
+                CYCLES_WITH_SLEEP.with(|x| x.observe_unit());
+
+                CROSS_THREAD_WORK_POLL_INTERVAL_MS
+            } else {
+                CYCLES_WITHOUT_SLEEP.with(|x| x.observe_unit());
+
+                0
+            };
+
+            self.io.borrow_mut().process_completions(io_wait_time_ms);
 
             // TODO: Process timers.
 
@@ -106,23 +149,31 @@ impl Agent {
 
             match self.engine.borrow_mut().execute_cycle() {
                 CycleResult::Continue => {
-                    CYCLES_CONTINUED.with(|x| x.observe_unit());
+                    // The async task engine believes there may be more work to do, so no sleep.
+                    allow_io_sleep = false;
                     continue;
                 }
                 CycleResult::Suspend => {
-                    CYCLES_SUSPENDED.with(|x| x.observe_unit());
-                    // TODO: We need to suspend until IO or task scheduling wakes us up, to avoid just
-                    // burning CPU when nothing is happening.
-                    std::thread::yield_now();
+                    // The async task engine had nothing to do, so it thinks we can sleep now. OK.
+                    allow_io_sleep = true;
                 }
             };
+        }
+
+        event!(Level::TRACE, "Terminating");
+
+        if let Some(tx) = &self.metrics_tx {
+            _ = tx.send(metrics::report_page());
         }
     }
 
     fn process_commands(&self) -> ProcessCommandsResult {
+        let mut received_commands = false;
+
         loop {
             match self.command_rx.try_recv() {
                 Ok(AgentCommand::EnqueueTask { erased_task }) => {
+                    received_commands = true;
                     REMOTE_TASKS.with(|x| x.observe_unit());
                     self.new_tasks.borrow_mut().push_back(erased_task);
                 }
@@ -130,7 +181,11 @@ impl Agent {
                     return ProcessCommandsResult::Terminate;
                 }
                 Err(mpsc::TryRecvError::Empty) => {
-                    return ProcessCommandsResult::Continue;
+                    if received_commands {
+                        return ProcessCommandsResult::ContinueAfterCommand;
+                    } else {
+                        return ProcessCommandsResult::ContinueWithoutCommands;
+                    }
                 }
                 Err(mpsc::TryRecvError::Disconnected) => {
                     // Each worker thread holds a reference to the runtime client, so this
@@ -142,6 +197,11 @@ impl Agent {
         }
     }
 }
+
+/// How often to poll for cross-thread work, in milliseconds. We do not have cross-thread real time
+/// signals and use polling to check for arriving work. This sets our maximum sleep time, although
+/// we will often check much more often if activity on the current thread wakes us up.
+const CROSS_THREAD_WORK_POLL_INTERVAL_MS: u32 = 10;
 
 impl Debug for Agent {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
@@ -175,8 +235,11 @@ impl Debug for AgentCommand {
 
 #[derive(Debug, Eq, PartialEq)]
 enum ProcessCommandsResult {
-    // All commands processed, keep going.
-    Continue,
+    // At least one command processed, keep going.
+    ContinueAfterCommand,
+
+    // There were no commands queued, keep going.
+    ContinueWithoutCommands,
 
     // We received a terminate command - stop the worker ASAP, drop everything on the floor (but
     // still clean up as needed so no dangling resources are left behind).
@@ -194,13 +257,13 @@ thread_local! {
         .build()
         .unwrap();
 
-    static CYCLES_SUSPENDED: Event = EventBuilder::new()
-        .name("rt_cycles_suspended")
+    static CYCLES_WITH_SLEEP: Event = EventBuilder::new()
+        .name("rt_cycles_with_sleep")
         .build()
         .unwrap();
 
-    static CYCLES_CONTINUED: Event = EventBuilder::new()
-        .name("rt_cycles_continued")
+    static CYCLES_WITHOUT_SLEEP: Event = EventBuilder::new()
+        .name("rt_cycles_without_sleep")
         .build()
         .unwrap();
 }
