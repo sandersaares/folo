@@ -22,6 +22,10 @@ struct EntrypointOptions {
     /// initialized for each test. Note that the thread that called the entrypoint is parked and
     /// not used for running tasks, so this function is not called on the entrypoint thread.
     worker_init_fn: Option<syn::Ident>,
+
+    /// If set, emits a dump of collected worker metrics to stdout when the runtime stops.
+    #[darling(default)]
+    print_metrics: bool,
 }
 
 impl EntrypointOptions {
@@ -107,6 +111,13 @@ fn core(
         #inner_sig #body
     };
 
+    let metrics_init = match options.print_metrics {
+        true => quote! {
+            .metrics_tx(__entrypoint_metrics_collector.tx())
+        },
+        false => quote! {},
+    };
+
     Ok(match &sig.output {
         syn::ReturnType::Default => quote! {
             #(#attrs)*
@@ -114,8 +125,11 @@ fn core(
             #vis #sig {
                 #global_init
 
+                let __entrypoint_metrics_collector = ::folo::__private::MetricsCollector::new();
+
                 let __entrypoint_runtime = ::folo::rt::RuntimeBuilder::new()
                     #worker_init
+                    #metrics_init
                     .build()
                     .unwrap();
                 let __entrypoint_runtime_clone = ::std::sync::Arc::clone(&__entrypoint_runtime);
@@ -136,8 +150,11 @@ fn core(
             #vis #sig {
                 #global_init
 
+                let __entrypoint_metrics_collector = ::folo::__private::MetricsCollector::new();
+
                 let __entrypoint_runtime = ::folo::rt::RuntimeBuilder::new()
                     #worker_init
+                    #metrics_init
                     .build()
                     .unwrap();
                 let __entrypoint_runtime_clone = ::std::sync::Arc::clone(&__entrypoint_runtime);
@@ -192,6 +209,8 @@ mod tests {
 
         let expected = quote! {
             fn main() {
+                let __entrypoint_metrics_collector = ::folo::__private::MetricsCollector::new();
+
                 let __entrypoint_runtime = ::folo::rt::RuntimeBuilder::new()
                     .build()
                     .unwrap();
@@ -229,6 +248,8 @@ mod tests {
 
         let expected = quote! {
             fn main() -> Result<(), Box<dyn std::error::Error + Send + 'static> > {
+                let __entrypoint_metrics_collector = ::folo::__private::MetricsCollector::new();
+
                 let __entrypoint_runtime = ::folo::rt::RuntimeBuilder::new()
                     .build()
                     .unwrap();
@@ -304,8 +325,54 @@ mod tests {
             fn main() {
                 setup_global();
 
+                let __entrypoint_metrics_collector = ::folo::__private::MetricsCollector::new();
+
                 let __entrypoint_runtime = ::folo::rt::RuntimeBuilder::new()
                     .worker_init(move || { setup_worker(); } )
+                    .build()
+                    .unwrap();
+                let __entrypoint_runtime_clone = ::std::sync::Arc::clone(&__entrypoint_runtime);
+
+                __entrypoint_runtime.spawn_on_any(|| async move {
+                    __inner_main().await;
+
+                    __entrypoint_runtime_clone.stop();
+                });
+
+                __entrypoint_runtime.wait();
+            }
+
+            async fn __inner_main() {
+                println!("Hello, world!");
+                yield_now().await;
+            }
+        };
+
+        assert_eq!(
+            entrypoint(attr, input, EntrypointType::Main).to_string(),
+            expected.to_string()
+        );
+    }
+
+    #[test]
+    fn main_with_metrics() {
+        let attr = parse_quote! {
+            print_metrics
+        };
+
+        let input = parse_quote! {
+            async fn main() {
+                println!("Hello, world!");
+                yield_now().await;
+            }
+        };
+
+        let expected = quote! {
+            fn main() {
+                let __entrypoint_metrics_collector = ::folo::__private::MetricsCollector::new();
+
+                let __entrypoint_runtime = ::folo::rt::RuntimeBuilder::new()
+                    .metrics_tx(__entrypoint_metrics_collector.tx())
                     .build()
                     .unwrap();
                 let __entrypoint_runtime_clone = ::std::sync::Arc::clone(&__entrypoint_runtime);
@@ -343,6 +410,8 @@ mod tests {
         let expected = quote! {
             #[test]
             fn my_test() {
+                let __entrypoint_metrics_collector = ::folo::__private::MetricsCollector::new();
+                
                 let __entrypoint_runtime = ::folo::rt::RuntimeBuilder::new()
                     .build()
                     .unwrap();

@@ -1,8 +1,11 @@
+#[doc(hidden)]
+pub mod __private;
 mod constants;
 #[cfg(feature = "criterion")]
 pub mod criterion;
 pub mod fs;
 mod io;
+pub mod metrics;
 pub mod rt;
 mod util;
 

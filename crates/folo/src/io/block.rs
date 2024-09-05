@@ -1,4 +1,8 @@
-use crate::{io, util::PinnedSlabChain};
+use crate::{
+    io,
+    metrics::{Event, EventBuilder, Magnitude},
+    util::PinnedSlabChain,
+};
 use std::{
     cell::RefCell,
     fmt,
@@ -38,6 +42,8 @@ impl BlockStore {
 
     /// Allocates a new block for I/O operations.
     pub fn allocate(&self) -> PrepareBlock {
+        BLOCKS_ALLOCATED.with(|x| x.observe_unit());
+
         let mut blocks = self.blocks.borrow_mut();
 
         let inserter = blocks.begin_insert();
@@ -70,6 +76,9 @@ impl BlockStore {
         let bytes_transferred = overlapped_entry.dwNumberOfBytesTransferred as usize;
         let status = NTSTATUS(overlapped_entry.Internal as i32);
 
+        BLOCKS_COMPLETED_ASYNC.with(|x| x.observe_unit());
+        BLOCK_COMPLETED_BYTES.with(|x| x.observe(bytes_transferred as f64));
+
         // Transform the *OVERLAPPED back into a &'static Block.
         let block = &mut *(overlapped_entry.lpOverlapped as *mut Block);
 
@@ -96,6 +105,9 @@ impl BlockStore {
 
         let bytes_transferred = block.immediate_bytes_transferred as usize;
         assert!(bytes_transferred <= block.buffer.len());
+
+        BLOCKS_COMPLETED_SYNC.with(|x| x.observe_unit());
+        BLOCK_COMPLETED_BYTES.with(|x| x.observe(bytes_transferred as f64));
 
         CompleteBlock {
             // SAFETY: We deliberately disconnect from Rust lifetime tracking because the block
@@ -394,4 +406,29 @@ impl Drop for CompleteBlock {
     fn drop(&mut self) {
         self.control.release(self.block.key);
     }
+}
+
+const BLOCK_COMPLETED_BYTES_BUCKETS: &[Magnitude] = &[0.0, 1024.0, 4096.0, 16384.0, 65536.0];
+
+thread_local! {
+    static BLOCKS_ALLOCATED: Event = EventBuilder::new()
+        .name("io_blocks_allocated")
+        .build()
+        .unwrap();
+
+    static BLOCKS_COMPLETED_ASYNC: Event = EventBuilder::new()
+        .name("io_blocks_completed_async")
+        .build()
+        .unwrap();
+
+    static BLOCKS_COMPLETED_SYNC: Event = EventBuilder::new()
+        .name("io_blocks_completed_sync")
+        .build()
+        .unwrap();
+
+    static BLOCK_COMPLETED_BYTES: Event = EventBuilder::new()
+        .name("io_blocks_completed_bytes")
+        .buckets(BLOCK_COMPLETED_BYTES_BUCKETS)
+        .build()
+        .unwrap();
 }

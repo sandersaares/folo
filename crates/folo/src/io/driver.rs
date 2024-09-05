@@ -1,5 +1,6 @@
 use crate::io::block::{BlockStore, PrepareBlock};
 use crate::io::{self, CompletionPort};
+use crate::metrics::{Event, EventBuilder, Magnitude};
 use windows::{
     core::Owned,
     Win32::{
@@ -51,6 +52,9 @@ impl Driver {
         let mut completed = vec![OVERLAPPED_ENTRY::default(); 64];
         let mut completed_items: u32 = 0;
 
+        // TODO: should we loop here if there might be more completions to pick up?
+        // Alternatively, should we just take the time to let existing ones be processed first?
+
         // SAFETY: TODO
         unsafe {
             // For now we just do a quick immediate poll with no timeout. We will need to make it
@@ -70,6 +74,8 @@ impl Driver {
                 Err(e) => panic!("unexpected error from GetQueuedCompletionStatusEx: {:?}", e),
             }
 
+            ASYNC_COMPLETIONS_DEQUEUED.with(|x| x.observe(completed_items as f64));
+
             for index in 0..completed_items {
                 let mut block = self.block_store.complete(completed[index as usize]);
 
@@ -87,4 +93,14 @@ impl Driver {
             }
         }
     }
+}
+
+const ASYNC_COMPLETIONS_DEQUEUED_BUCKETS: &[Magnitude] = &[0.0, 1.0, 16.0, 64.0, 512.0];
+
+thread_local! {
+    static ASYNC_COMPLETIONS_DEQUEUED: Event = EventBuilder::new()
+        .name("io_async_completions_dequeued")
+        .buckets(ASYNC_COMPLETIONS_DEQUEUED_BUCKETS)
+        .build()
+        .unwrap();
 }

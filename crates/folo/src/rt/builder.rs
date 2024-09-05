@@ -1,8 +1,11 @@
-use crate::rt::{
-    agent::{Agent, AgentCommand},
-    current_agent, current_runtime,
-    runtime::Runtime,
-    RuntimeClient,
+use crate::{
+    metrics::ReportPage,
+    rt::{
+        agent::{Agent, AgentCommand},
+        current_agent, current_runtime,
+        runtime::Runtime,
+        RuntimeClient,
+    },
 };
 use std::{
     fmt::{self, Debug, Formatter},
@@ -18,6 +21,7 @@ const ASYNC_WORKER_COUNT: usize = 2;
 pub struct RuntimeBuilder {
     worker_init: Option<Arc<dyn Fn() + Send + Sync + 'static>>,
     ad_hoc_entrypoint: bool,
+    metrics_tx: Option<mpsc::Sender<ReportPage>>,
 }
 
 impl RuntimeBuilder {
@@ -25,6 +29,7 @@ impl RuntimeBuilder {
         Self {
             worker_init: None,
             ad_hoc_entrypoint: false,
+            metrics_tx: None,
         }
     }
 
@@ -51,6 +56,13 @@ impl RuntimeBuilder {
         self
     }
 
+    /// Sets the channel that is to receive the end-of-life metrics from the runtime.
+    /// Each worker thread will send a report page to this channel when it is shutting down.
+    pub fn metrics_tx(mut self, tx: mpsc::Sender<ReportPage>) -> Self {
+        self.metrics_tx = Some(tx);
+        self
+    }
+
     pub fn build(self) -> Result<Arc<RuntimeClient>> {
         if self.ad_hoc_entrypoint {
             // With ad-hoc entrypoints we reuse the runtime if it is already set.
@@ -73,6 +85,11 @@ impl RuntimeBuilder {
 
             let worker_init = worker_init.clone();
 
+            let metrics_tx = match self.metrics_tx {
+                Some(ref tx) => Some(tx.clone()),
+                None => None,
+            };
+
             let join_handle = thread::spawn(move || {
                 (worker_init)();
 
@@ -82,7 +99,7 @@ impl RuntimeBuilder {
                     .recv()
                     .expect("runtime startup process failed in infallible code");
 
-                let agent = Rc::new(Agent::new(command_rx));
+                let agent = Rc::new(Agent::new(command_rx, metrics_tx));
 
                 current_agent::set(Rc::clone(&agent));
                 current_runtime::set(start.runtime_client);

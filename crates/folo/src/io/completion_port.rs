@@ -1,4 +1,7 @@
-use crate::io;
+use crate::{
+    io,
+    metrics::{Event, EventBuilder},
+};
 use negative_impl::negative_impl;
 use windows::{
     core::Owned,
@@ -67,6 +70,8 @@ impl CompletionPort {
             )?;
         }
 
+        PRIMITIVES_BOUND.with(|x| x.observe_unit());
+
         Ok(())
     }
 
@@ -79,3 +84,10 @@ impl CompletionPort {
 impl !Send for CompletionPort {}
 #[negative_impl]
 impl !Sync for CompletionPort {}
+
+thread_local! {
+    static PRIMITIVES_BOUND: Event = EventBuilder::new()
+        .name("io_primitives_bound")
+        .build()
+        .unwrap();
+}

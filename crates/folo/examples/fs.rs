@@ -1,7 +1,10 @@
 use std::error::Error;
 use tracing::{event, level_filters::LevelFilter, Level};
 
-#[folo::main]
+//const FILE_PATH: &str = "Cargo.lock";
+const FILE_PATH: &str = "c:\\Users\\sasaares\\Downloads\\GoogleDriveSetup.exe";
+
+#[folo::main(print_metrics)]
 async fn main() -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
     let stdout_subscriber = tracing_subscriber::fmt()
         // NOTE: Enabling trace level logging slows everything way down because tracing is
@@ -11,7 +14,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
 
     tracing::subscriber::set_global_default(stdout_subscriber)?;
 
-    match folo::fs::read("Cargo.lock").await {
+    match folo::fs::read(FILE_PATH).await {
         Ok(contents) => {
             event!(
                 Level::INFO,

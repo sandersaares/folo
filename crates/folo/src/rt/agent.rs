@@ -1,7 +1,6 @@
-use tracing::{event, Level};
-
 use crate::{
     io,
+    metrics::{self, Event, EventBuilder, ReportPage},
     rt::{
         async_task_engine::{AsyncTaskEngine, CycleResult},
         local_task::LocalTask,
@@ -16,11 +15,13 @@ use std::{
     future::Future,
     sync::mpsc,
 };
+use tracing::{event, Level};
 
 /// Coordinates the operations of the Folo runtime on a single thread. There may be different
 /// types of agents assigned to different threads (e.g. async worker versus sync worker).
 pub struct Agent {
     command_rx: mpsc::Receiver<AgentCommand>,
+    metrics_tx: Option<mpsc::Sender<ReportPage>>,
 
     engine: RefCell<AsyncTaskEngine>,
 
@@ -40,9 +41,13 @@ pub struct Agent {
 // accessible methods lead to conflicting RefCell borrows or we hit a panic).
 
 impl Agent {
-    pub fn new(command_rx: mpsc::Receiver<AgentCommand>) -> Self {
+    pub fn new(
+        command_rx: mpsc::Receiver<AgentCommand>,
+        metrics_tx: Option<mpsc::Sender<ReportPage>>,
+    ) -> Self {
         Self {
             command_rx,
+            metrics_tx,
             engine: RefCell::new(AsyncTaskEngine::new()),
             io: RefCell::new(io::Driver::new()),
             new_tasks: RefCell::new(VecDeque::new()),
@@ -67,6 +72,8 @@ impl Agent {
         let future_type = type_name::<F>();
         event!(Level::TRACE, message = "Agent::spawn", future_type);
 
+        LOCAL_TASKS.with(|x| x.observe_unit());
+
         let task = LocalTask::new(future);
         let join_handle = task.join_handle();
 
@@ -81,12 +88,16 @@ impl Agent {
         loop {
             if self.process_commands() == ProcessCommandsResult::Terminate {
                 event!(Level::TRACE, "Terminating");
+
+                if let Some(tx) = &self.metrics_tx {
+                    _ = tx.send(metrics::report_page());
+                }
+
                 break;
             }
 
             self.io.borrow_mut().process_completions();
 
-            // TODO: Process IO.
             // TODO: Process timers.
 
             while let Some(erased_task) = self.new_tasks.borrow_mut().pop_front() {
@@ -94,8 +105,12 @@ impl Agent {
             }
 
             match self.engine.borrow_mut().execute_cycle() {
-                CycleResult::Continue => continue,
+                CycleResult::Continue => {
+                    CYCLES_CONTINUED.with(|x| x.observe_unit());
+                    continue;
+                }
                 CycleResult::Suspend => {
+                    CYCLES_SUSPENDED.with(|x| x.observe_unit());
                     // TODO: We need to suspend until IO or task scheduling wakes us up, to avoid just
                     // burning CPU when nothing is happening.
                     std::thread::yield_now();
@@ -108,6 +123,7 @@ impl Agent {
         loop {
             match self.command_rx.try_recv() {
                 Ok(AgentCommand::EnqueueTask { erased_task }) => {
+                    REMOTE_TASKS.with(|x| x.observe_unit());
                     self.new_tasks.borrow_mut().push_back(erased_task);
                 }
                 Ok(AgentCommand::Terminate) => {
@@ -165,4 +181,26 @@ enum ProcessCommandsResult {
     // We received a terminate command - stop the worker ASAP, drop everything on the floor (but
     // still clean up as needed so no dangling resources are left behind).
     Terminate,
+}
+
+thread_local! {
+    static LOCAL_TASKS: Event = EventBuilder::new()
+        .name("rt_tasks_local")
+        .build()
+        .unwrap();
+
+    static REMOTE_TASKS: Event = EventBuilder::new()
+        .name("rt_tasks_remote")
+        .build()
+        .unwrap();
+
+    static CYCLES_SUSPENDED: Event = EventBuilder::new()
+        .name("rt_cycles_suspended")
+        .build()
+        .unwrap();
+
+    static CYCLES_CONTINUED: Event = EventBuilder::new()
+        .name("rt_cycles_continued")
+        .build()
+        .unwrap();
 }
