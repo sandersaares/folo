@@ -6,8 +6,7 @@ use windows::{
     Win32::{
         Foundation::{HANDLE, STATUS_END_OF_FILE},
         Storage::FileSystem::{
-            CreateFileA, ReadFile, FILE_FLAG_OVERLAPPED, FILE_FLAG_SEQUENTIAL_SCAN,
-            FILE_GENERIC_READ, FILE_SHARE_READ, OPEN_EXISTING,
+            CreateFileA, GetFileSizeEx, ReadFile, FILE_FLAG_OVERLAPPED, FILE_FLAG_SEQUENTIAL_SCAN, FILE_GENERIC_READ, FILE_SHARE_READ, OPEN_EXISTING
         },
     },
 };
@@ -39,7 +38,15 @@ pub async fn read(path: impl AsRef<Path>) -> io::Result<Vec<u8>> {
 
         current_agent::with_io(|io| io.bind_io_primitive(&file))?;
 
-        let mut result = Vec::new();
+        // Get the size first to allocate the buffer with the correct size. If the size changes
+        // while we read it, that is fine - this is just the initial allocation and may change.
+        let mut file_size: i64 = 0;
+
+        // TODO: inspecting file metadata a blocking function and potentially slow!
+        // Perhaps better to examine metadata on sync worker to avoid latency spikes here?
+        GetFileSizeEx(*file, &mut file_size as *mut _)?;
+
+        let mut result = Vec::with_capacity(file_size as usize);
 
         while read_bytes_from_file(&file, result.len(), &mut result).await?
             == ControlFlow::Continue(())
