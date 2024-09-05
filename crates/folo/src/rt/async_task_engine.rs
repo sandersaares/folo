@@ -73,10 +73,7 @@ impl AsyncTaskEngine {
         while let Some(key) = self.active.pop_front() {
             had_activity = true;
 
-            let task = self
-                .tasks
-                .get_mut(key)
-                .expect("if we have the ID for a task, we must also have the task");
+            let task = self.tasks.get_mut(key);
 
             // SAFETY: Requires `&self` to be pinned, which we guarantee by always keeping the task
             // pinned in the slab.
@@ -115,10 +112,7 @@ impl AsyncTaskEngine {
         while index < self.inactive.len() {
             let key = &self.inactive[index];
 
-            let task = self
-                .tasks
-                .get_mut(*key)
-                .expect("if we have the ID for a task, we must also have the task");
+            let task = self.tasks.get_mut(*key);
 
             // SAFETY: Requires `&self` to be pinned, which we guarantee by always keeping the task
             // pinned in the slab.
@@ -143,10 +137,7 @@ impl AsyncTaskEngine {
         self.completed.retain(|key| {
             // SAFETY: This is marked unsafe because it returns a plain reference to a pinned value.
             // As long as we still treat it as pinned (we do), all is well.
-            let task = self
-                .tasks
-                .get_mut(*key)
-                .expect("if we have the ID for a task, we must also have the task");
+            let task = self.tasks.get_mut(*key);
 
             // SAFETY: Requires `&self` to be pinned, which we guarantee by always keeping the task
             // pinned in the slab.

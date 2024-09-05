@@ -8,6 +8,7 @@ use std::{
     cell::RefCell,
     fmt,
     mem::{self, ManuallyDrop},
+    ops::DerefMut,
     ptr,
 };
 use tracing::{event, Level};
@@ -49,13 +50,16 @@ impl BlockStore {
 
         let inserter = blocks.begin_insert();
         let key = inserter.index();
-        let block = inserter.insert(Block::new(key));
+        let mut block = inserter.insert(Block::new(key));
 
         PrepareBlock {
             // SAFETY: We deliberately disconnect from Rust lifetime tracking because the block
             // is owned by a hybrid lifetime management logic built on the chain of types below
-            // and the operating system for part of its life cycle.
-            block: unsafe { mem::transmute(block) },
+            // and the operating system for part of its life cycle. We have an implicit exclusive
+            // access here (i.e. using the RefCell via slab.get() or slab.get_mut() would be
+            // unsound after this - once we reach this point, this implicit exclusive reference is
+            // the only one permitted to exist until the block is released).
+            block: unsafe { mem::transmute(block.deref_mut()) },
             control: self.control_node(),
             // We start by assuming each buffer is fully used. If the caller wants to use a subset,
             // they have the opportunity to specify a smaller size via `PrepareBlock::set_length()`.

@@ -40,9 +40,16 @@ format-self:
 features-check:
     cargo hack check --workspace --feature-powerset --locked
 
+install-tools:
+    cargo install cargo-machete cargo-nextest cargo-hack --locked
+    rustup toolchain install nightly --component miri
+
 # run machete to remove unused dependencies in the workspace
 machete:
     cargo machete --skip-target-dir
 
+miri:
+    cargo +nightly miri nextest run -p folo util::
+
 test:
-    cargo nextest --workspace --all-targets --all-features
+    cargo nextest run --workspace --all-targets --all-features

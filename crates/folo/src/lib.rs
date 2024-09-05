@@ -7,7 +7,7 @@ pub mod fs;
 mod io;
 pub mod metrics;
 pub mod rt;
-mod util;
+pub mod util;
 
 /// Marks a `main()` function as the async entry point of an app based on the Folo runtime.
 ///
