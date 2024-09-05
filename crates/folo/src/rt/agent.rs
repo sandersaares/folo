@@ -110,7 +110,12 @@ impl Agent {
         //
         // Note that our timers are I/O driven, so are not affected by our polling slowness. In
         // effect, this means that we only react slowly to activity arriving from other threads.
-
+        //
+        // We also have an explicit wakeup when a remote task is queued, so we do not just wait
+        // doing nothing when another thread gives us a new task. This is accomplished by signaling
+        // the I/O driver - "new task was added" is treated as an I/O completion event, which wakes
+        // us up.
+        //
         // If we have any reason to believe that we have non-I/O work to do, we set this to false,
         // which only dequeues already existing I/O completions and does not wait for new ones.
         let mut allow_io_sleep = false;

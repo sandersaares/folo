@@ -3,6 +3,7 @@ use crate::{
     metrics::{Event, EventBuilder, Magnitude},
     util::PinnedSlabChain,
 };
+use negative_impl::negative_impl;
 use std::{
     cell::RefCell,
     fmt,
@@ -234,6 +235,14 @@ impl fmt::Debug for Block {
     }
 }
 
+// We need to to avoid accidents. All our I/O blocks need to stay on the same thread when they
+// are in the Rust universe. The OS can do what it wants when it holds ownership but for us they
+// are single-threaded.
+#[negative_impl]
+impl !Send for Block {}
+#[negative_impl]
+impl !Sync for Block {}
+
 #[derive(Debug)]
 pub(crate) struct PrepareBlock {
     // SAFETY: We do not participate in the Rust lifetime tracking system with Block/BlockStore.
@@ -251,6 +260,7 @@ pub(crate) struct PrepareBlock {
 impl PrepareBlock {
     /// Obtains a buffer to fill with data for a write operation. You do not need to fill the entire
     /// buffer - call `set_length()` to indicate how many bytes you have written.
+    #[allow(dead_code)] // Usage is work in progress.
     pub fn buffer(&mut self) -> &mut [u8] {
         &mut self.block.buffer
     }
@@ -262,6 +272,7 @@ impl PrepareBlock {
     /// # Panics
     ///
     /// Panics if the length is greater than the buffer size.
+    #[allow(dead_code)] // Usage is work in progress.
     pub fn set_length(&mut self, length: usize) {
         assert!(length <= self.block.buffer.len());
 

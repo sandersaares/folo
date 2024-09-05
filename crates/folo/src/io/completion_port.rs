@@ -35,7 +35,7 @@ impl CompletionPort {
             let handle = Owned::new(CreateIoCompletionPort(
                 INVALID_HANDLE_VALUE,
                 HANDLE::default(),
-                0, // We do not use the completion key.
+                0, // We do not use the completion key for regular traffic, only for special signals.
                 1, // Only to be used by 1 thread (the current thread).
             ).expect("creating an I/O completion port should never fail unless the OS is critically out of resources"));
 

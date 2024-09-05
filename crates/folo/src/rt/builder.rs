@@ -1,4 +1,5 @@
 use crate::{
+    io::IoWaker,
     metrics::ReportPage,
     rt::{
         agent::{Agent, AgentCommand},
@@ -74,13 +75,18 @@ impl RuntimeBuilder {
         let mut join_handles = Vec::with_capacity(ASYNC_WORKER_COUNT);
         let mut command_txs = Vec::with_capacity(ASYNC_WORKER_COUNT);
         let mut start_txs = Vec::with_capacity(ASYNC_WORKER_COUNT);
+        let mut ready_rxs = Vec::with_capacity(ASYNC_WORKER_COUNT);
 
         let worker_init = self.worker_init.unwrap_or(Arc::new(|| {}));
 
         for _ in 0..ASYNC_WORKER_COUNT {
-            let (command_tx, command_rx) = mpsc::channel::<AgentCommand>();
-            let (start_tx, start_rx) = oneshot::channel::<AgentStartCommand>();
+            let (start_tx, start_rx) = oneshot::channel::<AgentStartArguments>();
             start_txs.push(start_tx);
+
+            let (ready_tx, ready_rx) = oneshot::channel::<AgentReady>();
+            ready_rxs.push(ready_rx);
+
+            let (command_tx, command_rx) = mpsc::channel::<AgentCommand>();
             command_txs.push(command_tx);
 
             let worker_init = worker_init.clone();
@@ -93,13 +99,20 @@ impl RuntimeBuilder {
             let join_handle = thread::spawn(move || {
                 (worker_init)();
 
+                let agent = Rc::new(Agent::new(command_rx, metrics_tx));
+
+                // Signal that we are ready to start.
+                ready_tx
+                    .send(AgentReady {
+                        waker: agent.io().borrow().waker(),
+                    })
+                    .expect("runtime startup process failed in infallible code");
+
                 // We first wait for the startup signal, which indicates that all agents have been
                 // created and registered with the runtime, and the runtime is ready to be used.
                 let start = start_rx
                     .recv()
                     .expect("runtime startup process failed in infallible code");
-
-                let agent = Rc::new(Agent::new(command_rx, metrics_tx));
 
                 current_agent::set(Rc::clone(&agent));
                 current_runtime::set(start.runtime_client);
@@ -110,6 +123,16 @@ impl RuntimeBuilder {
             join_handles.push(join_handle);
         }
 
+        let mut wakers = Vec::with_capacity(ASYNC_WORKER_COUNT);
+
+        for start_ack_rx in ready_rxs {
+            let start_ack = start_ack_rx
+                .recv()
+                .expect("async worker thread failed before even starting");
+
+            wakers.push(start_ack.waker);
+        }
+
         // Now we have all the info we need to construct the runtime and client. We do so and then
         // send a message to all the agents that they are now attached to a runtime and can start
         // doing their job.
@@ -117,6 +140,7 @@ impl RuntimeBuilder {
         // This is just a convenient package the runtime client uses to organize things internally.
         let runtime = Runtime {
             agent_join_handles: Some(join_handles.into_boxed_slice()),
+            agent_wakers: wakers.into_boxed_slice(),
             agent_command_txs: command_txs.into_boxed_slice(),
         };
 
@@ -133,7 +157,7 @@ impl RuntimeBuilder {
 
         // Tell all the agents to start.
         for tx in start_txs {
-            tx.send(AgentStartCommand {
+            tx.send(AgentStartArguments {
                 runtime_client: Arc::clone(&client),
             })
             .expect("runtime agent thread failed before it could be started");
@@ -156,9 +180,16 @@ impl Debug for RuntimeBuilder {
     }
 }
 
-/// A signal that the runtime has been initialized and agents are permitted to start.
+/// A signal that an agent is ready to start, providing inputs required for the runtime start.
 #[derive(Debug)]
-struct AgentStartCommand {
+struct AgentReady {
+    waker: IoWaker,
+}
+
+/// A signal that the runtime has been initialized and agents are permitted to start,
+/// providing relevant arguments to the agent.
+#[derive(Debug)]
+struct AgentStartArguments {
     runtime_client: Arc<RuntimeClient>,
 }
 

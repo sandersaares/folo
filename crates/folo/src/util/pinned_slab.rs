@@ -4,13 +4,11 @@ use std::mem::{self, MaybeUninit};
 
 /// A pinned fixed-size heap-allocated slab of values. Works similar to a Vec
 /// but pinned and with a fixed size, operating using an index for lookup.
-/// 
+///
 /// We return regular references from the slab but they are all guaranteed to be pinned.
 #[derive(Debug)]
 pub struct PinnedSlab<T, const COUNT: usize> {
     ptr: *mut Entry<T>,
-
-    len: usize,
 
     /// Index of the next free slot in the slab. Think of this as a virtual stack, with the stack
     /// entries stored in the slab entries themselves. This will point out of bounds if the slab
@@ -41,7 +39,6 @@ impl<T, const COUNT: usize> PinnedSlab<T, COUNT> {
         Self {
             // SAFETY: MaybeUninit is a ZST, so the layout is guaranteed to match.
             ptr: unsafe { mem::transmute(ptr) },
-            len: COUNT,
             next_free_index: 0,
         }
     }

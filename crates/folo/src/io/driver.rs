@@ -1,6 +1,8 @@
 use crate::io::block::{BlockStore, PrepareBlock};
 use crate::io::{self, CompletionPort};
 use crate::metrics::{Event, EventBuilder, Magnitude};
+use windows::Win32::Foundation::ERROR_IO_PENDING;
+use windows::Win32::System::IO::{PostQueuedCompletionStatus, OVERLAPPED};
 use windows::{
     core::Owned,
     Win32::{
@@ -47,6 +49,12 @@ impl Driver {
         self.block_store.allocate()
     }
 
+    /// Obtains a waker that can be used to wake up the I/O driver from another thread when it
+    /// is waiting for I/O.
+    pub(crate) fn waker(&self) -> IoWaker {
+        IoWaker::new(self.completion_port.handle())
+    }
+
     /// Process any I/O completion notifications and return their results to the callers. If there
     /// is no queued I/O, we wait up to `max_wait_time_ms` milliseconds for new I/O activity, after
     /// which we simply return.
@@ -80,7 +88,7 @@ impl Driver {
                     } else {
                         WAIT_TIMEOUTS.with(|x| x.observe_unit());
                     }
-                    
+
                     return;
                 }
                 Err(e) => panic!("unexpected error from GetQueuedCompletionStatusEx: {:?}", e),
@@ -89,6 +97,18 @@ impl Driver {
             ASYNC_COMPLETIONS_DEQUEUED.with(|x| x.observe(completed_items as f64));
 
             for index in 0..completed_items {
+                // If the completion key matches our magic value, this is a wakeup packet and needs
+                // special processing.
+                if completed[index as usize].lpCompletionKey == WAKE_UP_COMPLETION_KEY as usize {
+                    // This is not a normal I/O block. All it did was wake us up, we do no further
+                    // processing here and simply clean up the memory for it.
+
+                    drop(Box::from_raw(
+                        completed[index as usize].lpOverlapped as *mut OVERLAPPED,
+                    ));
+                    continue;
+                }
+
                 let mut block = self.block_store.complete(completed[index as usize]);
 
                 let result_tx = block.result_tx();
@@ -106,6 +126,57 @@ impl Driver {
         }
     }
 }
+
+// Value is meaningless, just has to be unique.
+const WAKE_UP_COMPLETION_KEY: usize = 0x23546789897;
+
+/// A cross-thread element that can be used to wake up an I/O driver from another thread.
+///
+/// The waker itself is a "client" of sorts that can be handed over to any thread. It has a handle
+/// to the completion port of the I/O driver. When it wants to wake up the I/O driver, it must post
+/// a specific completion packet to the completion port. If the remote thread is closed, it will
+/// just receive an error when it tries (which it ignores) - you can think of it as holding a weak
+/// reference to the I/O driver.
+///
+/// The completion packet is simply an empty OVERLAPPED structure posted with the completion key
+/// `WAKE_UP_COMPLETION_KEY`. The OVERLAPPED is allocated/deallocated by the sender/receiver as just
+/// a Rust object, without going through the usual pooling mechanism (because the block store used
+/// for regular I/O is single-threaded).
+#[derive(Debug)]
+pub(crate) struct IoWaker {
+    completion_port: HANDLE,
+}
+
+impl IoWaker {
+    pub(crate) fn new(completion_port: HANDLE) -> Self {
+        Self { completion_port }
+    }
+
+    /// Wakes up the I/O driver by sending a completion packet to its completion port. This is a
+    /// non-blocking operation.
+    pub(crate) fn wake(&self) {
+        let overlapped = Box::leak(Box::new(OVERLAPPED::default()));
+
+        unsafe {
+            match PostQueuedCompletionStatus(
+                self.completion_port,
+                0,
+                WAKE_UP_COMPLETION_KEY,
+                Some(overlapped as *const _),
+            ) {
+                Ok(()) => {}
+                Err(e) if e.code() == ERROR_IO_PENDING.into() => {}
+                _ => {
+                    // Something went wrong? Maybe the IOCP is not connected anymore. Clean up.
+                    drop(Box::from_raw(overlapped));
+                }
+            }
+        }
+    }
+}
+
+// SAFETY: It is fine to use a completion port across threads.
+unsafe impl Send for IoWaker {}
 
 const ASYNC_COMPLETIONS_DEQUEUED_BUCKETS: &[Magnitude] = &[0.0, 1.0, 16.0, 64.0, 512.0];
 

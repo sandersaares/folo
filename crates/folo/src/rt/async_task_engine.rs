@@ -1,6 +1,6 @@
 use crate::{
     rt::{waker::WakeSignal, LocalErasedTask},
-    util::{PinnedSlab, PinnedSlabChain},
+    util::PinnedSlabChain,
 };
 use negative_impl::negative_impl;
 use std::{

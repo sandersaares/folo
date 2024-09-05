@@ -16,6 +16,7 @@ impl<T, const SLAB_SIZE: usize> PinnedSlabChain<T, SLAB_SIZE> {
         Self { slabs: Vec::new() }
     }
 
+    #[allow(dead_code)] // Usage is work in progress.
     pub fn get(&self, index: usize) -> Option<&T> {
         let index = ChainIndex::<SLAB_SIZE>::from_whole(index);
 

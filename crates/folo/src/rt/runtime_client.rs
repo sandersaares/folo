@@ -51,6 +51,9 @@ impl RuntimeClient {
             })
             .expect("runtime agent thread terminated unexpectedly");
 
+        // Wake up the agent if it might be sleeping and waiting for I/O.
+        runtime.agent_wakers[worker_index].wake();
+
         join_handle
     }
 

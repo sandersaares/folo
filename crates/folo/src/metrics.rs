@@ -291,12 +291,12 @@ impl Display for ObservationBagSnapshot {
             buckets_cumulative += bucket_count;
             writeln!(
                 f,
-                "  bucket <= {}: {}",
+                "  value <= {}: {}",
                 self.bucket_magnitudes[i], bucket_count
             )?;
         }
 
-        writeln!(f, "  bucket +Inf: {}", self.count - buckets_cumulative)?;
+        writeln!(f, "  value <= +Inf: {}", self.count - buckets_cumulative)?;
 
         Ok(())
     }
