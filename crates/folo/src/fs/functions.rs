@@ -1,6 +1,6 @@
 use crate::{
     io::{self, Buffer},
-    rt::current_agent,
+    rt::current_async_agent,
 };
 use std::{ffi::CString, ops::ControlFlow, path::Path};
 use tracing::{event, Level};
@@ -46,7 +46,7 @@ pub async fn read_small_buffer(path: impl AsRef<Path>) -> io::Result<Vec<u8>> {
 
         event!(Level::DEBUG, message = "opened file",);
 
-        current_agent::with_io(|io| io.bind_io_primitive(&file))?;
+        current_async_agent::with_io(|io| io.bind_io_primitive(&file))?;
 
         // Get the size first to allocate the buffer with the correct size. If the size changes
         // while we read it, that is fine - this is just the initial allocation and may change.
@@ -97,7 +97,7 @@ pub async fn read_large_buffer(path: impl AsRef<Path>) -> io::Result<Vec<u8>> {
 
         event!(Level::DEBUG, message = "opened file",);
 
-        current_agent::with_io(|io| io.bind_io_primitive(&file))?;
+        current_async_agent::with_io(|io| io.bind_io_primitive(&file))?;
 
         // Get the size first to allocate the buffer with the correct size. If the size changes
         // while we read it, that is fine - this is just the initial allocation and may change.
@@ -154,7 +154,7 @@ async fn read_bytes_from_file(
     offset: usize,
     dest: &mut Vec<u8>,
 ) -> io::Result<ControlFlow<()>> {
-    let mut operation = current_agent::with_io(|io| io.operation(io::Buffer::from_pool()));
+    let mut operation = current_async_agent::with_io(|io| io.operation(io::Buffer::from_pool()));
     operation.set_offset(offset);
 
     // SAFETY: For safe usage of the I/O driver API, we are required to pass the `overlapped`
@@ -198,7 +198,7 @@ async fn read_buffer_from_file(
     offset: usize,
     buffer: Buffer<'_>,
 ) -> io::Result<ControlFlow<(), usize>> {
-    let mut operation = current_agent::with_io(|io| io.operation(buffer));
+    let mut operation = current_async_agent::with_io(|io| io.operation(buffer));
     operation.set_offset(offset);
 
     // SAFETY: For safe usage of the I/O driver API, we are required to pass the `overlapped`

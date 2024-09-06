@@ -2,8 +2,8 @@ use crate::{
     io::IoWaker,
     metrics::ReportPage,
     rt::{
-        agent::{Agent, AgentCommand},
-        current_agent, current_runtime,
+        async_agent::{AsyncAgent, AsyncAgentCommand},
+        current_async_agent, current_runtime,
         runtime::Runtime,
         RuntimeClient,
     },
@@ -15,9 +15,18 @@ use std::{
     thread,
 };
 
+use super::{
+    current_sync_agent,
+    sync_agent::{SyncAgent, SyncAgentCommand},
+};
+
 // For now, we use a hardcoded number of workers - the main point here is to verify that the design
 // works with multiple threads. We do not yet care about actually using threads optimally.
 const ASYNC_WORKER_COUNT: usize = 2;
+
+// For now, we use a hardcoded number of workers - the main point here is to verify that the design
+// works with multiple threads. We do not yet care about actually using threads optimally.
+const SYNC_WORKER_COUNT: usize = 2;
 
 pub struct RuntimeBuilder {
     worker_init: Option<Arc<dyn Fn() + Send + Sync + 'static>>,
@@ -72,22 +81,25 @@ impl RuntimeBuilder {
             }
         }
 
-        let mut join_handles = Vec::with_capacity(ASYNC_WORKER_COUNT);
-        let mut command_txs = Vec::with_capacity(ASYNC_WORKER_COUNT);
-        let mut start_txs = Vec::with_capacity(ASYNC_WORKER_COUNT);
-        let mut ready_rxs = Vec::with_capacity(ASYNC_WORKER_COUNT);
-
         let worker_init = self.worker_init.unwrap_or(Arc::new(|| {}));
+
+        let mut join_handles = Vec::with_capacity(ASYNC_WORKER_COUNT + SYNC_WORKER_COUNT);
+
+        // # Async workers
+
+        let mut async_command_txs = Vec::with_capacity(ASYNC_WORKER_COUNT);
+        let mut async_start_txs = Vec::with_capacity(ASYNC_WORKER_COUNT);
+        let mut async_ready_rxs = Vec::with_capacity(ASYNC_WORKER_COUNT);
 
         for _ in 0..ASYNC_WORKER_COUNT {
             let (start_tx, start_rx) = oneshot::channel::<AgentStartArguments>();
-            start_txs.push(start_tx);
+            async_start_txs.push(start_tx);
 
-            let (ready_tx, ready_rx) = oneshot::channel::<AgentReady>();
-            ready_rxs.push(ready_rx);
+            let (ready_tx, ready_rx) = oneshot::channel::<AsyncAgentReady>();
+            async_ready_rxs.push(ready_rx);
 
-            let (command_tx, command_rx) = mpsc::channel::<AgentCommand>();
-            command_txs.push(command_tx);
+            let (command_tx, command_rx) = mpsc::channel::<AsyncAgentCommand>();
+            async_command_txs.push(command_tx);
 
             let worker_init = worker_init.clone();
 
@@ -99,12 +111,12 @@ impl RuntimeBuilder {
             let join_handle = thread::spawn(move || {
                 (worker_init)();
 
-                let agent = Rc::new(Agent::new(command_rx, metrics_tx));
+                let agent = Rc::new(AsyncAgent::new(command_rx, metrics_tx));
 
                 // Signal that we are ready to start.
                 ready_tx
-                    .send(AgentReady {
-                        waker: agent.io().borrow().waker(),
+                    .send(AsyncAgentReady {
+                        io_waker: agent.io().borrow().waker(),
                     })
                     .expect("runtime startup process failed in infallible code");
 
@@ -114,7 +126,7 @@ impl RuntimeBuilder {
                     .recv()
                     .expect("runtime startup process failed in infallible code");
 
-                current_agent::set(Rc::clone(&agent));
+                current_async_agent::set(Rc::clone(&agent));
                 current_runtime::set(start.runtime_client);
 
                 agent.run();
@@ -123,15 +135,73 @@ impl RuntimeBuilder {
             join_handles.push(join_handle);
         }
 
-        let mut wakers = Vec::with_capacity(ASYNC_WORKER_COUNT);
+        let mut async_io_wakers = Vec::with_capacity(ASYNC_WORKER_COUNT);
 
-        for start_ack_rx in ready_rxs {
+        for start_ack_rx in async_ready_rxs {
             let start_ack = start_ack_rx
                 .recv()
                 .expect("async worker thread failed before even starting");
 
-            wakers.push(start_ack.waker);
+            async_io_wakers.push(start_ack.io_waker);
         }
+
+        // # Sync workers
+
+        let mut sync_command_txs = Vec::with_capacity(SYNC_WORKER_COUNT);
+        let mut sync_start_txs = Vec::with_capacity(SYNC_WORKER_COUNT);
+        let mut sync_ready_rxs = Vec::with_capacity(SYNC_WORKER_COUNT);
+
+        for _ in 0..SYNC_WORKER_COUNT {
+            let (start_tx, start_rx) = oneshot::channel::<AgentStartArguments>();
+            sync_start_txs.push(start_tx);
+
+            let (ready_tx, ready_rx) = oneshot::channel::<SyncAgentReady>();
+            sync_ready_rxs.push(ready_rx);
+
+            let (command_tx, command_rx) = mpsc::channel::<SyncAgentCommand>();
+            sync_command_txs.push(command_tx);
+
+            let worker_init = worker_init.clone();
+
+            let metrics_tx = match self.metrics_tx {
+                Some(ref tx) => Some(tx.clone()),
+                None => None,
+            };
+
+            let join_handle = thread::spawn(move || {
+                (worker_init)();
+
+                let agent = Rc::new(SyncAgent::new(command_rx, metrics_tx));
+
+                // Signal that we are ready to start.
+                ready_tx
+                    .send(SyncAgentReady {})
+                    .expect("runtime startup process failed in infallible code");
+
+                // We first wait for the startup signal, which indicates that all agents have been
+                // created and registered with the runtime, and the runtime is ready to be used.
+                let start = start_rx
+                    .recv()
+                    .expect("runtime startup process failed in infallible code");
+
+                current_sync_agent::set(Rc::clone(&agent));
+                current_runtime::set(start.runtime_client);
+
+                agent.run();
+            });
+
+            join_handles.push(join_handle);
+        }
+
+        for start_ack_rx in sync_ready_rxs {
+            _ = start_ack_rx
+                .recv()
+                .expect("sync worker thread failed before even starting");
+
+            // For now we just want to make sure we see the ACK. No actual state fanster needed.
+        }
+
+        // # Start
 
         // Now we have all the info we need to construct the runtime and client. We do so and then
         // send a message to all the agents that they are now attached to a runtime and can start
@@ -139,9 +209,12 @@ impl RuntimeBuilder {
 
         // This is just a convenient package the runtime client uses to organize things internally.
         let runtime = Runtime {
-            agent_join_handles: Some(join_handles.into_boxed_slice()),
-            agent_wakers: wakers.into_boxed_slice(),
-            agent_command_txs: command_txs.into_boxed_slice(),
+            async_command_txs: async_command_txs.into_boxed_slice(),
+            sync_command_txs: sync_command_txs.into_boxed_slice(),
+
+            async_io_wakers: async_io_wakers.into_boxed_slice(),
+
+            join_handles: Some(join_handles.into_boxed_slice()),
         };
 
         let client = Arc::new(RuntimeClient::new(runtime));
@@ -156,11 +229,18 @@ impl RuntimeBuilder {
         }
 
         // Tell all the agents to start.
-        for tx in start_txs {
+        for tx in async_start_txs {
             tx.send(AgentStartArguments {
                 runtime_client: Arc::clone(&client),
             })
-            .expect("runtime agent thread failed before it could be started");
+            .expect("runtime async agent thread failed before it could be started");
+        }
+
+        for tx in sync_start_txs {
+            tx.send(AgentStartArguments {
+                runtime_client: Arc::clone(&client),
+            })
+            .expect("runtime sync agent thread failed before it could be started");
         }
 
         // All the agents are now running and the runtime is ready to be used.
@@ -180,11 +260,15 @@ impl Debug for RuntimeBuilder {
     }
 }
 
-/// A signal that an agent is ready to start, providing inputs required for the runtime start.
+/// A signal that an async agent is ready to start, providing inputs required for the runtime start.
 #[derive(Debug)]
-struct AgentReady {
-    waker: IoWaker,
+struct AsyncAgentReady {
+    io_waker: IoWaker,
 }
+
+/// A signal that a sync agent is ready to start, providing inputs required for the runtime start.
+#[derive(Debug)]
+struct SyncAgentReady {}
 
 /// A signal that the runtime has been initialized and agents are permitted to start,
 /// providing relevant arguments to the agent.

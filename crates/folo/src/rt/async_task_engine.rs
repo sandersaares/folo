@@ -1,6 +1,6 @@
 use crate::{
     metrics::{Event, EventBuilder},
-    rt::{waker::WakeSignal, LocalErasedTask},
+    rt::{waker::WakeSignal, LocalErasedAsyncTask},
     util::PinnedSlabChain,
 };
 use negative_impl::negative_impl;
@@ -80,7 +80,7 @@ impl AsyncTaskEngine {
     /// Enqueues a future whose return type has been erased. It will be polled but no result
     /// will be made available by the async task engine - it is expected that some other mechanism
     /// is used to observe the result.
-    pub fn enqueue_erased(&mut self, erased_task: LocalErasedTask) {
+    pub fn enqueue_erased(&mut self, erased_task: LocalErasedAsyncTask) {
         // It is possible due to the eventually consistent nature between worker commands that a
         // worker will receive a new task after shutdown has already begun. We expect the worker
         // to perform the necessary filtering to prevent that from ever reaching the task engine.
@@ -255,14 +255,14 @@ pub enum CycleResult {
 
 #[pin_project]
 struct Task {
-    erased_task: RefCell<LocalErasedTask>,
+    erased_task: RefCell<LocalErasedAsyncTask>,
 
     #[pin]
     wake_signal: WakeSignal,
 }
 
 impl Task {
-    fn new(erased_task: LocalErasedTask) -> Self {
+    fn new(erased_task: LocalErasedAsyncTask) -> Self {
         Self {
             erased_task: RefCell::new(erased_task),
             wake_signal: WakeSignal::new(),
@@ -294,32 +294,32 @@ impl Debug for Task {
 
 thread_local! {
     static TASKS_CANCELED_ON_SHUTDOWN: Event = EventBuilder::new()
-        .name("rt_tasks_canceled_on_shutdown")
+        .name("rt_async_tasks_canceled_on_shutdown")
         .build()
         .unwrap();
 
     static TASK_POLLED: Event = EventBuilder::new()
-        .name("rt_task_polled")
+        .name("rt_async_task_polled")
         .build()
         .unwrap();
 
     static TASK_ACTIVATED: Event = EventBuilder::new()
-        .name("rt_task_activated")
+        .name("rt_async_task_activated")
         .build()
         .unwrap();
 
     static TASK_INACTIVATED: Event = EventBuilder::new()
-        .name("rt_task_inactivated")
+        .name("rt_async_task_inactivated")
         .build()
         .unwrap();
 
     static TASKS_COMPLETED: Event = EventBuilder::new()
-        .name("rt_tasks_completed")
+        .name("rt_async_tasks_completed")
         .build()
         .unwrap();
 
     static TASKS_DROPPED: Event = EventBuilder::new()
-        .name("rt_tasks_dropped")
+        .name("rt_async_tasks_dropped")
         .build()
         .unwrap();
 }

@@ -4,7 +4,7 @@ use crate::{
     rt::{
         async_task_engine::{AsyncTaskEngine, CycleResult},
         local_task::LocalTask,
-        LocalErasedTask, LocalJoinHandle, RemoteErasedTask,
+        LocalErasedAsyncTask, LocalJoinHandle, RemoteErasedAsyncTask,
     },
 };
 use std::{
@@ -18,7 +18,8 @@ use std::{
 use tracing::{event, Level};
 
 /// Coordinates the operations of the Folo runtime on a single thread. There may be different
-/// types of agents assigned to different threads (e.g. async worker versus sync worker).
+/// types of agents assigned to different threads (e.g. async worker versus sync worker). This is
+/// the async agent.
 ///
 /// An agent has multiple lifecycle stages:
 /// 1. Starting up - the agent is interacting with the runtime builder to set up the mutual state
@@ -33,8 +34,8 @@ use tracing::{event, Level};
 /// This takes place independently on each task - there is no "runtime" anymore and the worker
 /// threads are disconnected from each other by this point, though the runtime client can still
 /// be used to wait for them to complete.
-pub struct Agent {
-    command_rx: mpsc::Receiver<AgentCommand>,
+pub struct AsyncAgent {
+    command_rx: mpsc::Receiver<AsyncAgentCommand>,
     metrics_tx: Option<mpsc::Sender<ReportPage>>,
 
     engine: RefCell<AsyncTaskEngine>,
@@ -44,7 +45,7 @@ pub struct Agent {
     // Tasks that have been enqueued but have not yet been handed over to the async task engine.
     // Includes both locally queued tasks and tasks enqueued from another thread, which are both
     // unified to the `LocalErasedTask` type.
-    new_tasks: RefCell<VecDeque<LocalErasedTask>>,
+    new_tasks: RefCell<VecDeque<LocalErasedAsyncTask>>,
 
     // If we are shutting down, we ignore all requests to schedule new tasks and do our best to
     // cleanup ASAP.
@@ -58,9 +59,9 @@ pub struct Agent {
 // that possible. However, it is a bit error-prone (you have to be careful that no publicly
 // accessible methods lead to conflicting RefCell borrows or we hit a panic).
 
-impl Agent {
+impl AsyncAgent {
     pub fn new(
-        command_rx: mpsc::Receiver<AgentCommand>,
+        command_rx: mpsc::Receiver<AsyncAgentCommand>,
         metrics_tx: Option<mpsc::Sender<ReportPage>>,
     ) -> Self {
         Self {
@@ -222,12 +223,12 @@ impl Agent {
 
         loop {
             match self.command_rx.try_recv() {
-                Ok(AgentCommand::EnqueueTask { erased_task }) => {
+                Ok(AsyncAgentCommand::EnqueueTask { erased_task }) => {
                     received_commands = true;
                     REMOTE_TASKS.with(Event::observe_unit);
                     self.new_tasks.borrow_mut().push_back(erased_task);
                 }
-                Ok(AgentCommand::Terminate) => {
+                Ok(AsyncAgentCommand::Terminate) => {
                     return ProcessCommandsResult::Terminate;
                 }
                 Err(mpsc::TryRecvError::Empty) => {
@@ -253,28 +254,29 @@ impl Agent {
 /// we will often check much more often if activity on the current thread wakes us up.
 const CROSS_THREAD_WORK_POLL_INTERVAL_MS: u32 = 10;
 
-impl Debug for Agent {
+impl Debug for AsyncAgent {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("Agent")
             .field("command_rx", &self.command_rx)
             .field("engine", &self.engine)
+            .field("io", &self.io)
+            .field("shutting_down", &self.shutting_down)
             .finish()
     }
 }
 
-pub enum AgentCommand {
+pub enum AsyncAgentCommand {
     EnqueueTask {
-        erased_task: RemoteErasedTask,
+        erased_task: RemoteErasedAsyncTask,
     },
 
     /// Shuts down the worker thread immediately, without waiting for any pending operations to
-    /// complete. The worker will still perform necessary cleanup to avoid resource leaks, because
-    /// this is not necessarily called at process termination time when cleanup is not needed (e.g.
-    /// it may be one of many test runtimes used in a test run by different unit tests).
+    /// complete. The worker will still complete the current task and perform necessary cleanup
+    /// to avoid resource leaks, which may take some time.
     Terminate,
 }
 
-impl Debug for AgentCommand {
+impl Debug for AsyncAgentCommand {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Self::EnqueueTask { .. } => write!(f, "EnqueueTask"),
@@ -298,22 +300,22 @@ enum ProcessCommandsResult {
 
 thread_local! {
     static LOCAL_TASKS: Event = EventBuilder::new()
-        .name("rt_tasks_local")
+        .name("rt_async_tasks_local")
         .build()
         .unwrap();
 
     static REMOTE_TASKS: Event = EventBuilder::new()
-        .name("rt_tasks_remote")
+        .name("rt_async_tasks_remote")
         .build()
         .unwrap();
 
     static CYCLES_WITH_SLEEP: Event = EventBuilder::new()
-        .name("rt_cycles_with_sleep")
+        .name("rt_async_cycles_with_sleep")
         .build()
         .unwrap();
 
     static CYCLES_WITHOUT_SLEEP: Event = EventBuilder::new()
-        .name("rt_cycles_without_sleep")
+        .name("rt_async_cycles_without_sleep")
         .build()
         .unwrap();
 }

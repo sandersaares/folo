@@ -1,6 +1,12 @@
 use crate::constants;
-use crate::rt::{agent::AgentCommand, remote_task::RemoteTask, runtime::Runtime, RemoteJoinHandle};
+use crate::rt::{
+    async_agent::AsyncAgentCommand, remote_task::RemoteTask, runtime::Runtime, RemoteJoinHandle,
+};
+use std::sync::Arc;
 use std::{cell::Cell, future::Future, sync::Mutex, thread};
+
+use super::remote_result_box::RemoteResultBox;
+use super::sync_agent::SyncAgentCommand;
 
 /// The multithreaded entry point for the Folo runtime, used for operations that affect more than
 /// the current thread.
@@ -41,18 +47,42 @@ impl RuntimeClient {
         let join_handle = task.join_handle();
 
         let runtime = self.runtime.lock().expect(constants::POISONED_LOCK);
-        let worker_index = random_worker_index(runtime.agent_command_txs.len());
+        let worker_index = next_async_worker(runtime.async_command_txs.len());
 
-        runtime.agent_command_txs[worker_index]
-            .send(AgentCommand::EnqueueTask {
+        runtime.async_command_txs[worker_index]
+            .send(AsyncAgentCommand::EnqueueTask {
                 erased_task: Box::pin(task),
             })
             .expect("runtime agent thread terminated unexpectedly");
 
         // Wake up the agent if it might be sleeping and waiting for I/O.
-        runtime.agent_wakers[worker_index].wake();
+        runtime.async_io_wakers[worker_index].wake();
 
         join_handle
+    }
+
+    /// Spawns a blocking task on any synchronous worker thread suitable for blocking, returning
+    /// the result via a join handle suitable for use in asynchronous tasks.
+    pub fn spawn_blocking<FN, F, R>(&self, f: F) -> RemoteJoinHandle<R>
+    where
+        F: FnOnce() -> R + Send + 'static,
+        R: Send + 'static,
+    {
+        let result_box_rx = Arc::new(RemoteResultBox::new());
+        let result_box_tx = Arc::clone(&result_box_rx);
+
+        let task = move || result_box_tx.set(f());
+
+        let runtime = self.runtime.lock().expect(constants::POISONED_LOCK);
+        let worker_index = next_sync_worker(runtime.sync_command_txs.len());
+
+        runtime.sync_command_txs[worker_index]
+            .send(SyncAgentCommand::ExecuteTask {
+                erased_task: Box::new(task),
+            })
+            .expect("runtime agent thread terminated unexpectedly");
+
+        RemoteJoinHandle::new(result_box_rx)
     }
 
     /// Commands the runtime to stop processing tasks and shut down. Safe to call multiple times.
@@ -61,9 +91,16 @@ impl RuntimeClient {
     pub fn stop(&self) {
         let runtime = self.runtime.lock().expect(constants::POISONED_LOCK);
 
-        for tx in &runtime.agent_command_txs {
-            tx.send(AgentCommand::Terminate)
-                .expect("runtime agent thread terminated unexpectedly");
+        for tx in &runtime.async_command_txs {
+            // We ignore the return value because if the worker has already stopped, the channel
+            // may be closed in which case the send may simply fail.
+            _ = tx.send(AsyncAgentCommand::Terminate);
+        }
+
+        for tx in &runtime.sync_command_txs {
+            // We ignore the return value because if the worker has already stopped, the channel
+            // may be closed in which case the send may simply fail.
+            _ = tx.send(crate::rt::sync_agent::SyncAgentCommand::Terminate);
         }
     }
 
@@ -76,7 +113,7 @@ impl RuntimeClient {
         let runtime = self.runtime.lock().expect(constants::POISONED_LOCK);
 
         for join_handle in runtime
-            .agent_join_handles
+            .join_handles
             .as_ref()
             .expect("wait() has already been called - cannot access runtime state any more")
         {
@@ -109,17 +146,26 @@ impl RuntimeClient {
         let mut runtime = self.runtime.lock().expect(constants::POISONED_LOCK);
 
         runtime
-            .agent_join_handles
+            .join_handles
             .take()
             .expect("RuntimeClient::wait() called multiple times")
     }
 }
 
 // Basic round-robin implementation for distributing work across workers.
-thread_local!(static NEXT_WORKER_INDEX: Cell<usize> = const { Cell::new(0) });
+thread_local! {
+    static NEXT_ASYNC_WORKER_INDEX: Cell<usize> = const { Cell::new(0) };
+    static NEXT_SYNC_WORKER_INDEX: Cell<usize> = const { Cell::new(0) };
+}
 
-fn random_worker_index(max: usize) -> usize {
-    let next = NEXT_WORKER_INDEX.get();
-    NEXT_WORKER_INDEX.set((next + 1) % max);
+fn next_async_worker(max: usize) -> usize {
+    let next = NEXT_ASYNC_WORKER_INDEX.get();
+    NEXT_ASYNC_WORKER_INDEX.set((next + 1) % max);
+    next
+}
+
+fn next_sync_worker(max: usize) -> usize {
+    let next = NEXT_SYNC_WORKER_INDEX.get();
+    NEXT_SYNC_WORKER_INDEX.set((next + 1) % max);
     next
 }
