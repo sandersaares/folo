@@ -17,6 +17,7 @@ crate-type = ["lib"]
 criterion = ["dep:criterion"]
 
 [dependencies]
+core_affinity = "0"
 criterion = { version = "0", optional = true }
 folo_decl_macros = { path = "../folo_decl_macros", version = "0.1.0-main" }
 folo_proc_macros = { path = "../folo_proc_macros", version = "0.1.0-main" }

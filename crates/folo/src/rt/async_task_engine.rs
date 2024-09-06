@@ -1,4 +1,5 @@
 use crate::{
+    constants::GENERAL_SECONDS_BUCKETS,
     metrics::{Event, EventBuilder},
     rt::{waker::WakeSignal, LocalErasedAsyncTask},
     util::PinnedSlabChain,
@@ -12,6 +13,7 @@ use std::{
     future,
     pin::Pin,
     task,
+    time::Instant,
 };
 
 type TaskKey = usize;
@@ -64,6 +66,9 @@ pub struct AsyncTaskEngine {
     // In shutdown mode, all tasks are considered completed and the only thing we do is wait for
     // wakers to become inert (which may be driven by uncontrollable actions of foreign threads).
     shutting_down: bool,
+
+    // Used to report interval between cycles.
+    last_cycle_ended: Option<Instant>,
 }
 
 impl AsyncTaskEngine {
@@ -74,6 +79,7 @@ impl AsyncTaskEngine {
             inactive: VecDeque::new(),
             completed: VecDeque::new(),
             shutting_down: false,
+            last_cycle_ended: None,
         }
     }
 
@@ -99,6 +105,12 @@ impl AsyncTaskEngine {
     }
 
     pub fn execute_cycle(&mut self) -> CycleResult {
+        let cycle_start = Instant::now();
+
+        if let Some(last_end) = self.last_cycle_ended {
+            CYCLE_INTERVAL.with(|x| x.observe(cycle_start.duration_since(last_end).as_secs_f64()));
+        }
+
         // If we have no activity in the cycle, we indicate that the caller does not need to
         // immediately call us again and may suspend until it has a reason to call us again.
         let mut had_activity = false;
@@ -108,6 +120,8 @@ impl AsyncTaskEngine {
         if self.activate_awakened_tasks() {
             had_activity = true;
         }
+
+        let had_active_tasks = !self.active.is_empty();
 
         while let Some(key) = self.active.pop_front() {
             had_activity = true;
@@ -133,8 +147,8 @@ impl AsyncTaskEngine {
 
         // It may be that some activity within our cycle awakened some tasks, so there may be
         // more work to do immediately - if so, we ask the caller to continue. We skip this check
-        // if we already know that we need to come back again (as we activate above, as well).
-        if !had_activity && self.activate_awakened_tasks() {
+        // if we already know that we need to come back again or if there was no task activity.
+        if !had_activity && had_active_tasks && self.activate_awakened_tasks() {
             had_activity = true;
         }
 
@@ -143,13 +157,20 @@ impl AsyncTaskEngine {
         #[cfg(test)]
         self.tasks.integrity_check();
 
+        let cycle_end = Instant::now();
+        self.last_cycle_ended = Some(cycle_end);
+
+        CYCLE_DURATION.with(|x| x.observe(cycle_end.duration_since(cycle_start).as_secs_f64()));
+
         if self.shutting_down && self.completed.is_empty() {
             // Shutdown is finished if all completed tasks (== all tasks) have been removed from the
             // completed list after their wakers became inert.
             CycleResult::Shutdown
         } else if had_activity {
+            // We want to be immediately called again because we may have more work to do.
             CycleResult::Continue
         } else {
+            // We have no work to do, feel free to take a while before coming back to us.
             CycleResult::Suspend
         }
     }
@@ -320,6 +341,18 @@ thread_local! {
 
     static TASKS_DROPPED: Event = EventBuilder::new()
         .name("rt_async_tasks_dropped")
+        .build()
+        .unwrap();
+
+    static CYCLE_INTERVAL: Event = EventBuilder::new()
+        .name("rt_async_cycle_interval_seconds")
+        .buckets(GENERAL_SECONDS_BUCKETS)
+        .build()
+        .unwrap();
+
+    static CYCLE_DURATION: Event = EventBuilder::new()
+        .name("rt_async_cycle_duration_seconds")
+        .buckets(GENERAL_SECONDS_BUCKETS)
         .build()
         .unwrap();
 }

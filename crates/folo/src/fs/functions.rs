@@ -53,7 +53,7 @@ pub async fn read_small_buffer(path: impl AsRef<Path>) -> io::Result<Vec<u8>> {
 
             GetFileSizeEx(*file_handle, &mut file_size as *mut _)?;
 
-            event!(Level::DEBUG, message = "opened file", file_size);
+            event!(Level::DEBUG, message = "opened file", length = file_size);
 
             let file_handle = SendHandle::from(*file_handle);
             Ok((file_handle, file_size))

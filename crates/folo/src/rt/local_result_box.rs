@@ -1,5 +1,9 @@
+use crate::{
+    constants::GENERAL_SECONDS_BUCKETS,
+    metrics::{Event, EventBuilder},
+};
 use negative_impl::negative_impl;
-use std::{cell::RefCell, mem, task::Waker};
+use std::{cell::RefCell, mem, task::Waker, time::Instant};
 
 #[derive(Debug)]
 enum TaskResult<R> {
@@ -22,16 +26,22 @@ enum TaskResult<R> {
 #[derive(Debug)]
 pub(crate) struct LocalResultBox<R> {
     result: RefCell<TaskResult<R>>,
+    created: Instant,
 }
 
 impl<R> LocalResultBox<R> {
     pub fn new() -> Self {
         Self {
             result: RefCell::new(TaskResult::Pending),
+            created: Instant::now(),
         }
     }
 
     pub fn set(&self, result: R) {
+        FILL_DURATION.with(|x| {
+            x.observe(self.created.elapsed().as_secs_f64());
+        });
+
         let mut self_result = self.result.borrow_mut();
 
         match &*self_result {
@@ -72,6 +82,10 @@ impl<R> LocalResultBox<R> {
                 None
             }
             TaskResult::Ready(_) => {
+                CONSUME_DURATION.with(|x| {
+                    x.observe(self.created.elapsed().as_secs_f64());
+                });
+
                 let existing_result = mem::replace(&mut *self_result, TaskResult::Consumed);
 
                 match existing_result {
@@ -93,3 +107,17 @@ impl<R> LocalResultBox<R> {
 impl<R> !Send for LocalResultBox<R> {}
 #[negative_impl]
 impl<R> !Sync for LocalResultBox<R> {}
+
+thread_local! {
+    static FILL_DURATION: Event = EventBuilder::new()
+        .name("result_box_local_time_to_fill_seconds")
+        .buckets(GENERAL_SECONDS_BUCKETS)
+        .build()
+        .unwrap();
+
+    static CONSUME_DURATION: Event = EventBuilder::new()
+        .name("result_box_local_time_to_consume_seconds")
+        .buckets(GENERAL_SECONDS_BUCKETS)
+        .build()
+        .unwrap();
+}

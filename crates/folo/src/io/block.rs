@@ -1,7 +1,8 @@
 use super::Buffer;
 use crate::{
+    constants::{GENERAL_BYTES_BUCKETS, GENERAL_SECONDS_BUCKETS},
     io,
-    metrics::{Event, EventBuilder, Magnitude},
+    metrics::{Event, EventBuilder},
     util::PinnedSlabChain,
 };
 use negative_impl::negative_impl;
@@ -10,6 +11,7 @@ use std::{
     fmt,
     mem::{self, ManuallyDrop},
     ptr,
+    time::Instant,
 };
 use tracing::{event, Level};
 use windows::Win32::{
@@ -107,6 +109,15 @@ impl BlockStore {
         let block = &mut *(overlapped_entry.lpOverlapped as *mut Block);
 
         block.buffer.set_length(bytes_transferred);
+
+        let duration = Instant::now().duration_since(
+            block
+                .started
+                .take()
+                .expect("block must have an operation start time because the block is completed"),
+        );
+
+        BLOCK_COMPLETED_ASYNC_OK_DURATION.with(|x| x.observe(duration.as_secs_f64()));
 
         CompleteBlock {
             block,
@@ -233,6 +244,9 @@ struct Block<'b> {
     result_tx: Option<oneshot::Sender<io::Result<CompleteBlock<'b>>>>,
     result_rx: Option<oneshot::Receiver<io::Result<CompleteBlock<'b>>>>,
 
+    /// Timestamp of when the operation is started. Used to report I/O operation durations.
+    started: Option<Instant>,
+
     // Once pinned, this type cannot be unpinned.
     _phantom_pin: std::marker::PhantomPinned,
 }
@@ -248,6 +262,7 @@ impl<'b> Block<'b> {
             immediate_bytes_transferred: 0,
             result_tx: Some(result_tx),
             result_rx: Some(result_rx),
+            started: None,
             _phantom_pin: std::marker::PhantomPinned,
         }
     }
@@ -373,6 +388,8 @@ impl<'b> PrepareBlock<'b> {
         // SAFETY: This is just a manual move between compatible fields - no worries.
         let block = unsafe { ptr::read(&this.block) };
 
+        block.started = Some(Instant::now());
+
         (
             // SAFETY: Sets the lifetime to 'static because I cannot figure out a straightforward way to declare lifetimes here.
             // As long as the value is only used during the callback, this is fine (caller is responsible for not using it afterwards).
@@ -428,9 +445,6 @@ impl Drop for CompleteBlock<'_> {
     }
 }
 
-const BLOCK_COMPLETED_BYTES_BUCKETS: &[Magnitude] =
-    &[0.0, 1024.0, 4096.0, 16384.0, 65536.0, 1.0 * 1024.0 * 1024.0];
-
 thread_local! {
     static BLOCKS_ALLOCATED: Event = EventBuilder::new()
         .name("io_blocks_allocated")
@@ -449,7 +463,13 @@ thread_local! {
 
     static BLOCK_COMPLETED_BYTES: Event = EventBuilder::new()
         .name("io_completed_bytes")
-        .buckets(BLOCK_COMPLETED_BYTES_BUCKETS)
+        .buckets(GENERAL_BYTES_BUCKETS)
+        .build()
+        .unwrap();
+
+    static BLOCK_COMPLETED_ASYNC_OK_DURATION: Event = EventBuilder::new()
+        .name("io_completed_async_ok_duration_seconds")
+        .buckets(GENERAL_SECONDS_BUCKETS)
         .build()
         .unwrap();
 }

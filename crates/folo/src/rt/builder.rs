@@ -1,3 +1,6 @@
+use core_affinity::CoreId;
+use tracing::{event, Level};
+
 use crate::{
     io::IoWaker,
     metrics::ReportPage,
@@ -19,14 +22,6 @@ use super::{
     current_sync_agent,
     sync_agent::{SyncAgent, SyncAgentCommand},
 };
-
-// For now, we use a hardcoded number of workers - the main point here is to verify that the design
-// works with multiple threads. We do not yet care about actually using threads optimally.
-const ASYNC_WORKER_COUNT: usize = 2;
-
-// For now, we use a hardcoded number of workers - the main point here is to verify that the design
-// works with multiple threads. We do not yet care about actually using threads optimally.
-const SYNC_WORKER_COUNT: usize = 2;
 
 pub struct RuntimeBuilder {
     worker_init: Option<Arc<dyn Fn() + Send + Sync + 'static>>,
@@ -81,17 +76,25 @@ impl RuntimeBuilder {
             }
         }
 
+        let processor_ids =
+            core_affinity::get_core_ids().expect("must always be able to identify processor IDs");
+
+        // We will spawn one agent of each type (async + sync) for each processor.
+        let processor_count = processor_ids.len();
+
+        event!(Level::INFO, processor_count);
+
         let worker_init = self.worker_init.unwrap_or(Arc::new(|| {}));
 
-        let mut join_handles = Vec::with_capacity(ASYNC_WORKER_COUNT + SYNC_WORKER_COUNT);
+        let mut join_handles = Vec::with_capacity(processor_count * 2);
 
         // # Async workers
 
-        let mut async_command_txs = Vec::with_capacity(ASYNC_WORKER_COUNT);
-        let mut async_start_txs = Vec::with_capacity(ASYNC_WORKER_COUNT);
-        let mut async_ready_rxs = Vec::with_capacity(ASYNC_WORKER_COUNT);
+        let mut async_command_txs = Vec::with_capacity(processor_count);
+        let mut async_start_txs = Vec::with_capacity(processor_count);
+        let mut async_ready_rxs = Vec::with_capacity(processor_count);
 
-        for _ in 0..ASYNC_WORKER_COUNT {
+        for _ in 0..processor_count {
             let (start_tx, start_rx) = oneshot::channel::<AgentStartArguments>();
             async_start_txs.push(start_tx);
 
@@ -126,6 +129,8 @@ impl RuntimeBuilder {
                     .recv()
                     .expect("runtime startup process failed in infallible code");
 
+                core_affinity::set_for_current(start.processor_id);
+
                 current_async_agent::set(Rc::clone(&agent));
                 current_runtime::set(start.runtime_client);
 
@@ -135,7 +140,7 @@ impl RuntimeBuilder {
             join_handles.push(join_handle);
         }
 
-        let mut async_io_wakers = Vec::with_capacity(ASYNC_WORKER_COUNT);
+        let mut async_io_wakers = Vec::with_capacity(processor_count);
 
         for start_ack_rx in async_ready_rxs {
             let start_ack = start_ack_rx
@@ -147,11 +152,11 @@ impl RuntimeBuilder {
 
         // # Sync workers
 
-        let mut sync_command_txs = Vec::with_capacity(SYNC_WORKER_COUNT);
-        let mut sync_start_txs = Vec::with_capacity(SYNC_WORKER_COUNT);
-        let mut sync_ready_rxs = Vec::with_capacity(SYNC_WORKER_COUNT);
+        let mut sync_command_txs = Vec::with_capacity(processor_count);
+        let mut sync_start_txs = Vec::with_capacity(processor_count);
+        let mut sync_ready_rxs = Vec::with_capacity(processor_count);
 
-        for _ in 0..SYNC_WORKER_COUNT {
+        for _ in 0..processor_count {
             let (start_tx, start_rx) = oneshot::channel::<AgentStartArguments>();
             sync_start_txs.push(start_tx);
 
@@ -183,6 +188,8 @@ impl RuntimeBuilder {
                 let start = start_rx
                     .recv()
                     .expect("runtime startup process failed in infallible code");
+
+                core_affinity::set_for_current(start.processor_id);
 
                 current_sync_agent::set(Rc::clone(&agent));
                 current_runtime::set(start.runtime_client);
@@ -229,16 +236,18 @@ impl RuntimeBuilder {
         }
 
         // Tell all the agents to start.
-        for tx in async_start_txs {
+        for (index, tx) in async_start_txs.into_iter().enumerate() {
             tx.send(AgentStartArguments {
                 runtime_client: Arc::clone(&client),
+                processor_id: processor_ids[index],
             })
             .expect("runtime async agent thread failed before it could be started");
         }
 
-        for tx in sync_start_txs {
+        for (index, tx) in sync_start_txs.into_iter().enumerate() {
             tx.send(AgentStartArguments {
                 runtime_client: Arc::clone(&client),
+                processor_id: processor_ids[index],
             })
             .expect("runtime sync agent thread failed before it could be started");
         }
@@ -275,6 +284,7 @@ struct SyncAgentReady {}
 #[derive(Debug)]
 struct AgentStartArguments {
     runtime_client: Arc<RuntimeClient>,
+    processor_id: CoreId,
 }
 
 #[derive(thiserror::Error, Debug)]

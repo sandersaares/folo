@@ -20,7 +20,7 @@ where
     #[pin]
     future: F,
 
-    // This is an Rc because we need to share it both with the task and with the JoinHandle, each
+    // This is an Arc because we need to share it both with the task and with the JoinHandle, each
     // of which has an independent lifetime (runtime-defined and caller-defined, respectively).
     result: Arc<RemoteResultBox<R>>,
 }
@@ -38,6 +38,7 @@ where
     }
 
     pub fn join_handle(&self) -> RemoteJoinHandle<R> {
+        // TODO: Protect this so only one join handle can be taken.
         RemoteJoinHandle::new(Arc::clone(&self.result))
     }
 }

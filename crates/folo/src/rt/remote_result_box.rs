@@ -1,5 +1,8 @@
-use crate::constants;
-use std::{mem, sync::Mutex, task::Waker};
+use crate::{
+    constants::{self, GENERAL_SECONDS_BUCKETS},
+    metrics::{Event, EventBuilder},
+};
+use std::{mem, sync::Mutex, task::Waker, time::Instant};
 
 #[derive(Debug)]
 enum TaskResult<R> {
@@ -22,16 +25,22 @@ enum TaskResult<R> {
 #[derive(Debug)]
 pub(crate) struct RemoteResultBox<R> {
     result: Mutex<TaskResult<R>>,
+    created: Instant,
 }
 
 impl<R> RemoteResultBox<R> {
     pub fn new() -> Self {
         Self {
             result: Mutex::new(TaskResult::Pending),
+            created: Instant::now(),
         }
     }
 
     pub fn set(&self, result: R) {
+        FILL_DURATION.with(|x| {
+            x.observe(self.created.elapsed().as_secs_f64());
+        });
+
         let mut self_result = self.result.lock().expect(constants::POISONED_LOCK);
 
         match &*self_result {
@@ -72,6 +81,10 @@ impl<R> RemoteResultBox<R> {
                 None
             }
             TaskResult::Ready(_) => {
+                CONSUME_DURATION.with(|x| {
+                    x.observe(self.created.elapsed().as_secs_f64());
+                });
+                
                 let existing_result = mem::replace(&mut *self_result, TaskResult::Consumed);
 
                 match existing_result {
@@ -86,4 +99,18 @@ impl<R> RemoteResultBox<R> {
             }
         }
     }
+}
+
+thread_local! {
+    static FILL_DURATION: Event = EventBuilder::new()
+        .name("result_box_remote_time_to_fill_seconds")
+        .buckets(GENERAL_SECONDS_BUCKETS)
+        .build()
+        .unwrap();
+
+    static CONSUME_DURATION: Event = EventBuilder::new()
+        .name("result_box_remote_time_to_consume_seconds")
+        .buckets(GENERAL_SECONDS_BUCKETS)
+        .build()
+        .unwrap();
 }

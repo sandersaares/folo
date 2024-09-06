@@ -1,12 +1,13 @@
-use crate::constants;
+use super::remote_result_box::RemoteResultBox;
+use super::sync_agent::SyncAgentCommand;
+use crate::constants::{self, GENERAL_SECONDS_BUCKETS};
+use crate::metrics::{Event, EventBuilder};
 use crate::rt::{
     async_agent::AsyncAgentCommand, remote_task::RemoteTask, runtime::Runtime, RemoteJoinHandle,
 };
 use std::sync::Arc;
+use std::time::Instant;
 use std::{cell::Cell, future::Future, sync::Mutex, thread};
-
-use super::remote_result_box::RemoteResultBox;
-use super::sync_agent::SyncAgentCommand;
 
 /// The multithreaded entry point for the Folo runtime, used for operations that affect more than
 /// the current thread.
@@ -34,11 +35,15 @@ impl RuntimeClient {
         F: Future<Output = R> + 'static,
         R: Send + 'static,
     {
+        let started = Instant::now();
+
         // Just because we are spawning a future on another thread does not mean it has to be a
         // thread-safe future (although the return value has to be). Therefore, we kajigger it
         // around via a remote join handle from the same thread, to allow a single-threaded future
         // to execute, as long as the closure that creates it is thread-safe.
-        let thread_safe_wrapper_future = async {
+        let thread_safe_wrapper_future = async move {
+            REMOTE_SPAWN_DELAY.with(|x| x.observe(started.elapsed().as_secs_f64()));
+
             let join_handle: RemoteJoinHandle<R> = crate::rt::spawn(future_fn()).into();
             join_handle.await
         };
@@ -168,4 +173,12 @@ fn next_sync_worker(max: usize) -> usize {
     let next = NEXT_SYNC_WORKER_INDEX.get();
     NEXT_SYNC_WORKER_INDEX.set((next + 1) % max);
     next
+}
+
+thread_local! {
+    static REMOTE_SPAWN_DELAY: Event = EventBuilder::new()
+        .name("rt_remote_spawn_delay_seconds")
+        .buckets(GENERAL_SECONDS_BUCKETS)
+        .build()
+        .unwrap();
 }
