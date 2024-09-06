@@ -267,7 +267,10 @@ impl<'s, T, const COUNT: usize> PinnedSlabInserter<'s, T, COUNT> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::RefCell;
+    use std::{
+        cell::{Cell, RefCell},
+        rc::Rc,
+    };
 
     #[test]
     fn smoke_test() {
@@ -420,5 +423,28 @@ mod tests {
             assert_eq!(*slab.get(0), 42);
             assert!(slab.is_full());
         }
+    }
+
+    #[test]
+    fn calls_drop_on_remove() {
+        struct Droppable {
+            dropped: Rc<Cell<bool>>,
+        }
+
+        impl Drop for Droppable {
+            fn drop(&mut self) {
+                self.dropped.set(true);
+            }
+        }
+
+        let dropped = Rc::new(Cell::new(false));
+        let mut slab = PinnedSlab::<Droppable, 3>::new();
+
+        let a = slab.insert(Droppable {
+            dropped: dropped.clone(),
+        });
+        slab.remove(a);
+
+        assert!(dropped.get());
     }
 }
