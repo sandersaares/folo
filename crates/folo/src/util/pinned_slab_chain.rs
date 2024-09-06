@@ -1,10 +1,13 @@
-use std::cell::{Ref, RefMut};
-
 use super::{PinnedSlab, PinnedSlabInserter};
+use std::pin::Pin;
 
 /// Links up an arbitrary number of PinnedSlabs into a dynamically sized chain. The API surface is
 /// intended to be equivalent to that of a single PinnedSlab, but with the ability to grow beyond
 /// a single slab.
+///
+/// Mutation of items is possible but be aware that taking an exclusive `&mut` reference to an item
+/// via `get_mut()` will exclusively borrow the chain itself. If you wish to preserve an exclusive
+/// reference for a longer duration, you must use interior mutability in your items.
 #[derive(Debug)]
 pub struct PinnedSlabChain<T, const SLAB_SIZE: usize = 1024> {
     /// The slabs in the chain. We use a Vec here to allow for dynamic sizing.
@@ -17,7 +20,7 @@ impl<T, const SLAB_SIZE: usize> PinnedSlabChain<T, SLAB_SIZE> {
         Self { slabs: Vec::new() }
     }
 
-    pub fn get<'v>(&self, index: usize) -> Ref<'v, T> {
+    pub fn get(&self, index: usize) -> Pin<&T> {
         let index = ChainIndex::<SLAB_SIZE>::from_whole(index);
 
         self.slabs
@@ -26,7 +29,7 @@ impl<T, const SLAB_SIZE: usize> PinnedSlabChain<T, SLAB_SIZE> {
             .expect("index was out of bounds of slab chain")
     }
 
-    pub fn get_mut<'v>(&mut self, index: usize) -> RefMut<'v, T> {
+    pub fn get_mut(&mut self, index: usize) -> Pin<&mut T> {
         let index = ChainIndex::<SLAB_SIZE>::from_whole(index);
 
         self.slabs
@@ -83,15 +86,25 @@ impl<T, const SLAB_SIZE: usize> PinnedSlabChain<T, SLAB_SIZE> {
             self.slabs.len() - 1
         }
     }
+
+    #[cfg(test)]
+    pub fn integrity_check(&self) {
+        for slab in &self.slabs {
+            slab.integrity_check();
+        }
+    }
 }
 
-pub struct PinnedSlabChainInserter<'a, T, const SLAB_SIZE: usize> {
-    slab_inserter: PinnedSlabInserter<'a, T, SLAB_SIZE>,
+pub struct PinnedSlabChainInserter<'s, T, const SLAB_SIZE: usize> {
+    slab_inserter: PinnedSlabInserter<'s, T, SLAB_SIZE>,
     slab_index: usize,
 }
 
-impl<'a, T, const SLAB_SIZE: usize> PinnedSlabChainInserter<'a, T, SLAB_SIZE> {
-    pub fn insert<'v>(self, value: T) -> RefMut<'v, T> {
+impl<'s, T, const SLAB_SIZE: usize> PinnedSlabChainInserter<'s, T, SLAB_SIZE> {
+    pub fn insert<'v>(self, value: T) -> Pin<&'v T>
+    where
+        's: 'v,
+    {
         self.slab_inserter.insert(value)
     }
 

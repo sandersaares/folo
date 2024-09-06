@@ -24,7 +24,7 @@ use std::{
 ///
 /// # Safety
 ///
-/// The signal must be pinned at all times.
+/// The signal must be pinned at all times after calling `waker()`.
 ///
 /// This type is self-referential and should be used with care - do not deallocate it until it gives
 /// you permission via `is_inert()`.
@@ -47,9 +47,13 @@ pub(crate) struct WakeSignal {
     awakened: AtomicBool,
 
     // The real waker that we construct on first use. We hand out references to this.
-    // TODO: Unsure if there is any point in lazy-initializing this. Very cheap! Laziness is legacy
-    // from older more expensive implementation.
+    // This is self-referential and we need to initialize it lazily once we are pinned.
+    // Potentially there may be a way to not use UnsafeCell here but I could not convince the
+    // borrow checker that I was not doing anything wrong without it.
     waker: UnsafeCell<Option<Waker>>,
+
+    // This type cannot be unpinned once it has been pinned (latest when calling `waker()`).
+    _phantom_pinned: std::marker::PhantomPinned,
 }
 
 impl WakeSignal {
@@ -58,12 +62,13 @@ impl WakeSignal {
             waker_count: AtomicUsize::new(0),
             awakened: AtomicBool::new(false),
             waker: UnsafeCell::new(None),
+            _phantom_pinned: std::marker::PhantomPinned,
         }
     }
 
     /// Returns whether the signal has received a wake-up notification. If so, resets the signal
     /// to a not awakened state.
-    pub(crate) fn consume_awakened(self: Pin<&Self>) -> bool {
+    pub(crate) fn consume_awakened(&self) -> bool {
         // We acquire the awakened flag here and expect to ensure we see all memory operations
         // that occurred before the release of the awakened flag.
         self.awakened.swap(false, Ordering::Acquire)
@@ -71,7 +76,7 @@ impl WakeSignal {
 
     /// Returns whether the signal is inert, meaning that no wakers are currently active and it is
     /// safe to drop the signal.
-    pub(crate) fn is_inert(self: Pin<&Self>) -> bool {
+    pub(crate) fn is_inert(&self) -> bool {
         // We consider the reference count of 1 as inert. A count of 1 means that the waker
         // has been initialized but has not been cloned, so it is safe to say that nobody else is
         // using it (because the signal itself is single threaded - the owner thread can either be
@@ -79,10 +84,12 @@ impl WakeSignal {
         self.waker_count.load(Ordering::Relaxed) <= 1
     }
 
-    pub(crate) fn waker(self: Pin<&Self>) -> &Waker {
-        // SAFETY: It is always fine to create &mut in unsafe code as long as we don't return it.
-        // We are not returning it, so this is fine - mutating in unsafe code is allowed regardless
-        // of shared references existing.
+    /// # Safety
+    ///
+    /// Once the waker has been used, the signal comes out of the inert state and is not valid to
+    /// drop until it is inert again. You must check `is_inert()` before dropping the signal.
+    pub(crate) unsafe fn waker(self: Pin<&Self>) -> &Waker {
+        // SAFETY: It is fine to create this &mut in unsafe code as long as we don't return it.
         unsafe {
             let maybe_waker: &mut Option<Waker> = &mut *self.waker.get();
 
@@ -96,16 +103,12 @@ impl WakeSignal {
         }
     }
 
-    fn create_waker(self: Pin<&Self>) -> Waker {
+    unsafe fn create_waker(self: Pin<&Self>) -> Waker {
         self.waker_count.fetch_add(1, Ordering::Relaxed);
 
-        // SAFETY: Aliasing rules require that any transformation into a mutably used raw pointer
-        // (which we are - the waker will mutate the signal by awakening it) must be done by
-        // starting from a regular `&mut` exclusive reference. We have that here in `&mut self`.
-        //
-        // We also need to consider lifecycle logic, as the waker may be passed to foreign threads.
-        // See type level comments for info on how we deal with foreign threads dropping wakers at
-        // unspecified moments in time.
+        // SAFETY: The raw pointer is used as an equivalent to a shared reference because all the
+        // mutation happens via atomics, which do not require exclusive references. For lifecycle
+        // considerations, see comment on type.
         unsafe {
             let signal_ptr = Pin::into_inner_unchecked(self) as *const _ as *const ();
             Waker::from_raw(RawWaker::new(signal_ptr, &VTABLE))
@@ -115,7 +118,7 @@ impl WakeSignal {
 
 impl Drop for WakeSignal {
     fn drop(&mut self) {
-        debug_assert!(Pin::new(self as &Self).is_inert());
+        debug_assert!(self.is_inert());
     }
 }
 
@@ -176,9 +179,9 @@ mod tests {
     #[test]
     fn smoke_test() {
         let signal = WakeSignal::new();
-        let signal = Pin::new(&signal);
+        let signal = unsafe { Pin::new_unchecked(&signal) };
 
-        let waker = signal.waker();
+        let waker = unsafe { signal.waker() };
         let waker_clone = waker.clone();
 
         assert_eq!(signal.waker_count.load(Ordering::Relaxed), 2);

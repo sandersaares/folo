@@ -5,10 +5,9 @@ use crate::{
 };
 use negative_impl::negative_impl;
 use std::{
-    cell::RefCell,
+    cell::{RefCell, UnsafeCell},
     fmt,
     mem::{self, ManuallyDrop},
-    ops::DerefMut,
     ptr,
 };
 use tracing::{event, Level};
@@ -17,7 +16,14 @@ use windows::Win32::{
     System::IO::{OVERLAPPED, OVERLAPPED_ENTRY},
 };
 
+// TODO: Try out using proper lifetime bounds once we kick out the data buffer from the block.
+// Today, the data buffer makes the lifetime logic too complicated to be worth it.
+
 /// Maintains the backing storage for I/O blocks and organizes their allocation/release.
+///
+/// The block store uses interior mutability to facilitate block operations from different parts
+/// of a call chain, as blocks may need to be released when errors occur in deeper layers of
+/// processing and it is very cumbersome to thread a `&mut BlockStore` through all the layers.
 ///
 /// # Safety
 ///
@@ -32,7 +38,10 @@ use windows::Win32::{
 /// enough. TODO: Prove it.
 #[derive(Debug)]
 pub(super) struct BlockStore {
-    blocks: RefCell<PinnedSlabChain<Block>>,
+    // The blocks are stored in UnsafeCell because we are doings things like taking a shared
+    // reference from the slab chain and giving it to the operating system to mutate, which would
+    // be invalid Rust without Unsafecell.
+    blocks: RefCell<PinnedSlabChain<UnsafeCell<Block>>>,
 }
 
 impl BlockStore {
@@ -50,16 +59,13 @@ impl BlockStore {
 
         let inserter = blocks.begin_insert();
         let key = inserter.index();
-        let mut block = inserter.insert(Block::new(key));
+        let block = inserter.insert(UnsafeCell::new(Block::new(key)));
 
         PrepareBlock {
-            // SAFETY: We deliberately disconnect from Rust lifetime tracking because the block
-            // is owned by a hybrid lifetime management logic built on the chain of types below
-            // and the operating system for part of its life cycle. We have an implicit exclusive
-            // access here (i.e. using the RefCell via slab.get() or slab.get_mut() would be
-            // unsound after this - once we reach this point, this implicit exclusive reference is
-            // the only one permitted to exist until the block is released).
-            block: unsafe { mem::transmute(block.deref_mut()) },
+            // SAFETY: The block is referenced by exactly one of PrepareBlock, CompleteBlock or the
+            // operating system at any given time, so there is no possibility of multiple exclusive
+            // references being created.
+            block: unsafe { &mut *block.get() },
             control: self.control_node(),
             // We start by assuming each buffer is fully used. If the caller wants to use a subset,
             // they have the opportunity to specify a smaller size via `PrepareBlock::set_length()`.
@@ -84,14 +90,13 @@ impl BlockStore {
         BLOCKS_COMPLETED_ASYNC.with(|x| x.observe_unit());
         BLOCK_COMPLETED_BYTES.with(|x| x.observe(bytes_transferred as f64));
 
-        // Transform the *OVERLAPPED back into a &'static Block.
+        // SAFETY: The block is referenced by exactly one of PrepareBlock, CompleteBlock or the
+        // operating system at any given time, so there is no possibility of multiple exclusive
+        // references being created.
         let block = &mut *(overlapped_entry.lpOverlapped as *mut Block);
 
         CompleteBlock {
-            // SAFETY: We deliberately disconnect from Rust lifetime tracking because the block
-            // is owned by a hybrid lifetime management logic built on the chain of types below
-            // and the operating system for part of its life cycle.
-            block: mem::transmute(block),
+            block,
             control: self.control_node(),
             length: bytes_transferred,
             status,
@@ -104,8 +109,16 @@ impl BlockStore {
     ///
     /// This is for use with synchronous I/O operations that complete immediately, without
     /// triggering a completion notification.
+    ///
+    /// # Safety
+    ///
+    /// The input value must be the OVERLAPPED pointer handed to the callback in
+    /// `PrepareBlock::begin()` earlier, which received a response from the OK saying that the
+    /// operation completed immediately.
     unsafe fn complete_immediately(&self, overlapped: *mut OVERLAPPED) -> CompleteBlock {
-        // Transform the *OVERLAPPED back into a &'static Block.
+        // SAFETY: The block is referenced by exactly one of PrepareBlock, CompleteBlock or the
+        // operating system at any given time, so there is no possibility of multiple exclusive
+        // references being created.
         let block = &mut *(overlapped as *mut Block);
 
         let bytes_transferred = block.immediate_bytes_transferred as usize;
@@ -115,10 +128,7 @@ impl BlockStore {
         BLOCK_COMPLETED_BYTES.with(|x| x.observe(bytes_transferred as f64));
 
         CompleteBlock {
-            // SAFETY: We deliberately disconnect from Rust lifetime tracking because the block
-            // is owned by a hybrid lifetime management logic built on the chain of types below
-            // and the operating system for part of its life cycle.
-            block: mem::transmute(block),
+            block,
             control: self.control_node(),
             length: bytes_transferred,
             status: STATUS_SUCCESS,
@@ -133,8 +143,9 @@ impl BlockStore {
 
     fn control_node(&self) -> ControlNode {
         ControlNode {
-            // SAFETY: We deliberately disconnect from Rust lifetime tracking because we create
-            // a circular reference. See type-level safety comments to understand safe handling.
+            // SAFETY: We pretend that the BlockStore is 'static to avoid overcomplex lifetime
+            // annotations. This is embedded into Blocks, which anyway require us to keep the
+            // block store alive for the duration of their life, so it does not raise expectations.
             store: unsafe { mem::transmute(self) },
         }
     }
@@ -148,9 +159,8 @@ type BlockKey = usize;
 #[derive(Clone, Debug)]
 #[repr(transparent)]
 struct ControlNode {
-    // SAFETY: This is not actually a 'static reference - we rely on the fact that all ControlNodes
-    // are inside blocks owned by the very same BlockStore we reference here. The only way to reach
-    // an invalid BlockStore via this is if something already reached an invalid Block/ControlNode.
+    /// This is not really 'static but we pretend it is to avoid overcomplex lifetime annotations.
+    /// TODO: Try using real lifetimes once we get rid of the data buffer inside Block.
     store: &'static BlockStore,
 }
 
@@ -164,8 +174,12 @@ impl ControlNode {
     }
 }
 
-// Rust... puts the slab chunks on the stack?! Before putting them in memory. What? Well, it does.
-// That means if you make a large block, you will overflow the stack before it gets copied to heap.
+// Just being careful here because we have a 'static reference in there which is very "loose".
+#[negative_impl]
+impl !Send for ControlNode {}
+#[negative_impl]
+impl !Sync for ControlNode {}
+
 const BLOCK_SIZE_BYTES: usize = 64 * 1024;
 
 /// An I/O block contains the data structures required to communicate with the operating system
@@ -207,6 +221,9 @@ struct Block {
     /// Value is cleared when consumed, to make it obvious if any accidental reuse occurs.
     result_tx: Option<oneshot::Sender<io::Result<CompleteBlock>>>,
     result_rx: Option<oneshot::Receiver<io::Result<CompleteBlock>>>,
+
+    // Once pinned, this type cannot be unpinned.
+    _phantom_pin: std::marker::PhantomPinned,
 }
 
 impl Block {
@@ -220,6 +237,7 @@ impl Block {
             immediate_bytes_transferred: 0,
             result_tx: Some(result_tx),
             result_rx: Some(result_rx),
+            _phantom_pin: std::marker::PhantomPinned,
         }
     }
 }
@@ -249,11 +267,10 @@ impl !Sync for Block {}
 
 #[derive(Debug)]
 pub(crate) struct PrepareBlock {
-    // SAFETY: We do not participate in the Rust lifetime tracking system with Block/BlockStore.
-    // The chain of allocate() -> PrepareBlock -> SealedBlock -> CompleteBlock -> release() is
-    // what ensures that references are cleaned up properly, while lifetime tracking relies partly
-    // on unsafe code as we hand over references to the operating system and lose track of them.
-    // In other words, this is not a 'static reference but we pretend it is to avoid lifetimes.
+    // You can either have a PrepareBlock or a CompleteBlock or neither (when the OS owns it),
+    // but not both, so we never have multiple exclusive references to the underlying Block.
+    // This is not really 'static, we just pretend it is to avoid overcomplex lifetime annotations.
+    /// TODO: Try using real lifetimes once we get rid of the data buffer inside Block.
     block: &'static mut Block,
 
     control: ControlNode,
@@ -380,11 +397,10 @@ impl Drop for PrepareBlock {
 
 #[derive(Debug)]
 pub(crate) struct CompleteBlock {
-    // SAFETY: We do not participate in the Rust lifetime tracking system with Block/BlockStore.
-    // The chain of allocate() -> PrepareBlock -> SealedBlock -> CompleteBlock -> release() is
-    // what ensures that references are cleaned up properly, while lifetime tracking relies partly
-    // on unsafe code as we hand over references to the operating system and lose track of them.
-    // In other words, this is not a 'static reference but we pretend it is to avoid lifetimes.
+    // You can either have a PrepareBlock or a CompleteBlock or neither (when the OS owns it),
+    // but not both, so we never have multiple exclusive references to the underlying Block.
+    // This is not really 'static, we just pretend it is to avoid overcomplex lifetime annotations.
+    /// TODO: Try using real lifetimes once we get rid of the data buffer inside Block.
     block: &'static mut Block,
 
     control: ControlNode,

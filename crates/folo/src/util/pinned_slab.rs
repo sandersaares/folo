@@ -1,10 +1,14 @@
 use core::panic;
 use std::alloc::{alloc, dealloc, Layout};
-use std::cell::{Ref, RefCell, RefMut};
 use std::mem::{self, MaybeUninit};
+use std::pin::Pin;
 
 /// A pinned fixed-size heap-allocated slab of values. Works similar to a Vec
 /// but pinned and with a fixed size, operating using an index for lookup.
+///
+/// Mutation of items is possible but be aware that taking an exclusive `&mut` reference to an item
+/// via `get_mut()` will exclusively borrow the slab itself. If you wish to preserve an exclusive
+/// reference for a longer duration, you must use interior mutability in your items.
 #[derive(Debug)]
 pub struct PinnedSlab<T, const COUNT: usize> {
     ptr: *mut Entry<T>,
@@ -16,16 +20,9 @@ pub struct PinnedSlab<T, const COUNT: usize> {
 }
 
 enum Entry<T> {
-    /// We use a RefCell here to disconnect the lifetime of the references we return from the
-    /// lifetime of the slab itself (returning an exclusive reference to an item does not imply
-    /// that the slab itself is borrowed exclusively).
-    Occupied {
-        value: RefCell<T>,
-    },
+    Occupied { value: T },
 
-    Vacant {
-        next_free_index: usize,
-    },
+    Vacant { next_free_index: usize },
 }
 
 impl<T, const COUNT: usize> PinnedSlab<T, COUNT> {
@@ -59,7 +56,7 @@ impl<T, const COUNT: usize> PinnedSlab<T, COUNT> {
         self.next_free_index >= COUNT
     }
 
-    pub fn get<'v>(&self, index: usize) -> Ref<'v, T> {
+    pub fn get(&self, index: usize) -> Pin<&T> {
         assert!(index < COUNT, "get({index}) index out of bounds");
 
         // SAFETY: We did a bounds check and ensured in the ctor that every entry is initialized.
@@ -69,12 +66,13 @@ impl<T, const COUNT: usize> PinnedSlab<T, COUNT> {
                 .as_ref()
                 .expect("we expect the resulting pointer to always be valid")
         } {
-            Entry::Occupied { value } => value.borrow(),
+            // SAFETY: Items are always pinned - that is the point of this collection.
+            Entry::Occupied { value } => unsafe { Pin::new_unchecked(value) },
             Entry::Vacant { .. } => panic!("get({index}) entry was vacant"),
         }
     }
 
-    pub fn get_mut<'v>(&mut self, index: usize) -> RefMut<'v, T> {
+    pub fn get_mut(&mut self, index: usize) -> Pin<&mut T> {
         assert!(index < COUNT, "index {index} out of bounds");
 
         // SAFETY: We did a bounds check and ensured in the ctor that every entry is initialized.
@@ -84,7 +82,8 @@ impl<T, const COUNT: usize> PinnedSlab<T, COUNT> {
                 .as_mut()
                 .expect("we expect the resulting pointer to always be valid")
         } {
-            Entry::Occupied { ref mut value } => value.borrow_mut(),
+            // SAFETY: Items are always pinned - that is the point of this collection.
+            Entry::Occupied { ref mut value } => unsafe { Pin::new_unchecked(value) },
             Entry::Vacant { .. } => panic!("get_mut({index}) entry was vacant"),
         }
     }
@@ -93,6 +92,7 @@ impl<T, const COUNT: usize> PinnedSlab<T, COUNT> {
     where
         's: 'i,
     {
+        #[cfg(test)]
         self.integrity_check();
 
         assert!(!self.is_full(), "cannot insert into a full slab");
@@ -143,6 +143,7 @@ impl<T, const COUNT: usize> PinnedSlab<T, COUNT> {
         self.next_free_index = index;
     }
 
+    #[cfg(test)]
     pub fn integrity_check(&self) {
         let mut observed_is_vacant: [Option<bool>; COUNT] = [None; COUNT];
         let mut observed_next_free_index: [Option<usize>; COUNT] = [None; COUNT];
@@ -229,7 +230,10 @@ impl<'s, T, const COUNT: usize> PinnedSlabInserter<'s, T, COUNT> {
         self.index
     }
 
-    pub fn insert<'v>(self, value: T) -> RefMut<'v, T> {
+    pub fn insert<'v>(self, value: T) -> Pin<&'v T>
+    where
+        's: 'v,
+    {
         // SAFETY: We did a bounds check and ensured in the ctor that every entry is initialized.
         let slot = unsafe {
             self.slab
@@ -239,12 +243,7 @@ impl<'s, T, const COUNT: usize> PinnedSlabInserter<'s, T, COUNT> {
                 .expect("we expect the resulting pointer to always be valid")
         };
 
-        let previous_entry = mem::replace(
-            slot,
-            Entry::Occupied {
-                value: RefCell::new(value),
-            },
-        );
+        let previous_entry = mem::replace(slot, Entry::Occupied { value });
 
         self.slab.next_free_index = match previous_entry {
             Entry::Vacant { next_free_index } => next_free_index,
@@ -255,7 +254,8 @@ impl<'s, T, const COUNT: usize> PinnedSlabInserter<'s, T, COUNT> {
         };
 
         match slot {
-            Entry::Occupied { value } => value.borrow_mut(),
+            // SAFETY: Items are always pinned - that is the point of this collection.
+            Entry::Occupied { value } => unsafe { Pin::new_unchecked(value) },
             Entry::Vacant { .. } => panic!(
                 "entry {} was not occupied after we inserted into it",
                 self.index
@@ -267,6 +267,7 @@ impl<'s, T, const COUNT: usize> PinnedSlabInserter<'s, T, COUNT> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
 
     #[test]
     fn smoke_test() {

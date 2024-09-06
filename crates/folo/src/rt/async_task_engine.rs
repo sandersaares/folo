@@ -3,6 +3,7 @@ use crate::{
     util::PinnedSlabChain,
 };
 use negative_impl::negative_impl;
+use pin_project::pin_project;
 use std::{
     cell::RefCell,
     collections::VecDeque,
@@ -11,7 +12,7 @@ use std::{
     task,
 };
 
-type Key = usize;
+type TaskKey = usize;
 
 /// The engine incrementally executes async tasks on a single thread when polled. It is not active
 /// on its own and requires an external actor to poll it to make progress.
@@ -21,7 +22,7 @@ pub struct AsyncTaskEngine {
     tasks: PinnedSlabChain<Task>,
 
     // The active set contains all the tasks we want to poll. This is where all futures start.
-    active: VecDeque<Key>,
+    active: VecDeque<TaskKey>,
 
     // The inactive set contains all the tasks that are sleeping. We will move them back to the
     // active set after a waker notifies us that a future needs to wake up. Note that the wakeup
@@ -29,11 +30,17 @@ pub struct AsyncTaskEngine {
     // of the inactive set immediately before polling it, and be ready to move it back to the active
     // set during/after the poll if a waker is signaled during a poll. Also implies engine is not'
     // locked during a poll, so new activity can occur (not only wakes but also new tasks being added).
-    inactive: VecDeque<Key>,
+    inactive: VecDeque<TaskKey>,
 
     // These tasks have completed and we are waiting for the wake signals to become inert before we
     // can remove them from the slab.
-    completed: VecDeque<Key>,
+    //
+    // TODO: Well what if the wakers never wake up? There could be a "task deadlock" between two
+    // threads, couldn't there? Or the waker is for something that happens 2 hours from now, or
+    // even never because task processing has stopped? Well, dropping the tasks would presumably
+    // help but we cannot drop tasks until their wakers are inert! Ah but can we hollow out the
+    // tasks and just drop the erased task and any captured state (==wakers) that it holds?
+    completed: VecDeque<TaskKey>,
 }
 
 impl AsyncTaskEngine {
@@ -61,8 +68,8 @@ impl AsyncTaskEngine {
     }
 
     pub fn execute_cycle(&mut self) -> CycleResult {
-        // If we have no activity in the cycle, we indicate that we should suspend.
-        // In the future we should refactor this to a more direct signaling system.
+        // If we have no activity in the cycle, we indicate that the caller does not need to
+        // immediately call us again and may suspend until it has a reason to call us again.
         let mut had_activity = false;
 
         // There may be tasks that just prior woke up due to I/O activity, so go through the tasks
@@ -74,10 +81,9 @@ impl AsyncTaskEngine {
         while let Some(key) = self.active.pop_front() {
             had_activity = true;
 
-            let task = self.tasks.get_mut(key);
+            let task = self.tasks.get(key);
 
-            // SAFETY: Requires `&self` to be pinned, which we guarantee by always keeping the task
-            // pinned in the slab.
+            // SAFETY: TODO - how do we ensure we keep the task alive until the waker is inert?
             match unsafe { task.poll() } {
                 task::Poll::Ready(()) => {
                     self.completed.push_back(key);
@@ -97,6 +103,9 @@ impl AsyncTaskEngine {
 
         self.drop_completed_tasks();
 
+        #[cfg(test)]
+        self.tasks.integrity_check();
+
         if had_activity {
             CycleResult::Continue
         } else {
@@ -113,10 +122,9 @@ impl AsyncTaskEngine {
         while index < self.inactive.len() {
             let key = &self.inactive[index];
 
-            let task = self.tasks.get_mut(*key);
+            let task = self.tasks.get(*key);
 
-            // TODO: This Pin should ideally move upstream to the slab chain. Does the API allow us?
-            if Pin::new(&task.wake_signal).consume_awakened() {
+            if task.wake_signal.consume_awakened() {
                 had_activity = true;
 
                 let key = self
@@ -135,12 +143,9 @@ impl AsyncTaskEngine {
 
     fn drop_completed_tasks(&mut self) {
         self.completed.retain(|key| {
-            // SAFETY: This is marked unsafe because it returns a plain reference to a pinned value.
-            // As long as we still treat it as pinned (we do), all is well.
-            let task = self.tasks.get_mut(*key);
+            let task = self.tasks.get(*key);
 
-            // TODO: This Pin should ideally move upstream to the slab chain. Does the API allow us?
-            let is_inert = Pin::new(&task.wake_signal).is_inert();
+            let is_inert = task.wake_signal.is_inert();
 
             if is_inert {
                 self.tasks.remove(*key);
@@ -173,8 +178,11 @@ pub enum CycleResult {
     Suspend,
 }
 
+#[pin_project]
 struct Task {
     erased_task: RefCell<LocalErasedTask>,
+
+    #[pin]
     wake_signal: WakeSignal,
 }
 
@@ -188,15 +196,15 @@ impl Task {
 
     /// # Safety
     ///
-    /// Requires `&self` to be pinned.
-    unsafe fn poll(&self) -> task::Poll<()> {
-        // TODO: This Pin should ideally move upstream to the slab chain. Does the API allow us?
-        let waker = Pin::new(&self.wake_signal).waker();
+    /// Once you call this, the task must not be dropped until the wake signal indicates that it
+    /// has become inert.
+    unsafe fn poll(self: Pin<&Self>) -> task::Poll<()> {
+        let waker = self.project_ref().wake_signal.waker();
 
         let mut context = task::Context::from_waker(waker);
 
-        // SAFETY: We are only mut-borrowing in poll() which is only called by the current thread
-        // and never recursively.
+        // We are only accessing the erased task in poll() which is only called by the current
+        // thread and never recursively, so we are not at risk of conflicting borrows.
         self.erased_task.borrow_mut().as_mut().poll(&mut context)
     }
 }
