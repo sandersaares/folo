@@ -195,10 +195,19 @@ fn runtime_stops_with_external_dependency() {
     assert!(nexus.has_waker());
 
     folo.stop();
-    folo.wait();
 
-    // Now this should not break anything.
+    // The Folo runtime will keep running in shutdown mode until we call `nexus.complete()` because
+    // the nexus task is holding the last waker. Give it a moment to make any mistakes and corrupt
+    // any state before we allow it to complete.
+
+    thread::sleep(Duration::from_millis(10));
+
+    assert!(!folo.is_stopped());
+
+    // Allow it to complete the shutdown.
     nexus.complete();
+
+    folo.wait();
 }
 
 /// A future that progresses or completes (and wakes up the last poller) when manually commanded.
@@ -224,14 +233,6 @@ impl ManualFuture {
     fn has_waker(&self) -> bool {
         let state = self.state.lock().unwrap();
         state.waker.is_some()
-    }
-
-    fn wake(&self) {
-        let mut state = self.state.lock().unwrap();
-
-        if let Some(waker) = state.waker.take() {
-            waker.wake();
-        }
     }
 
     fn complete(&self) {

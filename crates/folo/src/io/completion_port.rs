@@ -70,7 +70,7 @@ impl CompletionPort {
             )?;
         }
 
-        PRIMITIVES_BOUND.with(|x| x.observe_unit());
+        PRIMITIVES_BOUND.with(Event::observe_unit);
 
         Ok(())
     }

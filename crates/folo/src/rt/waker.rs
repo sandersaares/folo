@@ -42,14 +42,14 @@ pub(crate) struct WakeSignal {
     /// This seems independent from any other memory operations, so we use Relaxed ordering.
     waker_count: AtomicUsize,
 
-    // Release ordering when setting, acquire ordering when consuming - we are passing a flag
-    // and expect memory writes before passing the flag to be synchronized.
+    /// Release ordering when setting, acquire ordering when consuming - we are passing a flag
+    /// and expect memory writes before passing the flag to be synchronized.
     awakened: AtomicBool,
 
-    // The real waker that we construct on first use. We hand out references to this.
-    // This is self-referential and we need to initialize it lazily once we are pinned.
-    // Potentially there may be a way to not use UnsafeCell here but I could not convince the
-    // borrow checker that I was not doing anything wrong without it.
+    /// The real waker that we construct on first use. We hand out references to this.
+    /// This is self-referential and we need to initialize it lazily once we are pinned.
+    /// Potentially there may be a way to not use UnsafeCell here but I could not convince the
+    /// borrow checker that I was not doing anything wrong without it.
     waker: UnsafeCell<Option<Waker>>,
 
     // This type cannot be unpinned once it has been pinned (latest when calling `waker()`).

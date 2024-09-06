@@ -9,7 +9,7 @@ use crate::{
 };
 use std::{
     any::type_name,
-    cell::RefCell,
+    cell::{Cell, RefCell},
     collections::VecDeque,
     fmt::{self, Debug, Formatter},
     future::Future,
@@ -19,6 +19,20 @@ use tracing::{event, Level};
 
 /// Coordinates the operations of the Folo runtime on a single thread. There may be different
 /// types of agents assigned to different threads (e.g. async worker versus sync worker).
+///
+/// An agent has multiple lifecycle stages:
+/// 1. Starting up - the agent is interacting with the runtime builder to set up the mutual state
+///    and communication channels so all the pieces can oprerate together.
+/// 2. Running - the agent is executing tasks and processing commands from other threads.
+/// 3. Shutting down - the agent is cleaning up and preparing to terminate.
+///
+/// The shutdown process is not exposed to user code for the most part - after each worker thread
+/// receives the shutdown command, it acknowledges it, after which the public API of the runtime
+/// becomes inactive (it is no longer possible to schedule new tasks, etc) but the worker threads
+/// themselves may still continue operating in the background to finish up any pending cleanup.
+/// This takes place independently on each task - there is no "runtime" anymore and the worker
+/// threads are disconnected from each other by this point, though the runtime client can still
+/// be used to wait for them to complete.
 pub struct Agent {
     command_rx: mpsc::Receiver<AgentCommand>,
     metrics_tx: Option<mpsc::Sender<ReportPage>>,
@@ -31,6 +45,10 @@ pub struct Agent {
     // Includes both locally queued tasks and tasks enqueued from another thread, which are both
     // unified to the `LocalErasedTask` type.
     new_tasks: RefCell<VecDeque<LocalErasedTask>>,
+
+    // If we are shutting down, we ignore all requests to schedule new tasks and do our best to
+    // cleanup ASAP.
+    shutting_down: Cell<bool>,
 }
 
 // TODO: This RefCell business is ugly, can we do better?
@@ -51,6 +69,7 @@ impl Agent {
             engine: RefCell::new(AsyncTaskEngine::new()),
             io: RefCell::new(io::Driver::new()),
             new_tasks: RefCell::new(VecDeque::new()),
+            shutting_down: Cell::new(false),
         }
     }
 
@@ -70,15 +89,23 @@ impl Agent {
         R: 'static,
     {
         let future_type = type_name::<F>();
-        event!(Level::TRACE, message = "Agent::spawn", future_type);
 
-        LOCAL_TASKS.with(|x| x.observe_unit());
+        LOCAL_TASKS.with(Event::observe_unit);
 
         let task = LocalTask::new(future);
         let join_handle = task.join_handle();
 
-        self.new_tasks.borrow_mut().push_back(Box::pin(task));
+        if self.shutting_down.get() {
+            event!(
+                Level::DEBUG,
+                message = "already shutting down, enqueued task will never complete",
+                future_type
+            );
+            return join_handle;
+        }
 
+        event!(Level::TRACE, future_type);
+        self.new_tasks.borrow_mut().push_back(Box::pin(task));
         join_handle
     }
 
@@ -115,7 +142,7 @@ impl Agent {
         // doing nothing when another thread gives us a new task. This is accomplished by signaling
         // the I/O driver - "new task was added" is treated as an I/O completion event, which wakes
         // us up.
-        //
+
         // If we have any reason to believe that we have non-I/O work to do, we set this to false,
         // which only dequeues already existing I/O completions and does not wait for new ones.
         let mut allow_io_sleep = false;
@@ -130,16 +157,30 @@ impl Agent {
                     // No commands received - we have no information saying we have non-I/O work to do.
                 }
                 ProcessCommandsResult::Terminate => {
-                    break;
+                    // This *starts* our shutdown - we still need to wait for the async task
+                    // engine to clean up.
+                    event!(
+                        Level::TRACE,
+                        "received terminate command; shutdown process starting"
+                    );
+
+                    // If some new tasks are queued, dump them - all cancelled.
+                    self.new_tasks.borrow_mut().clear();
+
+                    // Start cleaning up the async task engine. This may require some time if there
+                    // are foreign threads holding our wakers. We wait for all wakers to be dropped.
+                    self.engine.borrow_mut().begin_shutdown();
+
+                    // TODO: Shutdown I/O driver and anything else relevant as well.
                 }
             }
 
             let io_wait_time_ms = if allow_io_sleep {
-                CYCLES_WITH_SLEEP.with(|x| x.observe_unit());
+                CYCLES_WITH_SLEEP.with(Event::observe_unit);
 
                 CROSS_THREAD_WORK_POLL_INTERVAL_MS
             } else {
-                CYCLES_WITHOUT_SLEEP.with(|x| x.observe_unit());
+                CYCLES_WITHOUT_SLEEP.with(Event::observe_unit);
 
                 0
             };
@@ -162,10 +203,14 @@ impl Agent {
                     // The async task engine had nothing to do, so it thinks we can sleep now. OK.
                     allow_io_sleep = true;
                 }
+                CycleResult::Shutdown => {
+                    // The async task engine has finished shutting down, so we can now exit.
+                    break;
+                }
             };
         }
 
-        event!(Level::TRACE, "Terminating");
+        event!(Level::TRACE, "shutdown completed");
 
         if let Some(tx) = &self.metrics_tx {
             _ = tx.send(metrics::report_page());
@@ -179,7 +224,7 @@ impl Agent {
             match self.command_rx.try_recv() {
                 Ok(AgentCommand::EnqueueTask { erased_task }) => {
                     received_commands = true;
-                    REMOTE_TASKS.with(|x| x.observe_unit());
+                    REMOTE_TASKS.with(Event::observe_unit);
                     self.new_tasks.borrow_mut().push_back(erased_task);
                 }
                 Ok(AgentCommand::Terminate) => {

@@ -53,7 +53,7 @@ impl BlockStore {
 
     /// Allocates a new block for I/O operations.
     pub fn allocate(&self) -> PrepareBlock {
-        BLOCKS_ALLOCATED.with(|x| x.observe_unit());
+        BLOCKS_ALLOCATED.with(Event::observe_unit);
 
         let mut blocks = self.blocks.borrow_mut();
 
@@ -87,7 +87,7 @@ impl BlockStore {
         let bytes_transferred = overlapped_entry.dwNumberOfBytesTransferred as usize;
         let status = NTSTATUS(overlapped_entry.Internal as i32);
 
-        BLOCKS_COMPLETED_ASYNC.with(|x| x.observe_unit());
+        BLOCKS_COMPLETED_ASYNC.with(Event::observe_unit);
         BLOCK_COMPLETED_BYTES.with(|x| x.observe(bytes_transferred as f64));
 
         // SAFETY: The block is referenced by exactly one of PrepareBlock, CompleteBlock or the
@@ -124,7 +124,7 @@ impl BlockStore {
         let bytes_transferred = block.immediate_bytes_transferred as usize;
         assert!(bytes_transferred <= block.buffer.len());
 
-        BLOCKS_COMPLETED_SYNC.with(|x| x.observe_unit());
+        BLOCKS_COMPLETED_SYNC.with(Event::observe_unit);
         BLOCK_COMPLETED_BYTES.with(|x| x.observe(bytes_transferred as f64));
 
         CompleteBlock {

@@ -1,4 +1,5 @@
 use crate::{
+    metrics::{Event, EventBuilder},
     rt::{waker::WakeSignal, LocalErasedTask},
     util::PinnedSlabChain,
 };
@@ -8,6 +9,7 @@ use std::{
     cell::RefCell,
     collections::VecDeque,
     fmt::{self, Debug, Formatter},
+    future,
     pin::Pin,
     task,
 };
@@ -16,9 +18,30 @@ type TaskKey = usize;
 
 /// The engine incrementally executes async tasks on a single thread when polled. It is not active
 /// on its own and requires an external actor to poll it to make progress.
+///
+/// # Shutdown
+///
+/// The engine must be shut down by the caller before being dropped or it will panic in drop().
+///
+/// A critical component of the shutdown process is the safe destruction of the wakers, some of
+/// which may still be held by foreign threads or arbitrary entities outside the Folo runtime who
+/// have chosen to poll the tasks we manage. We cannot control when these wakers are dropped, so
+/// we must keep alive the data structures until all wakers have become inert.
+///
+/// This means the shutdown process is divided into two phases:
+///
+/// 1. We stop processing work and drop any state that we can drop (e.g. we drop futures that we
+///    will never poll again, so any data they reference gets dropped ASAP).
+/// 2. We wait for all wakers to become inert, after which we drop the data structures required
+///    by the wakers (which is hopefully a small subset).
+///
+/// The second phase happens in the background - publicly the Folo runtime is considered shut down
+/// already when the first phase completes. The second phase is merely a delayed memory release
+/// while the worker thread sticks around to clean up after itself and should have no functional
+/// side-effects.
 #[derive(Debug)]
 pub struct AsyncTaskEngine {
-    // We use a pinned slab here to allocate the tasks in-place and avoid a layer of Arc-indirection.
+    // We use a pinned slab here to allocate the tasks in-place and avoid allocation churn.
     tasks: PinnedSlabChain<Task>,
 
     // The active set contains all the tasks we want to poll. This is where all futures start.
@@ -33,14 +56,14 @@ pub struct AsyncTaskEngine {
     inactive: VecDeque<TaskKey>,
 
     // These tasks have completed and we are waiting for the wake signals to become inert before we
-    // can remove them from the slab.
-    //
-    // TODO: Well what if the wakers never wake up? There could be a "task deadlock" between two
-    // threads, couldn't there? Or the waker is for something that happens 2 hours from now, or
-    // even never because task processing has stopped? Well, dropping the tasks would presumably
-    // help but we cannot drop tasks until their wakers are inert! Ah but can we hollow out the
-    // tasks and just drop the erased task and any captured state (==wakers) that it holds?
+    // can remove them from the slab. During engine execution, we regularly perform this cleanup,
+    // although we do not bother with it in the shutdown phase because we will drop the whole
+    // container at the end anyway.
     completed: VecDeque<TaskKey>,
+
+    // In shutdown mode, all tasks are considered completed and the only thing we do is wait for
+    // wakers to become inert (which may be driven by uncontrollable actions of foreign threads).
+    shutting_down: bool,
 }
 
 impl AsyncTaskEngine {
@@ -50,6 +73,7 @@ impl AsyncTaskEngine {
             active: VecDeque::new(),
             inactive: VecDeque::new(),
             completed: VecDeque::new(),
+            shutting_down: false,
         }
     }
 
@@ -57,9 +81,16 @@ impl AsyncTaskEngine {
     /// will be made available by the async task engine - it is expected that some other mechanism
     /// is used to observe the result.
     pub fn enqueue_erased(&mut self, erased_task: LocalErasedTask) {
+        // It is possible due to the eventually consistent nature between worker commands that a
+        // worker will receive a new task after shutdown has already begun. We expect the worker
+        // to perform the necessary filtering to prevent that from ever reaching the task engine.
+        assert!(
+            !self.shutting_down,
+            "cannot enqueue tasks after shutdown has begun"
+        );
+
         let task = Task::new(erased_task);
 
-        // We just have a normal `&` to it, but the task is now pinned.
         let inserter = self.tasks.begin_insert();
         let key = inserter.index();
         inserter.insert(task);
@@ -83,12 +114,18 @@ impl AsyncTaskEngine {
 
             let task = self.tasks.get(key);
 
-            // SAFETY: TODO - how do we ensure we keep the task alive until the waker is inert?
+            TASK_POLLED.with(Event::observe_unit);
+
+            // SAFETY: After this, we are required to keep the task alive until the wakers are all
+            // inert. We do this in the async task agent by keeping the thread alive until all
+            // wakers have become inert.
             match unsafe { task.poll() } {
                 task::Poll::Ready(()) => {
+                    TASKS_COMPLETED.with(Event::observe_unit);
                     self.completed.push_back(key);
                 }
                 task::Poll::Pending => {
+                    TASK_INACTIVATED.with(Event::observe_unit);
                     self.inactive.push_back(key);
                 }
             }
@@ -106,7 +143,11 @@ impl AsyncTaskEngine {
         #[cfg(test)]
         self.tasks.integrity_check();
 
-        if had_activity {
+        if self.shutting_down && self.completed.is_empty() {
+            // Shutdown is finished if all completed tasks (== all tasks) have been removed from the
+            // completed list after their wakers became inert.
+            CycleResult::Shutdown
+        } else if had_activity {
             CycleResult::Continue
         } else {
             CycleResult::Suspend
@@ -126,6 +167,8 @@ impl AsyncTaskEngine {
 
             if task.wake_signal.consume_awakened() {
                 had_activity = true;
+
+                TASK_ACTIVATED.with(Event::observe_unit);
 
                 let key = self
                     .inactive
@@ -148,11 +191,40 @@ impl AsyncTaskEngine {
             let is_inert = task.wake_signal.is_inert();
 
             if is_inert {
+                TASKS_DROPPED.with(Event::observe_unit);
                 self.tasks.remove(*key);
             }
 
             !is_inert
         });
+    }
+
+    /// Enters shutdown mode. No new tasks can be enqueued and all existing tasks are considered
+    /// completed. We will only wait for wakers to become inert, no other activity will occur now.
+    pub fn begin_shutdown(&mut self) {
+        assert!(
+            !self.shutting_down,
+            "begin_shutdown() called twice on the same engine"
+        );
+
+        self.shutting_down = true;
+
+        // All tasks are considered completed - we never poll them again.
+        TASKS_CANCELED_ON_SHUTDOWN
+            .with(|x| x.observe((self.active.len() + self.inactive.len()) as f64));
+
+        self.completed.append(&mut self.active);
+        self.completed.append(&mut self.inactive);
+
+        // We drop the futures that are not yet completed. This eager cleanup is critical because
+        // these futures themselves may hold some of the wakers we want to make inert, creating a
+        // reference cycle. We must drop all futures (on all worker threads) to break the cycles.
+        // We implement this by replacing all the futures with an already-completed future (to
+        // avoid having to check for "empty" tasks on every iteration).
+        for key in &self.completed {
+            let task = self.tasks.get(*key);
+            _ = task.erased_task.replace(Box::pin(future::ready(())));
+        }
     }
 }
 
@@ -176,6 +248,9 @@ pub enum CycleResult {
     /// The cycle completed without performing any work - we should suspend until there is reason
     /// to suspect additional work has arrived (e.g. new tasks enqueued or on IO completions).
     Suspend,
+
+    /// The engine has completed shutdown and is ready to be dropped.
+    Shutdown,
 }
 
 #[pin_project]
@@ -215,4 +290,36 @@ impl Debug for Task {
             .field("wake_signal", &self.wake_signal)
             .finish()
     }
+}
+
+thread_local! {
+    static TASKS_CANCELED_ON_SHUTDOWN: Event = EventBuilder::new()
+        .name("rt_tasks_canceled_on_shutdown")
+        .build()
+        .unwrap();
+
+    static TASK_POLLED: Event = EventBuilder::new()
+        .name("rt_task_polled")
+        .build()
+        .unwrap();
+
+    static TASK_ACTIVATED: Event = EventBuilder::new()
+        .name("rt_task_activated")
+        .build()
+        .unwrap();
+
+    static TASK_INACTIVATED: Event = EventBuilder::new()
+        .name("rt_task_inactivated")
+        .build()
+        .unwrap();
+
+    static TASKS_COMPLETED: Event = EventBuilder::new()
+        .name("rt_tasks_completed")
+        .build()
+        .unwrap();
+
+    static TASKS_DROPPED: Event = EventBuilder::new()
+        .name("rt_tasks_dropped")
+        .build()
+        .unwrap();
 }

@@ -84,9 +84,9 @@ impl Driver {
                 // Timeout just means there was nothing to do - no I/O operations completed.
                 Err(e) if e.code() == HRESULT::from_win32(WAIT_TIMEOUT.0) => {
                     if max_wait_time_ms == 0 {
-                        POLL_TIMEOUTS.with(|x| x.observe_unit());
+                        POLL_TIMEOUTS.with(Event::observe_unit);
                     } else {
-                        WAIT_TIMEOUTS.with(|x| x.observe_unit());
+                        WAIT_TIMEOUTS.with(Event::observe_unit);
                     }
 
                     return;

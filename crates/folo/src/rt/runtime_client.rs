@@ -1,7 +1,5 @@
 use crate::constants;
-use crate::rt::{
-    agent::AgentCommand, runtime::Runtime, remote_task::RemoteTask, RemoteJoinHandle,
-};
+use crate::rt::{agent::AgentCommand, remote_task::RemoteTask, runtime::Runtime, RemoteJoinHandle};
 use std::{cell::Cell, future::Future, sync::Mutex, thread};
 
 /// The multithreaded entry point for the Folo runtime, used for operations that affect more than
@@ -69,8 +67,32 @@ impl RuntimeClient {
         }
     }
 
+    /// Returns `true` if the runtime has stopped (i.e. calling `wait()` would not block).
+    ///
+    /// # Panics
+    ///
+    /// If called after `wait()`.
+    pub fn is_stopped(&self) -> bool {
+        let runtime = self.runtime.lock().expect(constants::POISONED_LOCK);
+
+        for join_handle in runtime
+            .agent_join_handles
+            .as_ref()
+            .expect("wait() has already been called - cannot access runtime state any more")
+        {
+            if !join_handle.is_finished() {
+                return false;
+            }
+        }
+
+        true
+    }
+
     /// Waits for the runtime to stop. Blocks the thread until all runtime owned threads have
     /// terminated in response to a call to `stop()`. This can only be called once.
+    ///
+    /// If tasks on this runtime started external calls (e.g. awaited a future driven by a different
+    /// runtime for interop purposes) then this will block until those external calls complete.
     ///
     /// # Panics
     ///
