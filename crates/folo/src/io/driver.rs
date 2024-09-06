@@ -12,6 +12,8 @@ use windows::{
 };
 use windows_result::HRESULT;
 
+use super::Buffer;
+
 /// Processes I/O completion operations for a given thread as part of the async worker loop.
 #[derive(Debug)]
 pub(crate) struct Driver {
@@ -37,16 +39,14 @@ impl Driver {
     /// Starts preparing for a new I/O operation on some primitive bound to this driver.
     /// The typical workflow is:
     ///
-    /// 1. Call `operation()` to start the preparations. You will get a `PrepareBlock` to declare
-    ///    your intentions (e.g. set the offset, fill a buffer, set the buffer length)
+    /// 1. Call `operation()` and pass it a buffer to start the preparations to operate on the
+    ///    buffer. You will get a `PrepareBlock` to configure the operation (e.g. set the offset).
     /// 1. Call `PrepareBlock::begin()` to start the operation once all preparation is complete.
     ///    You will need to provide a callback in which you provider the buffer + metadata object
     ///    to the native I/O function of an I/O primitive bound to this driver.
     /// 1. Await the result of `begin()`.
-    ///
-    /// Resources (including buffers) are automatically managed by the driver.
-    pub(crate) fn operation(&mut self) -> PrepareBlock {
-        self.block_store.allocate()
+    pub(crate) fn operation<'a, 'b>(&'a mut self, buffer: Buffer<'b>) -> PrepareBlock<'b> {
+        self.block_store.allocate(buffer)
     }
 
     /// Obtains a waker that can be used to wake up the I/O driver from another thread when it

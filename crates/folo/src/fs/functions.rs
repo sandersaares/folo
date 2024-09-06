@@ -6,7 +6,8 @@ use windows::{
     Win32::{
         Foundation::{HANDLE, STATUS_END_OF_FILE},
         Storage::FileSystem::{
-            CreateFileA, GetFileSizeEx, ReadFile, FILE_FLAG_OVERLAPPED, FILE_FLAG_SEQUENTIAL_SCAN, FILE_GENERIC_READ, FILE_SHARE_READ, OPEN_EXISTING
+            CreateFileA, GetFileSizeEx, ReadFile, FILE_FLAG_OVERLAPPED, FILE_FLAG_SEQUENTIAL_SCAN,
+            FILE_GENERIC_READ, FILE_SHARE_READ, OPEN_EXISTING,
         },
     },
 };
@@ -76,11 +77,13 @@ async fn read_bytes_from_file(
     offset: usize,
     dest: &mut Vec<u8>,
 ) -> io::Result<ControlFlow<()>> {
-    let mut operation = current_agent::with_io(|io| io.operation());
+    let mut operation = current_agent::with_io(|io| io.operation(io::Buffer::from_pool()));
     operation.set_offset(offset);
 
     // SAFETY: For safe usage of the I/O driver API, we are required to pass the `overlapped`
     // argument to a native I/O call under all circumstances, to trigger an I/O completion. We do.
+    // We are also not allowed to use any of the callback arguments after the callback, even if
+    // the Rust compiler might allow us to.
     let result = unsafe {
         operation
             .begin(|buffer, overlapped, bytes_transferred_immediately| {

@@ -133,7 +133,7 @@ impl<T, const COUNT: usize> PinnedSlab<T, COUNT> {
         unsafe {
             // We know it is initialized, we just use this to facilitate the in-place drop.
             let slot: *mut MaybeUninit<Entry<T>> = mem::transmute(slot);
-            slot.drop_in_place();
+            (*slot).assume_init_drop();
 
             slot.write(MaybeUninit::new(Entry::Vacant {
                 next_free_index: self.next_free_index,

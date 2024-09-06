@@ -1,3 +1,4 @@
+use super::Buffer;
 use crate::{
     io,
     metrics::{Event, EventBuilder, Magnitude},
@@ -23,7 +24,8 @@ use windows::Win32::{
 ///
 /// The block store uses interior mutability to facilitate block operations from different parts
 /// of a call chain, as blocks may need to be released when errors occur in deeper layers of
-/// processing and it is very cumbersome to thread a `&mut BlockStore` through all the layers.
+/// processing and it is very cumbersome to thread a `&mut BlockStore` through all the layers,
+/// if at all possible.
 ///
 /// # Safety
 ///
@@ -41,7 +43,9 @@ pub(super) struct BlockStore {
     // The blocks are stored in UnsafeCell because we are doings things like taking a shared
     // reference from the slab chain and giving it to the operating system to mutate, which would
     // be invalid Rust without Unsafecell.
-    blocks: RefCell<PinnedSlabChain<UnsafeCell<Block>>>,
+    // We erase the lifetime of the blocks here and only specify an actual lifetime when returning
+    // individual blocks to the caller because the lifetime tracking gets too convoluted otherwise.
+    blocks: RefCell<PinnedSlabChain<UnsafeCell<Block<'static>>>>,
 }
 
 impl BlockStore {
@@ -52,24 +56,28 @@ impl BlockStore {
     }
 
     /// Allocates a new block for I/O operations.
-    pub fn allocate(&self) -> PrepareBlock {
+    pub fn allocate<'a, 'b>(&'a self, buffer: Buffer<'b>) -> PrepareBlock<'b> {
         BLOCKS_ALLOCATED.with(Event::observe_unit);
 
         let mut blocks = self.blocks.borrow_mut();
 
         let inserter = blocks.begin_insert();
         let key = inserter.index();
-        let block = inserter.insert(UnsafeCell::new(Block::new(key)));
 
-        PrepareBlock {
+        // SAFETY: We do not preserve the 'b annotation in the block store because the block store
+        // does not need to know about such details. We preserve the annotation on the wrapper types
+        // PrepareBlock and CompleteBlock instead, which should be enough to safeguard correctness.
+        let block = inserter.insert(UnsafeCell::new(unsafe {
+            mem::transmute(Block::new(key, buffer))
+        }));
+
+        PrepareBlock::<'b> {
             // SAFETY: The block is referenced by exactly one of PrepareBlock, CompleteBlock or the
             // operating system at any given time, so there is no possibility of multiple exclusive
             // references being created.
-            block: unsafe { &mut *block.get() },
+            // We reattach the 'b lifetime here, which we did not preserve in the block store.
+            block: unsafe { mem::transmute(&mut *block.get()) },
             control: self.control_node(),
-            // We start by assuming each buffer is fully used. If the caller wants to use a subset,
-            // they have the opportunity to specify a smaller size via `PrepareBlock::set_length()`.
-            length: BLOCK_SIZE_BYTES,
         }
     }
 
@@ -83,7 +91,10 @@ impl BlockStore {
     /// OVERLAPPED pointer obtained from the callback given to `PrepareBlock::begin()` earlier.
     /// You must also have received a completion notification from the OS, saying that the block is
     /// again ready for your use.
-    pub unsafe fn complete(&self, overlapped_entry: OVERLAPPED_ENTRY) -> CompleteBlock {
+    pub unsafe fn complete<'a, 'b>(
+        &'a self,
+        overlapped_entry: OVERLAPPED_ENTRY,
+    ) -> CompleteBlock<'b> {
         let bytes_transferred = overlapped_entry.dwNumberOfBytesTransferred as usize;
         let status = NTSTATUS(overlapped_entry.Internal as i32);
 
@@ -95,10 +106,11 @@ impl BlockStore {
         // references being created.
         let block = &mut *(overlapped_entry.lpOverlapped as *mut Block);
 
+        block.buffer.set_length(bytes_transferred);
+
         CompleteBlock {
             block,
             control: self.control_node(),
-            length: bytes_transferred,
             status,
         }
     }
@@ -122,15 +134,16 @@ impl BlockStore {
         let block = &mut *(overlapped as *mut Block);
 
         let bytes_transferred = block.immediate_bytes_transferred as usize;
-        assert!(bytes_transferred <= block.buffer.len());
+        assert!(bytes_transferred <= block.buffer.length());
 
         BLOCKS_COMPLETED_SYNC.with(Event::observe_unit);
         BLOCK_COMPLETED_BYTES.with(|x| x.observe(bytes_transferred as f64));
 
+        block.buffer.set_length(bytes_transferred);
+
         CompleteBlock {
             block,
             control: self.control_node(),
-            length: bytes_transferred,
             status: STATUS_SUCCESS,
         }
     }
@@ -180,8 +193,6 @@ impl !Send for ControlNode {}
 #[negative_impl]
 impl !Sync for ControlNode {}
 
-const BLOCK_SIZE_BYTES: usize = 64 * 1024;
-
 /// An I/O block contains the data structures required to communicate with the operating system
 /// and obtain the result of an asynchronous I/O operation.
 ///
@@ -199,7 +210,7 @@ const BLOCK_SIZE_BYTES: usize = 64 * 1024;
 /// Dropping the block in any of the states releases all the resources, except when you call the
 /// function to convert it to the native operating system objects (`.into_buffer_and_overlapped()`).
 #[repr(C)] // Facilitates conversion to/from OVERLAPPED.
-struct Block {
+struct Block<'b> {
     /// The part of the operation block visible to the operating system.
     ///
     /// NB! This must be the first item in the struct because
@@ -207,7 +218,7 @@ struct Block {
     overlapped: OVERLAPPED,
 
     /// The buffer containing the data affected by the operation.
-    buffer: [u8; BLOCK_SIZE_BYTES],
+    buffer: Buffer<'b>,
 
     /// Used to operate the control node, which requires us to know our own key.
     key: BlockKey,
@@ -219,20 +230,20 @@ struct Block {
 
     /// This is where the I/O completion handler will deliver the result of the operation.
     /// Value is cleared when consumed, to make it obvious if any accidental reuse occurs.
-    result_tx: Option<oneshot::Sender<io::Result<CompleteBlock>>>,
-    result_rx: Option<oneshot::Receiver<io::Result<CompleteBlock>>>,
+    result_tx: Option<oneshot::Sender<io::Result<CompleteBlock<'b>>>>,
+    result_rx: Option<oneshot::Receiver<io::Result<CompleteBlock<'b>>>>,
 
     // Once pinned, this type cannot be unpinned.
     _phantom_pin: std::marker::PhantomPinned,
 }
 
-impl Block {
-    pub fn new(key: BlockKey) -> Self {
+impl<'b> Block<'b> {
+    pub fn new(key: BlockKey, buffer: Buffer<'b>) -> Self {
         let (result_tx, result_rx) = oneshot::channel();
 
         Self {
             overlapped: OVERLAPPED::default(),
-            buffer: [0; BLOCK_SIZE_BYTES],
+            buffer,
             key,
             immediate_bytes_transferred: 0,
             result_tx: Some(result_tx),
@@ -242,7 +253,7 @@ impl Block {
     }
 }
 
-impl fmt::Debug for Block {
+impl fmt::Debug for Block<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Block")
             .field("buffer", &self.buffer)
@@ -261,45 +272,20 @@ impl fmt::Debug for Block {
 // are in the Rust universe. The OS can do what it wants when it holds ownership but for us they
 // are single-threaded.
 #[negative_impl]
-impl !Send for Block {}
+impl !Send for Block<'_> {}
 #[negative_impl]
-impl !Sync for Block {}
+impl !Sync for Block<'_> {}
 
 #[derive(Debug)]
-pub(crate) struct PrepareBlock {
+pub(crate) struct PrepareBlock<'b> {
     // You can either have a PrepareBlock or a CompleteBlock or neither (when the OS owns it),
     // but not both, so we never have multiple exclusive references to the underlying Block.
-    // This is not really 'static, we just pretend it is to avoid overcomplex lifetime annotations.
-    /// TODO: Try using real lifetimes once we get rid of the data buffer inside Block.
-    block: &'static mut Block,
+    block: &'b mut Block<'b>,
 
     control: ControlNode,
-
-    length: usize,
 }
 
-impl PrepareBlock {
-    /// Obtains a buffer to fill with data for a write operation. You do not need to fill the entire
-    /// buffer - call `set_length()` to indicate how many bytes you have written.
-    #[allow(dead_code)] // Usage is work in progress.
-    pub fn buffer(&mut self) -> &mut [u8] {
-        &mut self.block.buffer
-    }
-
-    /// Sets the length of the data in the buffer. This is used to indicate how many bytes you have
-    /// written to the buffer. The value is ignored for read operations - they will always try to
-    /// fill the entire buffer.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the length is greater than the buffer size.
-    #[allow(dead_code)] // Usage is work in progress.
-    pub fn set_length(&mut self, length: usize) {
-        assert!(length <= self.block.buffer.len());
-
-        self.length = length;
-    }
-
+impl<'b> PrepareBlock<'b> {
     /// For seekable I/O primitives (e.g. files), sets the offset in the file where the operation
     /// should be performed.
     pub fn set_offset(&mut self, offset: usize) {
@@ -320,9 +306,15 @@ impl PrepareBlock {
     ///    if the I/O operation completes synchronously (i.e. with `Ok(())`). This value is ignored
     ///    if the I/O operation completes asynchronously (i.e. with `Err(ERROR_IO_PENDING)`).
     ///
-    /// All arguments are only valid for the duration of the callback. Do not store them, even if
-    /// they claim to have a 'static lifetime! It is a lie!
-    pub async unsafe fn begin<F>(self, f: F) -> io::Result<CompleteBlock>
+    /// # Safety
+    ///
+    /// You must call a native I/O operation with the OVERLAPPED pointer provided by the callback.
+    /// If you fail to make such a call, you will leak resources. It is fine if the call fails, but
+    /// it must happen (and the callback return value must accurately represent the native result).
+    ///
+    /// All callback arguments are only valid for the duration of the callback. The 'static
+    /// lifetimes on them are a lie because assigning correct lifetimes was too difficult.
+    pub async unsafe fn begin<F>(self, f: F) -> io::Result<CompleteBlock<'b>>
     where
         F: FnOnce(&'static mut [u8], *mut OVERLAPPED, &mut u32) -> io::Result<()>,
     {
@@ -375,47 +367,44 @@ impl PrepareBlock {
     }
 
     fn into_callback_arguments(self) -> (&'static mut [u8], *mut OVERLAPPED, &'static mut u32) {
-        // We do not want to run Drop - this is an intentional cleanupless handover.
+        // We do not want to run Drop - this is an intentional cleanupless shattering of the type.
         let this = ManuallyDrop::new(self);
 
         // SAFETY: This is just a manual move between compatible fields - no worries.
         let block = unsafe { ptr::read(&this.block) };
 
         (
-            &mut block.buffer.as_mut()[0..this.length],
+            // SAFETY: Sets the lifetime to 'static because I cannot figure out a straightforward way to declare lifetimes here.
+            // As long as the value is only used during the callback, this is fine (caller is responsible for not using it afterwards).
+            unsafe { mem::transmute(block.buffer.as_mut_slice()) },
             &mut block.overlapped as *mut _,
-            &mut block.immediate_bytes_transferred,
+            // SAFETY: Sets the lifetime to 'static because I cannot figure out a straightforward way to declare lifetimes here.
+            // As long as the value is only used during the callback, this is fine (caller is responsible for not using it afterwards).
+            unsafe { mem::transmute(&mut block.immediate_bytes_transferred) },
         )
     }
 }
 
-impl Drop for PrepareBlock {
+impl Drop for PrepareBlock<'_> {
     fn drop(&mut self) {
         self.control.release(self.block.key);
     }
 }
 
 #[derive(Debug)]
-pub(crate) struct CompleteBlock {
+pub(crate) struct CompleteBlock<'b> {
     // You can either have a PrepareBlock or a CompleteBlock or neither (when the OS owns it),
     // but not both, so we never have multiple exclusive references to the underlying Block.
-    // This is not really 'static, we just pretend it is to avoid overcomplex lifetime annotations.
-    /// TODO: Try using real lifetimes once we get rid of the data buffer inside Block.
-    block: &'static mut Block,
+    block: &'b mut Block<'b>,
 
     control: ControlNode,
-
-    length: usize,
 
     status: NTSTATUS,
 }
 
-impl CompleteBlock {
-    /// References the data affected by the completed operation. Typically only meaningful for read
-    /// operations but even for writes, the data remains available here. The buffer is sized to the
-    /// data.
-    pub fn buffer(&self) -> &[u8] {
-        &self.block.buffer.as_ref()[..self.length]
+impl<'b> CompleteBlock<'b> {
+    pub(crate) fn buffer(&self) -> &[u8] {
+        self.block.buffer.as_slice()
     }
 
     pub(super) fn status(&self) -> NTSTATUS {
@@ -425,7 +414,7 @@ impl CompleteBlock {
     /// # Panics
     ///
     /// If called more than once. You can only get the result_tx once.
-    pub(super) fn result_tx(&mut self) -> oneshot::Sender<io::Result<CompleteBlock>> {
+    pub(super) fn result_tx(&mut self) -> oneshot::Sender<io::Result<CompleteBlock<'b>>> {
         self.block
             .result_tx
             .take()
@@ -433,7 +422,7 @@ impl CompleteBlock {
     }
 }
 
-impl Drop for CompleteBlock {
+impl Drop for CompleteBlock<'_> {
     fn drop(&mut self) {
         self.control.release(self.block.key);
     }
