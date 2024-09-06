@@ -182,7 +182,16 @@ mod tests {
         let signal = unsafe { Pin::new_unchecked(&signal) };
 
         let waker = unsafe { signal.waker() };
+
+        // It is still counted as inert here because the first waker can only be used by the same
+        // thread, so if the thread is cleaning up it must not be in use anymore.
+        assert!(signal.is_inert());
+
         let waker_clone = waker.clone();
+
+        // Now we have a second waker, which might have been given to some other thread, so may
+        // be called at any time - we are no longer inert.
+        assert!(!signal.is_inert());
 
         assert_eq!(signal.waker_count.load(Ordering::Relaxed), 2);
 
@@ -191,9 +200,12 @@ mod tests {
         waker.wake_by_ref();
         assert!(signal.consume_awakened());
 
-        drop(waker_clone);
-        assert_eq!(signal.waker_count.load(Ordering::Relaxed), 1);
+        assert!(!signal.is_inert());
 
+        // Once we drop the clone, we are again inert because only the original remains.
+        drop(waker_clone);
+
+        assert_eq!(signal.waker_count.load(Ordering::Relaxed), 1);
         assert!(signal.is_inert());
     }
 }
