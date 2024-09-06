@@ -16,14 +16,25 @@ use std::{
 /// same threat from start to finish.
 #[derive(Debug)]
 pub struct Buffer<'a> {
-    // This is the real storage of the bytes and determines the capacity.
-    inner: Pin<&'a mut [u8]>,
+    mode: Mode<'a>,
 
     // We might not always use the full capacity (though we do by default).
     length: usize,
+}
 
-    // For the time being, we only support pooled buffers (though later we can also do custom).
-    index_in_pool: usize,
+#[derive(Debug)]
+enum Mode<'a> {
+    Pooled {
+        // This is the real storage of the bytes and determines the capacity.
+        inner: Pin<&'a mut [u8]>,
+
+        // For the time being, we only support pooled buffers (though later we can also do custom).
+        index_in_pool: usize,
+    },
+    CallerProvided {
+        // This is the real storage of the bytes and determines the capacity.
+        inner: &'a mut [u8],
+    },
 }
 
 impl<'a> Buffer<'a> {
@@ -50,15 +61,32 @@ impl<'a> Buffer<'a> {
             };
 
             Buffer {
-                inner,
+                mode: Mode::Pooled {
+                    inner,
+                    index_in_pool: index,
+                },
                 length: BUFFER_CAPACITY_BYTES,
-                index_in_pool: index,
             }
         })
     }
 
+    /// References an existing buffer provided by the caller.
+    pub fn from_slice(slice: &'a mut [u8]) -> Self {
+        CALLER_BUFFERS_REFERENCED.with(Event::observe_unit);
+
+        let length = slice.len();
+
+        Buffer {
+            mode: Mode::CallerProvided { inner: slice },
+            length,
+        }
+    }
+
     pub fn capacity(&self) -> usize {
-        self.inner.len()
+        match &self.mode {
+            Mode::Pooled { inner, .. } => inner.len(),
+            Mode::CallerProvided { inner } => inner.len(),
+        }
     }
 
     pub fn length(&self) -> usize {
@@ -73,7 +101,10 @@ impl<'a> Buffer<'a> {
 
     /// Obtains a mutable view over the contents of the buffer.
     pub fn as_mut_slice(&mut self) -> &mut [u8] {
-        &mut self.inner[..self.length]
+        match &mut self.mode {
+            Mode::Pooled { inner, .. } => &mut inner[..self.length],
+            Mode::CallerProvided { inner } => &mut inner[..self.length],
+        }
     }
 
     /// Sets the length and obtains a mutable view over the contents of the buffer.
@@ -81,22 +112,30 @@ impl<'a> Buffer<'a> {
     pub fn as_mut_slice_with_length(&mut self, length: usize) -> &mut [u8] {
         self.set_length(length);
 
-        &mut self.inner[..self.length]
+        match &mut self.mode {
+            Mode::Pooled { inner, .. } => &mut inner[..self.length],
+            Mode::CallerProvided { inner } => &mut inner[..self.length],
+        }
     }
 
     /// Obtains an immutable view over the contents of the buffer.
     pub fn as_slice(&self) -> &[u8] {
-        &self.inner[..self.length]
+        match &self.mode {
+            Mode::Pooled { inner, .. } => &inner[..self.length],
+            Mode::CallerProvided { inner } => &inner[..self.length],
+        }
     }
 }
 
 impl Drop for Buffer<'_> {
     fn drop(&mut self) {
-        POOL.with(|pool| {
-            let mut pool = pool.borrow_mut();
-            pool.remove(self.index_in_pool);
-            DROPPED.with(Event::observe_unit);
-        });
+        if let Mode::Pooled { index_in_pool, .. } = self.mode {
+            POOL.with(|pool| {
+                let mut pool = pool.borrow_mut();
+                pool.remove(index_in_pool);
+                DROPPED.with(Event::observe_unit);
+            });
+        }
     }
 }
 
@@ -109,6 +148,11 @@ const BUFFER_CAPACITY_BYTES: usize = 64 * 1024;
 
 thread_local! {
     static POOL: RefCell<PinnedSlabChain<UnsafeCell<[u8; BUFFER_CAPACITY_BYTES]>>> = RefCell::new(PinnedSlabChain::new());
+
+    static CALLER_BUFFERS_REFERENCED: Event = EventBuilder::new()
+        .name("caller_buffers_referenced")
+        .build()
+        .unwrap();
 
     static ALLOCATED: Event = EventBuilder::new()
         .name("pool_buffers_allocated")

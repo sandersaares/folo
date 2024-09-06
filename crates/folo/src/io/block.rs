@@ -428,7 +428,8 @@ impl Drop for CompleteBlock<'_> {
     }
 }
 
-const BLOCK_COMPLETED_BYTES_BUCKETS: &[Magnitude] = &[0.0, 1024.0, 4096.0, 16384.0, 65536.0];
+const BLOCK_COMPLETED_BYTES_BUCKETS: &[Magnitude] =
+    &[0.0, 1024.0, 4096.0, 16384.0, 65536.0, 1.0 * 1024.0 * 1024.0];
 
 thread_local! {
     static BLOCKS_ALLOCATED: Event = EventBuilder::new()
@@ -447,7 +448,7 @@ thread_local! {
         .unwrap();
 
     static BLOCK_COMPLETED_BYTES: Event = EventBuilder::new()
-        .name("io_blocks_completed_bytes")
+        .name("io_completed_bytes")
         .buckets(BLOCK_COMPLETED_BYTES_BUCKETS)
         .build()
         .unwrap();
