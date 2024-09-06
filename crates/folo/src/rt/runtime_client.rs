@@ -63,7 +63,7 @@ impl RuntimeClient {
 
     /// Spawns a blocking task on any synchronous worker thread suitable for blocking, returning
     /// the result via a join handle suitable for use in asynchronous tasks.
-    pub fn spawn_blocking<FN, F, R>(&self, f: F) -> RemoteJoinHandle<R>
+    pub fn spawn_blocking<F, R>(&self, f: F) -> RemoteJoinHandle<R>
     where
         F: FnOnce() -> R + Send + 'static,
         R: Send + 'static,

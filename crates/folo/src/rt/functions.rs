@@ -36,6 +36,16 @@ where
     current_runtime::with(|runtime| runtime.spawn_on_any(future_fn))
 }
 
+/// Spawns a blocking task on any synchronous worker thread suitable for blocking, returning
+/// the result via a join handle suitable for use in asynchronous tasks.
+pub fn spawn_blocking<F, R>(f: F) -> RemoteJoinHandle<R>
+where
+    F: FnOnce() -> R + Send + 'static,
+    R: Send + 'static,
+{
+    current_runtime::with(|runtime| runtime.spawn_blocking(f))
+}
+
 /// Yields control back to the async task runtime to allow other tasks to run.
 /// There is no guarantee that other tasks will run in any particular order.
 /// Even the same task that called this may be scheduled again immediately.

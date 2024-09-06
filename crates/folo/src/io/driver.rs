@@ -1,3 +1,4 @@
+use super::Buffer;
 use crate::io::block::{BlockStore, PrepareBlock};
 use crate::io::{self, CompletionPort};
 use crate::metrics::{Event, EventBuilder, Magnitude};
@@ -11,8 +12,6 @@ use windows::{
     },
 };
 use windows_result::HRESULT;
-
-use super::Buffer;
 
 /// Processes I/O completion operations for a given thread as part of the async worker loop.
 #[derive(Debug)]

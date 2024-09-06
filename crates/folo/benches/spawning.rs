@@ -1,3 +1,5 @@
+use std::thread;
+
 use criterion::{criterion_group, criterion_main, Criterion};
 use folo::{criterion::FoloAdapter, rt::RemoteJoinHandle};
 
@@ -88,6 +90,43 @@ fn spawn_and_await_many(c: &mut Criterion) {
 
                     for _ in 0..MANY_TASK_COUNT {
                         tasks.push(folo::rt::spawn(async { folo::rt::yield_now().await }));
+                    }
+
+                    for task in tasks {
+                        _ = task.await;
+                    }
+                })
+                .into();
+
+                root_handle.await;
+            })
+        });
+    });
+
+    group.bench_function("tokio_blocking", |b| {
+        b.to_async(&tokio_local).iter(|| {
+            tokio::task::spawn(async {
+                let mut tasks = Vec::with_capacity(MANY_TASK_COUNT);
+
+                for _ in 0..MANY_TASK_COUNT {
+                    tasks.push(tokio::task::spawn_blocking(|| thread::yield_now()));
+                }
+
+                for task in tasks {
+                    _ = task.await;
+                }
+            })
+        });
+    });
+
+    group.bench_function("folo_blocking", |b| {
+        b.to_async(FoloAdapter::default()).iter(|| {
+            folo::rt::spawn_on_any(|| async {
+                let root_handle: RemoteJoinHandle<_> = folo::rt::spawn(async {
+                    let mut tasks = Vec::with_capacity(MANY_TASK_COUNT);
+
+                    for _ in 0..MANY_TASK_COUNT {
+                        tasks.push(folo::rt::spawn_blocking(|| thread::yield_now()));
                     }
 
                     for task in tasks {
