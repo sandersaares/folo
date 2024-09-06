@@ -1,0 +1,18 @@
+[package]
+name = "folo_testing"
+description = "Internal dev dependency of the 'folo' crate - do not reference directly."
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+readme.workspace = true
+repository.workspace = true
+categories.workspace = true
+
+[lib]
+bench = false
+crate-type = ["lib"]
+
+[dependencies]
+tracing = "0"
+tracing-subscriber = "0"

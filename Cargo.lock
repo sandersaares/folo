@@ -261,6 +261,7 @@ dependencies = [
  "criterion",
  "folo_decl_macros",
  "folo_proc_macros",
+ "folo_testing",
  "futures",
  "negative-impl",
  "oneshot",
@@ -292,6 +293,14 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "folo_testing"
+version = "0.1.0-pre"
+dependencies = [
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
