@@ -19,9 +19,6 @@ use windows::Win32::{
     System::IO::{OVERLAPPED, OVERLAPPED_ENTRY},
 };
 
-// TODO: Try out using proper lifetime bounds once we kick out the data buffer from the block.
-// Today, the data buffer makes the lifetime logic too complicated to be worth it.
-
 /// Maintains the backing storage for I/O blocks and organizes their allocation/release.
 ///
 /// The block store uses interior mutability to facilitate block operations from different parts
