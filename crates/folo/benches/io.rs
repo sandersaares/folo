@@ -1,24 +1,31 @@
 use criterion::{criterion_group, criterion_main, Criterion};
 use folo::criterion::FoloAdapter;
-use std::path::{Path, PathBuf};
+use std::{
+    fs::File,
+    path::{Path, PathBuf},
+};
 
 criterion_group!(benches, file_io, scan_many_files);
 criterion_main!(benches);
 
-const FILE_SIZE: usize = 10 * 1024 * 1024;
+const FILE_SIZE: usize = 10 * 1024 * 1024 * 1024;
 const FILE_PATH: &str = "testdata.bin";
-const PARALLEL_READS: usize = 10;
 
 fn file_io(c: &mut Criterion) {
     let tokio = tokio::runtime::Builder::new_multi_thread().build().unwrap();
 
     // Create a large testdata.bin file, overwriting if it exists.
-    let testdata = std::iter::repeat(0u8).take(FILE_SIZE).collect::<Vec<_>>();
-    std::fs::write(FILE_PATH, &testdata).unwrap();
+    File::create(FILE_PATH)
+        .unwrap()
+        .set_len(FILE_SIZE as u64)
+        .unwrap();
 
     let mut group = c.benchmark_group("file_io");
 
-    group.bench_function("folo_read_file_to_vec_one", |b| {
+    // This can take an eternity, so only repeat a few times.
+    group.sample_size(10);
+
+    group.bench_function("folo_read_file_to_vec", |b| {
         b.to_async(FoloAdapter::default()).iter(|| {
             folo::rt::spawn_on_any(|| async {
                 let file = folo::fs::read(FILE_PATH).await.unwrap();
@@ -27,49 +34,11 @@ fn file_io(c: &mut Criterion) {
         });
     });
 
-    group.bench_function("tokio_read_file_to_vec_one", |b| {
+    group.bench_function("tokio_read_file_to_vec", |b| {
         b.to_async(&tokio).iter(|| {
             tokio::task::spawn(async {
                 let file = tokio::fs::read(FILE_PATH).await.unwrap();
                 assert_eq!(file.len(), FILE_SIZE);
-            })
-        });
-    });
-
-    group.bench_function("folo_read_file_to_vec_many", |b| {
-        b.to_async(FoloAdapter::default()).iter(|| {
-            folo::rt::spawn_on_any(|| async {
-                let tasks = (0..PARALLEL_READS)
-                    .map(|_| {
-                        folo::rt::spawn(async {
-                            let file = folo::fs::read(FILE_PATH).await.unwrap();
-                            assert_eq!(file.len(), FILE_SIZE);
-                        })
-                    })
-                    .collect::<Vec<_>>();
-
-                for task in tasks {
-                    task.await;
-                }
-            })
-        });
-    });
-
-    group.bench_function("tokio_read_file_to_vec_many", |b| {
-        b.to_async(&tokio).iter(|| {
-            tokio::task::spawn(async {
-                let tasks = (0..PARALLEL_READS)
-                    .map(|_| {
-                        tokio::task::spawn(async {
-                            let file = tokio::fs::read(FILE_PATH).await.unwrap();
-                            assert_eq!(file.len(), FILE_SIZE);
-                        })
-                    })
-                    .collect::<Vec<_>>();
-
-                for task in tasks {
-                    _ = task.await;
-                }
             })
         });
     });
@@ -80,7 +49,7 @@ fn file_io(c: &mut Criterion) {
     std::fs::remove_file(FILE_PATH).unwrap();
 }
 
-const SCAN_PATH: &str = "c:\\Source\\Oss";
+const SCAN_PATH: &str = "c:\\Games";
 
 // We read in every file in the target directory, recursively, concurrently.
 fn scan_many_files(c: &mut Criterion) {
@@ -95,6 +64,7 @@ fn scan_many_files(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("scan_many_files");
 
+    // This can take an extra eternity, so only repeat a few times.
     group.sample_size(10);
 
     group.bench_function("folo_scan_many_files", |b| {
