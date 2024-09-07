@@ -185,7 +185,7 @@ pub async fn read_high_concurrency(path: impl AsRef<Path>) -> io::Result<Vec<u8>
                 FILE_SHARE_READ,
                 None,
                 OPEN_EXISTING,
-                FILE_FLAG_OVERLAPPED | FILE_FLAG_SEQUENTIAL_SCAN,
+                FILE_FLAG_OVERLAPPED,
                 None,
             )?);
 
