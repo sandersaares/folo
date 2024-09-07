@@ -206,7 +206,10 @@ pub async fn read_high_concurrency(path: impl AsRef<Path>) -> io::Result<Vec<u8>
 
         // We create a vector with what we think is the correct capacity and zero-initialize it.
         let mut result = Vec::with_capacity(file_size as usize);
-        result.resize(result.capacity(), 0);
+        // We do not care what bytes are in there already - we are reading into them anyway and
+        // the only way the caller will ever see them is if the operation succeeds and we replaced
+        // all the bytes in this Vec.
+        result.set_len(file_size as usize);
 
         // Blatant lie to avoid having to invent some sort of async scoping. As long as we join
         // the tasks before we throw this buffer away, all is well.

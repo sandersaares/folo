@@ -48,6 +48,10 @@ folo_testing = { path = "../folo_testing", version = "0.1.0-main" }
 tokio = { version = "1", features = ["fs", "rt-multi-thread"] }
 tracing-subscriber = "0"
 
+[profile.release]
+debug = "full"
+panic = "abort"
+
 [[bench]]
 name = "spawning"
 harness = false
