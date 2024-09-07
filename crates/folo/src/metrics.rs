@@ -297,10 +297,6 @@ impl Display for ObservationBagSnapshot {
             .max()
             .expect("we verified already that at least one bucket exists");
 
-        const TOTAL_BAR_WIDTH: usize = 50;
-
-        let count_per_char = cmp::max(max_bucket_value / TOTAL_BAR_WIDTH, 1);
-
         let mut buckets_to_print = self
             .bucket_counts
             .iter()
@@ -309,19 +305,23 @@ impl Display for ObservationBagSnapshot {
                 buckets_cumulative += count;
 
                 let magnitude = self.bucket_magnitudes[index];
-                let percentage = count as f64 / self.count as f64 * 100.0;
 
-                (magnitude, count, percentage)
+                (magnitude, count)
             })
             .collect::<Vec<_>>();
 
+        let plus_infinity_count = self.count - buckets_cumulative;
+
+        const TOTAL_BAR_WIDTH: usize = 50;
+        let count_per_char = cmp::max(
+            cmp::max(max_bucket_value, &plus_infinity_count) / TOTAL_BAR_WIDTH,
+            1,
+        );
+
         buckets_to_print.push({
-            let plus_infinity_count = self.count - buckets_cumulative;
-
             let magnitude = f64::INFINITY;
-            let percentage = plus_infinity_count as f64 / self.count as f64 * 100.0;
 
-            (magnitude, plus_infinity_count, percentage)
+            (magnitude, plus_infinity_count)
         });
 
         // Measure the dynamic parts of the string to know how much padding to add.
