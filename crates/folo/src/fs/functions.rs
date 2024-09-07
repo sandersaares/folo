@@ -222,8 +222,10 @@ pub async fn read_high_concurrency(path: impl AsRef<Path>) -> io::Result<Vec<u8>
         // Divide the file into chunks of up to CONCURRENT_CHUNK_SIZE bytes and read them in parallel.
         let chunk_tasks = eternal_result
             .chunks_mut(CONCURRENT_CHUNK_SIZE)
-            .map(|chunk| -> LocalJoinHandle<io::Result<()>> {
+            .enumerate()
+            .map(|(chunk_index, chunk)| -> LocalJoinHandle<io::Result<()>> {
                 let file_handle = file_handle.clone();
+                let chunk_start_offset = chunk_index * CONCURRENT_CHUNK_SIZE;
 
                 crate::rt::spawn(async move {
                     let mut bytes_read = 0;
@@ -231,7 +233,13 @@ pub async fn read_high_concurrency(path: impl AsRef<Path>) -> io::Result<Vec<u8>
                     loop {
                         let buffer = Buffer::from_slice(&mut chunk[bytes_read..]);
 
-                        match read_buffer_from_file(&file_handle, bytes_read, buffer).await? {
+                        match read_buffer_from_file(
+                            &file_handle,
+                            chunk_start_offset + bytes_read,
+                            buffer,
+                        )
+                        .await?
+                        {
                             ControlFlow::Continue(bytes) => {
                                 bytes_read += bytes;
 
