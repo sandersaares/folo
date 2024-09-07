@@ -19,7 +19,7 @@ supporting high-performance I/O primitives (IOCP, io_uring, ...). Primarily for 
 | Name                       | Status  |
 |----------------------------|---------|
 | Async task execution       | ✅       |
-| Blocking task execution    | ✅       |
+| Blocking task execution    | Partial |
 | Compute task execution     | ❌       |
 | Filesystem primitives      | Minimal |
 | Network primitives         | ❌       |
