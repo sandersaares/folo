@@ -1,5 +1,8 @@
 use super::ErasedSyncTask;
-use crate::metrics::{self, Event, EventBuilder, ReportPage};
+use crate::{
+    constants::GENERAL_SECONDS_BUCKETS,
+    metrics::{self, Event, EventBuilder, ReportPage},
+};
 use std::{
     fmt::{self, Debug, Formatter},
     sync::mpsc,
@@ -33,7 +36,8 @@ impl SyncAgent {
                 SyncAgentCommand::ExecuteTask { erased_task } => {
                     event!(Level::TRACE, "ExecuteTask");
                     TASKS.with(Event::observe_unit);
-                    (erased_task)();
+
+                    TASK_DURATION.with(|x| x.observe_duration(|| (erased_task)()));
                 }
                 SyncAgentCommand::Terminate => {
                     event!(Level::TRACE, "Shutting down");
@@ -82,6 +86,12 @@ impl Debug for SyncAgentCommand {
 thread_local! {
     static TASKS: Event = EventBuilder::new()
         .name("rt_sync_tasks")
+        .build()
+        .unwrap();
+
+    static TASK_DURATION: Event = EventBuilder::new()
+        .name("rt_sync_task_duration_seconds")
+        .buckets(GENERAL_SECONDS_BUCKETS)
         .build()
         .unwrap();
 }

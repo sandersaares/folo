@@ -8,6 +8,8 @@ const SCAN_PATH: &str = "c:\\Autodesk";
 
 #[folo::main(print_metrics)]
 async fn main() -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
+    tracing_subscriber::fmt::init();
+
     let files = generate_file_list(SCAN_PATH);
 
     event!(Level::INFO, message = "scanning files", count = files.len());
@@ -17,7 +19,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
         .cloned()
         .map(|file| {
             folo::rt::spawn_on_any(|| async {
-                let _ = folo::fs::read(file).await;
+                _ = folo::fs::read(file).await;
             })
         })
         .collect::<Vec<_>>();

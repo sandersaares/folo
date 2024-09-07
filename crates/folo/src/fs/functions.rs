@@ -3,7 +3,7 @@ use crate::{
     rt::{current_async_agent, spawn_blocking},
     util::SendHandle,
 };
-use std::{ffi::CString, ops::ControlFlow, path::Path};
+use std::{ffi::CString, mem, ops::ControlFlow, path::Path};
 use tracing::{event, Level};
 use windows::{
     core::{Owned, PCSTR},
@@ -55,8 +55,10 @@ pub async fn read_small_buffer(path: impl AsRef<Path>) -> io::Result<Vec<u8>> {
 
             event!(Level::DEBUG, message = "opened file", length = file_size);
 
-            let file_handle = SendHandle::from(*file_handle);
-            Ok((file_handle, file_size))
+            let send_file_handle = SendHandle::from(*file_handle);
+            mem::forget(file_handle); // Do not drop it, it must remain valid.
+
+            Ok((send_file_handle, file_size))
         })
         .await?;
 
@@ -85,7 +87,7 @@ pub async fn read_small_buffer(path: impl AsRef<Path>) -> io::Result<Vec<u8>> {
 /// Read the contents of a file to a vector of bytes using one giant buffer for the entire file.
 pub async fn read_large_buffer(path: impl AsRef<Path>) -> io::Result<Vec<u8>> {
     event!(
-        Level::INFO,
+        Level::TRACE,
         message = "read()",
         path = path.as_ref().display().to_string()
     );
@@ -93,29 +95,40 @@ pub async fn read_large_buffer(path: impl AsRef<Path>) -> io::Result<Vec<u8>> {
     let path_cstr = CString::new(path.as_ref().to_str().unwrap()).unwrap();
 
     unsafe {
-        // TODO: opening a file is a blocking function and potentially slow!
-        // Perhaps better to open the file on sync worker to avoid latency spikes here?
-        let file = Owned::new(CreateFileA(
-            PCSTR::from_raw(path_cstr.as_ptr() as *const u8),
-            FILE_GENERIC_READ.0,
-            FILE_SHARE_READ,
-            None,
-            OPEN_EXISTING,
-            FILE_FLAG_OVERLAPPED | FILE_FLAG_SEQUENTIAL_SCAN,
-            None,
-        )?);
+        // Opening the file and probing its size are blocking operations, so we kick them off to
+        // a synchronous worker thread to avoid blocking the async workers with these slow calls.
 
-        event!(Level::DEBUG, message = "opened file",);
+        let (file_handle, file_size) = spawn_blocking(move || -> io::Result<_> {
+            let file_handle = Owned::new(CreateFileA(
+                PCSTR::from_raw(path_cstr.as_ptr() as *const u8),
+                FILE_GENERIC_READ.0,
+                FILE_SHARE_READ,
+                None,
+                OPEN_EXISTING,
+                FILE_FLAG_OVERLAPPED | FILE_FLAG_SEQUENTIAL_SCAN,
+                None,
+            )?);
 
-        current_async_agent::with_io(|io| io.bind_io_primitive(&file))?;
+            // Get the size first to allocate the buffer with the correct size. If the size changes
+            // while we read it, that is fine - this is just the initial allocation and may change.
+            let mut file_size: i64 = 0;
 
-        // Get the size first to allocate the buffer with the correct size. If the size changes
-        // while we read it, that is fine - this is just the initial allocation and may change.
-        let mut file_size: i64 = 0;
+            GetFileSizeEx(*file_handle, &mut file_size as *mut _)?;
 
-        // TODO: inspecting file metadata a blocking function and potentially slow!
-        // Perhaps better to examine metadata on sync worker to avoid latency spikes here?
-        GetFileSizeEx(*file, &mut file_size as *mut _)?;
+            event!(Level::DEBUG, message = "opened file", length = file_size);
+
+            let send_file_handle = SendHandle::from(*file_handle);
+            mem::forget(file_handle); // Do not drop it, it must remain valid.
+
+            Ok((send_file_handle, file_size))
+        })
+        .await?;
+
+        // For transport across threads, we need to pack the HANDLE into a SendHandle but now we
+        // can again declare ownership via Owned<HANDLE>.
+        let file_handle = Owned::new(file_handle.into());
+
+        current_async_agent::with_io(|io| io.bind_io_primitive(&file_handle))?;
 
         // We create a vector with what we think is the correct capacity and zero-initialize it.
         let mut result = Vec::with_capacity(file_size as usize);
@@ -131,7 +144,7 @@ pub async fn read_large_buffer(path: impl AsRef<Path>) -> io::Result<Vec<u8>> {
             // part of what we asked for, so we need to be prepared to loop no matter what.
             let buffer = Buffer::from_slice(&mut result[bytes_read..]);
 
-            match read_buffer_from_file(&file, bytes_read, buffer).await? {
+            match read_buffer_from_file(&file_handle, bytes_read, buffer).await? {
                 ControlFlow::Continue(bytes) => {
                     bytes_read += bytes;
 
