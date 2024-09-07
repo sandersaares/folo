@@ -27,7 +27,7 @@ use tracing::{event, Level};
 /// of them to ensure that we can keep processing synchronous work when a large batch comes in.
 /// In the future we might replace this with a more dynamically sizing thread pool but for now the
 /// fixed size might be acceptable.
-const SYNC_WORKERS_PER_PROCESSOR: usize = 1;
+const SYNC_WORKERS_PER_PROCESSOR: usize = 2;
 
 pub struct RuntimeBuilder {
     worker_init: Option<Arc<dyn Fn() + Send + Sync + 'static>>,

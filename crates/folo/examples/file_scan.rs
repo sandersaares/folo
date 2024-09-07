@@ -4,7 +4,7 @@ use std::{
 };
 use tracing::{event, Level};
 
-const SCAN_PATH: &str = "c:\\Autodesk";
+const SCAN_PATH: &str = "c:\\Source";
 
 #[folo::main(print_metrics)]
 async fn main() -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
