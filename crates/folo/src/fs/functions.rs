@@ -209,6 +209,10 @@ pub async fn read_high_concurrency(path: impl AsRef<Path>) -> io::Result<Vec<u8>
         // We do not care what bytes are in there already - we are reading into them anyway and
         // the only way the caller will ever see them is if the operation succeeds and we replaced
         // all the bytes in this Vec.
+
+        // TODO: Unsure if this is really wise. On one hand, we never actually read from this until
+        // we have written into it, and it is not like u8 is some sort of complex type. Should try
+        // run this under some more verification to make sure.
         result.set_len(file_size as usize);
 
         // Blatant lie to avoid having to invent some sort of async scoping. As long as we join
