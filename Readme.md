@@ -31,11 +31,3 @@ supporting high-performance I/O primitives (IOCP, io_uring, ...). Primarily for 
 | Test suite                 | Minimal |
 | Benchmarks                 | Minimal |
 | Documentation              | ❌       |
-
-# Performance
-
-Research and development is ongoing. Comparisons with initial file I/O APIs on Windows indicate:
-
-* "Read single 10 GB file to `Vec<u8>`" is 45% faster than Tokio.
-* "Read 500 000 files totaling 50 GB to `Vec<u8>`" matches Tokio performance in throughput (perhaps
-  filesystem bottlenecked?) but is significantly more efficient in terms of CPU and memory.
