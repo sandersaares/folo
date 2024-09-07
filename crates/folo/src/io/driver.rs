@@ -1,4 +1,5 @@
 use super::Buffer;
+use crate::constants::GENERAL_SECONDS_BUCKETS;
 use crate::io::block::{BlockStore, PrepareBlock};
 use crate::io::{self, CompletionPort};
 use crate::metrics::{Event, EventBuilder, Magnitude};
@@ -72,17 +73,19 @@ impl Driver {
 
         // SAFETY: TODO
         unsafe {
-            // For now we just do a quick immediate poll with no timeout. We will need to make it
-            // smarter in the future, to actually wait until the next important event (e.g. a timer
-            // elapses or a new task is scheduled).
+            let result = GET_COMPLETED_DURATION.with(|x| {
+                x.observe_duration(|| {
+                    GetQueuedCompletionStatusEx(
+                        self.completion_port.handle(),
+                        completed.as_mut_slice(),
+                        &mut completed_items as *mut _,
+                        max_wait_time_ms,
+                        false,
+                    )
+                })
+            });
 
-            match GetQueuedCompletionStatusEx(
-                self.completion_port.handle(),
-                completed.as_mut_slice(),
-                &mut completed_items as *mut _,
-                max_wait_time_ms,
-                false,
-            ) {
+            match result {
                 Ok(()) => {}
                 // Timeout just means there was nothing to do - no I/O operations completed.
                 Err(e) if e.code() == HRESULT::from_win32(WAIT_TIMEOUT.0) => {
@@ -104,11 +107,7 @@ impl Driver {
                 // special processing.
                 if completed[index as usize].lpCompletionKey == WAKE_UP_COMPLETION_KEY as usize {
                     // This is not a normal I/O block. All it did was wake us up, we do no further
-                    // processing here and simply clean up the memory for it.
-
-                    drop(Box::from_raw(
-                        completed[index as usize].lpOverlapped as *mut OVERLAPPED,
-                    ));
+                    // processing here. The OVERLAPPED pointer will be null here!
                     continue;
                 }
 
@@ -158,22 +157,14 @@ impl IoWaker {
     /// Wakes up the I/O driver by sending a completion packet to its completion port. This is a
     /// non-blocking operation.
     pub(crate) fn wake(&self) {
-        let overlapped = Box::leak(Box::new(OVERLAPPED::default()));
-
+        // SAFETY: Nothing to worry about here. If the handle is invalid, we just get an error.
         unsafe {
-            match PostQueuedCompletionStatus(
-                self.completion_port,
-                0,
-                WAKE_UP_COMPLETION_KEY,
-                Some(overlapped as *const _),
-            ) {
-                Ok(()) => {}
-                Err(e) if e.code() == ERROR_IO_PENDING.into() => {}
-                _ => {
-                    // Something went wrong? Maybe the IOCP is not connected anymore. Clean up.
-                    drop(Box::from_raw(overlapped));
-                }
-            }
+            // Note that OVERLAPPED is null here - we do not need to provide one for this operation
+            // because only real operations require it - plain notifications do not.
+            // We ignore the result from this because it does not really matter - if anything goes
+            // wrong, the target thread fails to wake up and that's too bad but nothing for us to
+            // worry about - probably the entire app is going away if that happened anyway.
+            _ = PostQueuedCompletionStatus(self.completion_port, 0, WAKE_UP_COMPLETION_KEY, None);
         }
     }
 }
@@ -199,6 +190,12 @@ thread_local! {
     // With sleep time != 0.
     static WAIT_TIMEOUTS: Event = EventBuilder::new()
         .name("io_async_completions_wait_timeouts")
+        .build()
+        .unwrap();
+
+    static GET_COMPLETED_DURATION: Event = EventBuilder::new()
+        .name("io_async_completions_get_duration_seconds")
+        .buckets(GENERAL_SECONDS_BUCKETS)
         .build()
         .unwrap();
 }
