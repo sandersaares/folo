@@ -13,6 +13,10 @@ use windows::{
 };
 use windows_result::HRESULT;
 
+/// Max number of I/O operations to dequeue in one go. Presumably getting more data from the OS with
+/// a single call is desirable but the exact impact of different values on performance is not known.
+const IO_DEQUEUE_BATCH_SIZE: usize = 256;
+
 /// Processes I/O completion operations for a given thread as part of the async worker loop.
 #[derive(Debug)]
 pub(crate) struct Driver {
@@ -58,7 +62,7 @@ impl Driver {
     /// is no queued I/O, we wait up to `max_wait_time_ms` milliseconds for new I/O activity, after
     /// which we simply return.
     pub(crate) fn process_completions(&mut self, max_wait_time_ms: u32) {
-        let mut completed = vec![OVERLAPPED_ENTRY::default(); 64];
+        let mut completed = vec![OVERLAPPED_ENTRY::default(); IO_DEQUEUE_BATCH_SIZE];
         let mut completed_items: u32 = 0;
 
         // We intentionally do not loop here because we want to give the caller the opportunity to

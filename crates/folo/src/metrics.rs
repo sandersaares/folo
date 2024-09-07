@@ -1,10 +1,12 @@
+use core::f64;
 use negative_impl::negative_impl;
 use std::{
     borrow::Cow,
     cell::{Cell, RefCell},
+    cmp,
     collections::HashMap,
     error::Error,
-    fmt::Display,
+    fmt::{Display, Write},
     future::Future,
     rc::Rc,
     time::Instant,
@@ -282,21 +284,82 @@ impl Display for ObservationBagSnapshot {
             return Ok(());
         }
 
-        if self.bucket_counts.is_empty() {
+        // In general, a metric with count 0 is rarely going to even be displayed because they are
+        // lazy-initialized, so if not accessed how was it even created. But let's be thorough.
+        if self.bucket_counts.is_empty() || self.count == 0 {
             return Ok(());
         }
 
         let mut buckets_cumulative = 0;
-        for (i, &bucket_count) in self.bucket_counts.iter().enumerate() {
-            buckets_cumulative += bucket_count;
-            writeln!(
-                f,
-                "  value <= {}: {}",
-                self.bucket_magnitudes[i], bucket_count
-            )?;
-        }
+        let max_bucket_value = self
+            .bucket_counts
+            .iter()
+            .max()
+            .expect("we verified already that at least one bucket exists");
 
-        writeln!(f, "  value <= +Inf: {}", self.count - buckets_cumulative)?;
+        const TOTAL_BAR_WIDTH: usize = 50;
+
+        let count_per_char = cmp::max(max_bucket_value / TOTAL_BAR_WIDTH, 1);
+
+        let mut buckets_to_print = self
+            .bucket_counts
+            .iter()
+            .enumerate()
+            .map(|(index, &count)| {
+                buckets_cumulative += count;
+
+                let magnitude = self.bucket_magnitudes[index];
+                let percentage = count as f64 / self.count as f64 * 100.0;
+
+                (magnitude, count, percentage)
+            })
+            .collect::<Vec<_>>();
+
+        buckets_to_print.push({
+            let plus_infinity_count = self.count - buckets_cumulative;
+
+            let magnitude = f64::INFINITY;
+            let percentage = plus_infinity_count as f64 / self.count as f64 * 100.0;
+
+            (magnitude, plus_infinity_count, percentage)
+        });
+
+        // Measure the dynamic parts of the string to know how much padding to add.
+
+        let mut count_str = String::new();
+
+        let widest_count = buckets_to_print.iter().fold(0, |n, b| {
+            count_str.clear();
+            write!(&mut count_str, "{}", b.1).unwrap();
+            cmp::max(n, count_str.len())
+        });
+
+        let mut end_str = String::new();
+        let widest_range = buckets_to_print.iter().fold(0, |n, b| {
+            end_str.clear();
+            write!(&mut end_str, "{}", b.0).unwrap();
+            cmp::max(n, end_str.len())
+        });
+
+        for bucket in buckets_to_print.into_iter() {
+            end_str.clear();
+            write!(&mut end_str, "{}", bucket.0).unwrap();
+            for _ in 0..widest_range - end_str.len() {
+                end_str.insert(0, ' ');
+            }
+
+            count_str.clear();
+            write!(&mut count_str, "{}", bucket.1).unwrap();
+            for _ in 0..widest_count - count_str.len() {
+                count_str.insert(0, ' ');
+            }
+
+            write!(f, "value <= {} [ {} ]: ", end_str, count_str)?;
+            for _ in 0..bucket.1 / count_per_char {
+                write!(f, "∎")?;
+            }
+            writeln!(f)?;
+        }
 
         Ok(())
     }
@@ -314,7 +377,7 @@ mod tests {
 
         let event = EventBuilder::new()
             .name("test")
-            .buckets(&[1.0, 2.0, 3.0])
+            .buckets(&[0.5, 1.0, 2.0, 3.0])
             .build()
             .unwrap();
 
@@ -336,7 +399,7 @@ mod tests {
         let snapshot = page.bags.get("test").unwrap();
         assert_eq!(snapshot.count, 25);
         assert_eq!(snapshot.sum, 85.0);
-        assert_eq!(snapshot.bucket_counts, vec![3, 4, 5]);
+        assert_eq!(snapshot.bucket_counts, vec![0, 3, 4, 5]);
 
         let mut report_builder = ReportBuilder::new();
         report_builder.add_page(page);

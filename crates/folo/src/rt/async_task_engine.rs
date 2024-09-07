@@ -133,7 +133,10 @@ impl AsyncTaskEngine {
             // SAFETY: After this, we are required to keep the task alive until the wakers are all
             // inert. We do this in the async task agent by keeping the thread alive until all
             // wakers have become inert.
-            match unsafe { task.poll() } {
+            let poll_result =
+                TASK_POLL_DURATION.with(|x| x.observe_duration(|| unsafe { task.poll() }));
+
+            match poll_result {
                 task::Poll::Ready(()) => {
                     TASKS_COMPLETED.with(Event::observe_unit);
                     self.completed.push_back(key);
@@ -352,6 +355,12 @@ thread_local! {
 
     static CYCLE_DURATION: Event = EventBuilder::new()
         .name("rt_async_cycle_duration_seconds")
+        .buckets(GENERAL_SECONDS_BUCKETS)
+        .build()
+        .unwrap();
+
+    static TASK_POLL_DURATION: Event = EventBuilder::new()
+        .name("rt_async_task_poll_duration_seconds")
         .buckets(GENERAL_SECONDS_BUCKETS)
         .build()
         .unwrap();
