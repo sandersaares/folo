@@ -49,7 +49,7 @@ fn file_io(c: &mut Criterion) {
     std::fs::remove_file(FILE_PATH).unwrap();
 }
 
-const SCAN_PATH: &str = "c:\\Games";
+const SCAN_PATH: &str = "c:\\Source";
 
 // We read in every file in the target directory, recursively, concurrently.
 fn scan_many_files(c: &mut Criterion) {
