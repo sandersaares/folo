@@ -35,7 +35,7 @@ impl Driver {
     /// Binds an I/O primitive to the completion port of this driver, provided a handle to the I/O
     /// primitive in question (file handle, socket, ...). This must be called once for every I/O
     /// primitive used with this I/O driver.
-    pub(crate) fn bind_io_primitive(&self, handle: &Owned<HANDLE>) -> io::Result<()> {
+    pub(crate) fn bind_io_primitive(&self, handle: &HANDLE) -> io::Result<()> {
         self.completion_port.bind(handle)
     }
 

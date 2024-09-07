@@ -45,11 +45,11 @@ impl CompletionPort {
 
     /// Binds an I/O primitive to the completion port when provided a handle to the I/O primitive.
     /// This causes notifications from that I/O primitive to arrive at the completion port.
-    pub(crate) fn bind(&self, handle: &Owned<HANDLE>) -> io::Result<()> {
+    pub(crate) fn bind(&self, handle: &HANDLE) -> io::Result<()> {
         // SAFETY: We only pass in handles, which are safe to pass even if invalid (-> error)
         //         We ignore the return value, because it is the same as our own handle on success.
         unsafe {
-            CreateIoCompletionPort(**handle, *self.handle, 0, 1)?;
+            CreateIoCompletionPort(*handle, *self.handle, 0, 1)?;
         }
 
         // Why FILE_SKIP_SET_EVENT_ON_HANDLE: https://devblogs.microsoft.com/oldnewthing/20200221-00/?p=103466/
@@ -65,7 +65,7 @@ impl CompletionPort {
         //   code with ERROR_IO_PENDING.
         unsafe {
             SetFileCompletionNotificationModes(
-                **handle,
+                *handle,
                 (FILE_SKIP_SET_EVENT_ON_HANDLE | FILE_SKIP_COMPLETION_PORT_ON_SUCCESS) as u8,
             )?;
         }

@@ -55,11 +55,11 @@ impl RuntimeClient {
         let runtime = self.runtime.lock().expect(constants::POISONED_LOCK);
         let worker_index = next_async_worker(runtime.async_command_txs.len());
 
-        runtime.async_command_txs[worker_index]
-            .send(AsyncAgentCommand::EnqueueTask {
-                erased_task: Box::pin(task),
-            })
-            .expect("runtime agent thread terminated unexpectedly");
+        // We ignore the return value because it is theoretically possible that something is trying
+        // to schedule new work when we are in the middle of a shutdown process.
+        _ = runtime.async_command_txs[worker_index].send(AsyncAgentCommand::EnqueueTask {
+            erased_task: Box::pin(task),
+        });
 
         // Wake up the agent if it might be sleeping and waiting for I/O.
         runtime.async_io_wakers[worker_index].wake();
@@ -89,14 +89,16 @@ impl RuntimeClient {
 
         // TODO: Support spawn_blocking from arbitrary threads, not just async worker threads.
         let processor_id = current_async_agent::with(|x| x.processor_id());
-        let worker_index =
-            next_sync_worker(runtime.sync_command_txs_by_processor[&processor_id].len());
 
-        runtime.sync_command_txs_by_processor[&processor_id][worker_index]
-            .send(SyncAgentCommand::ExecuteTask {
-                erased_task: Box::new(task),
-            })
-            .expect("runtime agent thread terminated unexpectedly");
+        // We ignore the return value because it is theoretically possible that something is trying
+        // to schedule new work when we are in the middle of a shutdown process.
+        _ = runtime.sync_task_queues_by_processor[&processor_id].push(Box::new(task));
+
+        for tx in &runtime.sync_command_txs_by_processor[&processor_id] {
+            // We ignore the return value because it is theoretically possible that something is trying
+            // to schedule new work when we are in the middle of a shutdown process.
+            _ = tx.send(SyncAgentCommand::CheckForTasks);
+        }
 
         RemoteJoinHandle::new(result_box_rx)
     }
@@ -170,21 +172,14 @@ impl RuntimeClient {
     }
 }
 
-// Basic round-robin implementation for distributing work across workers.
+// Basic round-robin implementation for distributing work across async workers.
 thread_local! {
     static NEXT_ASYNC_WORKER_INDEX: Cell<usize> = const { Cell::new(0) };
-    static NEXT_SYNC_WORKER_INDEX: Cell<usize> = const { Cell::new(0) };
 }
 
 fn next_async_worker(max: usize) -> usize {
     let next = NEXT_ASYNC_WORKER_INDEX.get();
     NEXT_ASYNC_WORKER_INDEX.set((next + 1) % max);
-    next
-}
-
-fn next_sync_worker(max: usize) -> usize {
-    let next = NEXT_SYNC_WORKER_INDEX.get();
-    NEXT_SYNC_WORKER_INDEX.set((next + 1) % max);
     next
 }
 

@@ -1,9 +1,9 @@
 use crate::{
     io::{self, Buffer},
     rt::{current_async_agent, spawn_blocking},
-    util::SendHandle,
+    util::OwnedHandle,
 };
-use std::{ffi::CString, mem, ops::ControlFlow, path::Path};
+use std::{ffi::CString, ops::ControlFlow, path::Path};
 use tracing::{event, Level};
 use windows::{
     core::{Owned, PCSTR},
@@ -55,16 +55,10 @@ pub async fn read_small_buffer(path: impl AsRef<Path>) -> io::Result<Vec<u8>> {
 
             event!(Level::DEBUG, message = "opened file", length = file_size);
 
-            let send_file_handle = SendHandle::from(*file_handle);
-            mem::forget(file_handle); // Do not drop it, it must remain valid.
-
-            Ok((send_file_handle, file_size))
+            let file_handle: OwnedHandle = file_handle.into();
+            Ok((file_handle, file_size))
         })
         .await?;
-
-        // For transport across threads, we need to pack the HANDLE into a SendHandle but now we
-        // can again declare ownership via Owned<HANDLE>.
-        let file_handle = Owned::new(file_handle.into());
 
         current_async_agent::with_io(|io| io.bind_io_primitive(&file_handle))?;
 
@@ -117,16 +111,10 @@ pub async fn read_large_buffer(path: impl AsRef<Path>) -> io::Result<Vec<u8>> {
 
             event!(Level::DEBUG, message = "opened file", length = file_size);
 
-            let send_file_handle = SendHandle::from(*file_handle);
-            mem::forget(file_handle); // Do not drop it, it must remain valid.
-
-            Ok((send_file_handle, file_size))
+            let file_handle: OwnedHandle = file_handle.into();
+            Ok((file_handle, file_size))
         })
         .await?;
-
-        // For transport across threads, we need to pack the HANDLE into a SendHandle but now we
-        // can again declare ownership via Owned<HANDLE>.
-        let file_handle = Owned::new(file_handle.into());
 
         current_async_agent::with_io(|io| io.bind_io_primitive(&file_handle))?;
 
@@ -173,7 +161,7 @@ pub async fn read_large_buffer(path: impl AsRef<Path>) -> io::Result<Vec<u8>> {
 
 /// Reads a chunk of bytes from a file at a given offset using a small intermediate buffer.
 async fn read_bytes_from_file(
-    file: &Owned<HANDLE>,
+    file: &HANDLE,
     offset: usize,
     dest: &mut Vec<u8>,
 ) -> io::Result<ControlFlow<()>> {
@@ -188,7 +176,7 @@ async fn read_bytes_from_file(
         operation
             .begin(|buffer, overlapped, bytes_transferred_immediately| {
                 Ok(ReadFile(
-                    **file,
+                    *file,
                     Some(buffer),
                     Some(bytes_transferred_immediately as *mut _),
                     Some(overlapped),
@@ -217,7 +205,7 @@ async fn read_bytes_from_file(
 ///
 /// Returns the number of bytes read into the buffer on success.
 async fn read_buffer_from_file(
-    file: &Owned<HANDLE>,
+    file: &HANDLE,
     offset: usize,
     buffer: Buffer<'_>,
 ) -> io::Result<ControlFlow<(), usize>> {
@@ -232,7 +220,7 @@ async fn read_buffer_from_file(
         operation
             .begin(|buffer, overlapped, bytes_transferred_immediately| {
                 Ok(ReadFile(
-                    **file,
+                    *file,
                     Some(buffer),
                     Some(bytes_transferred_immediately as *mut _),
                     Some(overlapped),

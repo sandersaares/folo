@@ -95,6 +95,8 @@ fn scan_many_files(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("scan_many_files");
 
+    group.sample_size(10);
+
     group.bench_function("folo_scan_many_files", |b| {
         b.to_async(FoloAdapter::default()).iter_batched(
             || files.clone(),
