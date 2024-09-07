@@ -1,11 +1,15 @@
 use super::sync_agent::SyncAgentCommand;
 use crate::{io::IoWaker, rt::async_agent::AsyncAgentCommand};
-use std::{sync::mpsc, thread};
+use core_affinity::CoreId;
+use std::{collections::HashMap, sync::mpsc, thread};
 
 #[derive(Debug)]
 pub(crate) struct Runtime {
     pub async_command_txs: Box<[mpsc::Sender<AsyncAgentCommand>]>,
-    pub sync_command_txs: Box<[mpsc::Sender<SyncAgentCommand>]>,
+
+    // We often prefer to give work to the same processor, so we split
+    // the sync commands tx up by the processor ID.
+    pub sync_command_txs_by_processor: HashMap<CoreId, Box<[mpsc::Sender<SyncAgentCommand>]>>,
 
     pub async_io_wakers: Box<[IoWaker]>,
 

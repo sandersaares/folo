@@ -1,3 +1,4 @@
+use super::current_async_agent;
 use super::remote_result_box::RemoteResultBox;
 use super::sync_agent::SyncAgentCommand;
 use crate::constants::{self, GENERAL_SECONDS_BUCKETS};
@@ -76,12 +77,22 @@ impl RuntimeClient {
         let result_box_rx = Arc::new(RemoteResultBox::new());
         let result_box_tx = Arc::clone(&result_box_rx);
 
-        let task = move || result_box_tx.set(f());
+        let started = Instant::now();
+
+        let task = move || {
+            SYNC_SPAWN_DELAY.with(|x| x.observe(started.elapsed().as_secs_f64()));
+
+            result_box_tx.set(f())
+        };
 
         let runtime = self.runtime.lock().expect(constants::POISONED_LOCK);
-        let worker_index = next_sync_worker(runtime.sync_command_txs.len());
 
-        runtime.sync_command_txs[worker_index]
+        // TODO: Support spawn_blocking from arbitrary threads, not just async worker threads.
+        let processor_id = current_async_agent::with(|x| x.processor_id());
+        let worker_index =
+            next_sync_worker(runtime.sync_command_txs_by_processor[&processor_id].len());
+
+        runtime.sync_command_txs_by_processor[&processor_id][worker_index]
             .send(SyncAgentCommand::ExecuteTask {
                 erased_task: Box::new(task),
             })
@@ -102,10 +113,12 @@ impl RuntimeClient {
             _ = tx.send(AsyncAgentCommand::Terminate);
         }
 
-        for tx in &runtime.sync_command_txs {
-            // We ignore the return value because if the worker has already stopped, the channel
-            // may be closed in which case the send may simply fail.
-            _ = tx.send(crate::rt::sync_agent::SyncAgentCommand::Terminate);
+        for txs in runtime.sync_command_txs_by_processor.values() {
+            for tx in txs {
+                // We ignore the return value because if the worker has already stopped, the channel
+                // may be closed in which case the send may simply fail.
+                _ = tx.send(crate::rt::sync_agent::SyncAgentCommand::Terminate);
+            }
         }
     }
 
@@ -178,6 +191,12 @@ fn next_sync_worker(max: usize) -> usize {
 thread_local! {
     static REMOTE_SPAWN_DELAY: Event = EventBuilder::new()
         .name("rt_remote_spawn_delay_seconds")
+        .buckets(GENERAL_SECONDS_BUCKETS)
+        .build()
+        .unwrap();
+
+    static SYNC_SPAWN_DELAY: Event = EventBuilder::new()
+        .name("rt_sync_spawn_delay_seconds")
         .buckets(GENERAL_SECONDS_BUCKETS)
         .build()
         .unwrap();

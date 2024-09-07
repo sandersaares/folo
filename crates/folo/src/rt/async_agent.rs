@@ -7,6 +7,7 @@ use crate::{
         LocalErasedAsyncTask, LocalJoinHandle, RemoteErasedAsyncTask,
     },
 };
+use core_affinity::CoreId;
 use std::{
     any::type_name,
     cell::{Cell, RefCell},
@@ -37,6 +38,7 @@ use tracing::{event, Level};
 pub struct AsyncAgent {
     command_rx: mpsc::Receiver<AsyncAgentCommand>,
     metrics_tx: Option<mpsc::Sender<ReportPage>>,
+    processor_id: CoreId,
 
     engine: RefCell<AsyncTaskEngine>,
 
@@ -63,15 +65,21 @@ impl AsyncAgent {
     pub fn new(
         command_rx: mpsc::Receiver<AsyncAgentCommand>,
         metrics_tx: Option<mpsc::Sender<ReportPage>>,
+        processor_id: CoreId,
     ) -> Self {
         Self {
             command_rx,
             metrics_tx,
+            processor_id,
             engine: RefCell::new(AsyncTaskEngine::new()),
             io: RefCell::new(io::Driver::new()),
             new_tasks: RefCell::new(VecDeque::new()),
             shutting_down: Cell::new(false),
         }
+    }
+
+    pub fn processor_id(&self) -> CoreId {
+        self.processor_id
     }
 
     pub fn io(&self) -> &RefCell<io::Driver> {
