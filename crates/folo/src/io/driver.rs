@@ -15,7 +15,7 @@ use windows_result::HRESULT;
 
 /// Max number of I/O operations to dequeue in one go. Presumably getting more data from the OS with
 /// a single call is desirable but the exact impact of different values on performance is not known.
-const IO_DEQUEUE_BATCH_SIZE: usize = 256;
+const IO_DEQUEUE_BATCH_SIZE: usize = 1024;
 
 /// Processes I/O completion operations for a given thread as part of the async worker loop.
 #[derive(Debug)]
@@ -181,7 +181,7 @@ impl IoWaker {
 // SAFETY: It is fine to use a completion port across threads.
 unsafe impl Send for IoWaker {}
 
-const ASYNC_COMPLETIONS_DEQUEUED_BUCKETS: &[Magnitude] = &[0.0, 1.0, 16.0, 64.0, 512.0];
+const ASYNC_COMPLETIONS_DEQUEUED_BUCKETS: &[Magnitude] = &[0.0, 1.0, 16.0, 64.0, 256.0, 512.0];
 
 thread_local! {
     static ASYNC_COMPLETIONS_DEQUEUED: Event = EventBuilder::new()
