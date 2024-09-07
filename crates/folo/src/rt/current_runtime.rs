@@ -1,5 +1,5 @@
 use crate::rt::runtime_client::RuntimeClient;
-use std::{cell::RefCell, sync::Arc};
+use std::cell::RefCell;
 
 /// Executes a closure that receives the Folo runtime client for the runtime that owns the current
 /// thread.
@@ -20,11 +20,11 @@ where
 
 /// Attempts to get a new shared reference to the Folo runtime client for the runtime that owns the
 /// current thread.
-pub fn try_get() -> Option<Arc<RuntimeClient>> {
+pub fn try_get() -> Option<RuntimeClient> {
     CURRENT.with_borrow(|runtime| runtime.clone())
 }
 
-pub fn set(value: Arc<RuntimeClient>) {
+pub fn set(value: RuntimeClient) {
     CURRENT.with_borrow_mut(|runtime| {
         assert!(
             runtime.is_none(),
@@ -36,5 +36,5 @@ pub fn set(value: Arc<RuntimeClient>) {
 }
 
 thread_local!(
-    static CURRENT: RefCell<Option<Arc<RuntimeClient>>> = const { RefCell::new(None) }
+    static CURRENT: RefCell<Option<RuntimeClient>> = const { RefCell::new(None) }
 );

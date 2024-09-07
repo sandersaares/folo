@@ -1,12 +1,15 @@
-use super::current_async_agent;
+use concurrent_queue::ConcurrentQueue;
+use core_affinity::CoreId;
+
 use super::remote_result_box::RemoteResultBox;
 use super::sync_agent::SyncAgentCommand;
+use super::{current_async_agent, ErasedSyncTask};
 use crate::constants::{self, GENERAL_SECONDS_BUCKETS};
+use crate::io::IoWaker;
 use crate::metrics::{Event, EventBuilder};
-use crate::rt::{
-    async_agent::AsyncAgentCommand, remote_task::RemoteTask, runtime::Runtime, RemoteJoinHandle,
-};
-use std::sync::Arc;
+use crate::rt::{async_agent::AsyncAgentCommand, remote_task::RemoteTask, RemoteJoinHandle};
+use std::collections::HashMap;
+use std::sync::{mpsc, Arc};
 use std::time::Instant;
 use std::{cell::Cell, future::Future, sync::Mutex, thread};
 
@@ -14,18 +17,35 @@ use std::{cell::Cell, future::Future, sync::Mutex, thread};
 /// the current thread.
 ///
 /// This type is thread-safe.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct RuntimeClient {
-    // This is a silly implementation of a thread-safe runtime client because it uses a global
-    // mutex to do any work. A better implementation would avoid locking and make each thread have
-    // an independently operating client. However, this is a nice and simple starting point.
-    runtime: Mutex<Runtime>,
+    async_command_txs: Box<[mpsc::Sender<AsyncAgentCommand>]>,
+    async_io_wakers: Box<[IoWaker]>,
+
+    // We often prefer to give work to the same processor, so we split
+    // the sync command architecture up by the processor ID.
+    sync_command_txs_by_processor: HashMap<CoreId, Box<[mpsc::Sender<SyncAgentCommand>]>>,
+    sync_task_queues_by_processor: HashMap<CoreId, Arc<ConcurrentQueue<ErasedSyncTask>>>,
+
+    // This is None if `.wait()` has already been called - the field can be consumed only once,
+    // typically done by the runtime client provided to the entry point thread.
+    join_handles: Arc<Mutex<Option<Box<[thread::JoinHandle<()>]>>>>,
 }
 
 impl RuntimeClient {
-    pub(crate) fn new(runtime: Runtime) -> Self {
+    pub(super) fn new(
+        async_command_txs: Box<[mpsc::Sender<AsyncAgentCommand>]>,
+        async_io_wakers: Box<[IoWaker]>,
+        sync_command_txs_by_processor: HashMap<CoreId, Box<[mpsc::Sender<SyncAgentCommand>]>>,
+        sync_task_queues_by_processor: HashMap<CoreId, Arc<ConcurrentQueue<ErasedSyncTask>>>,
+        join_handles: Box<[thread::JoinHandle<()>]>,
+    ) -> Self {
         Self {
-            runtime: Mutex::new(runtime),
+            async_command_txs,
+            async_io_wakers,
+            sync_command_txs_by_processor,
+            sync_task_queues_by_processor,
+            join_handles: Arc::new(Mutex::new(Some(join_handles))),
         }
     }
 
@@ -52,17 +72,16 @@ impl RuntimeClient {
         let task = RemoteTask::new(thread_safe_wrapper_future);
         let join_handle = task.join_handle();
 
-        let runtime = self.runtime.lock().expect(constants::POISONED_LOCK);
-        let worker_index = next_async_worker(runtime.async_command_txs.len());
+        let worker_index = next_async_worker(self.async_command_txs.len());
 
         // We ignore the return value because it is theoretically possible that something is trying
         // to schedule new work when we are in the middle of a shutdown process.
-        _ = runtime.async_command_txs[worker_index].send(AsyncAgentCommand::EnqueueTask {
+        _ = self.async_command_txs[worker_index].send(AsyncAgentCommand::EnqueueTask {
             erased_task: Box::pin(task),
         });
 
         // Wake up the agent if it might be sleeping and waiting for I/O.
-        runtime.async_io_wakers[worker_index].wake();
+        self.async_io_wakers[worker_index].wake();
 
         join_handle
     }
@@ -85,16 +104,14 @@ impl RuntimeClient {
             result_box_tx.set(f())
         };
 
-        let runtime = self.runtime.lock().expect(constants::POISONED_LOCK);
-
         // TODO: Support spawn_blocking from arbitrary threads, not just async worker threads.
         let processor_id = current_async_agent::with(|x| x.processor_id());
 
         // We ignore the return value because it is theoretically possible that something is trying
         // to schedule new work when we are in the middle of a shutdown process.
-        _ = runtime.sync_task_queues_by_processor[&processor_id].push(Box::new(task));
+        _ = self.sync_task_queues_by_processor[&processor_id].push(Box::new(task));
 
-        for tx in &runtime.sync_command_txs_by_processor[&processor_id] {
+        for tx in &self.sync_command_txs_by_processor[&processor_id] {
             // We ignore the return value because it is theoretically possible that something is trying
             // to schedule new work when we are in the middle of a shutdown process.
             _ = tx.send(SyncAgentCommand::CheckForTasks);
@@ -107,15 +124,13 @@ impl RuntimeClient {
     ///
     /// This returns immediately. To wait for the runtime to stop, use `wait()`.
     pub fn stop(&self) {
-        let runtime = self.runtime.lock().expect(constants::POISONED_LOCK);
-
-        for tx in &runtime.async_command_txs {
+        for tx in &self.async_command_txs {
             // We ignore the return value because if the worker has already stopped, the channel
             // may be closed in which case the send may simply fail.
             _ = tx.send(AsyncAgentCommand::Terminate);
         }
 
-        for txs in runtime.sync_command_txs_by_processor.values() {
+        for txs in self.sync_command_txs_by_processor.values() {
             for tx in txs {
                 // We ignore the return value because if the worker has already stopped, the channel
                 // may be closed in which case the send may simply fail.
@@ -130,10 +145,9 @@ impl RuntimeClient {
     ///
     /// If called after `wait()`.
     pub fn is_stopped(&self) -> bool {
-        let runtime = self.runtime.lock().expect(constants::POISONED_LOCK);
+        let join_handles = self.join_handles.lock().expect(constants::POISONED_LOCK);
 
-        for join_handle in runtime
-            .join_handles
+        for join_handle in join_handles
             .as_ref()
             .expect("wait() has already been called - cannot access runtime state any more")
         {
@@ -155,20 +169,14 @@ impl RuntimeClient {
     ///
     /// If called more than once.
     pub fn wait(&self) {
-        let join_handles = self.get_join_handles();
+        let mut join_handles = self.join_handles.lock().expect(constants::POISONED_LOCK);
 
-        for join_handle in join_handles {
-            join_handle.join().expect("worker thread panicked");
-        }
-    }
-
-    fn get_join_handles(&self) -> Box<[thread::JoinHandle<()>]> {
-        let mut runtime = self.runtime.lock().expect(constants::POISONED_LOCK);
-
-        runtime
-            .join_handles
+        for join_handle in join_handles
             .take()
             .expect("RuntimeClient::wait() called multiple times")
+        {
+            join_handle.join().expect("worker thread panicked");
+        }
     }
 }
 

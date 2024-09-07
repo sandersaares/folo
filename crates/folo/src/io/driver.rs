@@ -145,7 +145,7 @@ const WAKE_UP_COMPLETION_KEY: usize = 0x23546789897;
 /// `WAKE_UP_COMPLETION_KEY`. The OVERLAPPED is allocated/deallocated by the sender/receiver as just
 /// a Rust object, without going through the usual pooling mechanism (because the block store used
 /// for regular I/O is single-threaded).
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct IoWaker {
     completion_port: HANDLE,
 }

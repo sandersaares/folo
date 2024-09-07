@@ -7,9 +7,7 @@ use crate::{
     metrics::ReportPage,
     rt::{
         async_agent::{AsyncAgent, AsyncAgentCommand},
-        current_async_agent, current_runtime,
-        runtime::Runtime,
-        RuntimeClient,
+        current_async_agent, current_runtime, RuntimeClient,
     },
 };
 use concurrent_queue::ConcurrentQueue;
@@ -17,7 +15,7 @@ use std::{
     collections::HashMap,
     fmt::{self, Debug, Formatter},
     rc::Rc,
-    sync::{mpsc, Arc},
+    sync::{mpsc, Arc, Mutex},
     thread,
 };
 use tracing::{event, Level};
@@ -74,7 +72,7 @@ impl RuntimeBuilder {
         self
     }
 
-    pub fn build(self) -> Result<Arc<RuntimeClient>> {
+    pub fn build(self) -> Result<RuntimeClient> {
         if self.ad_hoc_entrypoint {
             // With ad-hoc entrypoints we reuse the runtime if it is already set.
             if let Some(runtime) = current_runtime::try_get() {
@@ -243,21 +241,16 @@ impl RuntimeBuilder {
         // send a message to all the agents that they are now attached to a runtime and can start
         // doing their job.
 
-        // This is just a convenient package the runtime client uses to organize things internally.
-        let runtime = Runtime {
-            async_command_txs: async_command_txs.into_boxed_slice(),
-            async_io_wakers: async_io_wakers.into_boxed_slice(),
-
-            sync_command_txs_by_processor: sync_command_txs_by_processor
+        let client = RuntimeClient::new(
+            async_command_txs.into_boxed_slice(),
+            async_io_wakers.into_boxed_slice(),
+            sync_command_txs_by_processor
                 .into_iter()
                 .map(|(k, v)| (k, v.into_boxed_slice()))
                 .collect(),
             sync_task_queues_by_processor,
-
-            join_handles: Some(join_handles.into_boxed_slice()),
-        };
-
-        let client = Arc::new(RuntimeClient::new(runtime));
+            join_handles.into_boxed_slice(),
+        );
 
         // In most cases, the entrypoint thread is merely parked. However, for interoperability
         // purposes, the caller may wish to register the Folo runtime as the owner of the
@@ -265,20 +258,20 @@ impl RuntimeBuilder {
         // that calls `spawn_on_any()` to schedule work on the Folo runtime, while not being truly
         // on a Folo owned thread.
         if self.ad_hoc_entrypoint {
-            current_runtime::set(Arc::clone(&client));
+            current_runtime::set(client.clone());
         }
 
         // Tell all the agents to start.
         for tx in async_start_txs {
             tx.send(AgentStartArguments {
-                runtime_client: Arc::clone(&client),
+                runtime_client: client.clone(),
             })
             .expect("runtime async agent thread failed before it could be started");
         }
 
         for tx in sync_start_txs {
             tx.send(AgentStartArguments {
-                runtime_client: Arc::clone(&client),
+                runtime_client: client.clone(),
             })
             .expect("runtime sync agent thread failed before it could be started");
         }
@@ -314,7 +307,7 @@ struct SyncAgentReady {}
 /// providing relevant arguments to the agent.
 #[derive(Debug)]
 struct AgentStartArguments {
-    runtime_client: Arc<RuntimeClient>,
+    runtime_client: RuntimeClient,
 }
 
 #[derive(thiserror::Error, Debug)]

@@ -14,18 +14,20 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
 
     event!(Level::INFO, message = "scanning files", count = files.len());
 
-    let tasks = files
-        .iter()
-        .cloned()
-        .map(|file| {
-            folo::rt::spawn_on_any(|| async {
-                _ = folo::fs::read(file).await;
+    for _ in 0..25 {
+        let tasks = files
+            .iter()
+            .cloned()
+            .map(|file| {
+                folo::rt::spawn_on_any(|| async {
+                    _ = folo::fs::read(file).await;
+                })
             })
-        })
-        .collect::<Vec<_>>();
+            .collect::<Vec<_>>();
 
-    for task in tasks {
-        task.await;
+        for task in tasks {
+            task.await;
+        }
     }
 
     Ok(())

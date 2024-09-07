@@ -132,7 +132,7 @@ fn core(
                     #metrics_init
                     .build()
                     .unwrap();
-                let __entrypoint_runtime_clone = ::std::sync::Arc::clone(&__entrypoint_runtime);
+                let __entrypoint_runtime_clone = __entrypoint_runtime.clone();
 
                 __entrypoint_runtime.spawn_on_any(|| async move {
                     #inner_ident().await;
@@ -157,7 +157,7 @@ fn core(
                     #metrics_init
                     .build()
                     .unwrap();
-                let __entrypoint_runtime_clone = ::std::sync::Arc::clone(&__entrypoint_runtime);
+                let __entrypoint_runtime_clone = __entrypoint_runtime.clone();
 
                 let __entrypoint_result_rx = ::std::sync::Arc::new(::std::sync::Mutex::new(Option::<#ty>::None));
                 let __entrypoint_result_tx = ::std::sync::Arc::clone(&__entrypoint_result_rx);
@@ -214,7 +214,7 @@ mod tests {
                 let __entrypoint_runtime = ::folo::rt::RuntimeBuilder::new()
                     .build()
                     .unwrap();
-                let __entrypoint_runtime_clone = ::std::sync::Arc::clone(&__entrypoint_runtime);
+                let __entrypoint_runtime_clone = __entrypoint_runtime.clone();
 
                 __entrypoint_runtime.spawn_on_any(|| async move {
                     __inner_main().await;
@@ -253,7 +253,7 @@ mod tests {
                 let __entrypoint_runtime = ::folo::rt::RuntimeBuilder::new()
                     .build()
                     .unwrap();
-                let __entrypoint_runtime_clone = ::std::sync::Arc::clone(&__entrypoint_runtime);
+                let __entrypoint_runtime_clone = __entrypoint_runtime.clone();
 
                 let __entrypoint_result_rx = ::std::sync::Arc::new(::std::sync::Mutex::new(Option::<Result<(), Box<dyn std::error::Error + Send + 'static> > >::None));
                 let __entrypoint_result_tx = ::std::sync::Arc::clone(&__entrypoint_result_rx);
@@ -331,7 +331,7 @@ mod tests {
                     .worker_init(move || { setup_worker(); } )
                     .build()
                     .unwrap();
-                let __entrypoint_runtime_clone = ::std::sync::Arc::clone(&__entrypoint_runtime);
+                let __entrypoint_runtime_clone = __entrypoint_runtime.clone();
 
                 __entrypoint_runtime.spawn_on_any(|| async move {
                     __inner_main().await;
@@ -375,7 +375,7 @@ mod tests {
                     .metrics_tx(__entrypoint_metrics_collector.tx())
                     .build()
                     .unwrap();
-                let __entrypoint_runtime_clone = ::std::sync::Arc::clone(&__entrypoint_runtime);
+                let __entrypoint_runtime_clone = __entrypoint_runtime.clone();
 
                 __entrypoint_runtime.spawn_on_any(|| async move {
                     __inner_main().await;
@@ -415,7 +415,7 @@ mod tests {
                 let __entrypoint_runtime = ::folo::rt::RuntimeBuilder::new()
                     .build()
                     .unwrap();
-                let __entrypoint_runtime_clone = ::std::sync::Arc::clone(&__entrypoint_runtime);
+                let __entrypoint_runtime_clone = __entrypoint_runtime.clone();
 
                 __entrypoint_runtime.spawn_on_any(|| async move {
                     __inner_my_test().await;
