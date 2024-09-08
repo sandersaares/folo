@@ -57,7 +57,7 @@ fn spawn_and_await(c: &mut Criterion) {
                     for _ in 0..SPAWN_TASK_COUNT {
                         tasks.push(tokio::task::spawn(async {
                             for _ in 0..SPAWN_SUBFUTURE_COUNT {
-                                folo::rt::yield_now().await;
+                                tokio::task::yield_now().await;
                             }
                         }));
                     }
@@ -81,7 +81,7 @@ fn spawn_and_await(c: &mut Criterion) {
                     for _ in 0..SPAWN_TASK_COUNT {
                         tasks.push(tokio::task::spawn(async {
                             for _ in 0..SPAWN_SUBFUTURE_COUNT {
-                                folo::rt::yield_now().await;
+                                tokio::task::yield_now().await;
                             }
                         }));
                     }
