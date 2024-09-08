@@ -1,8 +1,9 @@
 use crate::{
-    constants::{self, GENERAL_SECONDS_BUCKETS},
+    constants::{self, GENERAL_LOW_PRECISION_SECONDS_BUCKETS},
     metrics::{Event, EventBuilder},
+    util::LowPrecisionInstant,
 };
-use std::{mem, sync::Mutex, task::Waker, time::Instant};
+use std::{mem, sync::Mutex, task::Waker};
 
 #[derive(Debug)]
 enum TaskResult<R> {
@@ -25,14 +26,14 @@ enum TaskResult<R> {
 #[derive(Debug)]
 pub(crate) struct RemoteResultBox<R> {
     result: Mutex<TaskResult<R>>,
-    created: Instant,
+    created: LowPrecisionInstant,
 }
 
 impl<R> RemoteResultBox<R> {
     pub fn new() -> Self {
         Self {
             result: Mutex::new(TaskResult::Pending),
-            created: Instant::now(),
+            created: LowPrecisionInstant::now(),
         }
     }
 
@@ -84,7 +85,7 @@ impl<R> RemoteResultBox<R> {
                 CONSUME_DURATION.with(|x| {
                     x.observe(self.created.elapsed().as_secs_f64());
                 });
-                
+
                 let existing_result = mem::replace(&mut *self_result, TaskResult::Consumed);
 
                 match existing_result {
@@ -104,13 +105,13 @@ impl<R> RemoteResultBox<R> {
 thread_local! {
     static FILL_DURATION: Event = EventBuilder::new()
         .name("result_box_remote_time_to_fill_seconds")
-        .buckets(GENERAL_SECONDS_BUCKETS)
+        .buckets(GENERAL_LOW_PRECISION_SECONDS_BUCKETS)
         .build()
         .unwrap();
 
     static CONSUME_DURATION: Event = EventBuilder::new()
         .name("result_box_remote_time_to_consume_seconds")
-        .buckets(GENERAL_SECONDS_BUCKETS)
+        .buckets(GENERAL_LOW_PRECISION_SECONDS_BUCKETS)
         .build()
         .unwrap();
 }

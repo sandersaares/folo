@@ -1,6 +1,7 @@
 use criterion::{criterion_group, criterion_main, Criterion};
 use folo::criterion::FoloAdapter;
 use std::{
+    cell::LazyCell,
     fs::File,
     path::{Path, PathBuf},
 };
@@ -53,9 +54,12 @@ const SCAN_PATH: &str = "c:\\Source";
 
 // We read in every file in the target directory, recursively, concurrently.
 fn scan_many_files(c: &mut Criterion) {
-    // First make the list of files in advance - we want a vec of all the files in SCAN_PATH, recursive.
-    let files = generate_file_list(SCAN_PATH);
-    println!("Found {} files to scan.", files.len());
+    let file_list = LazyCell::new(|| {
+        // First make the list of files in advance - we want a vec of all the files in SCAN_PATH, recursive.
+        let files = generate_file_list(SCAN_PATH);
+        println!("Found {} files to scan.", files.len());
+        files
+    });
 
     // We use multithreaded mode for each, distributing the files across the processors for maximum
     // system-wide stress. Presumably this will lead to all threads being heavily used and stress
@@ -69,7 +73,7 @@ fn scan_many_files(c: &mut Criterion) {
 
     group.bench_function("folo_scan_many_files", |b| {
         b.to_async(FoloAdapter::default()).iter_batched(
-            || files.clone(),
+            || file_list.clone(),
             |files| {
                 folo::rt::spawn_on_any(move || async move {
                     let tasks = files
@@ -93,7 +97,7 @@ fn scan_many_files(c: &mut Criterion) {
 
     group.bench_function("tokio_scan_many_files", |b| {
         b.to_async(&tokio).iter_batched(
-            || files.clone(),
+            || file_list.clone(),
             |files| {
                 tokio::task::spawn(async move {
                     let tasks = files

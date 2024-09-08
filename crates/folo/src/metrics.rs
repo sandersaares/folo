@@ -12,6 +12,8 @@ use std::{
     time::Instant,
 };
 
+use crate::util::LowPrecisionInstant;
+
 pub type Magnitude = f64;
 
 /// Measures the rate and amplitude of events. Just create an instance via EventBuilder and start
@@ -41,7 +43,7 @@ impl Event {
         self.bag.insert(magnitude, count);
     }
 
-    pub fn observe_duration<F, R>(&self, f: F) -> R
+    pub fn observe_duration_high_precision<F, R>(&self, f: F) -> R
     where
         F: FnOnce() -> R,
     {
@@ -56,12 +58,43 @@ impl Event {
         result
     }
 
-    pub async fn observe_duration_async<F, FF, R>(&self, f: F) -> R
+    pub async fn observe_duration_async_high_precision<F, FF, R>(&self, f: F) -> R
     where
         F: FnOnce() -> FF,
         FF: Future<Output = R>,
     {
         let start = Instant::now();
+
+        let result = f().await;
+
+        let duration = start.elapsed().as_secs_f64();
+
+        self.bag.insert(duration, 1);
+
+        result
+    }
+
+    pub fn observe_duration_low_precision<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce() -> R,
+    {
+        let start = LowPrecisionInstant::now();
+
+        let result = f();
+
+        let duration = start.elapsed().as_secs_f64();
+
+        self.bag.insert(duration, 1);
+
+        result
+    }
+
+    pub async fn observe_duration_async_low_precision<F, FF, R>(&self, f: F) -> R
+    where
+        F: FnOnce() -> FF,
+        FF: Future<Output = R>,
+    {
+        let start = LowPrecisionInstant::now();
 
         let result = f().await;
 

@@ -1,16 +1,12 @@
 use super::Buffer;
-use crate::constants::GENERAL_SECONDS_BUCKETS;
+use crate::constants::GENERAL_LOW_PRECISION_SECONDS_BUCKETS;
 use crate::io::block::{BlockStore, PrepareBlock};
 use crate::io::{self, CompletionPort};
 use crate::metrics::{Event, EventBuilder, Magnitude};
-use windows::Win32::Foundation::ERROR_IO_PENDING;
-use windows::Win32::System::IO::{PostQueuedCompletionStatus, OVERLAPPED};
-use windows::{
-    core::Owned,
-    Win32::{
-        Foundation::{HANDLE, STATUS_SUCCESS, WAIT_TIMEOUT},
-        System::IO::{GetQueuedCompletionStatusEx, OVERLAPPED_ENTRY},
-    },
+use windows::Win32::System::IO::PostQueuedCompletionStatus;
+use windows::Win32::{
+    Foundation::{HANDLE, STATUS_SUCCESS, WAIT_TIMEOUT},
+    System::IO::{GetQueuedCompletionStatusEx, OVERLAPPED_ENTRY},
 };
 use windows_result::HRESULT;
 
@@ -74,7 +70,7 @@ impl Driver {
         // SAFETY: TODO
         unsafe {
             let result = GET_COMPLETED_DURATION.with(|x| {
-                x.observe_duration(|| {
+                x.observe_duration_low_precision(|| {
                     GetQueuedCompletionStatusEx(
                         self.completion_port.handle(),
                         completed.as_mut_slice(),
@@ -195,7 +191,7 @@ thread_local! {
 
     static GET_COMPLETED_DURATION: Event = EventBuilder::new()
         .name("io_async_completions_get_duration_seconds")
-        .buckets(GENERAL_SECONDS_BUCKETS)
+        .buckets(GENERAL_LOW_PRECISION_SECONDS_BUCKETS)
         .build()
         .unwrap();
 }

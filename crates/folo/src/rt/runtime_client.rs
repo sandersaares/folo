@@ -1,16 +1,15 @@
-use concurrent_queue::ConcurrentQueue;
-use core_affinity::CoreId;
-
 use super::remote_result_box::RemoteResultBox;
 use super::sync_agent::SyncAgentCommand;
 use super::{current_async_agent, ErasedSyncTask};
-use crate::constants::{self, GENERAL_SECONDS_BUCKETS};
+use crate::constants::{self, GENERAL_LOW_PRECISION_SECONDS_BUCKETS};
 use crate::io::IoWaker;
 use crate::metrics::{Event, EventBuilder};
 use crate::rt::{async_agent::AsyncAgentCommand, remote_task::RemoteTask, RemoteJoinHandle};
+use crate::util::LowPrecisionInstant;
+use concurrent_queue::ConcurrentQueue;
+use core_affinity::CoreId;
 use std::collections::HashMap;
 use std::sync::{mpsc, Arc};
-use std::time::Instant;
 use std::{cell::Cell, future::Future, sync::Mutex, thread};
 
 /// The multithreaded entry point for the Folo runtime, used for operations that affect more than
@@ -56,7 +55,7 @@ impl RuntimeClient {
         F: Future<Output = R> + 'static,
         R: Send + 'static,
     {
-        let started = Instant::now();
+        let started = LowPrecisionInstant::now();
 
         // Just because we are spawning a future on another thread does not mean it has to be a
         // thread-safe future (although the return value has to be). Therefore, we kajigger it
@@ -96,7 +95,7 @@ impl RuntimeClient {
         let result_box_rx = Arc::new(RemoteResultBox::new());
         let result_box_tx = Arc::clone(&result_box_rx);
 
-        let started = Instant::now();
+        let started = LowPrecisionInstant::now();
 
         let task = move || {
             SYNC_SPAWN_DELAY.with(|x| x.observe(started.elapsed().as_secs_f64()));
@@ -194,13 +193,13 @@ fn next_async_worker(max: usize) -> usize {
 thread_local! {
     static REMOTE_SPAWN_DELAY: Event = EventBuilder::new()
         .name("rt_remote_spawn_delay_seconds")
-        .buckets(GENERAL_SECONDS_BUCKETS)
+        .buckets(GENERAL_LOW_PRECISION_SECONDS_BUCKETS)
         .build()
         .unwrap();
 
     static SYNC_SPAWN_DELAY: Event = EventBuilder::new()
         .name("rt_sync_spawn_delay_seconds")
-        .buckets(GENERAL_SECONDS_BUCKETS)
+        .buckets(GENERAL_LOW_PRECISION_SECONDS_BUCKETS)
         .build()
         .unwrap();
 }

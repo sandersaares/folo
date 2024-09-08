@@ -1,3 +1,5 @@
+#![allow(dead_code)] // Under active development, dead code is fine.
+
 #[doc(hidden)]
 pub mod __private;
 mod constants;

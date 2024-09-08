@@ -1,6 +1,6 @@
 use super::ErasedSyncTask;
 use crate::{
-    constants::GENERAL_SECONDS_BUCKETS,
+    constants::GENERAL_LOW_PRECISION_SECONDS_BUCKETS,
     metrics::{self, Event, EventBuilder, ReportPage},
 };
 use concurrent_queue::ConcurrentQueue;
@@ -48,7 +48,7 @@ impl SyncAgent {
                     };
 
                     TASKS.with(Event::observe_unit);
-                    TASK_DURATION.with(|x| x.observe_duration(|| (task)()));
+                    TASK_DURATION.with(|x| x.observe_duration_low_precision(|| (task)()));
                 }
                 SyncAgentCommand::Terminate => {
                     event!(Level::TRACE, "Shutting down");
@@ -85,7 +85,7 @@ thread_local! {
 
     static TASK_DURATION: Event = EventBuilder::new()
         .name("rt_sync_task_duration_seconds")
-        .buckets(GENERAL_SECONDS_BUCKETS)
+        .buckets(GENERAL_LOW_PRECISION_SECONDS_BUCKETS)
         .build()
         .unwrap();
 }

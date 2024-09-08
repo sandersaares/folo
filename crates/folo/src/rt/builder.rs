@@ -15,7 +15,7 @@ use std::{
     collections::HashMap,
     fmt::{self, Debug, Formatter},
     rc::Rc,
-    sync::{mpsc, Arc, Mutex},
+    sync::{mpsc, Arc},
     thread,
 };
 use tracing::{event, Level};

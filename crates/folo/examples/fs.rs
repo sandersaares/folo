@@ -1,5 +1,5 @@
 use std::error::Error;
-use tracing::{event, level_filters::LevelFilter, Level};
+use tracing::{event, Level};
 
 //const FILE_PATH: &str = "Cargo.lock";
 const FILE_PATH: &str = "c:\\Games\\X4 - Foundations\\01.dat";
@@ -10,7 +10,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
     let stdout_subscriber = tracing_subscriber::fmt()
         // NOTE: Enabling trace level logging slows everything way down because tracing is
         // synchronous (application code is paused while it is slowly written to stdout).
-        //.with_max_level(LevelFilter::TRACE)
+        //.with_max_level(level_filters::LevelFilter::TRACE)
         .finish();
 
     tracing::subscriber::set_global_default(stdout_subscriber)?;

@@ -10,7 +10,6 @@ use crate::{
 };
 use core_affinity::CoreId;
 use std::{
-    any::type_name,
     cell::{Cell, RefCell},
     collections::VecDeque,
     fmt::{self, Debug, Formatter},
@@ -92,9 +91,6 @@ impl AsyncAgent {
         F: Future<Output = R> + 'static,
         R: 'static,
     {
-        let future_type = type_name::<F>();
-        event!(Level::TRACE, future_type);
-
         assert!(
             !self.shutting_down.get(),
             "local tasks can only be spawned by the current thread; no call path takes us to spawning local tasks when we have already started local shutdown"

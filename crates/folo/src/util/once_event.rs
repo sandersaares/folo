@@ -3,7 +3,7 @@ use super::{
 };
 use negative_impl::negative_impl;
 use std::{
-    cell::RefCell,
+    cell::{RefCell, UnsafeCell},
     future::Future,
     mem,
     pin::Pin,
@@ -37,12 +37,16 @@ pub type OnceEventEmbeddedStorage<T> = RefCell<LocalCell<Option<OnceEvent<T>>>>;
 /// The event is single-threaded.
 #[derive(Debug)]
 pub struct OnceEvent<T> {
-    state: RefCell<EventState<T>>,
+    // We only have a get() and a set() that access the state and we guarantee this happens on the
+    // same thread, so there is no point in wasting cycles on borrow counting at runtime. We
+    // downgrade this from a RefCell to an UnsafeCell to remove the overhead of borrow counting.
+    state: UnsafeCell<EventState<T>>,
 }
 
 impl<T> OnceEvent<T> {
     fn set(&self, result: T) {
-        let mut state = self.state.borrow_mut();
+        // SAFETY: See comments on field.
+        let state = unsafe { &mut *self.state.get() };
 
         match &*state {
             EventState::NotSet => {
@@ -67,7 +71,8 @@ impl<T> OnceEvent<T> {
 
     // We are intended to be polled via Future::poll, so we have an equivalent signature here.
     fn poll(&self, waker: &Waker) -> Option<T> {
-        let mut state = self.state.borrow_mut();
+        // SAFETY: See comments on field.
+        let state = unsafe { &mut *self.state.get() };
 
         match &*state {
             EventState::NotSet => {
@@ -98,7 +103,7 @@ impl<T> OnceEvent<T> {
 
     fn new() -> Self {
         Self {
-            state: RefCell::new(EventState::NotSet),
+            state: UnsafeCell::new(EventState::NotSet),
         }
     }
 

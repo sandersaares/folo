@@ -1,9 +1,8 @@
 use crate::{
-    constants::GENERAL_SECONDS_BUCKETS,
+    constants::GENERAL_LOW_PRECISION_SECONDS_BUCKETS,
     metrics::{Event, EventBuilder},
-    rt::erased_async_task::ErasedResultAsyncTask,
-    rt::waker::WakeSignal,
-    util::PinnedSlabChain,
+    rt::{erased_async_task::ErasedResultAsyncTask, waker::WakeSignal},
+    util::{LowPrecisionInstant, PinnedSlabChain},
 };
 use negative_impl::negative_impl;
 use pin_project::pin_project;
@@ -13,7 +12,6 @@ use std::{
     fmt::{self, Debug, Formatter},
     pin::Pin,
     task,
-    time::Instant,
 };
 
 type TaskKey = usize;
@@ -71,7 +69,7 @@ pub struct AsyncTaskEngine {
     shutting_down: bool,
 
     // Used to report interval between cycles.
-    last_cycle_ended: Option<Instant>,
+    last_cycle_ended: Option<LowPrecisionInstant>,
 }
 
 impl AsyncTaskEngine {
@@ -110,7 +108,7 @@ impl AsyncTaskEngine {
     }
 
     pub fn execute_cycle(&mut self) -> CycleResult {
-        let cycle_start = Instant::now();
+        let cycle_start = LowPrecisionInstant::now();
 
         if let Some(last_end) = self.last_cycle_ended {
             CYCLE_INTERVAL.with(|x| x.observe(cycle_start.duration_since(last_end).as_secs_f64()));
@@ -133,7 +131,8 @@ impl AsyncTaskEngine {
 
             let task = self.tasks.get(key);
 
-            let poll_result = TASK_POLL_DURATION.with(|x| x.observe_duration(|| task.poll()));
+            let poll_result =
+                TASK_POLL_DURATION.with(|x| x.observe_duration_low_precision(|| task.poll()));
 
             match poll_result {
                 task::Poll::Ready(()) => {
@@ -156,10 +155,7 @@ impl AsyncTaskEngine {
 
         self.drop_inert_tasks();
 
-        #[cfg(test)]
-        self.tasks.integrity_check();
-
-        let cycle_end = Instant::now();
+        let cycle_end = LowPrecisionInstant::now();
         self.last_cycle_ended = Some(cycle_end);
 
         CYCLE_DURATION.with(|x| x.observe(cycle_end.duration_since(cycle_start).as_secs_f64()));
@@ -355,19 +351,19 @@ thread_local! {
 
     static CYCLE_INTERVAL: Event = EventBuilder::new()
         .name("rt_async_cycle_interval_seconds")
-        .buckets(GENERAL_SECONDS_BUCKETS)
+        .buckets(GENERAL_LOW_PRECISION_SECONDS_BUCKETS)
         .build()
         .unwrap();
 
     static CYCLE_DURATION: Event = EventBuilder::new()
         .name("rt_async_cycle_duration_seconds")
-        .buckets(GENERAL_SECONDS_BUCKETS)
+        .buckets(GENERAL_LOW_PRECISION_SECONDS_BUCKETS)
         .build()
         .unwrap();
 
     static TASK_POLL_DURATION: Event = EventBuilder::new()
         .name("rt_async_task_poll_duration_seconds")
-        .buckets(GENERAL_SECONDS_BUCKETS)
+        .buckets(GENERAL_LOW_PRECISION_SECONDS_BUCKETS)
         .build()
         .unwrap();
 }

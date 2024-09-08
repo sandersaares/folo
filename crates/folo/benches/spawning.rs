@@ -1,7 +1,6 @@
-use std::thread;
-
 use criterion::{criterion_group, criterion_main, Criterion};
 use folo::{criterion::FoloAdapter, rt::RemoteJoinHandle};
+use std::thread;
 
 criterion_group!(benches, spawn_and_await_many);
 criterion_main!(benches);
