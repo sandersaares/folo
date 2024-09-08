@@ -53,9 +53,13 @@ debug = "full"
 panic = "abort"
 
 [[bench]]
-name = "spawning"
+name = "io"
 harness = false
 
 [[bench]]
-name = "io"
+name = "once_event"
+harness = false
+
+[[bench]]
+name = "spawning"
 harness = false

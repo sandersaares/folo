@@ -270,12 +270,12 @@ mod tests {
         let (sender, mut receiver) = OnceEvent::new_in_ref(&storage);
 
         let cx = &mut task::Context::from_waker(noop_waker_ref());
+
         let result = receiver.poll_unpin(cx);
         assert_eq!(result, task::Poll::Pending);
 
         sender.set(42);
 
-        let cx = &mut task::Context::from_waker(noop_waker_ref());
         let result = receiver.poll_unpin(cx);
         assert_eq!(result, task::Poll::Ready(42));
     }
@@ -288,6 +288,7 @@ mod tests {
         sender.set(42);
 
         let cx = &mut task::Context::from_waker(noop_waker_ref());
+
         let result = receiver.poll_unpin(cx);
         assert_eq!(result, task::Poll::Ready(42));
     }
@@ -298,12 +299,12 @@ mod tests {
         let (sender, mut receiver) = OnceEvent::new_in_rc(Rc::clone(&storage));
 
         let cx = &mut task::Context::from_waker(noop_waker_ref());
+
         let result = receiver.poll_unpin(cx);
         assert_eq!(result, task::Poll::Pending);
 
         sender.set(42);
 
-        let cx = &mut task::Context::from_waker(noop_waker_ref());
         let result = receiver.poll_unpin(cx);
         assert_eq!(result, task::Poll::Ready(42));
     }
@@ -316,6 +317,7 @@ mod tests {
         sender.set(42);
 
         let cx = &mut task::Context::from_waker(noop_waker_ref());
+
         let result = receiver.poll_unpin(cx);
         assert_eq!(result, task::Poll::Ready(42));
     }
@@ -326,12 +328,12 @@ mod tests {
         let (sender, mut receiver) = unsafe { OnceEvent::new_in_unsafe(storage.as_ref()) };
 
         let cx = &mut task::Context::from_waker(noop_waker_ref());
+
         let result = receiver.poll_unpin(cx);
         assert_eq!(result, task::Poll::Pending);
 
         sender.set(42);
 
-        let cx = &mut task::Context::from_waker(noop_waker_ref());
         let result = receiver.poll_unpin(cx);
         assert_eq!(result, task::Poll::Ready(42));
     }
