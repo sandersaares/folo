@@ -6,7 +6,7 @@ const SUB_BATCH_SIZE: usize = 100;
 
 #[folo::main(print_metrics)]
 async fn main() -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
-    for _ in 0..10000 {
+    for _ in 0..100 {
         let tasks = (0..BATCH_SIZE)
             .into_iter()
             .map(|_| {
