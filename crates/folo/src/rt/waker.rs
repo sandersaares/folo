@@ -3,7 +3,7 @@ use std::{
     cell::UnsafeCell,
     pin::Pin,
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
-    task::{RawWaker, RawWakerVTable, Waker}, thread,
+    task::{RawWaker, RawWakerVTable, Waker},
 };
 
 // TODO: Double-check the atomics ordering here with the help of someone smarter.
