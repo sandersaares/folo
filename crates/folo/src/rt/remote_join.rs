@@ -1,6 +1,12 @@
-use crate::rt::{remote_result_box::RemoteResultBox, LocalJoinHandle};
+use super::remote_waker::RemoteWaker;
+use crate::{
+    io::IoWaker,
+    rt::{remote_result_box::RemoteResultBox, LocalJoinHandle},
+};
 use futures::{channel::oneshot, FutureExt};
-use std::{future::Future, pin::Pin, sync::Arc, task};
+use std::future::Future;
+use std::sync::Arc;
+use std::{pin::Pin, task};
 
 /// Allows a unit of work to be awaited and its result to be observed on any thread.
 ///
@@ -19,9 +25,9 @@ impl<R> RemoteJoinHandle<R>
 where
     R: Send + 'static,
 {
-    pub(crate) fn new(result: Arc<RemoteResultBox<R>>) -> Self {
+    pub(crate) fn new(result: Arc<RemoteResultBox<R>>, io_waker: Option<IoWaker>) -> Self {
         Self {
-            model: ImplementationModel::RemoteTask { result },
+            model: ImplementationModel::RemoteTask { result, io_waker },
         }
     }
 
@@ -68,10 +74,21 @@ where
                     task::Poll::Ready(Err(_)) | task::Poll::Pending => task::Poll::Pending,
                 }
             }
-            ImplementationModel::RemoteTask { result } => match result.poll(cx.waker()) {
-                Some(result) => task::Poll::Ready(result),
-                None => task::Poll::Pending,
-            },
+            ImplementationModel::RemoteTask { result, io_waker } => {
+                let poll_result = match io_waker {
+                    None => result.poll(cx.waker()),
+                    Some(io_waker) => {
+                        let composite_waker =
+                            RemoteWaker::new(io_waker.clone(), cx.waker().clone());
+                        result.poll(&composite_waker.into())
+                    }
+                };
+
+                match poll_result {
+                    Some(result) => task::Poll::Ready(result),
+                    None => task::Poll::Pending,
+                }
+            }
         }
     }
 }
@@ -79,10 +96,16 @@ where
 #[derive(Debug)]
 enum ImplementationModel<R> {
     // We are wrapping a `LocalJoinHandle`, which will send the result via oneshot channel.
-    LocalJoinHandle { result_rx: oneshot::Receiver<R> },
+    LocalJoinHandle {
+        result_rx: oneshot::Receiver<R>,
+    },
 
-    // We are observing a `RemoteTask` to obtain the result from it.
-    RemoteTask { result: Arc<RemoteResultBox<R>> },
+    // We are observing a `RemoteTask` to obtain the result from it. We use a special waker to
+    // also wake up our thread from I/O sleep if it is sleeping.
+    RemoteTask {
+        result: Arc<RemoteResultBox<R>>,
+        io_waker: Option<IoWaker>,
+    },
 }
 
 impl<R> From<LocalJoinHandle<R>> for RemoteJoinHandle<R>

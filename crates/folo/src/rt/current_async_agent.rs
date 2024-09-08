@@ -38,6 +38,19 @@ where
     })
 }
 
+/// Executes a closure that receives the current thread's I/O driver for the runtime that owns the
+/// current thread. This is the mechanism used to start I/O operations. Only available on async
+/// worker threads because only those threads can perform I/O using the Folo runtime.
+pub fn try_with_io<F, R>(f: F) -> Option<R>
+where
+    F: FnOnce(&mut io::Driver) -> R,
+{
+    CURRENT_AGENT.with_borrow(|agent| match agent {
+        Some(agent) => Some(f(&mut agent.io().borrow_mut())),
+        None => None,
+    })
+}
+
 pub fn set(value: Rc<AsyncAgent>) {
     CURRENT_AGENT.with_borrow_mut(|agent| {
         if agent.is_some() {

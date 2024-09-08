@@ -2,7 +2,7 @@ use super::remote_result_box::RemoteResultBox;
 use super::sync_agent::SyncAgentCommand;
 use super::{current_async_agent, ErasedSyncTask};
 use crate::constants::{self, GENERAL_LOW_PRECISION_SECONDS_BUCKETS};
-use crate::io::IoWaker;
+use crate::io::{self, IoWaker};
 use crate::metrics::{Event, EventBuilder};
 use crate::rt::{async_agent::AsyncAgentCommand, remote_task::RemoteTask, RemoteJoinHandle};
 use crate::util::LowPrecisionInstant;
@@ -64,12 +64,15 @@ impl RuntimeClient {
         let thread_safe_wrapper_future = async move {
             REMOTE_SPAWN_DELAY.with(|x| x.observe(started.elapsed().as_secs_f64()));
 
+            // TODO: This seems inefficient. Surely we can do better?
+            // This is: RemoteJoinHandle -> RemoteJoinHandle -> LocalJoinHandle -> LocalJoinHandle
+            // Desired is: RemoteJoinHandle -> LocalJoinHandle
             let join_handle: RemoteJoinHandle<R> = crate::rt::spawn(future_fn()).into();
             join_handle.await
         };
 
         let task = RemoteTask::new(thread_safe_wrapper_future);
-        let join_handle = task.join_handle();
+        let join_handle = task.join_handle(self.current_thread_io_waker());
 
         let worker_index = next_async_worker(self.async_command_txs.len());
 
@@ -116,7 +119,7 @@ impl RuntimeClient {
             _ = tx.send(SyncAgentCommand::CheckForTasks);
         }
 
-        RemoteJoinHandle::new(result_box_rx)
+        RemoteJoinHandle::new(result_box_rx, self.current_thread_io_waker())
     }
 
     /// Commands the runtime to stop processing tasks and shut down. Safe to call multiple times.
@@ -176,6 +179,10 @@ impl RuntimeClient {
         {
             join_handle.join().expect("worker thread panicked");
         }
+    }
+
+    fn current_thread_io_waker(&self) -> Option<IoWaker> {
+        current_async_agent::try_with_io(|io| io.waker())
     }
 }
 

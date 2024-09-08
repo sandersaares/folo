@@ -167,6 +167,8 @@ impl IoWaker {
 
 // SAFETY: It is fine to use a completion port across threads.
 unsafe impl Send for IoWaker {}
+// SAFETY: It is fine to use a completion port across threads.
+unsafe impl Sync for IoWaker {}
 
 const ASYNC_COMPLETIONS_DEQUEUED_BUCKETS: &[Magnitude] = &[0.0, 1.0, 16.0, 64.0, 256.0, 512.0];
 

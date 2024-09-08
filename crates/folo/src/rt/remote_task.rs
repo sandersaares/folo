@@ -1,5 +1,9 @@
-use crate::rt::{
-    erased_async_task::ErasedResultAsyncTask, remote_result_box::RemoteResultBox, RemoteJoinHandle,
+use crate::{
+    io::IoWaker,
+    rt::{
+        erased_async_task::ErasedResultAsyncTask, remote_result_box::RemoteResultBox,
+        RemoteJoinHandle,
+    },
 };
 use std::{cell::RefCell, future::Future, pin::Pin, sync::Arc, task};
 
@@ -38,9 +42,9 @@ where
         }
     }
 
-    pub fn join_handle(&self) -> RemoteJoinHandle<R> {
+    pub fn join_handle(&self, io_waker: Option<IoWaker>) -> RemoteJoinHandle<R> {
         // TODO: Protect this so only one join handle can be taken.
-        RemoteJoinHandle::new(Arc::clone(&self.result))
+        RemoteJoinHandle::new(Arc::clone(&self.result), io_waker)
     }
 }
 
