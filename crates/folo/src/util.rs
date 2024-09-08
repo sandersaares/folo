@@ -1,3 +1,4 @@
+pub mod once_event;
 mod owned_handle;
 mod pinned_slab;
 mod pinned_slab_chain;
