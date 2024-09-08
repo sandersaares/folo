@@ -163,6 +163,9 @@ impl AsyncAgent {
         // which only dequeues already existing I/O completions and does not wait for new ones.
         let mut allow_io_sleep = false;
 
+        // We are the only one referencing the engine, so just keep the reference around for good.
+        let mut engine = self.engine.borrow_mut();
+
         loop {
             match self.process_commands() {
                 ProcessCommandsResult::ContinueAfterCommand => {
@@ -191,12 +194,12 @@ impl AsyncAgent {
                         // tasks or external entities. We need to accept them into our regular process
                         // before dropping them - they are not safe to drop just because they are new.
                         while let Some(erased_task) = self.new_tasks.borrow_mut().pop_front() {
-                            self.engine.borrow_mut().enqueue_erased(erased_task);
+                            engine.enqueue_erased(erased_task);
                         }
 
                         // Start cleaning up the async task engine. This may require some time if there
                         // are foreign threads holding our wakers. We wait for all wakers to be dropped.
-                        self.engine.borrow_mut().begin_shutdown();
+                        engine.begin_shutdown();
 
                         // TODO: Does I/O driver need shutdown logic as well? How do they relate?
                     }
@@ -217,11 +220,15 @@ impl AsyncAgent {
 
             // TODO: Process timers.
 
-            while let Some(erased_task) = self.new_tasks.borrow_mut().pop_front() {
-                self.engine.borrow_mut().enqueue_erased(erased_task);
+            {
+                let mut new_tasks = self.new_tasks.borrow_mut();
+
+                while let Some(erased_task) = new_tasks.pop_front() {
+                    engine.enqueue_erased(erased_task);
+                }
             }
 
-            match self.engine.borrow_mut().execute_cycle() {
+            match engine.execute_cycle() {
                 CycleResult::Continue => {
                     // The async task engine believes there may be more work to do, so no sleep.
                     allow_io_sleep = false;
