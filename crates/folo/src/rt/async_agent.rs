@@ -1,10 +1,11 @@
+use super::erased_async_task::ErasedResultAsyncTask;
 use crate::{
     io,
     metrics::{self, Event, EventBuilder, ReportPage},
     rt::{
         async_task_engine::{AsyncTaskEngine, CycleResult},
         local_task::LocalTask,
-        LocalErasedAsyncTask, LocalJoinHandle, RemoteErasedAsyncTask,
+        LocalJoinHandle,
     },
 };
 use core_affinity::CoreId;
@@ -14,6 +15,7 @@ use std::{
     collections::VecDeque,
     fmt::{self, Debug, Formatter},
     future::Future,
+    pin::Pin,
     sync::mpsc,
 };
 use tracing::{event, Level};
@@ -24,7 +26,7 @@ use tracing::{event, Level};
 ///
 /// An agent has multiple lifecycle stages:
 /// 1. Starting up - the agent is interacting with the runtime builder to set up the mutual state
-///    and communication channels so all the pieces can oprerate together.
+///    and communication channels so all the pieces can operate together.
 /// 2. Running - the agent is executing tasks and processing commands from other threads.
 /// 3. Shutting down - the agent is cleaning up and preparing to terminate.
 ///
@@ -46,20 +48,13 @@ pub struct AsyncAgent {
 
     // Tasks that have been enqueued but have not yet been handed over to the async task engine.
     // Includes both locally queued tasks and tasks enqueued from another thread, which are both
-    // unified to the `LocalErasedTask` type.
-    new_tasks: RefCell<VecDeque<LocalErasedAsyncTask>>,
+    // unified to the `ErasedResultAsyncTask` type.
+    new_tasks: RefCell<VecDeque<Pin<Box<dyn ErasedResultAsyncTask>>>>,
 
-    // If we are shutting down, we ignore all requests to schedule new tasks and do our best to
+    // If we are shutting down, we try ignore requests to schedule new tasks and do our best to
     // cleanup ASAP.
     shutting_down: Cell<bool>,
 }
-
-// TODO: This RefCell business is ugly, can we do better?
-// It is how it is because it is legal to reference the current thread's agent via `Rc` to
-// command it. So in principle, when the engine is processing tasks, one of those tasks could
-// call back into the agent and enqueue more tasks. By separating everything via RefCell we make
-// that possible. However, it is a bit error-prone (you have to be careful that no publicly
-// accessible methods lead to conflicting RefCell borrows or we hit a panic).
 
 impl AsyncAgent {
     pub fn new(
@@ -98,23 +93,39 @@ impl AsyncAgent {
         R: 'static,
     {
         let future_type = type_name::<F>();
+        event!(Level::TRACE, future_type);
+
+        assert!(
+            !self.shutting_down.get(),
+            "local tasks can only be spawned by the current thread; no call path takes us to spawning local tasks when we have already started local shutdown"
+        );
 
         LOCAL_TASKS.with(Event::observe_unit);
 
-        let task = LocalTask::new(future);
-        let join_handle = task.join_handle();
+        // SAFETY: We must ensure that the LocalTask is not dropped while any references to its
+        // outcome exist (i.e. as long as the join handle is referenced by someone). The join handle
+        // is returned from this function and may be referenced by any other task owned by the same
+        // agent (that is what most user-initiated tasks will do - wait on other tasks).
+        //
+        // The specific type of the LocalTask is erased immediately after this function and it is
+        // mixed together with RemoteTasks in `self.new_tasks` as `Pin<Box<dyn ErasedTask>>`, after
+        // which they are all given to the async task engine which does not differentiate.
+        //
+        // `ErasedTask::is_inert()` informs the async task engine when the task is safe to drop.
+        // This is always true for remote tasks but for local tasks it is true when references to
+        // The embedded data structures have been dropped.
+        //
+        // But wait, if we are shutting down and there is another task that depends on it, what will
+        // even cause the reference to drop? After all, we are not executing tasks anymore during
+        // shutdown! The answer is `ErasedTask::clear()` which drops the future and any captured
+        // state such as the join handle! The task engine also relies on that capability to drop
+        // wakers and break waker reference cycles in a similar manner.
+        let mut task = unsafe { LocalTask::new(future) };
+        let join_handle = task.as_mut().join_handle();
 
-        if self.shutting_down.get() {
-            event!(
-                Level::DEBUG,
-                message = "already shutting down, enqueued task will never complete",
-                future_type
-            );
-            return join_handle;
-        }
-
-        event!(Level::TRACE, future_type);
-        self.new_tasks.borrow_mut().push_back(Box::pin(task));
+        // We queue up the tasks because we may be being called from within the async task engine
+        // itself, so we cannot call back into it immediately.
+        self.new_tasks.borrow_mut().push_back(task);
         join_handle
     }
 
@@ -166,21 +177,33 @@ impl AsyncAgent {
                     // No commands received - we have no information saying we have non-I/O work to do.
                 }
                 ProcessCommandsResult::Terminate => {
-                    // This *starts* our shutdown - we still need to wait for the async task
-                    // engine to clean up.
-                    event!(
-                        Level::TRACE,
-                        "received terminate command; shutdown process starting"
-                    );
+                    // Given various eventual consistency scenarios that may apply to the
+                    // coordination of worker threads, it is conceivable that somehow we might get
+                    // multiple shutdown commands. Just ignore any extra ones - we cannot be
+                    // shutting down any harder than we already are.
+                    if !self.shutting_down.get() {
+                        // This *starts* our shutdown - we still need to wait for the async task
+                        // engine to clean up.
+                        event!(
+                            Level::TRACE,
+                            "received terminate command; shutdown process starting"
+                        );
 
-                    // If some new tasks are queued, dump them - all cancelled.
-                    self.new_tasks.borrow_mut().clear();
+                        self.shutting_down.set(true);
 
-                    // Start cleaning up the async task engine. This may require some time if there
-                    // are foreign threads holding our wakers. We wait for all wakers to be dropped.
-                    self.engine.borrow_mut().begin_shutdown();
+                        // The tasks in this list may own resources that are already referenced by other
+                        // tasks or external entities. We need to accept them into our regular process
+                        // before dropping them - they are not safe to drop just because they are new.
+                        while let Some(erased_task) = self.new_tasks.borrow_mut().pop_front() {
+                            self.engine.borrow_mut().enqueue_erased(erased_task);
+                        }
 
-                    // TODO: Shutdown I/O driver and anything else relevant as well.
+                        // Start cleaning up the async task engine. This may require some time if there
+                        // are foreign threads holding our wakers. We wait for all wakers to be dropped.
+                        self.engine.borrow_mut().begin_shutdown();
+
+                        // TODO: Does I/O driver need shutdown logic as well? How do they relate?
+                    }
                 }
             }
 
@@ -228,19 +251,39 @@ impl AsyncAgent {
 
     fn process_commands(&self) -> ProcessCommandsResult {
         let mut received_commands = false;
+        let mut received_terminate = false;
 
         loop {
             match self.command_rx.try_recv() {
                 Ok(AsyncAgentCommand::EnqueueTask { erased_task }) => {
+                    // This is how remote tasks arrive at us. If we are shutting down then we do NOT
+                    // want to process them and will simply drop them on the floor. This is safe
+                    // because remote tasks are expected to always be inert (they hold no resources
+                    // that need special cleanup, at least not yet, because they have no local
+                    // presence yet).
+                    if self.shutting_down.get() || received_terminate {
+                        assert!(
+                            erased_task.is_inert(),
+                            "all remote tasks must be always inert"
+                        );
+                        continue;
+                    }
+
                     received_commands = true;
                     REMOTE_TASKS.with(Event::observe_unit);
                     self.new_tasks.borrow_mut().push_back(erased_task);
                 }
                 Ok(AsyncAgentCommand::Terminate) => {
-                    return ProcessCommandsResult::Terminate;
+                    // We continue processing commands even after the terminate signal because
+                    // we need to clean up any messages received during the shutdown process,
+                    // which can take some time and it feels better to avoid any data buildup.
+                    received_terminate = true;
+                    continue;
                 }
                 Err(mpsc::TryRecvError::Empty) => {
-                    if received_commands {
+                    if received_terminate {
+                        return ProcessCommandsResult::Terminate;
+                    } else if received_commands {
                         return ProcessCommandsResult::ContinueAfterCommand;
                     } else {
                         return ProcessCommandsResult::ContinueWithoutCommands;
@@ -275,7 +318,7 @@ impl Debug for AsyncAgent {
 
 pub enum AsyncAgentCommand {
     EnqueueTask {
-        erased_task: RemoteErasedAsyncTask,
+        erased_task: Pin<Box<dyn ErasedResultAsyncTask + Send>>,
     },
 
     /// Shuts down the worker thread immediately, without waiting for any pending operations to

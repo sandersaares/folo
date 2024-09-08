@@ -1,7 +1,8 @@
 use crate::{
     constants::GENERAL_SECONDS_BUCKETS,
     metrics::{Event, EventBuilder},
-    rt::{waker::WakeSignal, LocalErasedAsyncTask},
+    rt::erased_async_task::ErasedResultAsyncTask,
+    rt::waker::WakeSignal,
     util::PinnedSlabChain,
 };
 use negative_impl::negative_impl;
@@ -10,7 +11,6 @@ use std::{
     cell::RefCell,
     collections::VecDeque,
     fmt::{self, Debug, Formatter},
-    future,
     pin::Pin,
     task,
     time::Instant,
@@ -25,22 +25,26 @@ type TaskKey = usize;
 ///
 /// The engine must be shut down by the caller before being dropped or it will panic in drop().
 ///
-/// A critical component of the shutdown process is the safe destruction of the wakers, some of
-/// which may still be held by foreign threads or arbitrary entities outside the Folo runtime who
-/// have chosen to poll the tasks we manage. We cannot control when these wakers are dropped, so
-/// we must keep alive the data structures until all wakers have become inert.
+/// A critical component of the shutdown process is the safe destruction of cross-references between
+/// tasks, both remote and local. These can exist in different forms:
+///
+/// * A local task may hold a reference to the join handle of another local task.
+/// * A local or remote task may hold a reference to the wake signal of a local task.
+///
+/// Some of these references may still be held by foreign threads or arbitrary entities outside the
+/// Folo runtime who have chosen to poll the tasks we manage (e.g. in case of wakers). We cannot
+/// control when these wakers are dropped, so we must keep alive the data structures until all
+/// wakers have become inert. For other data structures, we can control it to some extent.
 ///
 /// This means the shutdown process is divided into two phases:
 ///
-/// 1. We stop processing work and drop any state that we can drop (e.g. we drop futures that we
-///    will never poll again, so any data they reference gets dropped ASAP).
-/// 2. We wait for all wakers to become inert, after which we drop the data structures required
-///    by the wakers (which is hopefully a small subset).
+/// 1. We stop processing work and call `clear()` on all local tasks to drop any state that may
+///    potentially hold references to other local tasks. For example, join handles and wakers.
+/// 2. We wait for all cross-referenceable data structures like wakers and erased tasks to become
+///    inert, after which we drop them. Ideally, this is a small subset of the total tasks.
 ///
-/// The second phase happens in the background - publicly the Folo runtime is considered shut down
-/// already when the first phase completes. The second phase is merely a delayed memory release
-/// while the worker thread sticks around to clean up after itself and should have no functional
-/// side-effects.
+/// The second phase happens independently in the background after a `RuntimeClient::stop()` is
+/// issued. Callers that call `RuntimeClient::wait()` will wait for the cleanup to complete, though.
 #[derive(Debug)]
 pub struct AsyncTaskEngine {
     // We use a pinned slab here to allocate the tasks in-place and avoid allocation churn.
@@ -54,17 +58,16 @@ pub struct AsyncTaskEngine {
     // may arrive from within the poll itself, which implies that we need to consider a future part
     // of the inactive set immediately before polling it, and be ready to move it back to the active
     // set during/after the poll if a waker is signaled during a poll. Also implies engine is not'
-    // locked during a poll, so new activity can occur (not only wakes but also new tasks being added).
+    // locked during a poll, so new activity can occur (not only wakes but also new tasks being
+    // added).
     inactive: VecDeque<TaskKey>,
 
-    // These tasks have completed and we are waiting for the wake signals to become inert before we
-    // can remove them from the slab. During engine execution, we regularly perform this cleanup,
-    // although we do not bother with it in the shutdown phase because we will drop the whole
-    // container at the end anyway.
+    // These tasks have completed and we are waiting for the references to them to be dropped (for
+    // the tasks to become inert) so we can finish releasing resources.
     completed: VecDeque<TaskKey>,
 
     // In shutdown mode, all tasks are considered completed and the only thing we do is wait for
-    // wakers to become inert (which may be driven by uncontrollable actions of foreign threads).
+    // them to become inert (which may be driven by uncontrollable actions of foreign threads).
     shutting_down: bool,
 
     // Used to report interval between cycles.
@@ -86,7 +89,10 @@ impl AsyncTaskEngine {
     /// Enqueues a future whose return type has been erased. It will be polled but no result
     /// will be made available by the async task engine - it is expected that some other mechanism
     /// is used to observe the result.
-    pub fn enqueue_erased(&mut self, erased_task: LocalErasedAsyncTask) {
+    pub fn enqueue_erased(&mut self, erased_task: Pin<Box<dyn ErasedResultAsyncTask>>) {
+        // TODO: Do we need to accept tasks when shutting down so we can do cleanup properly?
+        // What if the new tasks being scheduled hold references to old tasks? Or vice versa?
+
         // It is possible due to the eventually consistent nature between worker commands that a
         // worker will receive a new task after shutdown has already begun. We expect the worker
         // to perform the necessary filtering to prevent that from ever reaching the task engine.
@@ -95,13 +101,12 @@ impl AsyncTaskEngine {
             "cannot enqueue tasks after shutdown has begun"
         );
 
-        let task = Task::new(erased_task);
+        // SAFETY: We are responsible for not dropping the task until it is inert. We accomplish
+        // this by only removing tasks after they pass through the `completed` list and indicate
+        // that they have become inert.
+        let task = unsafe { Task::new(erased_task) };
 
-        let inserter = self.tasks.begin_insert();
-        let key = inserter.index();
-        inserter.insert(task);
-
-        self.active.push_back(key);
+        self.active.push_back(self.tasks.insert(task));
     }
 
     pub fn execute_cycle(&mut self) -> CycleResult {
@@ -128,13 +133,7 @@ impl AsyncTaskEngine {
 
             let task = self.tasks.get(key);
 
-            TASK_POLLED.with(Event::observe_unit);
-
-            // SAFETY: After this, we are required to keep the task alive until the wakers are all
-            // inert. We do this in the async task agent by keeping the thread alive until all
-            // wakers have become inert.
-            let poll_result =
-                TASK_POLL_DURATION.with(|x| x.observe_duration(|| unsafe { task.poll() }));
+            let poll_result = TASK_POLL_DURATION.with(|x| x.observe_duration(|| task.poll()));
 
             match poll_result {
                 task::Poll::Ready(()) => {
@@ -155,7 +154,7 @@ impl AsyncTaskEngine {
             had_activity = true;
         }
 
-        self.drop_completed_tasks();
+        self.drop_inert_tasks();
 
         #[cfg(test)]
         self.tasks.integrity_check();
@@ -208,11 +207,11 @@ impl AsyncTaskEngine {
         had_activity
     }
 
-    fn drop_completed_tasks(&mut self) {
+    fn drop_inert_tasks(&mut self) {
         self.completed.retain(|key| {
             let task = self.tasks.get(*key);
 
-            let is_inert = task.wake_signal.is_inert();
+            let is_inert = task.is_inert();
 
             if is_inert {
                 TASKS_DROPPED.with(Event::observe_unit);
@@ -237,18 +236,25 @@ impl AsyncTaskEngine {
         TASKS_CANCELED_ON_SHUTDOWN
             .with(|x| x.observe((self.active.len() + self.inactive.len()) as f64));
 
-        self.completed.append(&mut self.active);
-        self.completed.append(&mut self.inactive);
+        // We call `clear()` on all tasks that we are canceling. This will drop the maximum amount
+        // of internal state such as any captured variables that may be holding on to join handles
+        // and/or wakers, making it possible to start dropping the tasks. Not all tasks become inert
+        // because of this - there may also be callers on other threads holding on to our wakers but
+        // as shutdown happens simultaneously on all threads, we know they will also soon be
+        // canceled and permit us to release resources.
 
-        // We drop the futures that are not yet completed. This eager cleanup is critical because
-        // these futures themselves may hold some of the wakers we want to make inert, creating a
-        // reference cycle. We must drop all futures (on all worker threads) to break the cycles.
-        // We implement this by replacing all the futures with an already-completed future (to
-        // avoid having to check for "empty" tasks on every iteration).
-        for key in &self.completed {
-            let task = self.tasks.get(*key);
-            _ = task.erased_task.replace(Box::pin(future::ready(())));
-        }
+        // We call .count() to force the iterator to be evaluated. We do not care about the count.
+        _ = self
+            .active
+            .drain(..)
+            .chain(self.inactive.drain(..))
+            .map(|key| {
+                let task = self.tasks.get(key);
+                task.project_ref().inner.borrow().clear();
+
+                self.completed.push_back(key);
+            })
+            .count();
     }
 }
 
@@ -279,32 +285,37 @@ pub enum CycleResult {
 
 #[pin_project]
 struct Task {
-    erased_task: RefCell<LocalErasedAsyncTask>,
+    // Behind this may be either a local or a remote task - we do not know or care which.
+    inner: RefCell<Pin<Box<dyn ErasedResultAsyncTask>>>,
 
     #[pin]
     wake_signal: WakeSignal,
 }
 
 impl Task {
-    fn new(erased_task: LocalErasedAsyncTask) -> Self {
+    /// # Safety
+    ///
+    /// The task must not be dropped until it is inert.
+    unsafe fn new(inner: Pin<Box<dyn ErasedResultAsyncTask>>) -> Self {
         Self {
-            erased_task: RefCell::new(erased_task),
+            inner: RefCell::new(inner),
             wake_signal: WakeSignal::new(),
         }
     }
 
-    /// # Safety
-    ///
-    /// Once you call this, the task must not be dropped until the wake signal indicates that it
-    /// has become inert.
-    unsafe fn poll(self: Pin<&Self>) -> task::Poll<()> {
-        let waker = self.project_ref().wake_signal.waker();
+    fn poll(self: Pin<&Self>) -> task::Poll<()> {
+        // SAFETY: We rely on the caller not to drop the task until it signals it is inert.
+        let waker = unsafe { self.project_ref().wake_signal.waker() };
 
         let mut context = task::Context::from_waker(waker);
 
         // We are only accessing the erased task in poll() which is only called by the current
         // thread and never recursively, so we are not at risk of conflicting borrows.
-        self.erased_task.borrow_mut().as_mut().poll(&mut context)
+        self.inner.borrow_mut().as_mut().poll(&mut context)
+    }
+
+    fn is_inert(&self) -> bool {
+        self.wake_signal.is_inert() && self.inner.borrow().is_inert()
     }
 }
 
@@ -319,11 +330,6 @@ impl Debug for Task {
 thread_local! {
     static TASKS_CANCELED_ON_SHUTDOWN: Event = EventBuilder::new()
         .name("rt_async_tasks_canceled_on_shutdown")
-        .build()
-        .unwrap();
-
-    static TASK_POLLED: Event = EventBuilder::new()
-        .name("rt_async_task_polled")
         .build()
         .unwrap();
 

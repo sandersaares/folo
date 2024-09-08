@@ -1,4 +1,6 @@
-use super::{PinnedSlabChain, RcSlabRc, RefSlabRc, SlabRcCell, SlabRcCellStorage, UnsafeSlabRc};
+use super::{
+    LocalCell, PinnedSlabChain, RcSlabRc, RefSlabRc, SlabRcCell, SlabRcCellStorage, UnsafeSlabRc,
+};
 use negative_impl::negative_impl;
 use std::{
     cell::RefCell,
@@ -9,18 +11,23 @@ use std::{
     task::{self, Waker},
 };
 
-/// Shorthand type for defining the backing storage for OnceEvent instances. Use
+/// Shorthand type for defining the slab-based backing storage for OnceEvent instances. Use
 /// `OnceEvent::new_storage()` to easily create a new instance without having to remember each
 /// layer of types inside this type.
-pub type OnceEventStorage<T> = SlabRcCellStorage<OnceEvent<T>>;
+pub type OnceEventSlabStorage<T> = SlabRcCellStorage<OnceEvent<T>>;
+
+/// Shorthand type for defining inline backing storage for OnceEvent instances embedded into custom
+/// data structures owned by the caller. The caller must guarantee that this storage is pinned.
+pub type OnceEventEmbeddedStorage<T> = RefCell<LocalCell<Option<OnceEvent<T>>>>;
 
 /// An event that can be triggered at most once to deliver a value of type T to at most
 /// one listener awaiting that value.
 ///
 /// # Efficiency
 ///
-/// The event uses pooled backing storage provided by the caller, so can typically be used in ways
-/// that do not allocate memory, making it suitable for rapid creation and destruction.
+/// The event uses either pooled backing storage provided by the caller or is embedded inline into
+/// another data structure owned by the caller, so it can typically be used in ways that do not
+/// allocate memory, making it suitable for rapid creation and destruction.
 ///
 /// Event notifications are triggered instantly via waker if a listener is already awaiting, and
 /// the result is delivered instantly if the listener starts after the result is set.
@@ -28,6 +35,7 @@ pub type OnceEventStorage<T> = SlabRcCellStorage<OnceEvent<T>>;
 /// # Thread safety
 ///
 /// The event is single-threaded.
+#[derive(Debug)]
 pub struct OnceEvent<T> {
     state: RefCell<EventState<T>>,
 }
@@ -96,12 +104,16 @@ impl<T> OnceEvent<T> {
 
     /// Creates a new instance of the backing storage for OnceEvent instances. You may need to
     /// further wrap this depending on which storage-referencing mode you are using.
-    pub fn new_storage() -> OnceEventStorage<T> {
+    pub fn new_slab_storage() -> OnceEventSlabStorage<T> {
         SlabRcCellStorage::new(PinnedSlabChain::new())
     }
 
+    pub fn new_embedded_storage() -> OnceEventEmbeddedStorage<T> {
+        RefCell::default()
+    }
+
     pub fn new_in_ref<'storage>(
-        storage: &'storage OnceEventStorage<T>,
+        storage: &'storage OnceEventSlabStorage<T>,
     ) -> (RefSender<'storage, T>, RefReceiver<'storage, T>) {
         let event = SlabRcCell::new(Self::new()).insert_into_ref(storage);
 
@@ -113,7 +125,7 @@ impl<T> OnceEvent<T> {
         )
     }
 
-    pub fn new_in_rc(storage: Rc<OnceEventStorage<T>>) -> (RcSender<T>, RcReceiver<T>) {
+    pub fn new_in_rc(storage: Rc<OnceEventSlabStorage<T>>) -> (RcSender<T>, RcReceiver<T>) {
         let event = SlabRcCell::new(Self::new()).insert_into_rc(storage);
 
         (
@@ -128,7 +140,7 @@ impl<T> OnceEvent<T> {
     ///
     /// The caller is responsible for ensuring that the event does not outlive the storage.
     pub unsafe fn new_in_unsafe(
-        storage: Pin<&OnceEventStorage<T>>,
+        storage: Pin<&OnceEventSlabStorage<T>>,
     ) -> (UnsafeSender<T>, UnsafeReceiver<T>) {
         let event = SlabRcCell::new(Self::new()).insert_into_unsafe(storage);
 
@@ -139,8 +151,29 @@ impl<T> OnceEvent<T> {
             UnsafeReceiver { event },
         )
     }
+
+    /// # Safety
+    ///
+    /// The caller is responsible for ensuring that the event does not outlive the storage.
+    ///
+    /// The storage must be pinned at all times during the lifetime of the event.
+    pub unsafe fn new_embedded(
+        storage: Pin<&OnceEventEmbeddedStorage<T>>,
+    ) -> (EmbeddedSender<T>, EmbeddedReceiver<T>) {
+        let mut local_cell = LocalCell::new(Some(Self::new()));
+
+        // Sender + Receiver
+        local_cell.inc_ref();
+        local_cell.inc_ref();
+
+        *storage.borrow_mut() = local_cell;
+
+        let event = Pin::into_inner_unchecked(storage);
+        (EmbeddedSender { event }, EmbeddedReceiver { event })
+    }
 }
 
+#[derive(Debug)]
 enum EventState<T> {
     /// The event has not been set and nobody is listening for a result.
     NotSet,
@@ -162,6 +195,7 @@ impl<T> !Sync for OnceEvent<T> {}
 
 // ############## Ref ##############
 
+#[derive(Debug)]
 pub struct RefSender<'storage, T> {
     event: RefSlabRc<'storage, OnceEvent<T>>,
 }
@@ -172,6 +206,7 @@ impl<'storage, T> RefSender<'storage, T> {
     }
 }
 
+#[derive(Debug)]
 pub struct RefReceiver<'storage, T> {
     event: RefSlabRc<'storage, OnceEvent<T>>,
 }
@@ -191,6 +226,7 @@ impl<T> Future for RefReceiver<'_, T> {
 
 // ############## Rc ##############
 
+#[derive(Debug)]
 pub struct RcSender<T> {
     event: RcSlabRc<OnceEvent<T>>,
 }
@@ -201,6 +237,7 @@ impl<T> RcSender<T> {
     }
 }
 
+#[derive(Debug)]
 pub struct RcReceiver<T> {
     event: RcSlabRc<OnceEvent<T>>,
 }
@@ -220,6 +257,7 @@ impl<T> Future for RcReceiver<T> {
 
 // ############## Unsafe ##############
 
+#[derive(Debug)]
 pub struct UnsafeSender<T> {
     event: UnsafeSlabRc<OnceEvent<T>>,
 }
@@ -230,6 +268,7 @@ impl<T> UnsafeSender<T> {
     }
 }
 
+#[derive(Debug)]
 pub struct UnsafeReceiver<T> {
     event: UnsafeSlabRc<OnceEvent<T>>,
 }
@@ -247,6 +286,74 @@ impl<T> Future for UnsafeReceiver<T> {
     }
 }
 
+// ############## Embedded ##############
+
+#[derive(Debug)]
+pub struct EmbeddedSender<T> {
+    // The owner of the event is responsible for ensuring that we reference pinned memory that
+    // outlives the event.
+    event: *const OnceEventEmbeddedStorage<T>,
+}
+
+impl<T> EmbeddedSender<T> {
+    pub fn set(self, result: T) {
+        // SAFETY: We rely on the owner of the event to guarantee that the backing storage remains
+        // alive for at least as long as the event itself.
+        let storage = unsafe { &*self.event };
+        let mut storage = storage.borrow_mut();
+
+        storage
+            .get()
+            .as_ref()
+            .expect("OnceEvent must still exist because sender exists")
+            .set(result);
+
+        // There is no sender anymore, so we can drop a reference.
+        storage.dec_ref();
+    }
+}
+
+#[derive(Debug)]
+pub struct EmbeddedReceiver<T> {
+    // The owner of the event is responsible for ensuring that we reference pinned memory that
+    // outlives the event.
+    event: *const OnceEventEmbeddedStorage<T>,
+}
+
+impl<T> Future for EmbeddedReceiver<T> {
+    type Output = T;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut task::Context<'_>) -> task::Poll<Self::Output> {
+        // SAFETY: We rely on the owner of the event to guarantee that the backing storage remains
+        // alive for at least as long as the event itself.
+        let storage = unsafe { &*self.event };
+        let storage = storage.borrow();
+
+        let result = storage
+            .get()
+            .as_ref()
+            .expect("OnceEvent must still exist because receiver exists")
+            .poll(&cx.waker());
+
+        match result {
+            Some(result) => task::Poll::Ready(result),
+            None => task::Poll::Pending,
+        }
+    }
+}
+
+impl<T> Drop for EmbeddedReceiver<T> {
+    fn drop(&mut self) {
+        // SAFETY: We rely on the owner of the event to guarantee that the backing storage remains
+        // alive for at least as long as the event itself.
+        let storage = unsafe { &*self.event };
+        let mut storage = storage.borrow_mut();
+
+        // There is no receiver anymore, so we can drop a reference.
+        storage.dec_ref();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -254,7 +361,7 @@ mod tests {
 
     #[test]
     fn get_after_set_ref() {
-        let storage = OnceEvent::new_storage();
+        let storage = OnceEvent::new_slab_storage();
         let (sender, mut receiver) = OnceEvent::new_in_ref(&storage);
 
         sender.set(42);
@@ -266,7 +373,7 @@ mod tests {
 
     #[test]
     fn get_before_set_ref() {
-        let storage = OnceEvent::new_storage();
+        let storage = OnceEvent::new_slab_storage();
         let (sender, mut receiver) = OnceEvent::new_in_ref(&storage);
 
         let cx = &mut task::Context::from_waker(noop_waker_ref());
@@ -282,7 +389,7 @@ mod tests {
 
     #[test]
     fn get_after_set_rc() {
-        let storage = Rc::new(OnceEvent::new_storage());
+        let storage = Rc::new(OnceEvent::new_slab_storage());
         let (sender, mut receiver) = OnceEvent::new_in_rc(Rc::clone(&storage));
 
         sender.set(42);
@@ -295,7 +402,7 @@ mod tests {
 
     #[test]
     fn get_before_set_rc() {
-        let storage = Rc::new(OnceEvent::new_storage());
+        let storage = Rc::new(OnceEvent::new_slab_storage());
         let (sender, mut receiver) = OnceEvent::new_in_rc(Rc::clone(&storage));
 
         let cx = &mut task::Context::from_waker(noop_waker_ref());
@@ -311,7 +418,7 @@ mod tests {
 
     #[test]
     fn get_after_set_unsafe() {
-        let storage = Box::pin(OnceEvent::new_storage());
+        let storage = Box::pin(OnceEvent::new_slab_storage());
         let (sender, mut receiver) = unsafe { OnceEvent::new_in_unsafe(storage.as_ref()) };
 
         sender.set(42);
@@ -324,8 +431,37 @@ mod tests {
 
     #[test]
     fn get_before_set_unsafe() {
-        let storage = Box::pin(OnceEvent::new_storage());
+        let storage = Box::pin(OnceEvent::new_slab_storage());
         let (sender, mut receiver) = unsafe { OnceEvent::new_in_unsafe(storage.as_ref()) };
+
+        let cx = &mut task::Context::from_waker(noop_waker_ref());
+
+        let result = receiver.poll_unpin(cx);
+        assert_eq!(result, task::Poll::Pending);
+
+        sender.set(42);
+
+        let result = receiver.poll_unpin(cx);
+        assert_eq!(result, task::Poll::Ready(42));
+    }
+
+    #[test]
+    fn get_after_set_embedded() {
+        let storage = Box::pin(OnceEvent::new_embedded_storage());
+        let (sender, mut receiver) = unsafe { OnceEvent::new_embedded(storage.as_ref()) };
+
+        sender.set(42);
+
+        let cx = &mut task::Context::from_waker(noop_waker_ref());
+
+        let result = receiver.poll_unpin(cx);
+        assert_eq!(result, task::Poll::Ready(42));
+    }
+
+    #[test]
+    fn get_before_set_embedded() {
+        let storage = Box::pin(OnceEvent::new_embedded_storage());
+        let (sender, mut receiver) = unsafe { OnceEvent::new_embedded(storage.as_ref()) };
 
         let cx = &mut task::Context::from_waker(noop_waker_ref());
 

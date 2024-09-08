@@ -80,6 +80,7 @@ pub type SlabRcCellStorage<T> = RefCell<PinnedSlabChain<SlabRcCell<T>>>;
 /// let item_clone = UnsafeSlabRc::clone(&item);
 /// assert_eq!(*item_clone.deref_pin(), 42);
 /// ```
+#[derive(Debug)]
 pub struct SlabRcCell<T> {
     value: T,
     ref_count: Cell<usize>,
@@ -219,6 +220,7 @@ impl<T> From<T> for SlabRcCell<T> {
 ///
 /// Dropping the last reference to an item via `SlabRc` while holding an exclusive reference to the
 /// slab chain itself will panic.
+#[derive(Debug)]
 pub struct RefSlabRc<'slab, T> {
     // We may need to mutate the chain at any time, so we require it to be in a RefCell.
     slab_chain: &'slab RefCell<PinnedSlabChain<SlabRcCell<T>>>,
@@ -281,6 +283,7 @@ impl<T> Drop for RefSlabRc<'_, T> {
 ///
 /// Dropping the last reference to an item via `SlabRc` while holding an exclusive reference to the
 /// slab chain itself will panic.
+#[derive(Debug)]
 pub struct RcSlabRc<T> {
     // We may need to mutate the chain at any time, so we require it to be in a RefCell.
     slab_chain: Rc<RefCell<PinnedSlabChain<SlabRcCell<T>>>>,
@@ -349,6 +352,7 @@ impl<T> Drop for RcSlabRc<T> {
 ///
 /// Dropping the last reference to an item via `SlabRc` while holding an exclusive reference to the
 /// slab chain itself will panic.
+#[derive(Debug)]
 pub struct UnsafeSlabRc<T> {
     // We may need to mutate the chain at any time, so we require it to be in a RefCell.
     // The caller is responsible for ensuring this outlives us.
