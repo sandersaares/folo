@@ -3,7 +3,7 @@ use super::{
 };
 use negative_impl::negative_impl;
 use std::{
-    cell::{RefCell, UnsafeCell},
+    cell::UnsafeCell,
     future::Future,
     mem,
     pin::Pin,
@@ -15,10 +15,6 @@ use std::{
 /// `OnceEvent::new_storage()` to easily create a new instance without having to remember each
 /// layer of types inside this type.
 pub type OnceEventSlabStorage<T> = SlabRcCellStorage<OnceEvent<T>>;
-
-/// Shorthand type for defining inline backing storage for OnceEvent instances embedded into custom
-/// data structures owned by the caller. The caller must guarantee that this storage is pinned.
-pub type OnceEventEmbeddedStorage<T> = RefCell<LocalCell<Option<OnceEvent<T>>>>;
 
 /// An event that can be triggered at most once to deliver a value of type T to at most
 /// one listener awaiting that value.
@@ -114,7 +110,7 @@ impl<T> OnceEvent<T> {
     }
 
     pub fn new_embedded_storage() -> OnceEventEmbeddedStorage<T> {
-        RefCell::default()
+        OnceEventEmbeddedStorage::default()
     }
 
     pub fn new_in_ref<'storage>(
@@ -171,7 +167,8 @@ impl<T> OnceEvent<T> {
         local_cell.inc_ref();
         local_cell.inc_ref();
 
-        *storage.borrow_mut() = local_cell;
+        let storage_ref = &mut *storage.inner.get();
+        *storage_ref = local_cell;
 
         let event = Pin::into_inner_unchecked(storage);
         (EmbeddedSender { event }, EmbeddedReceiver { event })
@@ -293,6 +290,44 @@ impl<T> Future for UnsafeReceiver<T> {
 
 // ############## Embedded ##############
 
+/// Shorthand type for defining inline backing storage for OnceEvent instances embedded into custom
+/// data structures owned by the caller. The caller must guarantee that this storage is pinned.
+///
+/// # Safety
+///
+/// This uses UnsafeCell because we only ever have one sender and one receiver and they both execute
+/// on the same thread, and each only performs a logically atomic operation on the event. There is
+/// no need to pay for the runtime borrow counting of RefCell, so UnsafeCell gives us some extra
+/// performance for this commonly used primitive.
+#[derive(Debug)]
+pub struct OnceEventEmbeddedStorage<T> {
+    inner: UnsafeCell<LocalCell<Option<OnceEvent<T>>>>,
+}
+
+impl<T> OnceEventEmbeddedStorage<T> {
+    pub fn is_inert(&self) -> bool {
+        // SAFETY: See comments on type.
+        let storage = unsafe { &*self.inner.get() };
+
+        !storage.is_referenced()
+    }
+
+    pub fn ref_count(&self) -> usize {
+        // SAFETY: See comments on type.
+        let storage = unsafe { &*self.inner.get() };
+
+        storage.ref_count()
+    }
+}
+
+impl<T> Default for OnceEventEmbeddedStorage<T> {
+    fn default() -> Self {
+        Self {
+            inner: UnsafeCell::new(LocalCell::new(None)),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct EmbeddedSender<T> {
     // The owner of the event is responsible for ensuring that we reference pinned memory that
@@ -305,7 +340,9 @@ impl<T> EmbeddedSender<T> {
         // SAFETY: We rely on the owner of the event to guarantee that the backing storage remains
         // alive for at least as long as the event itself.
         let storage = unsafe { &*self.event };
-        let mut storage = storage.borrow_mut();
+
+        // SAFETY: See comments on storage type alias.
+        let storage = unsafe { &mut *storage.inner.get() };
 
         storage
             .get()
@@ -332,7 +369,9 @@ impl<T> Future for EmbeddedReceiver<T> {
         // SAFETY: We rely on the owner of the event to guarantee that the backing storage remains
         // alive for at least as long as the event itself.
         let storage = unsafe { &*self.event };
-        let storage = storage.borrow();
+
+        // SAFETY: See comments on storage type alias.
+        let storage = unsafe { &*storage.inner.get() };
 
         let result = storage
             .get()
@@ -352,7 +391,9 @@ impl<T> Drop for EmbeddedReceiver<T> {
         // SAFETY: We rely on the owner of the event to guarantee that the backing storage remains
         // alive for at least as long as the event itself.
         let storage = unsafe { &*self.event };
-        let mut storage = storage.borrow_mut();
+
+        // SAFETY: See comments on storage type alias.
+        let storage = unsafe { &mut *storage.inner.get() };
 
         // There is no receiver anymore, so we can drop a reference.
         storage.dec_ref();

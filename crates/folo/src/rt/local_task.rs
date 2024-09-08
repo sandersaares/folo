@@ -99,7 +99,7 @@ where
             self_references += 1;
         }
 
-        let ref_count = self.result.borrow().ref_count();
+        let ref_count = self.result.ref_count();
 
         assert!(
             ref_count >= self_references,
