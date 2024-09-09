@@ -1,3 +1,5 @@
+use std::mem::{self, MaybeUninit};
+
 use crate::constants::GENERAL_LOW_PRECISION_SECONDS_BUCKETS;
 use crate::io::block::{BlockStore, PrepareBlock};
 use crate::io::{self, Buffer, CompletionPort, IoWaker, WAKE_UP_COMPLETION_KEY};
@@ -79,7 +81,8 @@ impl Driver {
     /// is no queued I/O, we wait up to `max_wait_time_ms` milliseconds for new I/O activity, after
     /// which we simply return.
     pub(crate) fn process_completions(&mut self, max_wait_time_ms: u32) {
-        let mut completed = vec![OVERLAPPED_ENTRY::default(); IO_DEQUEUE_BATCH_SIZE];
+        let mut completed: [MaybeUninit<OVERLAPPED_ENTRY>; IO_DEQUEUE_BATCH_SIZE] =
+            [MaybeUninit::uninit(); IO_DEQUEUE_BATCH_SIZE];
         let mut completed_items: u32 = 0;
 
         // We intentionally do not loop here because we want to give the caller the opportunity to
@@ -93,7 +96,9 @@ impl Driver {
                 x.observe_duration_low_precision(|| {
                     GetQueuedCompletionStatusEx(
                         ***self.completion_port.handle(),
-                        completed.as_mut_slice(),
+                        // MaybeUninit is a ZST and binary-compatible. We use it to avoid
+                        // initializing the array, which is only used for collecting output.
+                        mem::transmute(completed.as_mut_slice()),
                         &mut completed_items as *mut _,
                         max_wait_time_ms,
                         false,
@@ -119,15 +124,17 @@ impl Driver {
             ASYNC_COMPLETIONS_DEQUEUED.with(|x| x.observe(completed_items as f64));
 
             for index in 0..completed_items {
+                let entry = completed[index as usize].assume_init();
+
                 // If the completion key matches our magic value, this is a wakeup packet and needs
                 // special processing.
-                if completed[index as usize].lpCompletionKey == WAKE_UP_COMPLETION_KEY as usize {
+                if entry.lpCompletionKey == WAKE_UP_COMPLETION_KEY as usize {
                     // This is not a normal I/O block. All it did was wake us up, we do no further
                     // processing here. The OVERLAPPED pointer will be null here!
                     continue;
                 }
 
-                let mut block = self.block_store.complete(completed[index as usize]);
+                let mut block = self.block_store.complete(entry);
 
                 let result_tx = block.result_tx();
                 let status = block.status();
