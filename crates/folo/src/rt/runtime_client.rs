@@ -2,7 +2,7 @@ use super::remote_result_box::RemoteResultBox;
 use super::sync_agent::SyncAgentCommand;
 use super::{current_async_agent, ErasedSyncTask};
 use crate::constants::{self, GENERAL_LOW_PRECISION_SECONDS_BUCKETS};
-use crate::io::{self, IoWaker};
+use crate::io::IoWaker;
 use crate::metrics::{Event, EventBuilder};
 use crate::rt::{async_agent::AsyncAgentCommand, remote_task::RemoteTask, RemoteJoinHandle};
 use crate::util::LowPrecisionInstant;

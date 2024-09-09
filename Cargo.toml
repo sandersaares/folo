@@ -13,3 +13,7 @@ readme = "Readme.md"
 version = "0.1.0-pre"
 repository = "https://github.com/sandersaares/folo"
 categories = ["asynchronous", "concurrency"]
+
+[profile.release]
+debug = "full"
+panic = "abort"
