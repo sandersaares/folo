@@ -1,8 +1,10 @@
 use crate::{
     io,
     metrics::{Event, EventBuilder},
+    util::ThreadSafe,
 };
 use negative_impl::negative_impl;
+use std::sync::Arc;
 use windows::{
     core::Owned,
     Win32::{
@@ -17,51 +19,64 @@ use windows::{
     },
 };
 
+// We allow the handle to be shared across threads because other threads may be sending us
+// messages via the completion port. Typically, HANDLE is not thread-safe but that is merely
+// because HANDLE is overly general and not all types of handles are legitimately shared across
+// threads.
+pub(crate) type CompletionPortHandle = Arc<ThreadSafe<Owned<HANDLE>>>;
+
 /// The I/O completion port is used to notify the I/O driver that an I/O operation has completed.
 /// It must be associated with each file/socket/handle that is capable of asynchronous I/O. We do
-/// not expose this in the public API, just use it internally.
+/// not expose this in the public API, just use it internally to implement I/O primitives.
 ///
 /// Each async worker thread has a single I/O completion port used for all I/O operations. This type
 /// is single-threaded to prevent accidental sharing between threads.
 #[derive(Debug)]
 pub(crate) struct CompletionPort {
-    handle: Owned<HANDLE>,
+    // This is a shared handle, which means it is plausible that even after the CompletionPort
+    // object is dropped, the actual completion port remains in existence. That is not ideal but
+    // is largely going to be harmless (all it will do is collect wakeup notifications that nobody
+    // will read). The resource leak this may produce is likely minimal, since with the thread gone,
+    // there is unlikely to be much interest in any other threads waking it up again.
+    handle: CompletionPortHandle,
 }
 
 impl CompletionPort {
     pub(crate) fn new() -> Self {
-        // SAFETY: We wrap it in Owned, so it is released on drop. Nothing else to worry about.
-        unsafe {
-            let handle = Owned::new(CreateIoCompletionPort(
+        // SAFETY: We wrap it in Owned, ensuring it is released when dropped.
+        let handle = unsafe {
+            Owned::new(CreateIoCompletionPort(
                 INVALID_HANDLE_VALUE,
                 HANDLE::default(),
-                0, // We do not use the completion key for regular traffic, only for special signals.
-                1, // Only to be used by 1 thread (the current thread).
-            ).expect("creating an I/O completion port should never fail unless the OS is critically out of resources"));
+                0, // Ignored as we are not binding a handle to the port.
+                1, // The port is only to be read from by one thread (the current thread).
+            ).expect("creating an I/O completion port should never fail unless the OS is critically out of resources"))
+        };
 
-            Self { handle }
-        }
+        // SAFETY: See comment on CompletionPortHandle.
+        let handle = Arc::new(unsafe { ThreadSafe::new(handle) });
+
+        Self { handle }
     }
 
     /// Binds an I/O primitive to the completion port when provided a handle to the I/O primitive.
     /// This causes notifications from that I/O primitive to arrive at the completion port.
     pub(crate) fn bind(&self, handle: &HANDLE) -> io::Result<()> {
-        // SAFETY: We only pass in handles, which are safe to pass even if invalid (-> error)
-        //         We ignore the return value, because it is the same as our own handle on success.
+        // SAFETY: Our handle cannot be invalid because we are keeping it alive via Arc.
+        // SAFETY: We ignore the return value, because it is the same as our own handle on success.
         unsafe {
-            CreateIoCompletionPort(*handle, *self.handle, 0, 1)?;
+            CreateIoCompletionPort(*handle, ***self.handle, 0, 1)?;
         }
 
         // Why FILE_SKIP_SET_EVENT_ON_HANDLE: https://devblogs.microsoft.com/oldnewthing/20200221-00/?p=103466/
         //
         // SAFETY:
-        // * This is overall safe to call even if the handle is invalid, all that can happen is an
-        //   error gets returned.
-        // * This means we cannot rely on file handles being secretly treated as events. That
-        //   is perfectly fine, because we do not use them as events.
-        // * This means we will not get completion notifications for synchronous I/O operations. We
+        // * We rely on the caller to ensure they are passing a valid I/O primitive handle.
+        // * Afterwards we cannot rely on file handles being secretly treated as events. That
+        //   is fine because the whole point is that we do not want to use them as events.
+        // * Afterwards we will not get completion notifications for synchronous I/O operations. We
         //   must handle all synchronous completions inline. That is also fine - we do this in the
-        //   PrepareBlock::apply() method, where we only use the completion port if we get a status
+        //   PrepareBlock::begin() method, where we only use the completion port if we get a status
         //   code with ERROR_IO_PENDING.
         unsafe {
             SetFileCompletionNotificationModes(
@@ -75,8 +90,10 @@ impl CompletionPort {
         Ok(())
     }
 
-    pub(crate) fn handle(&self) -> HANDLE {
-        *self.handle
+    /// Obtains a thread-safe handle to the completion port. The primary use case is to give this
+    /// to an IoWaker so that it can be used to wake up the thread that owns this completion port.
+    pub(crate) fn handle(&self) -> CompletionPortHandle {
+        Arc::clone(&self.handle)
     }
 }
 

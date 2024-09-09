@@ -1,9 +1,7 @@
-use super::Buffer;
 use crate::constants::GENERAL_LOW_PRECISION_SECONDS_BUCKETS;
 use crate::io::block::{BlockStore, PrepareBlock};
-use crate::io::{self, CompletionPort};
+use crate::io::{self, Buffer, CompletionPort, IoWaker, WAKE_UP_COMPLETION_KEY};
 use crate::metrics::{Event, EventBuilder, Magnitude};
-use windows::Win32::System::IO::PostQueuedCompletionStatus;
 use windows::Win32::{
     Foundation::{HANDLE, STATUS_SUCCESS, WAIT_TIMEOUT},
     System::IO::{GetQueuedCompletionStatusEx, OVERLAPPED_ENTRY},
@@ -12,6 +10,10 @@ use windows_result::HRESULT;
 
 /// Max number of I/O operations to dequeue in one go. Presumably getting more data from the OS with
 /// a single call is desirable but the exact impact of different values on performance is not known.
+/// 
+/// Known aspects of performance impact:
+/// * GetQueuedCompletionStatusEx duration seems linearly affected under non-concurrent synthetic
+///   message load (e.g. 40 us for 1024 items).
 const IO_DEQUEUE_BATCH_SIZE: usize = 1024;
 
 /// Processes I/O completion operations for a given thread as part of the async worker loop.
@@ -72,7 +74,7 @@ impl Driver {
             let result = GET_COMPLETED_DURATION.with(|x| {
                 x.observe_duration_low_precision(|| {
                     GetQueuedCompletionStatusEx(
-                        self.completion_port.handle(),
+                        ***self.completion_port.handle(),
                         completed.as_mut_slice(),
                         &mut completed_items as *mut _,
                         max_wait_time_ms,
@@ -124,51 +126,6 @@ impl Driver {
         }
     }
 }
-
-// Value is meaningless, just has to be unique.
-const WAKE_UP_COMPLETION_KEY: usize = 0x23546789897;
-
-/// A cross-thread element that can be used to wake up an I/O driver from another thread.
-///
-/// The waker itself is a "client" of sorts that can be handed over to any thread. It has a handle
-/// to the completion port of the I/O driver. When it wants to wake up the I/O driver, it must post
-/// a specific completion packet to the completion port. If the remote thread is closed, it will
-/// just receive an error when it tries (which it ignores) - you can think of it as holding a weak
-/// reference to the I/O driver.
-///
-/// The completion packet is simply an empty OVERLAPPED structure posted with the completion key
-/// `WAKE_UP_COMPLETION_KEY`. The OVERLAPPED is allocated/deallocated by the sender/receiver as just
-/// a Rust object, without going through the usual pooling mechanism (because the block store used
-/// for regular I/O is single-threaded).
-#[derive(Clone, Debug)]
-pub(crate) struct IoWaker {
-    completion_port: HANDLE,
-}
-
-impl IoWaker {
-    pub(crate) fn new(completion_port: HANDLE) -> Self {
-        Self { completion_port }
-    }
-
-    /// Wakes up the I/O driver by sending a completion packet to its completion port. This is a
-    /// non-blocking operation.
-    pub(crate) fn wake(&self) {
-        // SAFETY: Nothing to worry about here. If the handle is invalid, we just get an error.
-        unsafe {
-            // Note that OVERLAPPED is null here - we do not need to provide one for this operation
-            // because only real operations require it - plain notifications do not.
-            // We ignore the result from this because it does not really matter - if anything goes
-            // wrong, the target thread fails to wake up and that's too bad but nothing for us to
-            // worry about - probably the entire app is going away if that happened anyway.
-            _ = PostQueuedCompletionStatus(self.completion_port, 0, WAKE_UP_COMPLETION_KEY, None);
-        }
-    }
-}
-
-// SAFETY: It is fine to use a completion port across threads.
-unsafe impl Send for IoWaker {}
-// SAFETY: It is fine to use a completion port across threads.
-unsafe impl Sync for IoWaker {}
 
 const ASYNC_COMPLETIONS_DEQUEUED_BUCKETS: &[Magnitude] = &[0.0, 1.0, 16.0, 64.0, 256.0, 512.0];
 
