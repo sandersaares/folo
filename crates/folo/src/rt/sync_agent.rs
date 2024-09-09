@@ -18,6 +18,13 @@ pub struct SyncAgent {
     // When the command queue says "you may have a task", we check here. There might not always be
     // a task waiting for us because another sync agent sharing the same queue may have taken it.
     task_queue: Arc<ConcurrentQueue<ErasedSyncTask>>,
+
+    // When the command queue says "you may have a task", we check here. There might not always be
+    // a task waiting for us because another sync agent sharing the same queue may have taken it.
+    // Tasks in this queue are executed first, over `task_queue`. This is usually because they are
+    // of a "beneficial" nature such as releasing resources, so doing them first will help the
+    // process overall work more efficiently.
+    priority_task_queue: Arc<ConcurrentQueue<ErasedSyncTask>>,
 }
 
 impl SyncAgent {
@@ -25,11 +32,13 @@ impl SyncAgent {
         command_rx: mpsc::Receiver<SyncAgentCommand>,
         metrics_tx: Option<mpsc::Sender<ReportPage>>,
         task_queue: Arc<ConcurrentQueue<ErasedSyncTask>>,
+        priority_task_queue: Arc<ConcurrentQueue<ErasedSyncTask>>,
     ) -> Self {
         Self {
             command_rx,
             metrics_tx,
             task_queue,
+            priority_task_queue,
         }
     }
 
@@ -42,7 +51,7 @@ impl SyncAgent {
         while let Ok(command) = self.command_rx.recv() {
             match command {
                 SyncAgentCommand::CheckForTasks => {
-                    let Ok(task) = self.task_queue.pop() else {
+                    let Some(task) = self.next_task() else {
                         // Some other worker cleared the queue already.
                         continue;
                     };
@@ -62,6 +71,13 @@ impl SyncAgent {
         if let Some(tx) = &self.metrics_tx {
             _ = tx.send(metrics::report_page());
         }
+    }
+
+    fn next_task(&self) -> Option<ErasedSyncTask> {
+        self.priority_task_queue
+            .pop()
+            .ok()
+            .or_else(|| self.task_queue.pop().ok())
     }
 }
 

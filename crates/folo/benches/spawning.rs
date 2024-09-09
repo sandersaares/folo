@@ -172,7 +172,7 @@ fn spawn_and_await(c: &mut Criterion) {
         );
     });
 
-    group.bench_function("folo_blocking", |b| {
+    group.bench_function("folo_sync", |b| {
         b.iter_batched(
             || {
                 comparison_adapter.begin_folo(Box::new(|| {
@@ -180,7 +180,10 @@ fn spawn_and_await(c: &mut Criterion) {
                         let mut tasks = Vec::with_capacity(SPAWN_TASK_COUNT);
 
                         for _ in 0..SPAWN_TASK_COUNT {
-                            tasks.push(folo::rt::spawn_blocking(|| thread::yield_now()));
+                            tasks.push(folo::rt::spawn_sync(
+                                folo::rt::SynchronousTaskType::Syscall,
+                                || thread::yield_now(),
+                            ));
                         }
 
                         for task in tasks {

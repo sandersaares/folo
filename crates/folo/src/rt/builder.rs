@@ -166,6 +166,7 @@ impl RuntimeBuilder {
         let mut sync_ready_rxs = Vec::with_capacity(sync_worker_count);
 
         let mut sync_task_queues_by_processor = HashMap::new();
+        let mut sync_priority_task_queues_by_processor = HashMap::new();
 
         for processor_id in &processor_ids {
             // There is a single queue of synchronous tasks per processor, shared by all the sync
@@ -173,6 +174,11 @@ impl RuntimeBuilder {
             // often block for unequal amounts of time and end up imbalanced.
             let sync_task_queue = Arc::new(ConcurrentQueue::unbounded());
             sync_task_queues_by_processor.insert(*processor_id, Arc::clone(&sync_task_queue));
+
+            // Same, but for higher-priority tasks (e.g. releasing resources).
+            let sync_priority_task_queue = Arc::new(ConcurrentQueue::unbounded());
+            sync_priority_task_queues_by_processor
+                .insert(*processor_id, Arc::clone(&sync_priority_task_queue));
 
             for _ in 0..SYNC_WORKERS_PER_PROCESSOR {
                 let processor_id = processor_id.clone();
@@ -198,11 +204,17 @@ impl RuntimeBuilder {
                 };
 
                 let sync_task_queue = Arc::clone(&sync_task_queue);
+                let sync_priority_task_queue = Arc::clone(&sync_priority_task_queue);
 
                 let join_handle = thread::spawn(move || {
                     (worker_init)();
 
-                    let agent = Rc::new(SyncAgent::new(command_rx, metrics_tx, sync_task_queue));
+                    let agent = Rc::new(SyncAgent::new(
+                        command_rx,
+                        metrics_tx,
+                        sync_task_queue,
+                        sync_priority_task_queue,
+                    ));
 
                     // Signal that we are ready to start.
                     ready_tx
@@ -249,6 +261,7 @@ impl RuntimeBuilder {
                 .map(|(k, v)| (k, v.into_boxed_slice()))
                 .collect(),
             sync_task_queues_by_processor,
+            sync_priority_task_queues_by_processor,
             join_handles.into_boxed_slice(),
         );
 

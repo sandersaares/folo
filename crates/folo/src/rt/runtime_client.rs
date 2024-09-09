@@ -25,6 +25,7 @@ pub struct RuntimeClient {
     // the sync command architecture up by the processor ID.
     sync_command_txs_by_processor: HashMap<CoreId, Box<[mpsc::Sender<SyncAgentCommand>]>>,
     sync_task_queues_by_processor: HashMap<CoreId, Arc<ConcurrentQueue<ErasedSyncTask>>>,
+    sync_priority_task_queues_by_processor: HashMap<CoreId, Arc<ConcurrentQueue<ErasedSyncTask>>>,
 
     // This is None if `.wait()` has already been called - the field can be consumed only once,
     // typically done by the runtime client provided to the entry point thread.
@@ -37,6 +38,10 @@ impl RuntimeClient {
         async_io_wakers: Box<[IoWaker]>,
         sync_command_txs_by_processor: HashMap<CoreId, Box<[mpsc::Sender<SyncAgentCommand>]>>,
         sync_task_queues_by_processor: HashMap<CoreId, Arc<ConcurrentQueue<ErasedSyncTask>>>,
+        sync_priority_task_queues_by_processor: HashMap<
+            CoreId,
+            Arc<ConcurrentQueue<ErasedSyncTask>>,
+        >,
         join_handles: Box<[thread::JoinHandle<()>]>,
     ) -> Self {
         Self {
@@ -44,6 +49,7 @@ impl RuntimeClient {
             async_io_wakers,
             sync_command_txs_by_processor,
             sync_task_queues_by_processor,
+            sync_priority_task_queues_by_processor,
             join_handles: Arc::new(Mutex::new(Some(join_handles))),
         }
     }
@@ -88,30 +94,51 @@ impl RuntimeClient {
         join_handle
     }
 
-    /// Spawns a blocking task on any synchronous worker thread suitable for blocking, returning
-    /// the result via a join handle suitable for use in asynchronous tasks.
-    pub fn spawn_blocking<F, R>(&self, f: F) -> RemoteJoinHandle<R>
+    /// Spawns a task on a synchronous worker thread suitable for the specific type of synchronous
+    /// work requested, returning the result via a join handle suitable for use in asynchronous
+    /// tasks.
+    pub fn spawn_sync<F, R>(&self, task_type: SynchronousTaskType, f: F) -> RemoteJoinHandle<R>
     where
         F: FnOnce() -> R + Send + 'static,
         R: Send + 'static,
     {
+        if task_type == SynchronousTaskType::Compute {
+            panic!("SynchronousTaskType::Compute is not yet supported");
+        }
+
         let result_box_rx = Arc::new(RemoteResultBox::new());
         let result_box_tx = Arc::clone(&result_box_rx);
 
         let started = LowPrecisionInstant::now();
 
         let task = move || {
-            SYNC_SPAWN_DELAY.with(|x| x.observe(started.elapsed().as_secs_f64()));
+            match task_type {
+                SynchronousTaskType::Syscall => SYNC_SPAWN_DELAY_LOW_PRIORITY
+                    .with(|x| x.observe(started.elapsed().as_secs_f64())),
+                SynchronousTaskType::HighPrioritySyscall => SYNC_SPAWN_DELAY_HIGH_PRIORITY
+                    .with(|x| x.observe(started.elapsed().as_secs_f64())),
+                _ => unreachable!(),
+            };
 
             result_box_tx.set(f())
         };
 
         // TODO: Support spawn_blocking from arbitrary threads, not just async worker threads.
+        // While not relevant for private I/O (first/current motivation for this to exist), it
+        // would be relevant for user workloads.
         let processor_id = current_async_agent::with(|x| x.processor_id());
 
         // We ignore the return value because it is theoretically possible that something is trying
         // to schedule new work when we are in the middle of a shutdown process.
-        _ = self.sync_task_queues_by_processor[&processor_id].push(Box::new(task));
+        match task_type {
+            SynchronousTaskType::Syscall => {
+                _ = self.sync_task_queues_by_processor[&processor_id].push(Box::new(task));
+            }
+            SynchronousTaskType::HighPrioritySyscall => {
+                _ = self.sync_priority_task_queues_by_processor[&processor_id].push(Box::new(task));
+            }
+            _ => unreachable!(),
+        }
 
         for tx in &self.sync_command_txs_by_processor[&processor_id] {
             // We ignore the return value because it is theoretically possible that something is trying
@@ -186,6 +213,23 @@ impl RuntimeClient {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SynchronousTaskType {
+    /// Some syscall that the runtime needs to perform synchronously and which may take an unknown
+    /// amount of time. We try to keep the time to a minimum by always using asynchronous I/O and
+    /// never intentionally blocking on this but the system is a wild west and for I/O operations
+    /// you may have things like antivirus drivers that freeze your syscall for many seconds.
+    Syscall,
+
+    /// A high-priority syscall whose execution we benefit from in some way. For example, this may
+    /// release resources, thereby improving our overall efficiency.
+    HighPrioritySyscall,
+
+    /// The task may occupy a thread with a compute workload for a nontrivial duration (> 10 ms)
+    /// and requires a safe space to execute without interfering with non-compute workloads.
+    Compute,
+}
+
 // Basic round-robin implementation for distributing work across async workers.
 thread_local! {
     static NEXT_ASYNC_WORKER_INDEX: Cell<usize> = const { Cell::new(0) };
@@ -204,8 +248,14 @@ thread_local! {
         .build()
         .unwrap();
 
-    static SYNC_SPAWN_DELAY: Event = EventBuilder::new()
-        .name("rt_sync_spawn_delay_seconds")
+    static SYNC_SPAWN_DELAY_HIGH_PRIORITY: Event = EventBuilder::new()
+        .name("rt_sync_spawn_delay_high_priority_seconds")
+        .buckets(GENERAL_LOW_PRECISION_SECONDS_BUCKETS)
+        .build()
+        .unwrap();
+
+    static SYNC_SPAWN_DELAY_LOW_PRIORITY: Event = EventBuilder::new()
+        .name("rt_sync_spawn_delay_low_priority_seconds")
         .buckets(GENERAL_LOW_PRECISION_SECONDS_BUCKETS)
         .build()
         .unwrap();

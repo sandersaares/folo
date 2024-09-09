@@ -24,6 +24,10 @@ pub fn try_get() -> Option<RuntimeClient> {
     CURRENT.with_borrow(|runtime| runtime.clone())
 }
 
+pub fn is_some() -> bool {
+    CURRENT.with_borrow(|runtime| runtime.is_some())
+}
+
 pub fn set(value: RuntimeClient) {
     CURRENT.with_borrow_mut(|runtime| {
         assert!(

@@ -2,7 +2,7 @@ mod async_agent;
 mod async_task_engine;
 mod builder;
 pub(crate) mod current_async_agent;
-mod current_runtime;
+pub(crate) mod current_runtime;
 pub(crate) mod current_sync_agent;
 mod erased_async_task;
 mod functions;

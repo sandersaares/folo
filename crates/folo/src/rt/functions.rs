@@ -1,5 +1,6 @@
 //! Top-level free functions that can be called to manipulate the Folo runtime.
 
+use super::SynchronousTaskType;
 use crate::rt::{
     current_async_agent, current_runtime, ready_after_poll::ReadyAfterPoll, LocalJoinHandle,
     RemoteJoinHandle,
@@ -36,14 +37,15 @@ where
     current_runtime::with(|runtime| runtime.spawn_on_any(future_fn))
 }
 
-/// Spawns a blocking task on any synchronous worker thread suitable for blocking, returning
-/// the result via a join handle suitable for use in asynchronous tasks.
-pub fn spawn_blocking<F, R>(f: F) -> RemoteJoinHandle<R>
+/// Spawns a task on a synchronous worker thread suitable for the specific type of synchronous
+/// work requested, returning the result via a join handle suitable for use in asynchronous
+/// tasks.
+pub fn spawn_sync<F, R>(task_type: SynchronousTaskType, f: F) -> RemoteJoinHandle<R>
 where
     F: FnOnce() -> R + Send + 'static,
     R: Send + 'static,
 {
-    current_runtime::with(|runtime| runtime.spawn_blocking(f))
+    current_runtime::with(|runtime| runtime.spawn_sync(task_type, f))
 }
 
 /// Yields control back to the async task runtime to allow other tasks to run.

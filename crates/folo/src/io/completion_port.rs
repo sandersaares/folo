@@ -1,21 +1,16 @@
 use crate::{
     io,
     metrics::{Event, EventBuilder},
-    util::ThreadSafe,
+    util::{OwnedHandle, ThreadSafe},
 };
 use negative_impl::negative_impl;
 use std::sync::Arc;
-use windows::{
-    core::Owned,
-    Win32::{
-        Foundation::{HANDLE, INVALID_HANDLE_VALUE},
-        Storage::FileSystem::SetFileCompletionNotificationModes,
-        System::{
-            WindowsProgramming::{
-                FILE_SKIP_COMPLETION_PORT_ON_SUCCESS, FILE_SKIP_SET_EVENT_ON_HANDLE,
-            },
-            IO::CreateIoCompletionPort,
-        },
+use windows::Win32::{
+    Foundation::{HANDLE, INVALID_HANDLE_VALUE},
+    Storage::FileSystem::SetFileCompletionNotificationModes,
+    System::{
+        WindowsProgramming::{FILE_SKIP_COMPLETION_PORT_ON_SUCCESS, FILE_SKIP_SET_EVENT_ON_HANDLE},
+        IO::CreateIoCompletionPort,
     },
 };
 
@@ -23,7 +18,7 @@ use windows::{
 // messages via the completion port. Typically, HANDLE is not thread-safe but that is merely
 // because HANDLE is overly general and not all types of handles are legitimately shared across
 // threads.
-pub(crate) type CompletionPortHandle = Arc<ThreadSafe<Owned<HANDLE>>>;
+pub(crate) type CompletionPortHandle = Arc<ThreadSafe<OwnedHandle>>;
 
 /// The I/O completion port is used to notify the I/O driver that an I/O operation has completed.
 /// It must be associated with each file/socket/handle that is capable of asynchronous I/O. We do
@@ -43,9 +38,10 @@ pub(crate) struct CompletionPort {
 
 impl CompletionPort {
     pub(crate) fn new() -> Self {
-        // SAFETY: We wrap it in Owned, ensuring it is released when dropped.
+        // SAFETY: We wrap it in OwnedHandle, ensuring it is released when dropped. I/O completion
+        // ports are safe to close from any thread, as required by the OwnedHandle API contract.
         let handle = unsafe {
-            Owned::new(CreateIoCompletionPort(
+            OwnedHandle::new(CreateIoCompletionPort(
                 INVALID_HANDLE_VALUE,
                 HANDLE::default(),
                 0, // Ignored as we are not binding a handle to the port.
