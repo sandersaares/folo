@@ -43,13 +43,24 @@ type TaskKey = usize;
 ///
 /// The second phase happens independently in the background after a `RuntimeClient::stop()` is
 /// issued. Callers that call `RuntimeClient::wait()` will wait for the cleanup to complete, though.
+///
+/// # Safety
+///
+/// As we need to ensure a proper cleanup process for each task anyway and cannot just drop them,
+/// we might as well directly reference them via pointers instead of using lookup keys and
+/// repeatedly looking them up. They are pinned forever, so there is no possibility of them moving
+/// in memory!
+///
+/// This means it is not safe to drop the engine while any tasks are still active. You must wait for
+/// the `CycleResult::Shutdown` result before it is safe to drop the engine.
 #[derive(Debug)]
 pub struct AsyncTaskEngine {
     // We use a pinned slab here to allocate the tasks in-place and avoid allocation churn.
     tasks: PinnedSlabChain<Task>,
 
     // The active set contains all the tasks we want to poll. This is where all futures start.
-    active: VecDeque<TaskKey>,
+    // The items are pinned pointers into the `tasks` collection.
+    active: VecDeque<*mut Task>,
 
     // The inactive set contains all the tasks that are sleeping. We will move them back to the
     // active set after a waker notifies us that a future needs to wake up. Note that the wakeup
@@ -58,11 +69,13 @@ pub struct AsyncTaskEngine {
     // set during/after the poll if a waker is signaled during a poll. Also implies engine is not'
     // locked during a poll, so new activity can occur (not only wakes but also new tasks being
     // added).
-    inactive: VecDeque<TaskKey>,
+    // The items are pinned pointers into the `tasks` collection.
+    inactive: VecDeque<*mut Task>,
 
     // These tasks have completed and we are waiting for the references to them to be dropped (for
     // the tasks to become inert) so we can finish releasing resources.
-    completed: VecDeque<TaskKey>,
+    // The items are pinned pointers into the `tasks` collection.
+    completed: VecDeque<*mut Task>,
 
     // In shutdown mode, all tasks are considered completed and the only thing we do is wait for
     // them to become inert (which may be driven by uncontrollable actions of foreign threads).
@@ -73,7 +86,10 @@ pub struct AsyncTaskEngine {
 }
 
 impl AsyncTaskEngine {
-    pub fn new() -> Self {
+    /// # Safety
+    ///
+    /// You must receive the `CycleResult::Shutdown` result before it is safe to drop the engine.
+    pub unsafe fn new() -> Self {
         Self {
             tasks: PinnedSlabChain::new(),
             active: VecDeque::new(),
@@ -88,9 +104,6 @@ impl AsyncTaskEngine {
     /// will be made available by the async task engine - it is expected that some other mechanism
     /// is used to observe the result.
     pub fn enqueue_erased(&mut self, erased_task: Pin<Box<dyn ErasedResultAsyncTask>>) {
-        // TODO: Do we need to accept tasks when shutting down so we can do cleanup properly?
-        // What if the new tasks being scheduled hold references to old tasks? Or vice versa?
-
         // It is possible due to the eventually consistent nature between worker commands that a
         // worker will receive a new task after shutdown has already begun. We expect the worker
         // to perform the necessary filtering to prevent that from ever reaching the task engine.
@@ -99,12 +112,14 @@ impl AsyncTaskEngine {
             "cannot enqueue tasks after shutdown has begun"
         );
 
+        let inserter = self.tasks.begin_insert();
+
         // SAFETY: We are responsible for not dropping the task until it is inert. We accomplish
         // this by only removing tasks after they pass through the `completed` list and indicate
         // that they have become inert.
-        let task = unsafe { Task::new(erased_task) };
+        let task = unsafe { Task::new(inserter.index(), erased_task) };
 
-        self.active.push_back(self.tasks.insert(task));
+        self.active.push_back(inserter.insert_raw(task));
     }
 
     pub fn execute_cycle(&mut self) -> CycleResult {
@@ -126,10 +141,12 @@ impl AsyncTaskEngine {
 
         let had_active_tasks = !self.active.is_empty();
 
-        while let Some(key) = self.active.pop_front() {
+        while let Some(task_ptr) = self.active.pop_front() {
             had_activity = true;
 
-            let task = self.tasks.get(key);
+            // SAFETY: This comes from a pinned slab and we are responsible for dropping tasks, which
+            // we never do until they progress through the lifecycle into the `completed` list.
+            let task = unsafe { Pin::new_unchecked(&*task_ptr) };
 
             let poll_result =
                 TASK_POLL_DURATION.with(|x| x.observe_duration_low_precision(|| task.poll()));
@@ -137,11 +154,11 @@ impl AsyncTaskEngine {
             match poll_result {
                 task::Poll::Ready(()) => {
                     TASKS_COMPLETED.with(Event::observe_unit);
-                    self.completed.push_back(key);
+                    self.completed.push_back(task_ptr);
                 }
                 task::Poll::Pending => {
                     TASK_INACTIVATED.with(Event::observe_unit);
-                    self.inactive.push_back(key);
+                    self.inactive.push_back(task_ptr);
                 }
             }
         }
@@ -180,21 +197,23 @@ impl AsyncTaskEngine {
         let mut index = 0;
 
         while index < self.inactive.len() {
-            let key = &self.inactive[index];
+            let task_ptr = &self.inactive[index];
 
-            let task = self.tasks.get(*key);
+            // SAFETY: This comes from a pinned slab and we are responsible for dropping tasks, which
+            // we never do until they progress through the lifecycle into the `completed` list.
+            let task = unsafe { Pin::new_unchecked(&**task_ptr) };
 
             if task.wake_signal.consume_awakened() {
                 had_activity = true;
 
                 TASK_ACTIVATED.with(Event::observe_unit);
 
-                let key = self
+                let task_ptr = self
                     .inactive
                     .remove(index)
                     .expect("key must exist - we just got it from the same data structure");
 
-                self.active.push_back(key);
+                self.active.push_back(task_ptr);
             } else {
                 index += 1;
             }
@@ -204,14 +223,16 @@ impl AsyncTaskEngine {
     }
 
     fn drop_inert_tasks(&mut self) {
-        self.completed.retain(|key| {
-            let task = self.tasks.get(*key);
+        self.completed.retain(|task_ptr| {
+            // SAFETY: This comes from a pinned slab and we are responsible for dropping tasks, which
+            // we never do until they progress through the lifecycle into the `completed` list.
+            let task = unsafe { Pin::new_unchecked(&**task_ptr) };
 
             let is_inert = task.is_inert();
 
             if is_inert {
                 TASKS_DROPPED.with(Event::observe_unit);
-                self.tasks.remove(*key);
+                self.tasks.remove(task.index);
             }
 
             !is_inert
@@ -244,19 +265,32 @@ impl AsyncTaskEngine {
             .active
             .drain(..)
             .chain(self.inactive.drain(..))
-            .map(|key| {
-                let task = self.tasks.get(key);
+            .map(|task_ptr| {
+                // SAFETY: This comes from a pinned slab and we are responsible for dropping tasks, which
+                // we never do until they progress through the lifecycle into the `completed` list.
+                let task = unsafe { Pin::new_unchecked(&*task_ptr) };
+
                 task.project_ref().inner.borrow().clear();
 
-                self.completed.push_back(key);
+                self.completed.push_back(task_ptr);
             })
             .count();
     }
 }
 
-impl Default for AsyncTaskEngine {
-    fn default() -> Self {
-        Self::new()
+impl Drop for AsyncTaskEngine {
+    fn drop(&mut self) {
+        assert!(
+            self.shutting_down,
+            "async task engine dropped without safe shutdown process"
+        );
+
+        // We must ensure that all tasks are completed before we drop the engine. This is a safety
+        // requirement of the engine - if it is not inert, we are violating memory safety.
+        assert!(
+            self.tasks.is_empty(),
+            "async task engine dropped while some tasks still exist"
+        );
     }
 }
 
@@ -284,6 +318,9 @@ struct Task {
     // Behind this may be either a local or a remote task - we do not know or care which.
     inner: RefCell<Pin<Box<dyn ErasedResultAsyncTask>>>,
 
+    // Used for dropping the task once we are done with it.
+    index: usize,
+
     #[pin]
     wake_signal: WakeSignal,
 }
@@ -292,9 +329,10 @@ impl Task {
     /// # Safety
     ///
     /// The task must not be dropped until it is inert.
-    unsafe fn new(inner: Pin<Box<dyn ErasedResultAsyncTask>>) -> Self {
+    unsafe fn new(index: usize, inner: Pin<Box<dyn ErasedResultAsyncTask>>) -> Self {
         Self {
             inner: RefCell::new(inner),
+            index,
             wake_signal: WakeSignal::new(),
         }
     }

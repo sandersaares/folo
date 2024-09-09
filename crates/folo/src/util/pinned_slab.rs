@@ -293,6 +293,39 @@ impl<'s, T, const COUNT: usize> PinnedSlabInserter<'s, T, COUNT> {
 
         pinned_ref
     }
+
+    pub fn insert_raw(self, value: T) -> *mut T {
+        // SAFETY: We did a bounds check and ensured in the ctor that every entry is initialized.
+        let slot = unsafe {
+            self.slab
+                .ptr
+                .add(self.index)
+                .as_mut()
+                .expect("we expect the resulting pointer to always be valid")
+        };
+
+        let previous_entry = mem::replace(slot, Entry::Occupied { value });
+
+        self.slab.next_free_index = match previous_entry {
+            Entry::Vacant { next_free_index } => next_free_index,
+            Entry::Occupied { .. } => panic!(
+                "entry {} was not vacant when we inserted into it",
+                self.index
+            ),
+        };
+
+        let ptr = match slot {
+            Entry::Occupied { value } => value as *mut T,
+            Entry::Vacant { .. } => panic!(
+                "entry {} was not occupied after we inserted into it",
+                self.index
+            ),
+        };
+
+        self.slab.count += 1;
+
+        ptr
+    }
 }
 
 #[cfg(test)]

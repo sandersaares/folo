@@ -116,6 +116,11 @@ impl<'s, T, const SLAB_SIZE: usize> PinnedSlabChainInserter<'s, T, SLAB_SIZE> {
         self.slab_inserter.insert(value)
     }
 
+    pub fn insert_raw(self, value: T) -> *mut T
+    {
+        self.slab_inserter.insert_raw(value)
+    }
+
     pub fn index(&self) -> usize {
         ChainIndex::<SLAB_SIZE>::from_parts(self.slab_index, self.slab_inserter.index()).to_whole()
     }

@@ -66,7 +66,9 @@ impl AsyncAgent {
             command_rx,
             metrics_tx,
             processor_id,
-            engine: RefCell::new(AsyncTaskEngine::new()),
+            // SAFETY: The async task engine must not be dropped until we get a
+            // `CycleResult::Shutdown` from it. We do wait for this in `run()`.
+            engine: RefCell::new(unsafe { AsyncTaskEngine::new() }),
             // SAFETY: The I/O driver must not be dropped while there are pending I/O operations.
             // We ensure this by waiting for I/O to complete before returning from `run()`.
             io: RefCell::new(unsafe { io::Driver::new() }),
