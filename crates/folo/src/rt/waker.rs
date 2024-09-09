@@ -69,9 +69,11 @@ impl WakeSignal {
     /// Returns whether the signal has received a wake-up notification. If so, resets the signal
     /// to a not awakened state.
     pub(crate) fn consume_awakened(&self) -> bool {
-        // We acquire the awakened flag here and expect to ensure we see all memory operations
-        // that occurred before the release of the awakened flag.
-        self.awakened.swap(false, Ordering::Acquire)
+        // Most of the time, the flag will be false so we at first probe it with Relaxed ordering.
+        // If it is false, we can return early. If it is true, we need to ensure that we see all
+        // memory operations that happened before the flag was set, so we use Acquire ordering and
+        // load it one more time.
+        self.awakened.load(Ordering::Relaxed) && self.awakened.swap(false, Ordering::Acquire)
     }
 
     /// Returns whether the signal is inert, meaning that no wakers are currently active and it is
