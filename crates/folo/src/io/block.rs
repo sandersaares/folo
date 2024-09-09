@@ -28,14 +28,8 @@ use windows::Win32::{
 /// # Safety
 ///
 /// Contents of a BlockStore are exposed to native code. For safe operation, the BlockStore must
-/// be freed after all native I/O operations referencing the blocks have been terminated. This
-/// includes:
-///
-/// * All file handles must be closed.
-/// * All I/O completion ports must be closed.
-///
-/// It is not required to wait for scheduled I/O completions to finish - closing the handles is
-/// enough. TODO: Prove it.
+/// be freed after all native I/O operations referencing the blocks have been completed. This means
+/// after the completion notification has been received on the I/O completion port.
 #[derive(Debug)]
 pub(super) struct BlockStore {
     // The blocks are stored in UnsafeCell because we are doings things like taking a shared
@@ -51,6 +45,11 @@ impl BlockStore {
         Self {
             blocks: RefCell::new(PinnedSlabChain::new()),
         }
+    }
+
+    /// Whether the block store is empty and it is safe to drop the instance.
+    pub fn is_empty(&self) -> bool {
+        self.blocks.borrow().is_empty()
     }
 
     /// Allocates a new block for I/O operations.

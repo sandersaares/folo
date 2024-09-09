@@ -10,13 +10,19 @@ use std::pin::Pin;
 /// via `get_mut()` will exclusively borrow the slab itself. If you wish to preserve an exclusive
 /// reference for a longer duration, you must use interior mutability in your items.
 #[derive(Debug)]
-pub struct PinnedSlab<T, const COUNT: usize> {
+pub struct PinnedSlab<T, const CAPACITY: usize> {
     ptr: *mut Entry<T>,
 
     /// Index of the next free slot in the slab. Think of this as a virtual stack, with the stack
     /// entries stored in the slab entries themselves. This will point out of bounds if the slab
     /// is full.
     next_free_index: usize,
+
+    /// The total number of items in the slab. This is not used by the slab itself but
+    /// may be valuable to callers who want to know if the slab is empty because in many use
+    /// cases the slab is the backing store for a custom allocation/pinning scheme and may not
+    /// be dropped when any items are still present.
+    count: usize,
 }
 
 enum Entry<T> {
@@ -25,13 +31,13 @@ enum Entry<T> {
     Vacant { next_free_index: usize },
 }
 
-impl<T, const COUNT: usize> PinnedSlab<T, COUNT> {
+impl<T, const CAPACITY: usize> PinnedSlab<T, CAPACITY> {
     pub fn new() -> Self {
         let ptr = unsafe { alloc(Self::layout()) as *mut MaybeUninit<Entry<T>> };
 
         // Initialize them all to `Vacant` to start with.
         // We can now assume the slab is initialized - safe to access without causing UB.
-        for index in 0..COUNT {
+        for index in 0..CAPACITY {
             unsafe {
                 let slot = ptr.add(index);
                 (*slot).write(Entry::Vacant {
@@ -44,20 +50,29 @@ impl<T, const COUNT: usize> PinnedSlab<T, COUNT> {
             // SAFETY: MaybeUninit is a ZST, so the layout is guaranteed to match.
             ptr: unsafe { mem::transmute(ptr) },
             next_free_index: 0,
+            count: 0,
         }
     }
 
     fn layout() -> Layout {
-        Layout::array::<MaybeUninit<Entry<T>>>(COUNT)
+        Layout::array::<MaybeUninit<Entry<T>>>(CAPACITY)
             .expect("simple flat array layout must be calculable")
     }
 
+    pub fn len(&self) -> usize {
+        self.count
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.count == 0
+    }
+
     pub fn is_full(&self) -> bool {
-        self.next_free_index >= COUNT
+        self.next_free_index >= CAPACITY
     }
 
     pub fn get(&self, index: usize) -> Pin<&T> {
-        assert!(index < COUNT, "get({index}) index out of bounds");
+        assert!(index < CAPACITY, "get({index}) index out of bounds");
 
         // SAFETY: We did a bounds check and ensured in the ctor that every entry is initialized.
         match unsafe {
@@ -73,7 +88,7 @@ impl<T, const COUNT: usize> PinnedSlab<T, COUNT> {
     }
 
     pub fn get_mut(&mut self, index: usize) -> Pin<&mut T> {
-        assert!(index < COUNT, "index {index} out of bounds");
+        assert!(index < CAPACITY, "index {index} out of bounds");
 
         // SAFETY: We did a bounds check and ensured in the ctor that every entry is initialized.
         match unsafe {
@@ -88,7 +103,7 @@ impl<T, const COUNT: usize> PinnedSlab<T, COUNT> {
         }
     }
 
-    pub fn begin_insert<'s, 'i>(&'s mut self) -> PinnedSlabInserter<'i, T, COUNT>
+    pub fn begin_insert<'s, 'i>(&'s mut self) -> PinnedSlabInserter<'i, T, CAPACITY>
     where
         's: 'i,
     {
@@ -113,7 +128,7 @@ impl<T, const COUNT: usize> PinnedSlab<T, COUNT> {
     }
 
     pub fn remove(&mut self, index: usize) {
-        assert!(index < COUNT, "remove({index}) index out of bounds");
+        assert!(index < CAPACITY, "remove({index}) index out of bounds");
 
         // SAFETY: We did a bounds check and ensured in the ctor that every entry is initialized.
         let slot = unsafe {
@@ -141,14 +156,16 @@ impl<T, const COUNT: usize> PinnedSlab<T, COUNT> {
         }
 
         self.next_free_index = index;
+        self.count -= 1;
     }
 
     #[cfg(test)]
     pub fn integrity_check(&self) {
-        let mut observed_is_vacant: [Option<bool>; COUNT] = [None; COUNT];
-        let mut observed_next_free_index: [Option<usize>; COUNT] = [None; COUNT];
+        let mut observed_is_vacant: [Option<bool>; CAPACITY] = [None; CAPACITY];
+        let mut observed_next_free_index: [Option<usize>; CAPACITY] = [None; CAPACITY];
+        let mut observed_occupied_count = 0;
 
-        for index in 0..COUNT {
+        for index in 0..CAPACITY {
             // SAFETY: We are operating within bounds. We initialized all slots in the ctor. Is OK.
             match unsafe {
                 self.ptr
@@ -156,7 +173,10 @@ impl<T, const COUNT: usize> PinnedSlab<T, COUNT> {
                     .as_ref()
                     .expect("we expect the resulting pointer to always be valid")
             } {
-                Entry::Occupied { .. } => observed_is_vacant[index] = Some(false),
+                Entry::Occupied { .. } => {
+                    observed_is_vacant[index] = Some(false);
+                    observed_occupied_count += 1;
+                }
                 Entry::Vacant { next_free_index } => {
                     observed_is_vacant[index] = Some(true);
                     observed_next_free_index[index] = Some(*next_free_index);
@@ -164,26 +184,33 @@ impl<T, const COUNT: usize> PinnedSlab<T, COUNT> {
             };
         }
 
-        if self.next_free_index < COUNT && !observed_is_vacant[self.next_free_index].unwrap() {
+        if self.next_free_index < CAPACITY && !observed_is_vacant[self.next_free_index].unwrap() {
             panic!(
                 "self.next_free_index points to an occupied slot: {}",
                 self.next_free_index
             );
         }
 
-        for index in 0..COUNT {
+        if self.count != observed_occupied_count {
+            panic!(
+                "self.count {} does not match the observed occupied count {}",
+                self.count, observed_occupied_count
+            );
+        }
+
+        for index in 0..CAPACITY {
             if !observed_is_vacant[index].unwrap() {
                 continue;
             }
 
             let next_free_index = observed_next_free_index[index].unwrap();
 
-            if next_free_index == COUNT {
+            if next_free_index == CAPACITY {
                 // This is fine - it means the slab became full once we inserted this one.
                 continue;
             }
 
-            if next_free_index > COUNT {
+            if next_free_index > CAPACITY {
                 panic!(
                     "entry {} is vacant but has an out-of-bounds next_free_index beyond COUNT: {}",
                     index, next_free_index
@@ -253,14 +280,18 @@ impl<'s, T, const COUNT: usize> PinnedSlabInserter<'s, T, COUNT> {
             ),
         };
 
-        match slot {
+        let pinned_ref: Pin<&'v T> = match slot {
             // SAFETY: Items are always pinned - that is the point of this collection.
             Entry::Occupied { value } => unsafe { Pin::new_unchecked(value) },
             Entry::Vacant { .. } => panic!(
                 "entry {} was not occupied after we inserted into it",
                 self.index
             ),
-        }
+        };
+
+        self.slab.count += 1;
+
+        pinned_ref
     }
 }
 

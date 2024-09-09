@@ -10,25 +10,43 @@ use windows_result::HRESULT;
 
 /// Max number of I/O operations to dequeue in one go. Presumably getting more data from the OS with
 /// a single call is desirable but the exact impact of different values on performance is not known.
-/// 
+///
 /// Known aspects of performance impact:
 /// * GetQueuedCompletionStatusEx duration seems linearly affected under non-concurrent synthetic
 ///   message load (e.g. 40 us for 1024 items).
 const IO_DEQUEUE_BATCH_SIZE: usize = 1024;
 
 /// Processes I/O completion operations for a given thread as part of the async worker loop.
+///
+/// # Safety
+///
+/// The driver must not be dropped while any I/O operation is in progress. To shut down safely, the
+/// I/O driver must be polled until it signals that all I/O operations have completed (`is_inert()`
+/// returns true).
 #[derive(Debug)]
 pub(crate) struct Driver {
     completion_port: CompletionPort,
+
+    // These are the I/O blocks that are currently in flight for operation started with the OS but
+    // result not yet received. Each such operation has one block in this store.
     block_store: BlockStore,
 }
 
 impl Driver {
-    pub(crate) fn new() -> Self {
+    /// # Safety
+    ///
+    /// See safety requirements on the type.
+    pub(crate) unsafe fn new() -> Self {
         Self {
             completion_port: CompletionPort::new(),
             block_store: BlockStore::new(),
         }
+    }
+
+    /// Whether the driver has entered a state where it is safe to drop it. This requires that all
+    /// ongoing I/O operations be completed and the completion notification received.
+    pub fn is_inert(&self) -> bool {
+        self.block_store.is_empty()
     }
 
     /// Binds an I/O primitive to the completion port of this driver, provided a handle to the I/O
@@ -124,6 +142,17 @@ impl Driver {
                 }
             }
         }
+    }
+}
+
+impl Drop for Driver {
+    fn drop(&mut self) {
+        // We must ensure that all I/O operations are completed before we drop the driver. This is
+        // a safety requirement of the driver - if it is not inert, we are violating memory safety.
+        assert!(
+            self.is_inert(),
+            "I/O driver dropped while I/O operations are still in progress"
+        );
     }
 }
 

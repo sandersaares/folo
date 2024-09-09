@@ -18,6 +18,7 @@ use std::{
     sync::mpsc,
 };
 use tracing::{event, Level};
+use windows::Win32::System::Threading::INFINITE;
 
 /// Coordinates the operations of the Folo runtime on a single thread. There may be different
 /// types of agents assigned to different threads (e.g. async worker versus sync worker). This is
@@ -66,7 +67,9 @@ impl AsyncAgent {
             metrics_tx,
             processor_id,
             engine: RefCell::new(AsyncTaskEngine::new()),
-            io: RefCell::new(io::Driver::new()),
+            // SAFETY: The I/O driver must not be dropped while there are pending I/O operations.
+            // We ensure this by waiting for I/O to complete before returning from `run()`.
+            io: RefCell::new(unsafe { io::Driver::new() }),
             new_tasks: RefCell::new(VecDeque::new()),
             shutting_down: Cell::new(false),
         }
@@ -115,7 +118,7 @@ impl AsyncAgent {
         // even cause the reference to drop? After all, we are not executing tasks anymore during
         // shutdown! The answer is `ErasedTask::clear()` which drops the future and any captured
         // state such as the join handle! The task engine also relies on that capability to drop
-        // wakers and break waker reference cycles in a similar manner.
+        // wakers and break waker reference cycles and we use this to also cancel pending I/O.
         let mut task = unsafe { LocalTask::new(future) };
         let join_handle = task.as_mut().join_handle();
 
@@ -141,23 +144,21 @@ impl AsyncAgent {
         //     consequence of that activity (e.g. I/O completion). However, a task can also be woken
         //     up by some event on another thread!
         //
-        // It is not feasible to (cheaply) react immediately to all of these events, so we need to
-        // use periodic polling with some of them. The I/O driver is the most important one, as it
+        // We try to react fast to all these events. The I/O driver is the most important one, as it
         // is time-critical and often going to be the main source of incoming work, so we focus on
         // that as our key driver of work. Therefore, when we have nothing else to do, we will just
         // go to sleep waiting on the I/O driver to wake us up.
         //
-        // As a fallback, to ensure that other events are not missed during stretches of time when
-        // there is no I/O activity, we wake up every N milliseconds to check for new work from
-        // other sources.
+        // All the other sources of work are subordinated to the I/O driver - the never wake us up
+        // themselves but we can often identify that a particular completion event might require a
+        // particular thread's I/O driver to wake up. In these cases we send a special wakeup packet
+        // to the I/O driver, which will then wake up the thread.
         //
-        // Note that our timers are I/O driven, so are not affected by our polling slowness. In
-        // effect, this means that we only react slowly to activity arriving from other threads.
-        //
-        // We also have an explicit wakeup when a remote task is queued, so we do not just wait
-        // doing nothing when another thread gives us a new task. This is accomplished by signaling
-        // the I/O driver - "new task was added" is treated as an I/O completion event, which wakes
-        // us up.
+        // The wakeup packet is not a guarantee - there are situations where we cannot identify the
+        // correct thread to wake up, or possibly cannot schedule a wakeup for other reasons. As a
+        // fallback, we wake up every N milliseconds to check for new work from other sources even
+        // if there is no activity on the I/O driver. This may add some latency to the cases where
+        // we cannot immediately trigger an I/O wakeup (typically up to 20 milliseconds).
 
         // If we have any reason to believe that we have non-I/O work to do, we set this to false,
         // which only dequeues already existing I/O completions and does not wait for new ones.
@@ -182,7 +183,7 @@ impl AsyncAgent {
                     // shutting down any harder than we already are.
                     if !self.shutting_down.get() {
                         // This *starts* our shutdown - we still need to wait for the async task
-                        // engine to clean up.
+                        // engine to clean up and for pending I/O operations to complete.
                         event!(
                             Level::TRACE,
                             "received terminate command; shutdown process starting"
@@ -201,7 +202,12 @@ impl AsyncAgent {
                         // are foreign threads holding our wakers. We wait for all wakers to be dropped.
                         engine.begin_shutdown();
 
-                        // TODO: Does I/O driver need shutdown logic as well? How do they relate?
+                        // The I/O driver itself does not have a shutdown process - we simply need
+                        // to wait for all pending operations to complete. This will occur naturally
+                        // over time, speeded up by the fact that the async task engine dropped a
+                        // bunch of tasks that were hopefully holding I/O handles that now got
+                        // closed and resulted in pending I/O being canceled (which we still need to
+                        // wait for - a cancellation is just a regular I/O completion for us).
                     }
                 }
             }
@@ -240,9 +246,34 @@ impl AsyncAgent {
                 }
                 CycleResult::Shutdown => {
                     // The async task engine has finished shutting down, so we can now exit.
+                    event!(
+                        Level::TRACE,
+                        "async tasks engine reported it is safe to shut down"
+                    );
                     break;
                 }
             };
+        }
+
+        {
+            let mut io = self.io.borrow_mut();
+
+            if io.is_inert() {
+                event!(
+                    Level::TRACE,
+                    "there are no pending I/O operations - safe to shut down I/O driver"
+                );
+            } else {
+                event!(
+                    Level::TRACE,
+                    "waiting for I/O driver to complete pending operations"
+                );
+
+                while !io.is_inert() {
+                    // We have no need to wake up for non-I/O work anymore, so we can sleep forever.
+                    io.process_completions(INFINITE);
+                }
+            }
         }
 
         event!(Level::TRACE, "shutdown completed");

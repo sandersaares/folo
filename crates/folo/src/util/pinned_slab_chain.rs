@@ -20,6 +20,14 @@ impl<T, const SLAB_SIZE: usize> PinnedSlabChain<T, SLAB_SIZE> {
         Self { slabs: Vec::new() }
     }
 
+    pub fn len(&self) -> usize {
+        self.slabs.iter().map(|slab| slab.len()).sum()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.slabs.iter().all(|slab| slab.is_empty())
+    }
+
     pub fn get(&self, index: usize) -> Pin<&T> {
         let index = ChainIndex::<SLAB_SIZE>::from_whole(index);
 
