@@ -1,5 +1,5 @@
-use criterion::{criterion_group, criterion_main, Criterion};
-use folo::criterion::FoloAdapter;
+use criterion::{criterion_group, criterion_main, BatchSize, Criterion};
+use folo::criterion::{ComparativeAdapter, FoloAdapter};
 use std::{
     cell::LazyCell,
     fs::File,
@@ -12,13 +12,23 @@ criterion_main!(benches);
 const FILE_SIZE: usize = 10 * 1024 * 1024 * 1024;
 const FILE_PATH: &str = "testdata.bin";
 
-fn file_io(c: &mut Criterion) {
-    let tokio = tokio::runtime::Builder::new_multi_thread().build().unwrap();
+const SMALL_FILE_SIZE: usize = 1 * 1024 * 1024 * 1024;
+const SMALL_FILE_COUNT: usize = 32;
+const SMALL_FILE_PATH: &str = "testdata_small.bin";
 
-    // Create a large testdata.bin file, overwriting if it exists.
+fn file_io(c: &mut Criterion) {
+    let comparison_adapter =
+        ComparativeAdapter::new(|| tokio::runtime::Builder::new_multi_thread().build().unwrap());
+
+    // Create our test data files.
     File::create(FILE_PATH)
         .unwrap()
         .set_len(FILE_SIZE as u64)
+        .unwrap();
+
+    File::create(SMALL_FILE_PATH)
+        .unwrap()
+        .set_len(SMALL_FILE_SIZE as u64)
         .unwrap();
 
     let mut group = c.benchmark_group("file_io");
@@ -27,27 +37,90 @@ fn file_io(c: &mut Criterion) {
     group.sample_size(10);
 
     group.bench_function("folo_read_file_to_vec", |b| {
-        b.to_async(FoloAdapter::default()).iter(|| {
-            folo::rt::spawn_on_any(|| async {
-                let file = folo::fs::read(FILE_PATH).await.unwrap();
-                assert_eq!(file.len(), FILE_SIZE);
-            })
-        });
+        b.iter_batched(
+            || {
+                comparison_adapter.begin_folo(Box::new(|| {
+                    Box::pin(async move {
+                        folo::rt::spawn_on_any(|| async {
+                            let file = folo::fs::read(FILE_PATH).await.unwrap();
+                            assert_eq!(file.len(), FILE_SIZE);
+                        }).await;
+                    })
+                }))
+            },
+            |prepared| prepared.run(),
+            BatchSize::PerIteration,
+        );
     });
 
     group.bench_function("tokio_read_file_to_vec", |b| {
-        b.to_async(&tokio).iter(|| {
-            tokio::task::spawn(async {
-                let file = tokio::fs::read(FILE_PATH).await.unwrap();
-                assert_eq!(file.len(), FILE_SIZE);
-            })
-        });
+        b.iter_batched(
+            || {
+                comparison_adapter.begin_competitor(Box::pin(async move {
+                    _ = tokio::task::spawn(async {
+                        let file = tokio::fs::read(FILE_PATH).await.unwrap();
+                        assert_eq!(file.len(), FILE_SIZE);
+                    }).await;
+                }))
+            },
+            |prepared| prepared.run(),
+            BatchSize::PerIteration,
+        );
+    });
+
+    group.bench_function("folo_read_file_to_vec_many", |b| {
+        b.iter_batched(
+            || {
+                comparison_adapter.begin_folo(Box::new(|| {
+                    Box::pin(async move {
+                        let tasks = (0..SMALL_FILE_COUNT)
+                            .map(|_| {
+                                folo::rt::spawn_on_any(|| async {
+                                    let file = folo::fs::read(SMALL_FILE_PATH).await.unwrap();
+                                    assert_eq!(file.len(), SMALL_FILE_SIZE);
+                                })
+                            })
+                            .collect::<Vec<_>>();
+
+                        for task in tasks {
+                            _ = task.await;
+                        }
+                    })
+                }))
+            },
+            |prepared| prepared.run(),
+            BatchSize::PerIteration,
+        );
+    });
+
+    group.bench_function("tokio_read_file_to_vec_many", |b| {
+        b.iter_batched(
+            || {
+                comparison_adapter.begin_competitor(Box::pin(async move {
+                    let tasks = (0..SMALL_FILE_COUNT)
+                        .map(|_| {
+                            tokio::task::spawn(async {
+                                let file = tokio::fs::read(SMALL_FILE_PATH).await.unwrap();
+                                assert_eq!(file.len(), SMALL_FILE_SIZE);
+                            })
+                        })
+                        .collect::<Vec<_>>();
+
+                    for task in tasks {
+                        _ = task.await;
+                    }
+                }))
+            },
+            |prepared| prepared.run(),
+            BatchSize::PerIteration,
+        );
     });
 
     group.finish();
 
-    // Delete our test data file.
+    // Delete our test data files.
     std::fs::remove_file(FILE_PATH).unwrap();
+    std::fs::remove_file(SMALL_FILE_PATH).unwrap();
 }
 
 const SCAN_PATH: &str = "c:\\Source";
