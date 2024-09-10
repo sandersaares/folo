@@ -5,7 +5,6 @@ use crate::{
 };
 use futures_concurrency::future::Join;
 use std::{ffi::CString, ops::ControlFlow, path::Path};
-use tracing::{event, Level};
 use windows::{
     core::PCSTR,
     Win32::{
