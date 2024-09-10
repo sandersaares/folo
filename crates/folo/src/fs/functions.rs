@@ -25,12 +25,6 @@ pub async fn read(path: impl AsRef<Path>) -> io::Result<Vec<u8>> {
 
 /// Read the contents of a file to a vector of bytes using small pooled buffers.
 pub async fn read_small_buffer(path: impl AsRef<Path>) -> io::Result<Vec<u8>> {
-    event!(
-        Level::INFO,
-        message = "read()",
-        path = path.as_ref().display().to_string()
-    );
-
     let path_cstr = CString::new(path.as_ref().to_str().unwrap()).unwrap();
 
     unsafe {
@@ -54,8 +48,6 @@ pub async fn read_small_buffer(path: impl AsRef<Path>) -> io::Result<Vec<u8>> {
                 let mut file_size: i64 = 0;
 
                 GetFileSizeEx(*file_handle, &mut file_size as *mut _)?;
-
-                event!(Level::DEBUG, message = "opened file", length = file_size);
 
                 Ok((file_handle, file_size))
             })
@@ -69,24 +61,12 @@ pub async fn read_small_buffer(path: impl AsRef<Path>) -> io::Result<Vec<u8>> {
             == ControlFlow::Continue(())
         {}
 
-        event!(
-            Level::TRACE,
-            message = "read() complete",
-            length = result.len()
-        );
-
         Ok(result)
     }
 }
 
 /// Read the contents of a file to a vector of bytes using one giant buffer for the entire file.
 pub async fn read_large_buffer(path: impl AsRef<Path>) -> io::Result<Vec<u8>> {
-    event!(
-        Level::TRACE,
-        message = "read()",
-        path = path.as_ref().display().to_string()
-    );
-
     let path_cstr = CString::new(path.as_ref().to_str().unwrap()).unwrap();
 
     unsafe {
@@ -110,8 +90,6 @@ pub async fn read_large_buffer(path: impl AsRef<Path>) -> io::Result<Vec<u8>> {
                 let mut file_size: i64 = 0;
 
                 GetFileSizeEx(*file_handle, &mut file_size as *mut _)?;
-
-                event!(Level::DEBUG, message = "opened file", length = file_size);
 
                 Ok((file_handle, file_size))
             })
@@ -150,12 +128,6 @@ pub async fn read_large_buffer(path: impl AsRef<Path>) -> io::Result<Vec<u8>> {
             }
         }
 
-        event!(
-            Level::TRACE,
-            message = "read() complete",
-            length = result.len()
-        );
-
         Ok(result)
     }
 }
@@ -166,12 +138,6 @@ const CONCURRENT_CHUNK_SIZE: usize = 1 * 1024 * 1024;
 /// Read the contents of a file to a vector of bytes using one large buffer accessed concurrently
 /// by multiple read operations enqueued on the same file.
 pub async fn read_high_concurrency(path: impl AsRef<Path>) -> io::Result<Vec<u8>> {
-    event!(
-        Level::TRACE,
-        message = "read()",
-        path = path.as_ref().display().to_string()
-    );
-
     let path_cstr = CString::new(path.as_ref().to_str().unwrap()).unwrap();
 
     unsafe {
@@ -195,8 +161,6 @@ pub async fn read_high_concurrency(path: impl AsRef<Path>) -> io::Result<Vec<u8>
                 let mut file_size: i64 = 0;
 
                 GetFileSizeEx(*file_handle, &mut file_size as *mut _)?;
-
-                event!(Level::DEBUG, message = "opened file", length = file_size);
 
                 Ok((file_handle, file_size))
             })
@@ -267,12 +231,6 @@ pub async fn read_high_concurrency(path: impl AsRef<Path>) -> io::Result<Vec<u8>
         for result in results {
             result?;
         }
-
-        event!(
-            Level::TRACE,
-            message = "read() complete",
-            length = result.len()
-        );
 
         Ok(result)
     }

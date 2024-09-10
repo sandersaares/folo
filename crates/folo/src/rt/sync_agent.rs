@@ -1,7 +1,7 @@
 use super::ErasedSyncTask;
 use crate::{
     constants::GENERAL_LOW_PRECISION_SECONDS_BUCKETS,
-    metrics::{self, Event, EventBuilder, ReportPage},
+    metrics::{self, Event, EventBuilder, Magnitude, ReportPage},
 };
 use concurrent_queue::ConcurrentQueue;
 use std::{
@@ -48,7 +48,9 @@ impl SyncAgent {
         // We simply process commands one by one until we receive a terminate command.
         // There is a risk of a huge buildup of commands with a pending terminate at the very end
         // but we are not going to worry about that for now.
-        while let Ok(command) = self.command_rx.recv() {
+        while let Ok(command) =
+            TASK_INTERVAL.with(|x| x.observe_duration_low_precision(|| self.command_rx.recv()))
+        {
             match command {
                 SyncAgentCommand::CheckForTasks => {
                     let Some(task) = self.next_task() else {
@@ -74,6 +76,9 @@ impl SyncAgent {
     }
 
     fn next_task(&self) -> Option<ErasedSyncTask> {
+        LOW_PRIORITY_QUEUE_SIZE.with(|x| x.observe(self.task_queue.len() as f64));
+        HIGH_PRIORITY_QUEUE_SIZE.with(|x| x.observe(self.priority_task_queue.len() as f64));
+
         self.priority_task_queue
             .pop()
             .ok()
@@ -93,6 +98,8 @@ pub enum SyncAgentCommand {
     Terminate,
 }
 
+const QUEUE_SIZE_BUCKETS: &[Magnitude] = &[0.0, 1.0, 10.0, 100.0, 1000.0];
+
 thread_local! {
     static TASKS: Event = EventBuilder::new()
         .name("rt_sync_tasks")
@@ -104,4 +111,23 @@ thread_local! {
         .buckets(GENERAL_LOW_PRECISION_SECONDS_BUCKETS)
         .build()
         .unwrap();
+
+    static TASK_INTERVAL: Event = EventBuilder::new()
+        .name("rt_sync_task_interval_seconds")
+        .buckets(GENERAL_LOW_PRECISION_SECONDS_BUCKETS)
+        .build()
+        .unwrap();
+
+    static LOW_PRIORITY_QUEUE_SIZE: Event = EventBuilder::new()
+        .name("rt_sync_low_priority_queue_size")
+        .buckets(QUEUE_SIZE_BUCKETS)
+        .build()
+        .unwrap();
+
+    static HIGH_PRIORITY_QUEUE_SIZE: Event = EventBuilder::new()
+        .name("rt_sync_high_priority_queue_size")
+        .buckets(QUEUE_SIZE_BUCKETS)
+        .build()
+        .unwrap();
+
 }

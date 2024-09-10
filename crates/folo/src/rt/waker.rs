@@ -1,13 +1,15 @@
+use crate::rt::async_task_engine::Task;
 use negative_impl::negative_impl;
 use std::{
     cell::UnsafeCell,
+    collections::HashSet,
     pin::Pin,
-    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
+    sync::{
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+        Arc, Mutex,
+    },
     task::{RawWaker, RawWakerVTable, Waker},
 };
-
-// TODO: Double-check the atomics ordering here with the help of someone smarter.
-// A good stress test suite would not hurt, either!
 
 /// A wake signal intended to be allocated inline as part of the task structure that is woken up.
 ///
@@ -35,6 +37,18 @@ use std::{
 /// safe as required by the Waker API contract.
 #[derive(Debug)]
 pub(crate) struct WakeSignal {
+    // The task that we are waking up. We will insert this pointer into a list of awakened tasks.
+    task_ptr: *mut Task,
+
+    // The set of tasks that have been awakened by a signal. If we can lock the mutex without
+    // blocking and if there is room in the set, we add our task to the set. Otherwise, we update
+    // the signal itself and set the "probe signals to find awakened ones" flag.
+    awakened_set: Arc<Mutex<HashSet<*mut Task>>>,
+
+    // If we cannot add the task to the set, we set this flag to inform the task engine that it
+    // needs to read each signal to identify what has woken up.
+    probe_embedded_wake_signals: Arc<AtomicBool>,
+
     /// Counts each waker we have created (both the initial one and any clones). The instance cannot
     /// be dropped until the clones are all gone because each clone holds a self-reference to the
     /// wake signal.
@@ -57,13 +71,25 @@ pub(crate) struct WakeSignal {
 }
 
 impl WakeSignal {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(
+        awakened_set: Arc<Mutex<HashSet<*mut Task>>>,
+        probe_embedded_wake_signals: Arc<AtomicBool>,
+    ) -> Self {
         Self {
+            task_ptr: std::ptr::null_mut(),
+            awakened_set,
+            probe_embedded_wake_signals,
             waker_count: AtomicUsize::new(0),
             awakened: AtomicBool::new(false),
             waker: UnsafeCell::new(None),
             _phantom_pinned: std::marker::PhantomPinned,
         }
+    }
+
+    /// This is self-referential (the wake signal is part of the task), so needs to be
+    /// lazy-initialized after the ctor.
+    pub(crate) fn set_task_ptr(&mut self, task_ptr: *mut Task) {
+        self.task_ptr = task_ptr;
     }
 
     /// Returns whether the signal has received a wake-up notification. If so, resets the signal
@@ -116,6 +142,25 @@ impl WakeSignal {
             Waker::from_raw(RawWaker::new(signal_ptr, &VTABLE))
         }
     }
+
+    fn wake(&self) {
+        if let Ok(mut awakened_set) = self.awakened_set.try_lock() {
+            // We only add if we can do so without increasing capacity, because increasing capacity
+            // from an arbitrary thread may require reallocation, which we do not want to do on a
+            // different thread than the one that owns the set.
+            if awakened_set.len() < awakened_set.capacity() {
+                awakened_set.insert(self.task_ptr);
+                return;
+            }
+        }
+
+        // We release the awakened flag here, which means when someone acquires it
+        // they will see all the memory operations that happened up to this point.
+        self.awakened.store(true, Ordering::Release);
+
+        self.probe_embedded_wake_signals
+            .store(true, Ordering::Release);
+    }
 }
 
 impl Drop for WakeSignal {
@@ -148,9 +193,7 @@ fn waker_clone_waker(ptr: *const ()) -> RawWaker {
 fn waker_wake(ptr: *const ()) {
     let signal = unsafe { resurrect_signal_ptr(ptr) };
 
-    // We release the awakened flag here, which means when someone acquires it
-    // they will see all the memory operations that happened up to this point.
-    signal.awakened.store(true, Ordering::Release);
+    signal.wake();
 
     // This consumes the waker!
     signal.waker_count.fetch_sub(1, Ordering::Relaxed);
@@ -159,9 +202,7 @@ fn waker_wake(ptr: *const ()) {
 fn waker_wake_by_ref(ptr: *const ()) {
     let signal = unsafe { resurrect_signal_ptr(ptr) };
 
-    // We release the awakened flag here, which means when someone acquires it
-    // they will see all the memory operations that happened up to this point.
-    signal.awakened.store(true, Ordering::Release);
+    signal.wake();
 }
 
 fn waker_drop_waker(ptr: *const ()) {
@@ -179,8 +220,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn smoke_test() {
-        let signal = WakeSignal::new();
+    fn awaken_via_embedded_signal() {
+        let awakened_set = Arc::new(Mutex::new(HashSet::with_capacity(10)));
+        let probe_embedded_wake_signals = Arc::new(AtomicBool::new(false));
+
+        // We hold the lock - the signal cannot use the set.
+        let _awakened_set_lock_guard = awakened_set.lock().unwrap();
+
+        let signal = WakeSignal::new(
+            Arc::clone(&awakened_set),
+            Arc::clone(&probe_embedded_wake_signals),
+        );
         let signal = unsafe { Pin::new_unchecked(&signal) };
 
         let waker = unsafe { signal.waker() };
@@ -200,6 +250,91 @@ mod tests {
         assert!(!signal.consume_awakened());
 
         waker.wake_by_ref();
+        assert_eq!(true, probe_embedded_wake_signals.load(Ordering::Relaxed));
+        assert!(signal.consume_awakened());
+
+        assert!(!signal.is_inert());
+
+        // Once we drop the clone, we are again inert because only the original remains.
+        drop(waker_clone);
+
+        assert_eq!(signal.waker_count.load(Ordering::Relaxed), 1);
+        assert!(signal.is_inert());
+    }
+
+    #[test]
+    fn awaken_via_awakened_set() {
+        let awakened_set = Arc::new(Mutex::new(HashSet::with_capacity(10)));
+        let probe_embedded_wake_signals = Arc::new(AtomicBool::new(false));
+
+        let signal = WakeSignal::new(
+            Arc::clone(&awakened_set),
+            Arc::clone(&probe_embedded_wake_signals),
+        );
+        let signal = unsafe { Pin::new_unchecked(&signal) };
+
+        let waker = unsafe { signal.waker() };
+
+        // It is still counted as inert here because the first waker can only be used by the same
+        // thread, so if the thread is cleaning up it must not be in use anymore.
+        assert!(signal.is_inert());
+
+        let waker_clone = waker.clone();
+
+        // Now we have a second waker, which might have been given to some other thread, so may
+        // be called at any time - we are no longer inert.
+        assert!(!signal.is_inert());
+
+        assert_eq!(signal.waker_count.load(Ordering::Relaxed), 2);
+
+        assert!(!signal.consume_awakened());
+
+        waker.wake_by_ref();
+        // It should not have set the embedded signal here because we use the awakened set.
+        assert_eq!(false, probe_embedded_wake_signals.load(Ordering::Relaxed));
+        assert!(!signal.consume_awakened());
+        assert!(!awakened_set.lock().unwrap().is_empty());
+
+        assert!(!signal.is_inert());
+
+        // Once we drop the clone, we are again inert because only the original remains.
+        drop(waker_clone);
+
+        assert_eq!(signal.waker_count.load(Ordering::Relaxed), 1);
+        assert!(signal.is_inert());
+    }
+
+    #[test]
+    fn awaken_via_full_awakened_set() {
+        // Capacity is 0 so the set is not allowed to allocate (== is never used).
+        let awakened_set = Arc::new(Mutex::new(HashSet::with_capacity(0)));
+        let probe_embedded_wake_signals = Arc::new(AtomicBool::new(false));
+
+        let signal = WakeSignal::new(
+            Arc::clone(&awakened_set),
+            Arc::clone(&probe_embedded_wake_signals),
+        );
+        let signal = unsafe { Pin::new_unchecked(&signal) };
+
+        let waker = unsafe { signal.waker() };
+
+        // It is still counted as inert here because the first waker can only be used by the same
+        // thread, so if the thread is cleaning up it must not be in use anymore.
+        assert!(signal.is_inert());
+
+        let waker_clone = waker.clone();
+
+        // Now we have a second waker, which might have been given to some other thread, so may
+        // be called at any time - we are no longer inert.
+        assert!(!signal.is_inert());
+
+        assert_eq!(signal.waker_count.load(Ordering::Relaxed), 2);
+
+        assert!(!signal.consume_awakened());
+
+        waker.wake_by_ref();
+        // Even though it could lock the set, it could not use it because it was at capacity.
+        assert_eq!(true, probe_embedded_wake_signals.load(Ordering::Relaxed));
         assert!(signal.consume_awakened());
 
         assert!(!signal.is_inert());

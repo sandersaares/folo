@@ -1,5 +1,5 @@
 use crate::{
-    constants::GENERAL_LOW_PRECISION_SECONDS_BUCKETS,
+    constants::{GENERAL_LOW_PRECISION_SECONDS_BUCKETS, POISONED_LOCK},
     metrics::{Event, EventBuilder},
     rt::{erased_async_task::ErasedResultAsyncTask, waker::WakeSignal},
     util::{LowPrecisionInstant, PinnedSlabChain},
@@ -8,9 +8,13 @@ use negative_impl::negative_impl;
 use pin_project::pin_project;
 use std::{
     cell::RefCell,
-    collections::VecDeque,
+    collections::{HashSet, VecDeque},
     fmt::{self, Debug, Formatter},
     pin::Pin,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
     task,
 };
 
@@ -60,7 +64,7 @@ pub struct AsyncTaskEngine {
 
     // The active set contains all the tasks we want to poll. This is where all futures start.
     // The items are pinned pointers into the `tasks` collection.
-    active: VecDeque<*mut Task>,
+    active: HashSet<*mut Task>,
 
     // The inactive set contains all the tasks that are sleeping. We will move them back to the
     // active set after a waker notifies us that a future needs to wake up. Note that the wakeup
@@ -70,7 +74,21 @@ pub struct AsyncTaskEngine {
     // locked during a poll, so new activity can occur (not only wakes but also new tasks being
     // added).
     // The items are pinned pointers into the `tasks` collection.
-    inactive: VecDeque<*mut Task>,
+    inactive: HashSet<*mut Task>,
+
+    // The primary mechanism used to signal that a task has awoken and needs to be moved from the
+    // inactive queue to the active queue. We ONLY add entries to this list if we can do so without
+    // waiting on the lock, to minimize time we spend blocked on cross-thread synchronization. We
+    // also only add entries if we do not need to increase the capacity, to avoid allocating the new
+    // data structure on a different thread from the consuming thread (and therefore potentially in
+    // a different memory region, which would lead to inefficiency). If an entry cannot be added to
+    // this queue for any reason, the probe_embedded_wake_signals is set instead and the next cycle
+    // of the engine will probe the awakened status of every inactive task to synchronize statuses.
+    awakened: Arc<Mutex<HashSet<*mut Task>>>,
+
+    // When a waker cannot lock the `awakened` queue or when the queue is full, it will set this
+    // flag to indicate that the awakened status of every inactive task should be directly probed.
+    probe_embedded_wake_signals: Arc<AtomicBool>,
 
     // These tasks have completed and we are waiting for the references to them to be dropped (for
     // the tasks to become inert) so we can finish releasing resources.
@@ -85,6 +103,8 @@ pub struct AsyncTaskEngine {
     last_cycle_ended: Option<LowPrecisionInstant>,
 }
 
+const AWAKENED_CAPACITY: usize = 1024;
+
 impl AsyncTaskEngine {
     /// # Safety
     ///
@@ -92,8 +112,10 @@ impl AsyncTaskEngine {
     pub unsafe fn new() -> Self {
         Self {
             tasks: PinnedSlabChain::new(),
-            active: VecDeque::new(),
-            inactive: VecDeque::new(),
+            active: HashSet::new(),
+            inactive: HashSet::new(),
+            awakened: Arc::new(Mutex::new(HashSet::with_capacity(AWAKENED_CAPACITY))),
+            probe_embedded_wake_signals: Arc::new(AtomicBool::new(false)),
             completed: VecDeque::new(),
             shutting_down: false,
             last_cycle_ended: None,
@@ -116,10 +138,25 @@ impl AsyncTaskEngine {
 
         // SAFETY: We are responsible for not dropping the task until it is inert. We accomplish
         // this by only removing tasks after they pass through the `completed` list and indicate
-        // that they have become inert.
-        let task = unsafe { Task::new(inserter.index(), erased_task) };
+        // that they have become inert. We must also initialize the task with ::initialize() before
+        // it is used.
+        let task = unsafe {
+            Task::new(
+                inserter.index(),
+                erased_task,
+                Arc::clone(&self.awakened),
+                Arc::clone(&self.probe_embedded_wake_signals),
+            )
+        };
 
-        self.active.push_back(inserter.insert_raw(task));
+        let task_ptr = inserter.insert_raw(task);
+
+        // We must initialize it once pinned, to set up the self-referential pointer.
+        // SAFETY: We know it is pinned because all tasks are always pinned once in `self.tasks`.
+        let task_pin = unsafe { Pin::new_unchecked(&mut *task_ptr) };
+        task_pin.initialize();
+
+        self.active.insert(task_ptr);
     }
 
     pub fn execute_cycle(&mut self) -> CycleResult {
@@ -141,7 +178,8 @@ impl AsyncTaskEngine {
 
         let had_active_tasks = !self.active.is_empty();
 
-        while let Some(task_ptr) = self.active.pop_front() {
+        while let Some(task_ptr) = self.active.iter().copied().next() {
+            self.active.remove(&task_ptr);
             had_activity = true;
 
             // SAFETY: This comes from a pinned slab and we are responsible for dropping tasks, which
@@ -158,7 +196,7 @@ impl AsyncTaskEngine {
                 }
                 task::Poll::Pending => {
                     TASK_INACTIVATED.with(Event::observe_unit);
-                    self.inactive.push_back(task_ptr);
+                    self.inactive.insert(task_ptr);
                 }
             }
         }
@@ -194,29 +232,56 @@ impl AsyncTaskEngine {
     fn activate_awakened_tasks(&mut self) -> bool {
         let mut had_activity = false;
 
-        let mut index = 0;
+        // There are two ways to activate tasks:
+        // 1. by probing the embedded wake signals.
+        // 2. by receiving an explicit wake signal via the `awakened` set.
+        //
+        // Note that the same task may be awakened via both channels simultaneously, and that
+        // explicit wake signals may be sent when the task is already active (the signal
+        // may come from some caller who has no idea if it is already awake or not).
 
-        while index < self.inactive.len() {
-            let task_ptr = &self.inactive[index];
+        {
+            // Hard lock here - hopefully any competing threads do not hold it too long.
+            // 99% of notifications will be from the same thread, so this should be low cost.
+            let mut awakened = self.awakened.lock().expect(POISONED_LOCK);
 
-            // SAFETY: This comes from a pinned slab and we are responsible for dropping tasks, which
-            // we never do until they progress through the lifecycle into the `completed` list.
-            let task = unsafe { Pin::new_unchecked(&**task_ptr) };
+            // We copy here so the loop does not keep a reference to the awakened set.
+            while let Some(task_ptr) = awakened.iter().copied().next() {
+                awakened.remove(&task_ptr);
 
-            if task.wake_signal.consume_awakened() {
-                had_activity = true;
+                // It is theoretically possible for a completed task to be awakened, in which case
+                // we do nothing. We detect this by ensuring that the task was in the "inactive" set
+                // before we react to the wake notification. This also eliminates spurious wakes.
+                if self.inactive.remove(&task_ptr) {
+                    self.active.insert(task_ptr);
 
-                TASK_ACTIVATED.with(Event::observe_unit);
-
-                let task_ptr = self
-                    .inactive
-                    .remove(index)
-                    .expect("key must exist - we just got it from the same data structure");
-
-                self.active.push_back(task_ptr);
-            } else {
-                index += 1;
+                    had_activity = true;
+                    TASK_ACTIVATED_VIA_SET.with(Event::observe_unit);
+                } else {
+                    TASK_ACTIVATED_SPURIOUS.with(Event::observe_unit);
+                }
             }
+        }
+
+        if self
+            .probe_embedded_wake_signals
+            .swap(false, Ordering::Acquire)
+        {
+            self.inactive.retain(|task_ptr| {
+                // SAFETY: This comes from a pinned slab and we are responsible for dropping tasks, which
+                // we never do until they progress through the lifecycle into the `completed` list.
+                let task = unsafe { Pin::new_unchecked(&**task_ptr) };
+
+                if task.wake_signal.consume_awakened() {
+                    had_activity = true;
+
+                    TASK_ACTIVATED_VIA_SIGNAL.with(Event::observe_unit);
+                    self.active.insert(*task_ptr);
+                    false
+                } else {
+                    true
+                }
+            });
         }
 
         had_activity
@@ -263,8 +328,8 @@ impl AsyncTaskEngine {
         // We call .count() to force the iterator to be evaluated. We do not care about the count.
         _ = self
             .active
-            .drain(..)
-            .chain(self.inactive.drain(..))
+            .drain()
+            .chain(self.inactive.drain())
             .map(|task_ptr| {
                 // SAFETY: This comes from a pinned slab and we are responsible for dropping tasks, which
                 // we never do until they progress through the lifecycle into the `completed` list.
@@ -314,7 +379,7 @@ pub enum CycleResult {
 }
 
 #[pin_project]
-struct Task {
+pub(super) struct Task {
     // Behind this may be either a local or a remote task - we do not know or care which.
     inner: RefCell<Pin<Box<dyn ErasedResultAsyncTask>>>,
 
@@ -328,13 +393,28 @@ struct Task {
 impl Task {
     /// # Safety
     ///
+    /// The task must be initialized via ::initialize() once it has been pinned.
     /// The task must not be dropped until it is inert.
-    unsafe fn new(index: usize, inner: Pin<Box<dyn ErasedResultAsyncTask>>) -> Self {
+    unsafe fn new(
+        index: usize,
+        inner: Pin<Box<dyn ErasedResultAsyncTask>>,
+        awakened_set: Arc<Mutex<HashSet<*mut Task>>>,
+        probe_embedded_wake_signals: Arc<AtomicBool>,
+    ) -> Self {
         Self {
             inner: RefCell::new(inner),
             index,
-            wake_signal: WakeSignal::new(),
+            wake_signal: WakeSignal::new(awakened_set, probe_embedded_wake_signals),
         }
+    }
+
+    /// The task is self-referential, so must be initialized once pinned.
+    fn initialize(self: Pin<&mut Self>) {
+        // SAFETY: We are not unpinning anything here, just writing some harmless pointers.
+        let self_mut: &mut Self = unsafe { Pin::into_inner_unchecked(self) };
+        let self_ptr = self_mut as *mut _;
+
+        self_mut.wake_signal.set_task_ptr(self_ptr);
     }
 
     fn poll(self: Pin<&Self>) -> task::Poll<()> {
@@ -367,8 +447,18 @@ thread_local! {
         .build()
         .unwrap();
 
-    static TASK_ACTIVATED: Event = EventBuilder::new()
-        .name("rt_async_task_activated")
+    static TASK_ACTIVATED_VIA_SET: Event = EventBuilder::new()
+        .name("rt_async_task_activated_via_set")
+        .build()
+        .unwrap();
+
+    static TASK_ACTIVATED_VIA_SIGNAL: Event = EventBuilder::new()
+        .name("rt_async_task_activated_via_signal")
+        .build()
+        .unwrap();
+
+    static TASK_ACTIVATED_SPURIOUS: Event = EventBuilder::new()
+        .name("rt_async_task_activated_spurious")
         .build()
         .unwrap();
 
