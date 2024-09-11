@@ -1,5 +1,5 @@
 use crate::{
-    constants::{self, GENERAL_LOW_PRECISION_SECONDS_BUCKETS},
+    constants::{self, GENERAL_MILLISECONDS_BUCKETS},
     metrics::{Event, EventBuilder},
     util::LowPrecisionInstant,
 };
@@ -39,7 +39,7 @@ impl<R> RemoteResultBox<R> {
 
     pub fn set(&self, result: R) {
         FILL_DURATION.with(|x| {
-            x.observe(self.created.elapsed().as_secs_f64());
+            x.observe_millis(self.created.elapsed());
         });
 
         let mut self_result = self.result.lock().expect(constants::POISONED_LOCK);
@@ -83,7 +83,7 @@ impl<R> RemoteResultBox<R> {
             }
             TaskResult::Ready(_) => {
                 CONSUME_DURATION.with(|x| {
-                    x.observe(self.created.elapsed().as_secs_f64());
+                    x.observe_millis(self.created.elapsed());
                 });
 
                 let existing_result = mem::replace(&mut *self_result, TaskResult::Consumed);
@@ -104,14 +104,14 @@ impl<R> RemoteResultBox<R> {
 
 thread_local! {
     static FILL_DURATION: Event = EventBuilder::new()
-        .name("result_box_remote_time_to_fill_seconds")
-        .buckets(GENERAL_LOW_PRECISION_SECONDS_BUCKETS)
+        .name("result_box_remote_time_to_fill_millis")
+        .buckets(GENERAL_MILLISECONDS_BUCKETS)
         .build()
         .unwrap();
 
     static CONSUME_DURATION: Event = EventBuilder::new()
-        .name("result_box_remote_time_to_consume_seconds")
-        .buckets(GENERAL_LOW_PRECISION_SECONDS_BUCKETS)
+        .name("result_box_remote_time_to_consume_millis")
+        .buckets(GENERAL_MILLISECONDS_BUCKETS)
         .build()
         .unwrap();
 }

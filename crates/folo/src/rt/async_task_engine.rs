@@ -1,5 +1,5 @@
 use crate::{
-    constants::{GENERAL_LOW_PRECISION_SECONDS_BUCKETS, POISONED_LOCK},
+    constants::{GENERAL_MILLISECONDS_BUCKETS, POISONED_LOCK},
     metrics::{Event, EventBuilder},
     rt::{erased_async_task::ErasedResultAsyncTask, waker::WakeSignal},
     util::{BuildPointerHasher, LowPrecisionInstant, PinnedSlabChain},
@@ -166,7 +166,7 @@ impl AsyncTaskEngine {
         let cycle_start = LowPrecisionInstant::now();
 
         if let Some(last_end) = self.last_cycle_ended {
-            CYCLE_INTERVAL.with(|x| x.observe(cycle_start.duration_since(last_end).as_secs_f64()));
+            CYCLE_INTERVAL.with(|x| x.observe_millis(cycle_start.duration_since(last_end)));
         }
 
         // If we have no activity in the cycle, we indicate that the caller does not need to
@@ -190,7 +190,7 @@ impl AsyncTaskEngine {
             let task = unsafe { Pin::new_unchecked(&*task_ptr) };
 
             let poll_result =
-                TASK_POLL_DURATION.with(|x| x.observe_duration_low_precision(|| task.poll()));
+                TASK_POLL_DURATION.with(|x| x.observe_duration_millis(|| task.poll()));
 
             match poll_result {
                 task::Poll::Ready(()) => {
@@ -216,7 +216,7 @@ impl AsyncTaskEngine {
         let cycle_end = LowPrecisionInstant::now();
         self.last_cycle_ended = Some(cycle_end);
 
-        CYCLE_DURATION.with(|x| x.observe(cycle_end.duration_since(cycle_start).as_secs_f64()));
+        CYCLE_DURATION.with(|x| x.observe_millis(cycle_end.duration_since(cycle_start)));
 
         if self.shutting_down && self.completed.is_empty() {
             // Shutdown is finished if all completed tasks (== all tasks) have been removed from the
@@ -319,7 +319,7 @@ impl AsyncTaskEngine {
 
         // All tasks are considered completed - we never poll them again.
         TASKS_CANCELED_ON_SHUTDOWN
-            .with(|x| x.observe((self.active.len() + self.inactive.len()) as f64));
+            .with(|x| x.observe((self.active.len() + self.inactive.len()) as i64));
 
         // We call `clear()` on all tasks that we are canceling. This will drop the maximum amount
         // of internal state such as any captured variables that may be holding on to join handles
@@ -481,20 +481,20 @@ thread_local! {
         .unwrap();
 
     static CYCLE_INTERVAL: Event = EventBuilder::new()
-        .name("rt_async_cycle_interval_seconds")
-        .buckets(GENERAL_LOW_PRECISION_SECONDS_BUCKETS)
+        .name("rt_async_cycle_interval_millis")
+        .buckets(GENERAL_MILLISECONDS_BUCKETS)
         .build()
         .unwrap();
 
     static CYCLE_DURATION: Event = EventBuilder::new()
-        .name("rt_async_cycle_duration_seconds")
-        .buckets(GENERAL_LOW_PRECISION_SECONDS_BUCKETS)
+        .name("rt_async_cycle_duration_millis")
+        .buckets(GENERAL_MILLISECONDS_BUCKETS)
         .build()
         .unwrap();
 
     static TASK_POLL_DURATION: Event = EventBuilder::new()
-        .name("rt_async_task_poll_duration_seconds")
-        .buckets(GENERAL_LOW_PRECISION_SECONDS_BUCKETS)
+        .name("rt_async_task_poll_duration_millis")
+        .buckets(GENERAL_MILLISECONDS_BUCKETS)
         .build()
         .unwrap();
 }

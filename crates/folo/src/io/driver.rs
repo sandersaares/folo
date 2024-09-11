@@ -1,9 +1,8 @@
-use std::mem::{self, MaybeUninit};
-
-use crate::constants::GENERAL_LOW_PRECISION_SECONDS_BUCKETS;
+use crate::constants::GENERAL_MILLISECONDS_BUCKETS;
 use crate::io::block::{BlockStore, PrepareBlock};
 use crate::io::{self, Buffer, CompletionPort, IoWaker, WAKE_UP_COMPLETION_KEY};
 use crate::metrics::{Event, EventBuilder, Magnitude};
+use std::mem::{self, MaybeUninit};
 use windows::Win32::{
     Foundation::{HANDLE, STATUS_SUCCESS, WAIT_TIMEOUT},
     System::IO::{GetQueuedCompletionStatusEx, OVERLAPPED_ENTRY},
@@ -93,7 +92,7 @@ impl Driver {
         // SAFETY: TODO
         unsafe {
             let result = GET_COMPLETED_DURATION.with(|x| {
-                x.observe_duration_low_precision(|| {
+                x.observe_duration_millis(|| {
                     GetQueuedCompletionStatusEx(
                         ***self.completion_port.handle(),
                         // MaybeUninit is a ZST and binary-compatible. We use it to avoid
@@ -121,7 +120,7 @@ impl Driver {
                 Err(e) => panic!("unexpected error from GetQueuedCompletionStatusEx: {:?}", e),
             }
 
-            ASYNC_COMPLETIONS_DEQUEUED.with(|x| x.observe(completed_items as f64));
+            ASYNC_COMPLETIONS_DEQUEUED.with(|x| x.observe(completed_items as Magnitude));
 
             for index in 0..completed_items {
                 let entry = completed[index as usize].assume_init();
@@ -163,7 +162,7 @@ impl Drop for Driver {
     }
 }
 
-const ASYNC_COMPLETIONS_DEQUEUED_BUCKETS: &[Magnitude] = &[0.0, 1.0, 16.0, 64.0, 256.0, 512.0];
+const ASYNC_COMPLETIONS_DEQUEUED_BUCKETS: &[Magnitude] = &[0, 1, 16, 64, 256, 512];
 
 thread_local! {
     static ASYNC_COMPLETIONS_DEQUEUED: Event = EventBuilder::new()
@@ -185,8 +184,8 @@ thread_local! {
         .unwrap();
 
     static GET_COMPLETED_DURATION: Event = EventBuilder::new()
-        .name("io_async_completions_get_duration_seconds")
-        .buckets(GENERAL_LOW_PRECISION_SECONDS_BUCKETS)
+        .name("io_async_completions_get_duration_millis")
+        .buckets(GENERAL_MILLISECONDS_BUCKETS)
         .build()
         .unwrap();
 }

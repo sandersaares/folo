@@ -1,4 +1,3 @@
-use core::f64;
 use negative_impl::negative_impl;
 use std::{
     borrow::Cow,
@@ -9,12 +8,12 @@ use std::{
     fmt::{Display, Write},
     future::Future,
     rc::Rc,
-    time::Instant,
+    time::Duration,
 };
 
 use crate::util::LowPrecisionInstant;
 
-pub type Magnitude = f64;
+pub type Magnitude = i64;
 
 /// Measures the rate and amplitude of events. Just create an instance via EventBuilder and start
 /// feeding it events. It will do the rest. Interior mutability is used, so you can put these in
@@ -32,49 +31,22 @@ impl Event {
     /// Observes an event with a magnitude of 1. An event that only takes observations of this kind
     /// is a counter and undergoes simplified reporting.
     pub fn observe_unit(&self) {
-        self.bag.insert(1.0, 1);
+        self.bag.insert(1, 1);
     }
 
     pub fn observe(&self, magnitude: Magnitude) {
         self.bag.insert(magnitude, 1);
     }
 
+    pub fn observe_millis(&self, duration: Duration) {
+        self.bag.insert(duration.as_millis() as i64, 1);
+    }
+
     pub fn observe_many(&self, magnitude: Magnitude, count: usize) {
         self.bag.insert(magnitude, count);
     }
 
-    pub fn observe_duration_high_precision<F, R>(&self, f: F) -> R
-    where
-        F: FnOnce() -> R,
-    {
-        let start = Instant::now();
-
-        let result = f();
-
-        let duration = start.elapsed().as_secs_f64();
-
-        self.bag.insert(duration, 1);
-
-        result
-    }
-
-    pub async fn observe_duration_async_high_precision<F, FF, R>(&self, f: F) -> R
-    where
-        F: FnOnce() -> FF,
-        FF: Future<Output = R>,
-    {
-        let start = Instant::now();
-
-        let result = f().await;
-
-        let duration = start.elapsed().as_secs_f64();
-
-        self.bag.insert(duration, 1);
-
-        result
-    }
-
-    pub fn observe_duration_low_precision<F, R>(&self, f: F) -> R
+    pub fn observe_duration_millis<F, R>(&self, f: F) -> R
     where
         F: FnOnce() -> R,
     {
@@ -82,14 +54,12 @@ impl Event {
 
         let result = f();
 
-        let duration = start.elapsed().as_secs_f64();
-
-        self.bag.insert(duration, 1);
+        self.observe_millis(start.elapsed());
 
         result
     }
 
-    pub async fn observe_duration_async_low_precision<F, FF, R>(&self, f: F) -> R
+    pub async fn observe_duration_millis_async<F, FF, R>(&self, f: F) -> R
     where
         F: FnOnce() -> FF,
         FF: Future<Output = R>,
@@ -98,9 +68,7 @@ impl Event {
 
         let result = f().await;
 
-        let duration = start.elapsed().as_secs_f64();
-
-        self.bag.insert(duration, 1);
+        self.observe_millis(start.elapsed());
 
         result
     }
@@ -188,7 +156,7 @@ impl ObservationBag {
     fn new(buckets: &'static [Magnitude]) -> Self {
         Self {
             count: Cell::new(0),
-            sum: Cell::new(0.0),
+            sum: Cell::new(0),
             bucket_counts: RefCell::new(vec![0; buckets.len()]),
             bucket_magnitudes: buckets,
         }
@@ -264,7 +232,7 @@ impl ReportBuilder {
                         .entry(name.clone())
                         .or_insert_with(|| ObservationBagSnapshot {
                             count: 0,
-                            sum: 0.0,
+                            sum: 0,
                             bucket_counts: vec![0; snapshot.bucket_counts.len()],
                             bucket_magnitudes: snapshot.bucket_magnitudes,
                         })
@@ -339,7 +307,7 @@ impl Display for ObservationBagSnapshot {
 
                 let magnitude = self.bucket_magnitudes[index];
 
-                (magnitude, count)
+                (Some(magnitude), count)
             })
             .collect::<Vec<_>>();
 
@@ -351,11 +319,7 @@ impl Display for ObservationBagSnapshot {
             1,
         );
 
-        buckets_to_print.push({
-            let magnitude = f64::INFINITY;
-
-            (magnitude, plus_infinity_count)
-        });
+        buckets_to_print.push((None, plus_infinity_count));
 
         // Measure the dynamic parts of the string to know how much padding to add.
 
@@ -370,13 +334,23 @@ impl Display for ObservationBagSnapshot {
         let mut end_str = String::new();
         let widest_range = buckets_to_print.iter().fold(0, |n, b| {
             end_str.clear();
-            write!(&mut end_str, "{}", b.0).unwrap();
+
+            match b.0 {
+                Some(le) => write!(&mut end_str, "{}", le).unwrap(),
+                None => write!(&mut end_str, "+inf").unwrap(),
+            }
+
             cmp::max(n, end_str.len())
         });
 
         for bucket in buckets_to_print.into_iter() {
             end_str.clear();
-            write!(&mut end_str, "{}", bucket.0).unwrap();
+
+            match bucket.0 {
+                Some(le) => write!(&mut end_str, "{}", le).unwrap(),
+                None => write!(&mut end_str, "+inf").unwrap(),
+            }
+
             for _ in 0..widest_range - end_str.len() {
                 end_str.insert(0, ' ');
             }
@@ -410,20 +384,20 @@ mod tests {
 
         let event = EventBuilder::new()
             .name("test")
-            .buckets(&[0.5, 1.0, 2.0, 3.0])
+            .buckets(&[0, 1, 2, 3])
             .build()
             .unwrap();
 
-        event.observe(1.0);
-        event.observe(2.0);
-        event.observe(3.0);
-        event.observe(4.0);
-        event.observe(5.0);
-        event.observe_many(1.0, 2);
-        event.observe_many(2.0, 3);
-        event.observe_many(3.0, 4);
-        event.observe_many(4.0, 5);
-        event.observe_many(5.0, 6);
+        event.observe(1);
+        event.observe(2);
+        event.observe(3);
+        event.observe(4);
+        event.observe(5);
+        event.observe_many(1, 2);
+        event.observe_many(2, 3);
+        event.observe_many(3, 4);
+        event.observe_many(4, 5);
+        event.observe_many(5, 6);
 
         let page = report_page();
 
@@ -431,7 +405,7 @@ mod tests {
 
         let snapshot = page.bags.get("test").unwrap();
         assert_eq!(snapshot.count, 25);
-        assert_eq!(snapshot.sum, 85.0);
+        assert_eq!(snapshot.sum, 85);
         assert_eq!(snapshot.bucket_counts, vec![0, 3, 4, 5]);
 
         let mut report_builder = ReportBuilder::new();
@@ -462,7 +436,7 @@ mod tests {
 
         let snapshot = page.bags.get("test_counter").unwrap();
         assert_eq!(snapshot.count, 3);
-        assert_eq!(snapshot.sum, 3.0);
+        assert_eq!(snapshot.sum, 3);
         assert_eq!(snapshot.bucket_counts, Vec::<usize>::new());
 
         let mut report_builder = ReportBuilder::new();
@@ -479,24 +453,24 @@ mod tests {
 
         let event = EventBuilder::new()
             .name("test")
-            .buckets(&[1.0, 2.0, 3.0])
+            .buckets(&[1, 2, 3])
             .build()
             .unwrap();
 
-        event.observe(0.0);
-        event.observe(100.0);
+        event.observe(0);
+        event.observe(100);
 
         let other_page = thread::spawn(move || {
             let event = EventBuilder::new()
                 .name("test")
-                .buckets(&[1.0, 2.0, 3.0])
+                .buckets(&[1, 2, 3])
                 .build()
                 .unwrap();
 
-            event.observe(-10.0);
-            event.observe(1.0);
-            event.observe(1.0);
-            event.observe(1.0);
+            event.observe(-10);
+            event.observe(1);
+            event.observe(1);
+            event.observe(1);
 
             report_page()
         })
@@ -514,7 +488,7 @@ mod tests {
         let snapshot = report.bags.get("test").unwrap();
 
         assert_eq!(snapshot.count, 6);
-        assert_eq!(snapshot.sum, 93.0);
+        assert_eq!(snapshot.sum, 93);
         assert_eq!(snapshot.bucket_counts, vec![5, 0, 0]);
 
         println!("{}", report);
@@ -526,22 +500,22 @@ mod tests {
 
         let event = EventBuilder::new()
             .name("test")
-            .buckets(&[1.0, 2.0, 3.0])
+            .buckets(&[1, 2, 3])
             .build()
             .unwrap();
 
-        event.observe(0.0);
-        event.observe(100.0);
+        event.observe(0);
+        event.observe(100);
 
         let event = EventBuilder::new().name("another_test").build().unwrap();
 
-        event.observe(1234.0);
-        event.observe(45678.0);
+        event.observe(1234);
+        event.observe(45678);
 
         let event = EventBuilder::new().name("more").build().unwrap();
 
-        event.observe(1234.0);
-        event.observe(45678.0);
+        event.observe(1234);
+        event.observe(45678);
 
         let mut report_builder = ReportBuilder::new();
         report_builder.add_page(report_page());

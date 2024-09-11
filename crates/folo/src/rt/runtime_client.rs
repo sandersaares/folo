@@ -1,7 +1,7 @@
 use super::remote_result_box::RemoteResultBox;
 use super::sync_agent::SyncAgentCommand;
 use super::{current_async_agent, ErasedSyncTask};
-use crate::constants::{self, GENERAL_LOW_PRECISION_SECONDS_BUCKETS};
+use crate::constants::{self, GENERAL_MILLISECONDS_BUCKETS};
 use crate::io::IoWaker;
 use crate::metrics::{Event, EventBuilder};
 use crate::rt::{async_agent::AsyncAgentCommand, remote_task::RemoteTask, RemoteJoinHandle};
@@ -66,7 +66,7 @@ impl RuntimeClient {
         // around via a remote join handle from the same thread, to allow a single-threaded future
         // to execute, as long as the closure that creates it is thread-safe.
         let thread_safe_wrapper_future = async move {
-            REMOTE_SPAWN_DELAY.with(|x| x.observe(started.elapsed().as_secs_f64()));
+            REMOTE_SPAWN_DELAY.with(|x| x.observe_millis(started.elapsed()));
 
             // TODO: This seems inefficient. Surely we can do better?
             // This is: RemoteJoinHandle -> RemoteJoinHandle -> LocalJoinHandle -> LocalJoinHandle
@@ -111,10 +111,12 @@ impl RuntimeClient {
 
         let task = move || {
             match task_type {
-                SynchronousTaskType::Syscall => SYNC_SPAWN_DELAY_LOW_PRIORITY
-                    .with(|x| x.observe(started.elapsed().as_secs_f64())),
-                SynchronousTaskType::HighPrioritySyscall => SYNC_SPAWN_DELAY_HIGH_PRIORITY
-                    .with(|x| x.observe(started.elapsed().as_secs_f64())),
+                SynchronousTaskType::Syscall => {
+                    SYNC_SPAWN_DELAY_LOW_PRIORITY.with(|x| x.observe_millis(started.elapsed()))
+                }
+                SynchronousTaskType::HighPrioritySyscall => {
+                    SYNC_SPAWN_DELAY_HIGH_PRIORITY.with(|x| x.observe_millis(started.elapsed()))
+                }
                 _ => unreachable!(),
             };
 
@@ -241,20 +243,20 @@ fn next_async_worker(max: usize) -> usize {
 
 thread_local! {
     static REMOTE_SPAWN_DELAY: Event = EventBuilder::new()
-        .name("rt_remote_spawn_delay_seconds")
-        .buckets(GENERAL_LOW_PRECISION_SECONDS_BUCKETS)
+        .name("rt_remote_spawn_delay_millis")
+        .buckets(GENERAL_MILLISECONDS_BUCKETS)
         .build()
         .unwrap();
 
     static SYNC_SPAWN_DELAY_HIGH_PRIORITY: Event = EventBuilder::new()
-        .name("rt_sync_spawn_delay_high_priority_seconds")
-        .buckets(GENERAL_LOW_PRECISION_SECONDS_BUCKETS)
+        .name("rt_sync_spawn_delay_high_priority_millis")
+        .buckets(GENERAL_MILLISECONDS_BUCKETS)
         .build()
         .unwrap();
 
     static SYNC_SPAWN_DELAY_LOW_PRIORITY: Event = EventBuilder::new()
-        .name("rt_sync_spawn_delay_low_priority_seconds")
-        .buckets(GENERAL_LOW_PRECISION_SECONDS_BUCKETS)
+        .name("rt_sync_spawn_delay_low_priority_millis")
+        .buckets(GENERAL_MILLISECONDS_BUCKETS)
         .build()
         .unwrap();
 }

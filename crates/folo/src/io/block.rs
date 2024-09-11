@@ -1,8 +1,8 @@
 use super::Buffer;
 use crate::{
-    constants::{GENERAL_BYTES_BUCKETS, GENERAL_LOW_PRECISION_SECONDS_BUCKETS},
+    constants::{GENERAL_BYTES_BUCKETS, GENERAL_MILLISECONDS_BUCKETS},
     io,
-    metrics::{Event, EventBuilder},
+    metrics::{Event, EventBuilder, Magnitude},
     util::{LowPrecisionInstant, PinnedSlabChain},
 };
 use negative_impl::negative_impl;
@@ -96,7 +96,7 @@ impl BlockStore {
         let status = NTSTATUS(overlapped_entry.Internal as i32);
 
         BLOCKS_COMPLETED_ASYNC.with(Event::observe_unit);
-        BLOCK_COMPLETED_BYTES.with(|x| x.observe(bytes_transferred as f64));
+        BLOCK_COMPLETED_BYTES.with(|x| x.observe(bytes_transferred as Magnitude));
 
         // SAFETY: The block is referenced by exactly one of PrepareBlock, CompleteBlock or the
         // operating system at any given time, so there is no possibility of multiple exclusive
@@ -112,7 +112,7 @@ impl BlockStore {
                 .expect("block must have an operation start time because the block is completed"),
         );
 
-        BLOCK_COMPLETED_ASYNC_OK_DURATION.with(|x| x.observe(duration.as_secs_f64()));
+        BLOCK_COMPLETED_ASYNC_OK_DURATION.with(|x| x.observe_millis(duration));
 
         CompleteBlock {
             block,
@@ -143,7 +143,7 @@ impl BlockStore {
         assert!(bytes_transferred <= block.buffer.length());
 
         BLOCKS_COMPLETED_SYNC.with(Event::observe_unit);
-        BLOCK_COMPLETED_BYTES.with(|x| x.observe(bytes_transferred as f64));
+        BLOCK_COMPLETED_BYTES.with(|x| x.observe(bytes_transferred as Magnitude));
 
         block.buffer.set_length(bytes_transferred);
 
@@ -463,8 +463,8 @@ thread_local! {
         .unwrap();
 
     static BLOCK_COMPLETED_ASYNC_OK_DURATION: Event = EventBuilder::new()
-        .name("io_completed_async_ok_duration_seconds")
-        .buckets(GENERAL_LOW_PRECISION_SECONDS_BUCKETS)
+        .name("io_completed_async_ok_duration_millis")
+        .buckets(GENERAL_MILLISECONDS_BUCKETS)
         .build()
         .unwrap();
 }
