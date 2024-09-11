@@ -31,6 +31,7 @@ pub struct RuntimeBuilder {
     worker_init: Option<Arc<dyn Fn() + Send + Sync + 'static>>,
     ad_hoc_entrypoint: bool,
     metrics_tx: Option<channel::Sender<ReportPage>>,
+    max_processors: Option<usize>,
 }
 
 impl RuntimeBuilder {
@@ -39,6 +40,7 @@ impl RuntimeBuilder {
             worker_init: None,
             ad_hoc_entrypoint: false,
             metrics_tx: None,
+            max_processors: None,
         }
     }
 
@@ -72,6 +74,15 @@ impl RuntimeBuilder {
         self
     }
 
+    /// Limits the number of processors the runtime will use. This may be useful in testing to get
+    /// a closer look at some behavior without 99 different worker threads going wild. Not super
+    /// valuable in real usage because it does not specify which processor (actually, it will use
+    /// the first N).
+    pub fn max_processors(mut self, max_processors: usize) -> Self {
+        self.max_processors = Some(max_processors);
+        self
+    }
+
     pub fn build(self) -> Result<RuntimeClient> {
         if self.ad_hoc_entrypoint {
             // With ad-hoc entrypoints we reuse the runtime if it is already set.
@@ -80,8 +91,12 @@ impl RuntimeBuilder {
             }
         }
 
-        let processor_ids =
+        let mut processor_ids =
             core_affinity::get_core_ids().expect("must always be able to identify processor IDs");
+
+        if let Some(max_processors) = self.max_processors {
+            processor_ids.truncate(max_processors);
+        }
 
         // We will spawn one agent of each type (async + sync) for each processor.
         let processor_count = processor_ids.len();

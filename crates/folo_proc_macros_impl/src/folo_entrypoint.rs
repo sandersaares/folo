@@ -23,6 +23,10 @@ struct EntrypointOptions {
     /// not used for running tasks, so this function is not called on the entrypoint thread.
     worker_init_fn: Option<syn::Ident>,
 
+    /// Limits the number of processors the runtime will use. Just for debugging purposes - not
+    /// flexible enough to be used as a resource management tool.
+    max_processors: Option<usize>,
+
     /// If set, emits a dump of collected worker metrics to stdout when the runtime stops.
     #[darling(default)]
     print_metrics: bool,
@@ -118,6 +122,13 @@ fn core(
         false => quote! {},
     };
 
+    let max_processors = match options.max_processors {
+        Some(n) => quote! {
+            .max_processors(#n)
+        },
+        None => quote! {},
+    };
+
     Ok(match &sig.output {
         syn::ReturnType::Default => quote! {
             #(#attrs)*
@@ -130,6 +141,7 @@ fn core(
                 let __entrypoint_runtime = ::folo::rt::RuntimeBuilder::new()
                     #worker_init
                     #metrics_init
+                    #max_processors
                     .build()
                     .unwrap();
                 let __entrypoint_runtime_clone = __entrypoint_runtime.clone();
@@ -155,6 +167,7 @@ fn core(
                 let __entrypoint_runtime = ::folo::rt::RuntimeBuilder::new()
                     #worker_init
                     #metrics_init
+                    #max_processors
                     .build()
                     .unwrap();
                 let __entrypoint_runtime_clone = __entrypoint_runtime.clone();
@@ -373,6 +386,50 @@ mod tests {
 
                 let __entrypoint_runtime = ::folo::rt::RuntimeBuilder::new()
                     .metrics_tx(__entrypoint_metrics_collector.tx())
+                    .build()
+                    .unwrap();
+                let __entrypoint_runtime_clone = __entrypoint_runtime.clone();
+
+                __entrypoint_runtime.spawn_on_any(|| async move {
+                    __inner_main().await;
+
+                    __entrypoint_runtime_clone.stop();
+                });
+
+                __entrypoint_runtime.wait();
+            }
+
+            async fn __inner_main() {
+                println!("Hello, world!");
+                yield_now().await;
+            }
+        };
+
+        assert_eq!(
+            entrypoint(attr, input, EntrypointType::Main).to_string(),
+            expected.to_string()
+        );
+    }
+
+    #[test]
+    fn main_with_max_processors() {
+        let attr = parse_quote! {
+            max_processors = 3
+        };
+
+        let input = parse_quote! {
+            async fn main() {
+                println!("Hello, world!");
+                yield_now().await;
+            }
+        };
+
+        let expected = quote! {
+            fn main() {
+                let __entrypoint_metrics_collector = ::folo::__private::MetricsCollector::new();
+
+                let __entrypoint_runtime = ::folo::rt::RuntimeBuilder::new()
+                    .max_processors(3usize)
                     .build()
                     .unwrap();
                 let __entrypoint_runtime_clone = __entrypoint_runtime.clone();
