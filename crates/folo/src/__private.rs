@@ -1,16 +1,16 @@
 use crate::metrics::{ReportBuilder, ReportPage};
-use std::sync::mpsc;
+use crossbeam::channel;
 
 /// Collects metrics from a channel and publishes a report when dropped. This is used by the Folo
 /// entrypoint macro when metrics publishing is enabled. It is not meant for direct consumption.
 pub struct MetricsCollector {
-    metrics_rx: mpsc::Receiver<ReportPage>,
-    metrics_tx: mpsc::Sender<ReportPage>,
+    metrics_rx: channel::Receiver<ReportPage>,
+    metrics_tx: channel::Sender<ReportPage>,
 }
 
 impl MetricsCollector {
     pub fn new() -> Self {
-        let (metrics_tx, metrics_rx) = mpsc::channel();
+        let (metrics_tx, metrics_rx) = channel::unbounded();
 
         Self {
             metrics_rx,
@@ -18,7 +18,7 @@ impl MetricsCollector {
         }
     }
 
-    pub fn tx(&self) -> mpsc::Sender<ReportPage> {
+    pub fn tx(&self) -> channel::Sender<ReportPage> {
         self.metrics_tx.clone()
     }
 

@@ -6,10 +6,11 @@ use crate::io::IoWaker;
 use crate::metrics::{Event, EventBuilder};
 use crate::rt::{async_agent::AsyncAgentCommand, remote_task::RemoteTask, RemoteJoinHandle};
 use crate::util::LowPrecisionInstant;
-use concurrent_queue::ConcurrentQueue;
 use core_affinity::CoreId;
+use crossbeam::channel;
+use crossbeam::queue::SegQueue;
 use std::collections::HashMap;
-use std::sync::{mpsc, Arc};
+use std::sync::Arc;
 use std::{cell::Cell, future::Future, sync::Mutex, thread};
 
 /// The multithreaded entry point for the Folo runtime, used for operations that affect more than
@@ -18,14 +19,14 @@ use std::{cell::Cell, future::Future, sync::Mutex, thread};
 /// This type is thread-safe.
 #[derive(Clone, Debug)]
 pub struct RuntimeClient {
-    async_command_txs: Box<[mpsc::Sender<AsyncAgentCommand>]>,
+    async_command_txs: Box<[channel::Sender<AsyncAgentCommand>]>,
     async_io_wakers: Box<[IoWaker]>,
 
     // We often prefer to give work to the same processor, so we split
     // the sync command architecture up by the processor ID.
-    sync_command_txs_by_processor: HashMap<CoreId, Box<[mpsc::Sender<SyncAgentCommand>]>>,
-    sync_task_queues_by_processor: HashMap<CoreId, Arc<ConcurrentQueue<ErasedSyncTask>>>,
-    sync_priority_task_queues_by_processor: HashMap<CoreId, Arc<ConcurrentQueue<ErasedSyncTask>>>,
+    sync_command_txs_by_processor: HashMap<CoreId, Box<[channel::Sender<SyncAgentCommand>]>>,
+    sync_task_queues_by_processor: HashMap<CoreId, Arc<SegQueue<ErasedSyncTask>>>,
+    sync_priority_task_queues_by_processor: HashMap<CoreId, Arc<SegQueue<ErasedSyncTask>>>,
 
     // This is None if `.wait()` has already been called - the field can be consumed only once,
     // typically done by the runtime client provided to the entry point thread.
@@ -34,14 +35,11 @@ pub struct RuntimeClient {
 
 impl RuntimeClient {
     pub(super) fn new(
-        async_command_txs: Box<[mpsc::Sender<AsyncAgentCommand>]>,
+        async_command_txs: Box<[channel::Sender<AsyncAgentCommand>]>,
         async_io_wakers: Box<[IoWaker]>,
-        sync_command_txs_by_processor: HashMap<CoreId, Box<[mpsc::Sender<SyncAgentCommand>]>>,
-        sync_task_queues_by_processor: HashMap<CoreId, Arc<ConcurrentQueue<ErasedSyncTask>>>,
-        sync_priority_task_queues_by_processor: HashMap<
-            CoreId,
-            Arc<ConcurrentQueue<ErasedSyncTask>>,
-        >,
+        sync_command_txs_by_processor: HashMap<CoreId, Box<[channel::Sender<SyncAgentCommand>]>>,
+        sync_task_queues_by_processor: HashMap<CoreId, Arc<SegQueue<ErasedSyncTask>>>,
+        sync_priority_task_queues_by_processor: HashMap<CoreId, Arc<SegQueue<ErasedSyncTask>>>,
         join_handles: Box<[thread::JoinHandle<()>]>,
     ) -> Self {
         Self {

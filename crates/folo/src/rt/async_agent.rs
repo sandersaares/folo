@@ -9,13 +9,13 @@ use crate::{
     },
 };
 use core_affinity::CoreId;
+use crossbeam::channel;
 use std::{
     cell::{Cell, RefCell},
     collections::VecDeque,
     fmt::{self, Debug, Formatter},
     future::Future,
     pin::Pin,
-    sync::mpsc,
 };
 use tracing::{event, Level};
 use windows::Win32::System::Threading::INFINITE;
@@ -38,8 +38,8 @@ use windows::Win32::System::Threading::INFINITE;
 /// threads are disconnected from each other by this point, though the runtime client can still
 /// be used to wait for them to complete.
 pub struct AsyncAgent {
-    command_rx: mpsc::Receiver<AsyncAgentCommand>,
-    metrics_tx: Option<mpsc::Sender<ReportPage>>,
+    command_rx: channel::Receiver<AsyncAgentCommand>,
+    metrics_tx: Option<channel::Sender<ReportPage>>,
     processor_id: CoreId,
 
     engine: RefCell<AsyncTaskEngine>,
@@ -58,8 +58,8 @@ pub struct AsyncAgent {
 
 impl AsyncAgent {
     pub fn new(
-        command_rx: mpsc::Receiver<AsyncAgentCommand>,
-        metrics_tx: Option<mpsc::Sender<ReportPage>>,
+        command_rx: channel::Receiver<AsyncAgentCommand>,
+        metrics_tx: Option<channel::Sender<ReportPage>>,
         processor_id: CoreId,
     ) -> Self {
         Self {
@@ -316,7 +316,7 @@ impl AsyncAgent {
                     received_terminate = true;
                     continue;
                 }
-                Err(mpsc::TryRecvError::Empty) => {
+                Err(channel::TryRecvError::Empty) => {
                     if received_terminate {
                         return ProcessCommandsResult::Terminate;
                     } else if received_commands {
@@ -325,7 +325,7 @@ impl AsyncAgent {
                         return ProcessCommandsResult::ContinueWithoutCommands;
                     }
                 }
-                Err(mpsc::TryRecvError::Disconnected) => {
+                Err(channel::TryRecvError::Disconnected) => {
                     // Each worker thread holds a reference to the runtime client, so this
                     // should be impossible - the only way to drop the runtime is to first
                     // terminate all the worker threads. Otherwise it runs forever.

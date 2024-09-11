@@ -10,12 +10,12 @@ use crate::{
         current_async_agent, current_runtime, RuntimeClient,
     },
 };
-use concurrent_queue::ConcurrentQueue;
+use crossbeam::{channel, queue::SegQueue};
 use std::{
     collections::HashMap,
     fmt::{self, Debug, Formatter},
     rc::Rc,
-    sync::{mpsc, Arc},
+    sync::Arc,
     thread,
 };
 use tracing::{event, Level};
@@ -30,7 +30,7 @@ const SYNC_WORKERS_PER_PROCESSOR: usize = 2;
 pub struct RuntimeBuilder {
     worker_init: Option<Arc<dyn Fn() + Send + Sync + 'static>>,
     ad_hoc_entrypoint: bool,
-    metrics_tx: Option<mpsc::Sender<ReportPage>>,
+    metrics_tx: Option<channel::Sender<ReportPage>>,
 }
 
 impl RuntimeBuilder {
@@ -67,7 +67,7 @@ impl RuntimeBuilder {
 
     /// Sets the channel that is to receive the end-of-life metrics from the runtime.
     /// Each worker thread will send a report page to this channel when it is shutting down.
-    pub fn metrics_tx(mut self, tx: mpsc::Sender<ReportPage>) -> Self {
+    pub fn metrics_tx(mut self, tx: channel::Sender<ReportPage>) -> Self {
         self.metrics_tx = Some(tx);
         self
     }
@@ -102,13 +102,13 @@ impl RuntimeBuilder {
         let mut async_ready_rxs = Vec::with_capacity(async_worker_count);
 
         for worker_index in 0..async_worker_count {
-            let (start_tx, start_rx) = oneshot::channel::<AgentStartArguments>();
+            let (start_tx, start_rx) = channel::unbounded::<AgentStartArguments>();
             async_start_txs.push(start_tx);
 
-            let (ready_tx, ready_rx) = oneshot::channel::<AsyncAgentReady>();
+            let (ready_tx, ready_rx) = channel::unbounded::<AsyncAgentReady>();
             async_ready_rxs.push(ready_rx);
 
-            let (command_tx, command_rx) = mpsc::channel::<AsyncAgentCommand>();
+            let (command_tx, command_rx) = channel::unbounded::<AsyncAgentCommand>();
             async_command_txs.push(command_tx);
 
             let worker_init = worker_init.clone();
@@ -172,28 +172,28 @@ impl RuntimeBuilder {
             // There is a single queue of synchronous tasks per processor, shared by all the sync
             // workers assigned to that processor, to try balance out the load given that these may
             // often block for unequal amounts of time and end up imbalanced.
-            let sync_task_queue = Arc::new(ConcurrentQueue::unbounded());
+            let sync_task_queue = Arc::new(SegQueue::new());
             sync_task_queues_by_processor.insert(*processor_id, Arc::clone(&sync_task_queue));
 
             // Same, but for higher-priority tasks (e.g. releasing resources).
-            let sync_priority_task_queue = Arc::new(ConcurrentQueue::unbounded());
+            let sync_priority_task_queue = Arc::new(SegQueue::new());
             sync_priority_task_queues_by_processor
                 .insert(*processor_id, Arc::clone(&sync_priority_task_queue));
 
             for _ in 0..SYNC_WORKERS_PER_PROCESSOR {
                 let processor_id = processor_id.clone();
 
-                let (start_tx, start_rx) = oneshot::channel::<AgentStartArguments>();
+                let (start_tx, start_rx) = channel::unbounded::<AgentStartArguments>();
                 sync_start_txs.push(start_tx);
 
-                let (ready_tx, ready_rx) = oneshot::channel::<SyncAgentReady>();
+                let (ready_tx, ready_rx) = channel::unbounded::<SyncAgentReady>();
                 sync_ready_rxs.push(ready_rx);
 
                 let sync_command_txs = sync_command_txs_by_processor
                     .entry(processor_id)
                     .or_insert_with(|| Vec::with_capacity(sync_worker_count));
 
-                let (command_tx, command_rx) = mpsc::channel::<SyncAgentCommand>();
+                let (command_tx, command_rx) = channel::unbounded::<SyncAgentCommand>();
                 sync_command_txs.push(command_tx);
 
                 let worker_init = worker_init.clone();

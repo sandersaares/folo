@@ -3,36 +3,33 @@ use crate::{
     constants::GENERAL_LOW_PRECISION_SECONDS_BUCKETS,
     metrics::{self, Event, EventBuilder, Magnitude, ReportPage},
 };
-use concurrent_queue::ConcurrentQueue;
-use std::{
-    fmt::Debug,
-    sync::{mpsc, Arc},
-};
+use crossbeam::{channel, queue::SegQueue};
+use std::{fmt::Debug, sync::Arc};
 use tracing::{event, Level};
 
 #[derive(Debug)]
 pub struct SyncAgent {
-    command_rx: mpsc::Receiver<SyncAgentCommand>,
-    metrics_tx: Option<mpsc::Sender<ReportPage>>,
+    command_rx: channel::Receiver<SyncAgentCommand>,
+    metrics_tx: Option<channel::Sender<ReportPage>>,
 
     // When the command queue says "you may have a task", we check here. There might not always be
     // a task waiting for us because another sync agent sharing the same queue may have taken it.
-    task_queue: Arc<ConcurrentQueue<ErasedSyncTask>>,
+    task_queue: Arc<SegQueue<ErasedSyncTask>>,
 
     // When the command queue says "you may have a task", we check here. There might not always be
     // a task waiting for us because another sync agent sharing the same queue may have taken it.
     // Tasks in this queue are executed first, over `task_queue`. This is usually because they are
     // of a "beneficial" nature such as releasing resources, so doing them first will help the
     // process overall work more efficiently.
-    priority_task_queue: Arc<ConcurrentQueue<ErasedSyncTask>>,
+    priority_task_queue: Arc<SegQueue<ErasedSyncTask>>,
 }
 
 impl SyncAgent {
     pub fn new(
-        command_rx: mpsc::Receiver<SyncAgentCommand>,
-        metrics_tx: Option<mpsc::Sender<ReportPage>>,
-        task_queue: Arc<ConcurrentQueue<ErasedSyncTask>>,
-        priority_task_queue: Arc<ConcurrentQueue<ErasedSyncTask>>,
+        command_rx: channel::Receiver<SyncAgentCommand>,
+        metrics_tx: Option<channel::Sender<ReportPage>>,
+        task_queue: Arc<SegQueue<ErasedSyncTask>>,
+        priority_task_queue: Arc<SegQueue<ErasedSyncTask>>,
     ) -> Self {
         Self {
             command_rx,
@@ -81,8 +78,7 @@ impl SyncAgent {
 
         self.priority_task_queue
             .pop()
-            .ok()
-            .or_else(|| self.task_queue.pop().ok())
+            .or_else(|| self.task_queue.pop())
     }
 }
 
