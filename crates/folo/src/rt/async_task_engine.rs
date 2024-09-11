@@ -64,7 +64,9 @@ pub struct AsyncTaskEngine {
 
     // The active set contains all the tasks we want to poll. This is where all futures start.
     // The items are pinned pointers into the `tasks` collection.
-    active: HashSet<*mut Task, BuildPointerHasher>,
+    //
+    // This is a VedDeque because we do not require set characteristics and a deque is faster.
+    active: VecDeque<*mut Task>,
 
     // The inactive set contains all the tasks that are sleeping. We will move them back to the
     // active set after a waker notifies us that a future needs to wake up. Note that the wakeup
@@ -84,6 +86,9 @@ pub struct AsyncTaskEngine {
     // a different memory region, which would lead to inefficiency). If an entry cannot be added to
     // this queue for any reason, the probe_embedded_wake_signals is set instead and the next cycle
     // of the engine will probe the awakened status of every inactive task to synchronize statuses.
+    //
+    // This is a HashSet because we need to be able to preallocate the capacity (insertions are
+    // always allocation-free because they may come from a different thread, so we cannot allocate).
     awakened: Arc<Mutex<HashSet<*mut Task, BuildPointerHasher>>>,
 
     // When a waker cannot lock the `awakened` queue or when the queue is full, it will set this
@@ -112,7 +117,7 @@ impl AsyncTaskEngine {
     pub unsafe fn new() -> Self {
         Self {
             tasks: PinnedSlabChain::new(),
-            active: HashSet::with_hasher(BuildPointerHasher::default()),
+            active: VecDeque::new(),
             inactive: HashSet::with_hasher(BuildPointerHasher::default()),
             awakened: Arc::new(Mutex::new(HashSet::with_capacity_and_hasher(
                 AWAKENED_CAPACITY,
@@ -159,7 +164,7 @@ impl AsyncTaskEngine {
         let task_pin = unsafe { Pin::new_unchecked(&mut *task_ptr) };
         task_pin.initialize();
 
-        self.active.insert(task_ptr);
+        self.active.push_back(task_ptr);
     }
 
     pub fn execute_cycle(&mut self) -> CycleResult {
@@ -181,8 +186,7 @@ impl AsyncTaskEngine {
 
         let had_active_tasks = !self.active.is_empty();
 
-        while let Some(task_ptr) = self.active.iter().copied().next() {
-            self.active.remove(&task_ptr);
+        while let Some(task_ptr) = self.active.pop_front() {
             had_activity = true;
 
             // SAFETY: This comes from a pinned slab and we are responsible for dropping tasks, which
@@ -256,7 +260,7 @@ impl AsyncTaskEngine {
                 // we do nothing. We detect this by ensuring that the task was in the "inactive" set
                 // before we react to the wake notification. This also eliminates spurious wakes.
                 if self.inactive.remove(&task_ptr) {
-                    self.active.insert(task_ptr);
+                    self.active.push_back(task_ptr);
 
                     had_activity = true;
                     TASK_ACTIVATED_VIA_SET.with(Event::observe_unit);
@@ -279,7 +283,7 @@ impl AsyncTaskEngine {
                     had_activity = true;
 
                     TASK_ACTIVATED_VIA_SIGNAL.with(Event::observe_unit);
-                    self.active.insert(*task_ptr);
+                    self.active.push_back(*task_ptr);
                     false
                 } else {
                     true
@@ -331,7 +335,7 @@ impl AsyncTaskEngine {
         // We call .count() to force the iterator to be evaluated. We do not care about the count.
         _ = self
             .active
-            .drain()
+            .drain(..)
             .chain(self.inactive.drain())
             .map(|task_ptr| {
                 // SAFETY: This comes from a pinned slab and we are responsible for dropping tasks, which
