@@ -1,16 +1,21 @@
+use std::hint::black_box;
+
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion};
 use windows::{
     core::Owned,
     Win32::{
         Foundation::{HANDLE, INVALID_HANDLE_VALUE},
-        System::IO::{
-            CreateIoCompletionPort, GetQueuedCompletionStatusEx, PostQueuedCompletionStatus,
-            OVERLAPPED_ENTRY,
+        System::{
+            SystemInformation::GetTickCount64,
+            IO::{
+                CreateIoCompletionPort, GetQueuedCompletionStatusEx, PostQueuedCompletionStatus,
+                OVERLAPPED_ENTRY,
+            },
         },
     },
 };
 
-criterion_group!(benches, win32_io);
+criterion_group!(benches, win32_io, win32_time);
 criterion_main!(benches);
 
 fn win32_io(c: &mut Criterion) {
@@ -114,6 +119,16 @@ fn win32_io(c: &mut Criterion) {
             },
             BatchSize::LargeInput,
         )
+    });
+
+    group.finish();
+}
+
+fn win32_time(c: &mut Criterion) {
+    let mut group = c.benchmark_group("win32_time");
+
+    group.bench_function("gettickcount64", |b| {
+        b.iter(|| unsafe { black_box(GetTickCount64()) })
     });
 
     group.finish();
