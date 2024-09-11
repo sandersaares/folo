@@ -1,8 +1,8 @@
-use crate::rt::async_task_engine::Task;
-use hash_hasher::HashedSet;
+use crate::{rt::async_task_engine::Task, util::BuildPointerHasher};
 use negative_impl::negative_impl;
 use std::{
     cell::UnsafeCell,
+    collections::HashSet,
     pin::Pin,
     sync::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -43,7 +43,7 @@ pub(crate) struct WakeSignal {
     // The set of tasks that have been awakened by a signal. If we can lock the mutex without
     // blocking and if there is room in the set, we add our task to the set. Otherwise, we update
     // the signal itself and set the "probe signals to find awakened ones" flag.
-    awakened_set: Arc<Mutex<HashedSet<*mut Task>>>,
+    awakened_set: Arc<Mutex<HashSet<*mut Task, BuildPointerHasher>>>,
 
     // If we cannot add the task to the set, we set this flag to inform the task engine that it
     // needs to read each signal to identify what has woken up.
@@ -72,7 +72,7 @@ pub(crate) struct WakeSignal {
 
 impl WakeSignal {
     pub(crate) fn new(
-        awakened_set: Arc<Mutex<HashedSet<*mut Task>>>,
+        awakened_set: Arc<Mutex<HashSet<*mut Task, BuildPointerHasher>>>,
         probe_embedded_wake_signals: Arc<AtomicBool>,
     ) -> Self {
         Self {
@@ -217,15 +217,15 @@ unsafe fn resurrect_signal_ptr(ptr: *const ()) -> &'static WakeSignal {
 
 #[cfg(test)]
 mod tests {
-    use hash_hasher::HashBuildHasher;
+    use std::collections::HashSet;
 
     use super::*;
 
     #[test]
     fn awaken_via_embedded_signal() {
-        let awakened_set = Arc::new(Mutex::new(HashedSet::with_capacity_and_hasher(
+        let awakened_set = Arc::new(Mutex::new(HashSet::with_capacity_and_hasher(
             10,
-            HashBuildHasher::default(),
+            BuildPointerHasher::default(),
         )));
         let probe_embedded_wake_signals = Arc::new(AtomicBool::new(false));
 
@@ -269,9 +269,9 @@ mod tests {
 
     #[test]
     fn awaken_via_awakened_set() {
-        let awakened_set = Arc::new(Mutex::new(HashedSet::with_capacity_and_hasher(
+        let awakened_set = Arc::new(Mutex::new(HashSet::with_capacity_and_hasher(
             10,
-            HashBuildHasher::default(),
+            BuildPointerHasher::default(),
         )));
         let probe_embedded_wake_signals = Arc::new(AtomicBool::new(false));
 
@@ -315,9 +315,9 @@ mod tests {
     #[test]
     fn awaken_via_full_awakened_set() {
         // Capacity is 0 so the set is not allowed to allocate (== is never used).
-        let awakened_set = Arc::new(Mutex::new(HashedSet::with_capacity_and_hasher(
+        let awakened_set = Arc::new(Mutex::new(HashSet::with_capacity_and_hasher(
             0,
-            HashBuildHasher::default(),
+            BuildPointerHasher::default(),
         )));
         let probe_embedded_wake_signals = Arc::new(AtomicBool::new(false));
 

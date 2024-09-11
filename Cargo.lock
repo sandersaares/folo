@@ -335,7 +335,6 @@ dependencies = [
  "folo_testing",
  "futures",
  "futures-concurrency",
- "hash_hasher",
  "negative-impl",
  "oneshot",
  "pin-project",
@@ -515,12 +514,6 @@ dependencies = [
  "cfg-if",
  "crunchy",
 ]
-
-[[package]]
-name = "hash_hasher"
-version = "2.0.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "74721d007512d0cb3338cd20f0654ac913920061a4c4d0d8708edb3f2a698c0c"
 
 [[package]]
 name = "hermit-abi"
