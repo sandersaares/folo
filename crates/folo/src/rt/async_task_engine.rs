@@ -108,7 +108,11 @@ pub struct AsyncTaskEngine {
     last_cycle_ended: Option<LowPrecisionInstant>,
 }
 
-const AWAKENED_CAPACITY: usize = 1024;
+// We only use the "awakened set" for very small task counts because if we have a large set of tasks
+// awakening all the time, the set mutation operation overhead will be far larger than any potential
+// gains from skipping the probing of the wake signals. This value was just eyeballed - 1000 was way
+// to wasteful of cycles, so something on the opposite end of the spectrum was picked here.
+const AWAKENED_CAPACITY: usize = 64;
 
 impl AsyncTaskEngine {
     /// # Safety
