@@ -4,11 +4,12 @@ use crate::{
     rt::{erased_async_task::ErasedResultAsyncTask, waker::WakeSignal},
     util::{LowPrecisionInstant, PinnedSlabChain},
 };
+use hash_hasher::{HashBuildHasher, HashedSet};
 use negative_impl::negative_impl;
 use pin_project::pin_project;
 use std::{
     cell::RefCell,
-    collections::{HashSet, VecDeque},
+    collections::VecDeque,
     fmt::{self, Debug, Formatter},
     pin::Pin,
     sync::{
@@ -64,7 +65,7 @@ pub struct AsyncTaskEngine {
 
     // The active set contains all the tasks we want to poll. This is where all futures start.
     // The items are pinned pointers into the `tasks` collection.
-    active: HashSet<*mut Task>,
+    active: HashedSet<*mut Task>,
 
     // The inactive set contains all the tasks that are sleeping. We will move them back to the
     // active set after a waker notifies us that a future needs to wake up. Note that the wakeup
@@ -74,7 +75,7 @@ pub struct AsyncTaskEngine {
     // locked during a poll, so new activity can occur (not only wakes but also new tasks being
     // added).
     // The items are pinned pointers into the `tasks` collection.
-    inactive: HashSet<*mut Task>,
+    inactive: HashedSet<*mut Task>,
 
     // The primary mechanism used to signal that a task has awoken and needs to be moved from the
     // inactive queue to the active queue. We ONLY add entries to this list if we can do so without
@@ -84,7 +85,7 @@ pub struct AsyncTaskEngine {
     // a different memory region, which would lead to inefficiency). If an entry cannot be added to
     // this queue for any reason, the probe_embedded_wake_signals is set instead and the next cycle
     // of the engine will probe the awakened status of every inactive task to synchronize statuses.
-    awakened: Arc<Mutex<HashSet<*mut Task>>>,
+    awakened: Arc<Mutex<HashedSet<*mut Task>>>,
 
     // When a waker cannot lock the `awakened` queue or when the queue is full, it will set this
     // flag to indicate that the awakened status of every inactive task should be directly probed.
@@ -112,9 +113,12 @@ impl AsyncTaskEngine {
     pub unsafe fn new() -> Self {
         Self {
             tasks: PinnedSlabChain::new(),
-            active: HashSet::new(),
-            inactive: HashSet::new(),
-            awakened: Arc::new(Mutex::new(HashSet::with_capacity(AWAKENED_CAPACITY))),
+            active: HashedSet::default(),
+            inactive: HashedSet::default(),
+            awakened: Arc::new(Mutex::new(HashedSet::with_capacity_and_hasher(
+                AWAKENED_CAPACITY,
+                HashBuildHasher::default(),
+            ))),
             probe_embedded_wake_signals: Arc::new(AtomicBool::new(false)),
             completed: VecDeque::new(),
             shutting_down: false,
@@ -398,7 +402,7 @@ impl Task {
     unsafe fn new(
         index: usize,
         inner: Pin<Box<dyn ErasedResultAsyncTask>>,
-        awakened_set: Arc<Mutex<HashSet<*mut Task>>>,
+        awakened_set: Arc<Mutex<HashedSet<*mut Task>>>,
         probe_embedded_wake_signals: Arc<AtomicBool>,
     ) -> Self {
         Self {
