@@ -214,6 +214,10 @@ impl AsyncAgent {
                 }
             }
 
+            // If new tasks have been enqueued but not yet handed over to the engine, we inhibit I/O
+            // sleep to get to processing those new tasks ASAP after any pending I/O is completed.
+            allow_io_sleep &= self.new_tasks.borrow().is_empty();
+
             let io_wait_time_ms = if allow_io_sleep {
                 CYCLES_WITH_SLEEP.with(Event::observe_unit);
 

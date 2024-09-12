@@ -178,21 +178,17 @@ impl AsyncTaskEngine {
             CYCLE_INTERVAL.with(|x| x.observe_millis(cycle_start.duration_since(last_end)));
         }
 
-        // If we have no activity in the cycle, we indicate that the caller does not need to
-        // immediately call us again and may suspend until it has a reason to call us again.
-        let mut had_activity = false;
-
-        // There may be tasks that just prior woke up due to I/O activity, so go through the tasks
-        // to activate any we need to activate, ensuring they get processed immediately.
-        if self.activate_awakened_tasks() {
-            had_activity = true;
-        }
-
-        let had_active_tasks = !self.active.is_empty();
+        // This is the moment we wake up any tasks that were signaled to wake up. The signals may
+        // have been due to things like:
+        //
+        // 1. A waker was signaled from a different thread because some remote result is ready.
+        // 2. A waker was signaled from the current thread because some local result is ready.
+        // 3. I/O operation completed and the result is ready for processing.
+        //
+        // We do not really care why/how the wake signal was sent - same handling for all cases.
+        self.activate_awakened_tasks();
 
         while let Some(task_ptr) = self.active.pop_front() {
-            had_activity = true;
-
             // SAFETY: This comes from a pinned slab and we are responsible for dropping tasks, which
             // we never do until they progress through the lifecycle into the `completed` list.
             let task = unsafe { Pin::new_unchecked(&*task_ptr) };
@@ -212,13 +208,6 @@ impl AsyncTaskEngine {
             }
         }
 
-        // It may be that some activity within our cycle awakened some tasks, so there may be
-        // more work to do immediately - if so, we ask the caller to continue. We skip this check
-        // if we already know that we need to come back again or if there was no task activity.
-        if !had_activity && had_active_tasks && self.activate_awakened_tasks() {
-            had_activity = true;
-        }
-
         self.drop_inert_tasks();
 
         let cycle_end = LowPrecisionInstant::now();
@@ -230,7 +219,7 @@ impl AsyncTaskEngine {
             // Shutdown is finished if all completed tasks (== all tasks) have been removed from the
             // completed list after their wakers became inert.
             CycleResult::Shutdown
-        } else if had_activity {
+        } else if self.has_work_to_do() {
             // We want to be immediately called again because we may have more work to do.
             CycleResult::Continue
         } else {
@@ -239,10 +228,18 @@ impl AsyncTaskEngine {
         }
     }
 
-    // Moves any awakened tasks into the active set. Returns whether any tasks were moved.
-    fn activate_awakened_tasks(&mut self) -> bool {
-        let mut had_activity = false;
+    /// Returns whether there is any work to do in the engine. This is used to determine if the
+    /// engine should be polled again immediately or if it should be suspended until new work
+    /// arrives.
+    fn has_work_to_do(&self) -> bool {
+        // Work for us means either a) some task is active; b) a wakeup signal has been received.
+        !self.active.is_empty()
+            || !self.awakened.lock().expect(POISONED_LOCK).is_empty()
+            || self.probe_embedded_wake_signals.load(Ordering::Relaxed)
+    }
 
+    // Moves any awakened tasks into the active set. Returns whether any tasks were moved.
+    fn activate_awakened_tasks(&mut self) {
         // There are two ways to activate tasks:
         // 1. by probing the embedded wake signals.
         // 2. by receiving an explicit wake signal via the `awakened` set.
@@ -266,7 +263,6 @@ impl AsyncTaskEngine {
                 if self.inactive.remove(&task_ptr) {
                     self.active.push_back(task_ptr);
 
-                    had_activity = true;
                     TASK_ACTIVATED_VIA_SET.with(Event::observe_unit);
                 } else {
                     TASK_ACTIVATED_SPURIOUS.with(Event::observe_unit);
@@ -284,8 +280,6 @@ impl AsyncTaskEngine {
                 let task = unsafe { Pin::new_unchecked(&**task_ptr) };
 
                 if task.wake_signal.consume_awakened() {
-                    had_activity = true;
-
                     TASK_ACTIVATED_VIA_SIGNAL.with(Event::observe_unit);
                     self.active.push_back(*task_ptr);
                     false
@@ -294,8 +288,6 @@ impl AsyncTaskEngine {
                 }
             });
         }
-
-        had_activity
     }
 
     fn drop_inert_tasks(&mut self) {
