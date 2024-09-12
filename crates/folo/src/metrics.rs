@@ -1,7 +1,7 @@
 use negative_impl::negative_impl;
 use std::{
     borrow::Cow,
-    cell::{Cell, RefCell},
+    cell::{Cell, RefCell, UnsafeCell},
     cmp,
     collections::HashMap,
     error::Error,
@@ -133,7 +133,11 @@ thread_local! {
 struct ObservationBag {
     count: Cell<usize>,
     sum: Cell<Magnitude>,
-    bucket_counts: RefCell<Vec<usize>>,
+
+    // This is UnsafeCell because it is part of some very hot loops and
+    // we do not want to pay for the runtime borrow checking.
+    bucket_counts: UnsafeCell<Vec<usize>>,
+
     bucket_magnitudes: &'static [Magnitude],
 }
 
@@ -143,21 +147,22 @@ impl ObservationBag {
         self.sum
             .set(self.sum.get() + magnitude * (count as Magnitude));
 
-        let mut bucket_counts = self.bucket_counts.borrow_mut();
+        // SAFETY: This is a single threaded type and we do not let any bucket references escape
+        // the type while it may still be mutated, so we can be certain that references are legal.
+        let bucket_counts = unsafe { &mut *self.bucket_counts.get() };
 
-        for (i, &bucket_magnitude) in self.bucket_magnitudes.iter().enumerate() {
-            if magnitude <= bucket_magnitude {
-                bucket_counts[i] += count;
-                break;
-            }
-        }
+        self.bucket_magnitudes
+            .iter()
+            .enumerate()
+            .find(|(_, &bucket_magnitude)| magnitude <= bucket_magnitude)
+            .map(|(i, _)| bucket_counts[i] += count);
     }
 
     fn new(buckets: &'static [Magnitude]) -> Self {
         Self {
             count: Cell::new(0),
             sum: Cell::new(0),
-            bucket_counts: RefCell::new(vec![0; buckets.len()]),
+            bucket_counts: UnsafeCell::new(vec![0; buckets.len()]),
             bucket_magnitudes: buckets,
         }
     }
@@ -166,7 +171,9 @@ impl ObservationBag {
         ObservationBagSnapshot {
             count: self.count.get(),
             sum: self.sum.get(),
-            bucket_counts: self.bucket_counts.borrow().clone(),
+            // SAFETY: This is a single-threaded type and we never let any exclusive reference
+            // escape from this type, so taking this reference is legal.
+            bucket_counts: unsafe { &*self.bucket_counts.get() }.clone(),
             bucket_magnitudes: self.bucket_magnitudes,
         }
     }
