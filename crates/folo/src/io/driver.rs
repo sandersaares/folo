@@ -4,10 +4,12 @@ use crate::io::{self, Buffer, CompletionPort, IoWaker, WAKE_UP_COMPLETION_KEY};
 use crate::metrics::{Event, EventBuilder, Magnitude};
 use std::mem::{self, MaybeUninit};
 use windows::Win32::{
-    Foundation::{HANDLE, STATUS_SUCCESS, WAIT_TIMEOUT},
+    Foundation::{STATUS_SUCCESS, WAIT_TIMEOUT},
     System::IO::{GetQueuedCompletionStatusEx, OVERLAPPED_ENTRY},
 };
 use windows_result::HRESULT;
+
+use super::IoPrimitive;
 
 /// Max number of I/O operations to dequeue in one go. Presumably getting more data from the OS with
 /// a single call is desirable but the exact impact of different values on performance is not known.
@@ -53,7 +55,10 @@ impl Driver {
     /// Binds an I/O primitive to the completion port of this driver, provided a handle to the I/O
     /// primitive in question (file handle, socket, ...). This must be called once for every I/O
     /// primitive used with this I/O driver.
-    pub(crate) fn bind_io_primitive(&self, handle: &HANDLE) -> io::Result<()> {
+    pub(crate) fn bind_io_primitive(
+        &self,
+        handle: &(impl Into<IoPrimitive> + Copy),
+    ) -> io::Result<()> {
         self.completion_port.bind(handle)
     }
 

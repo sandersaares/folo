@@ -103,7 +103,7 @@ impl BlockStore {
         // references being created.
         let block = &mut *(overlapped_entry.lpOverlapped as *mut Block);
 
-        block.buffer.set_length(bytes_transferred);
+        block.buffer.set_len(bytes_transferred);
 
         let duration = LowPrecisionInstant::now().duration_since(
             block
@@ -140,12 +140,12 @@ impl BlockStore {
         let block = &mut *(overlapped as *mut Block);
 
         let bytes_transferred = block.immediate_bytes_transferred as usize;
-        assert!(bytes_transferred <= block.buffer.length());
+        assert!(bytes_transferred <= block.buffer.len());
 
         BLOCKS_COMPLETED_SYNC.with(Event::observe_unit);
         BLOCK_COMPLETED_BYTES.with(|x| x.observe(bytes_transferred as Magnitude));
 
-        block.buffer.set_length(bytes_transferred);
+        block.buffer.set_len(bytes_transferred);
 
         CompleteBlock {
             block,

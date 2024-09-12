@@ -34,6 +34,7 @@ pin-project = "1"
 thiserror = "1"
 tracing = "0"
 windows = { version = "0", features = [
+    "Win32_Networking_WinSock",
     "Win32_Security",
     "Win32_Storage_FileSystem",
     "Win32_System_IO",

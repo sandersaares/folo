@@ -2,36 +2,52 @@ use super::ThreadSafe;
 use crate::rt::SynchronousTaskType;
 use std::mem;
 use std::ops::Deref;
-use windows::{core::Free, core::Owned, Win32::Foundation::HANDLE};
+use windows::{
+    core::{Free, Owned},
+    Win32::{Foundation::HANDLE, Networking::WinSock::SOCKET},
+};
 
-/// An owned HANDLE from the `windows` crate, which we release on a background worker thread in case
-/// closing the handle incurs synchronous work due to flushing caches etc.
+/// An owned HANDLE/SOCKET or other type of reference from the `windows` crate, which we release on
+/// a background worker thread in case closing the handle incurs synchronous work due to flushing
+/// caches etc.
 ///
 /// # Safety
 ///
-/// Must be a type of handle that is valid to close from any thread.
+/// Must be used with a type of reference handle that is valid to close from any thread.
 #[derive(Debug)]
-pub struct OwnedHandle {
-    inner: HANDLE,
+pub struct OwnedHandle<T>
+where
+    T: Free + Copy + 'static,
+{
+    inner: T,
 }
 
-impl OwnedHandle {
+impl<T> OwnedHandle<T>
+where
+    T: Free + Copy + 'static,
+{
     /// # Safety
     ///
-    /// The caller must ensure that the handle is valid to close from any thread.
-    pub unsafe fn new(handle: HANDLE) -> Self {
+    /// The caller must ensure that the reference handle is valid to close from any thread.
+    pub unsafe fn new(handle: T) -> Self {
         Self { inner: handle }
     }
 }
 
-impl From<HANDLE> for OwnedHandle {
-    fn from(handle: HANDLE) -> Self {
+impl<T> From<T> for OwnedHandle<T>
+where
+    T: Free + Copy + 'static,
+{
+    fn from(handle: T) -> Self {
         Self { inner: handle }
     }
 }
 
-impl From<Owned<HANDLE>> for OwnedHandle {
-    fn from(value: Owned<HANDLE>) -> Self {
+impl<T> From<Owned<T>> for OwnedHandle<T>
+where
+    T: Free + Copy + 'static,
+{
+    fn from(value: Owned<T>) -> Self {
         let inner = *value;
 
         // Forget the value so that the handle is not closed on drop of the original.
@@ -41,26 +57,21 @@ impl From<Owned<HANDLE>> for OwnedHandle {
     }
 }
 
-impl From<OwnedHandle> for HANDLE {
-    fn from(value: OwnedHandle) -> HANDLE {
-        let inner = value.inner;
-
-        // Forget the value so that the handle is not closed on drop of the original.
-        mem::forget(value);
-
-        inner
-    }
-}
-
-impl Deref for OwnedHandle {
-    type Target = HANDLE;
+impl<T> Deref for OwnedHandle<T>
+where
+    T: Free + Copy + 'static,
+{
+    type Target = T;
 
     fn deref(&self) -> &Self::Target {
         &self.inner
     }
 }
 
-impl Drop for OwnedHandle {
+impl<T> Drop for OwnedHandle<T>
+where
+    T: Free + Copy + 'static,
+{
     fn drop(&mut self) {
         // We require that this type is only used with thread-safe handles.
         let mut thread_safe = unsafe { ThreadSafe::new(self.inner) };
@@ -88,5 +99,27 @@ impl Drop for OwnedHandle {
     }
 }
 
-unsafe impl Send for OwnedHandle {}
-unsafe impl Sync for OwnedHandle {}
+unsafe impl<T> Send for OwnedHandle<T> where T: Free + Copy + 'static {}
+unsafe impl<T> Sync for OwnedHandle<T> where T: Free + Copy + 'static {}
+
+impl From<OwnedHandle<HANDLE>> for HANDLE {
+    fn from(value: OwnedHandle<HANDLE>) -> HANDLE {
+        let inner = value.inner;
+
+        // Forget the value so that the handle is not closed on drop of the original.
+        mem::forget(value);
+
+        inner
+    }
+}
+
+impl From<OwnedHandle<SOCKET>> for SOCKET {
+    fn from(value: OwnedHandle<SOCKET>) -> SOCKET {
+        let inner = value.inner;
+
+        // Forget the value so that the handle is not closed on drop of the original.
+        mem::forget(value);
+
+        inner
+    }
+}

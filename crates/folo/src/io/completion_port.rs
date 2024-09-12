@@ -1,5 +1,5 @@
 use crate::{
-    io,
+    io::{self, IoPrimitive},
     metrics::{Event, EventBuilder},
     util::{OwnedHandle, ThreadSafe},
 };
@@ -18,7 +18,7 @@ use windows::Win32::{
 // messages via the completion port. Typically, HANDLE is not thread-safe but that is merely
 // because HANDLE is overly general and not all types of handles are legitimately shared across
 // threads.
-pub(crate) type CompletionPortHandle = Arc<ThreadSafe<OwnedHandle>>;
+pub(crate) type CompletionPortHandle = Arc<ThreadSafe<OwnedHandle<HANDLE>>>;
 
 /// The I/O completion port is used to notify the I/O driver that an I/O operation has completed.
 /// It must be associated with each file/socket/handle that is capable of asynchronous I/O. We do
@@ -57,11 +57,14 @@ impl CompletionPort {
 
     /// Binds an I/O primitive to the completion port when provided a handle to the I/O primitive.
     /// This causes notifications from that I/O primitive to arrive at the completion port.
-    pub(crate) fn bind(&self, handle: &HANDLE) -> io::Result<()> {
-        // SAFETY: Our handle cannot be invalid because we are keeping it alive via Arc.
-        // SAFETY: We ignore the return value, because it is the same as our own handle on success.
+    pub(crate) fn bind(&self, handle: &(impl Into<IoPrimitive> + Copy)) -> io::Result<()> {
+        let handle = HANDLE::from((*handle).into());
+
+        // SAFETY: Our own handle cannot be invalid because we are keeping it alive via Arc.
+        // We have to assume the user provided a valid handle (but if not, it will just be an
+        // error result). We ignore the return value because it is our own handle on success.
         unsafe {
-            CreateIoCompletionPort(*handle, ***self.handle, 0, 1)?;
+            CreateIoCompletionPort(handle, ***self.handle, 0, 1)?;
         }
 
         // Why FILE_SKIP_SET_EVENT_ON_HANDLE: https://devblogs.microsoft.com/oldnewthing/20200221-00/?p=103466/
@@ -76,7 +79,7 @@ impl CompletionPort {
         //   code with ERROR_IO_PENDING.
         unsafe {
             SetFileCompletionNotificationModes(
-                *handle,
+                handle,
                 (FILE_SKIP_SET_EVENT_ON_HANDLE | FILE_SKIP_COMPLETION_PORT_ON_SUCCESS) as u8,
             )?;
         }

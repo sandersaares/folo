@@ -6,7 +6,8 @@ mod constants;
 #[cfg(feature = "criterion")]
 pub mod criterion;
 pub mod fs;
-mod io;
+pub mod io;
+pub mod net;
 pub mod metrics;
 pub mod rt;
 pub mod sync;

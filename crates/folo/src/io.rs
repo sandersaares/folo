@@ -3,10 +3,12 @@ mod block;
 mod completion_port;
 mod driver;
 mod error;
+mod primitive;
 mod waker;
 
 pub(crate) use buffer::*;
 pub(crate) use completion_port::*;
 pub(crate) use driver::*;
 pub use error::*;
+pub(crate) use primitive::*;
 pub(crate) use waker::*;

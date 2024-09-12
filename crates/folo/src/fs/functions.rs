@@ -10,8 +10,8 @@ use windows::{
     Win32::{
         Foundation::{HANDLE, STATUS_END_OF_FILE},
         Storage::FileSystem::{
-            CreateFileA, GetFileSizeEx, ReadFile, FILE_FLAG_OVERLAPPED, FILE_FLAG_SEQUENTIAL_SCAN,
-            FILE_GENERIC_READ, FILE_SHARE_READ, OPEN_EXISTING,
+            CreateFileA, GetFileSizeEx, ReadFile, FILE_FLAG_OVERLAPPED, FILE_GENERIC_READ,
+            FILE_SHARE_READ, OPEN_EXISTING,
         },
     },
 };
@@ -20,115 +20,6 @@ use windows::{
 
 pub async fn read(path: impl AsRef<Path>) -> io::Result<Vec<u8>> {
     read_high_concurrency(path).await
-}
-
-/// Read the contents of a file to a vector of bytes using small pooled buffers.
-pub async fn read_small_buffer(path: impl AsRef<Path>) -> io::Result<Vec<u8>> {
-    let path_cstr = CString::new(path.as_ref().to_str().unwrap()).unwrap();
-
-    unsafe {
-        // Opening the file and probing its size are blocking operations, so we kick them off to
-        // a synchronous worker thread to avoid blocking the async workers with these slow calls.
-
-        let (file_handle, file_size) =
-            spawn_sync(SynchronousTaskType::Syscall, move || -> io::Result<_> {
-                let file_handle = OwnedHandle::new(CreateFileA(
-                    PCSTR::from_raw(path_cstr.as_ptr() as *const u8),
-                    FILE_GENERIC_READ.0,
-                    FILE_SHARE_READ,
-                    None,
-                    OPEN_EXISTING,
-                    FILE_FLAG_OVERLAPPED | FILE_FLAG_SEQUENTIAL_SCAN,
-                    None,
-                )?);
-
-                // Get the size first to allocate the buffer with the correct size. If the size changes
-                // while we read it, that is fine - this is just the initial allocation and may change.
-                let mut file_size: i64 = 0;
-
-                GetFileSizeEx(*file_handle, &mut file_size as *mut _)?;
-
-                Ok((file_handle, file_size))
-            })
-            .await?;
-
-        current_async_agent::with_io(|io| io.bind_io_primitive(&file_handle))?;
-
-        let mut result = Vec::with_capacity(file_size as usize);
-
-        while read_bytes_from_file(&file_handle, result.len(), &mut result).await?
-            == ControlFlow::Continue(())
-        {}
-
-        Ok(result)
-    }
-}
-
-/// Read the contents of a file to a vector of bytes using one giant buffer for the entire file.
-pub async fn read_large_buffer(path: impl AsRef<Path>) -> io::Result<Vec<u8>> {
-    let path_cstr = CString::new(path.as_ref().to_str().unwrap()).unwrap();
-
-    unsafe {
-        // Opening the file and probing its size are blocking operations, so we kick them off to
-        // a synchronous worker thread to avoid blocking the async workers with these slow calls.
-
-        let (file_handle, file_size) =
-            spawn_sync(SynchronousTaskType::Syscall, move || -> io::Result<_> {
-                let file_handle = OwnedHandle::new(CreateFileA(
-                    PCSTR::from_raw(path_cstr.as_ptr() as *const u8),
-                    FILE_GENERIC_READ.0,
-                    FILE_SHARE_READ,
-                    None,
-                    OPEN_EXISTING,
-                    FILE_FLAG_OVERLAPPED | FILE_FLAG_SEQUENTIAL_SCAN,
-                    None,
-                )?);
-
-                // Get the size first to allocate the buffer with the correct size. If the size changes
-                // while we read it, that is fine - this is just the initial allocation and may change.
-                let mut file_size: i64 = 0;
-
-                GetFileSizeEx(*file_handle, &mut file_size as *mut _)?;
-
-                Ok((file_handle, file_size))
-            })
-            .await?;
-
-        current_async_agent::with_io(|io| io.bind_io_primitive(&file_handle))?;
-
-        // We create a vector with what we think is the correct capacity and zero-initialize it.
-        let mut result = Vec::with_capacity(file_size as usize);
-        result.resize(result.capacity(), 0);
-
-        let mut bytes_read = 0;
-
-        // This does not account for the fact that the file size may theoretically change during
-        // the read operation. Not super interesting for our purposes - file is constant during
-        // benchmarking.
-        loop {
-            // We ask the OS to read the entire file. It is within its rights to give us only a
-            // part of what we asked for, so we need to be prepared to loop no matter what.
-            let buffer = Buffer::from_slice(&mut result[bytes_read..]);
-
-            match read_buffer_from_file(&file_handle, bytes_read, buffer).await? {
-                ControlFlow::Continue(bytes) => {
-                    bytes_read += bytes;
-
-                    if bytes_read == result.len() {
-                        // We have read the entire file (we think). We are done.
-                        break;
-                    }
-                }
-                ControlFlow::Break(()) => {
-                    // All done! L
-                    assert_eq!(bytes_read, result.len());
-                    break;
-                }
-            }
-        }
-
-        Ok(result)
-    }
 }
 
 /// Modern filesystems are fast, so no point reading less than 1 MB at a time.
@@ -165,7 +56,7 @@ pub async fn read_high_concurrency(path: impl AsRef<Path>) -> io::Result<Vec<u8>
             })
             .await?;
 
-        current_async_agent::with_io(|io| io.bind_io_primitive(&file_handle))?;
+        current_async_agent::with_io(|io| io.bind_io_primitive(&*file_handle))?;
 
         // We create a vector with what we think is the correct capacity and zero-initialize it.
         let mut result = Vec::with_capacity(file_size as usize);

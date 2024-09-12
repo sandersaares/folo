@@ -89,11 +89,11 @@ impl<'a> Buffer<'a> {
         }
     }
 
-    pub fn length(&self) -> usize {
+    pub fn len(&self) -> usize {
         self.length
     }
 
-    pub fn set_length(&mut self, value: usize) {
+    pub fn set_len(&mut self, value: usize) {
         assert!(value <= self.capacity());
 
         self.length = value;
@@ -109,8 +109,8 @@ impl<'a> Buffer<'a> {
 
     /// Sets the length and obtains a mutable view over the contents of the buffer.
     /// Shorthand to easily fill the buffer and set the length in one go for write operations.
-    pub fn as_mut_slice_with_length(&mut self, length: usize) -> &mut [u8] {
-        self.set_length(length);
+    pub fn as_mut_slice_with_len(&mut self, length: usize) -> &mut [u8] {
+        self.set_len(length);
 
         match &mut self.mode {
             Mode::Pooled { inner, .. } => &mut inner[..self.length],
