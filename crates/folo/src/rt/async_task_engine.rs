@@ -1,5 +1,6 @@
 use crate::{
     constants::{GENERAL_MILLISECONDS_BUCKETS, POISONED_LOCK},
+    io::IO_DEQUEUE_BATCH_SIZE,
     metrics::{Event, EventBuilder},
     rt::{erased_async_task::ErasedResultAsyncTask, waker::WakeSignal},
     util::{BuildPointerHasher, LowPrecisionInstant, PinnedSlabChain},
@@ -89,7 +90,7 @@ pub struct AsyncTaskEngine {
     //
     // This is a HashSet because we need to be able to preallocate the capacity (insertions are
     // always allocation-free because they may come from a different thread, so we cannot allocate).
-    awakened: Arc<Mutex<HashSet<*mut Task, BuildPointerHasher>>>,
+    awakened: Arc<Mutex<VecDeque<*mut Task>>>,
 
     // When a waker cannot lock the `awakened` queue or when the queue is full, it will set this
     // flag to indicate that the awakened status of every inactive task should be directly probed.
@@ -108,11 +109,13 @@ pub struct AsyncTaskEngine {
     last_cycle_ended: Option<LowPrecisionInstant>,
 }
 
-// We only use the "awakened set" for very small task counts because if we have a large set of tasks
-// awakening all the time, the set mutation operation overhead will be far larger than any potential
-// gains from skipping the probing of the wake signals. This value was just eyeballed - 1000 was way
-// to wasteful of cycles, so something on the opposite end of the spectrum was picked here.
-const AWAKENED_CAPACITY: usize = 64;
+// We prefer to get wakeup notifications via the "awakened" queue. This may not always be possible
+// because the queue may be full or it may be locked (if the wakeup is coming from another thread).
+//
+// It is just a VecDeque so the size does not significantly impact wakeup processing time. The
+// current size is chosen to accept "all reasonable" wakeups without needing to allocate, by
+// accounting for the possibility that we have a huge batch of IO completions + some random wakes.
+const AWAKENED_CAPACITY: usize = IO_DEQUEUE_BATCH_SIZE + 100;
 
 impl AsyncTaskEngine {
     /// # Safety
@@ -123,10 +126,7 @@ impl AsyncTaskEngine {
             tasks: PinnedSlabChain::new(),
             active: VecDeque::new(),
             inactive: HashSet::with_hasher(BuildPointerHasher::default()),
-            awakened: Arc::new(Mutex::new(HashSet::with_capacity_and_hasher(
-                AWAKENED_CAPACITY,
-                BuildPointerHasher::default(),
-            ))),
+            awakened: Arc::new(Mutex::new(VecDeque::with_capacity(AWAKENED_CAPACITY))),
             probe_embedded_wake_signals: Arc::new(AtomicBool::new(false)),
             completed: VecDeque::new(),
             shutting_down: false,
@@ -254,9 +254,7 @@ impl AsyncTaskEngine {
             let mut awakened = self.awakened.lock().expect(POISONED_LOCK);
 
             // We copy here so the loop does not keep a reference to the awakened set.
-            while let Some(task_ptr) = awakened.iter().copied().next() {
-                awakened.remove(&task_ptr);
-
+            while let Some(task_ptr) = awakened.pop_front() {
                 // It is theoretically possible for a completed task to be awakened, in which case
                 // we do nothing. We detect this by ensuring that the task was in the "inactive" set
                 // before we react to the wake notification. This also eliminates spurious wakes.
@@ -401,13 +399,13 @@ impl Task {
     unsafe fn new(
         index: usize,
         inner: Pin<Box<dyn ErasedResultAsyncTask>>,
-        awakened_set: Arc<Mutex<HashSet<*mut Task, BuildPointerHasher>>>,
+        awakened_queue: Arc<Mutex<VecDeque<*mut Task>>>,
         probe_embedded_wake_signals: Arc<AtomicBool>,
     ) -> Self {
         Self {
             inner: RefCell::new(inner),
             index,
-            wake_signal: WakeSignal::new(awakened_set, probe_embedded_wake_signals),
+            wake_signal: WakeSignal::new(awakened_queue, probe_embedded_wake_signals),
         }
     }
 

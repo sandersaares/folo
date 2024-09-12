@@ -1,8 +1,8 @@
-use crate::{rt::async_task_engine::Task, util::BuildPointerHasher};
+use crate::rt::async_task_engine::Task;
 use negative_impl::negative_impl;
 use std::{
     cell::UnsafeCell,
-    collections::HashSet,
+    collections::VecDeque,
     pin::Pin,
     sync::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -40,10 +40,10 @@ pub(crate) struct WakeSignal {
     // The task that we are waking up. We will insert this pointer into a list of awakened tasks.
     task_ptr: *mut Task,
 
-    // The set of tasks that have been awakened by a signal. If we can lock the mutex without
-    // blocking and if there is room in the set, we add our task to the set. Otherwise, we update
+    // The queue of tasks that have been awakened by a signal. If we can lock the mutex without
+    // blocking and if there is room in the queue, we add our task. Otherwise, we update
     // the signal itself and set the "probe signals to find awakened ones" flag.
-    awakened_set: Arc<Mutex<HashSet<*mut Task, BuildPointerHasher>>>,
+    awakened_queue: Arc<Mutex<VecDeque<*mut Task>>>,
 
     // If we cannot add the task to the set, we set this flag to inform the task engine that it
     // needs to read each signal to identify what has woken up.
@@ -72,12 +72,12 @@ pub(crate) struct WakeSignal {
 
 impl WakeSignal {
     pub(crate) fn new(
-        awakened_set: Arc<Mutex<HashSet<*mut Task, BuildPointerHasher>>>,
+        awakened_queue: Arc<Mutex<VecDeque<*mut Task>>>,
         probe_embedded_wake_signals: Arc<AtomicBool>,
     ) -> Self {
         Self {
             task_ptr: std::ptr::null_mut(),
-            awakened_set,
+            awakened_queue,
             probe_embedded_wake_signals,
             waker_count: AtomicUsize::new(0),
             awakened: AtomicBool::new(false),
@@ -144,12 +144,15 @@ impl WakeSignal {
     }
 
     fn wake(&self) {
-        if let Ok(mut awakened_set) = self.awakened_set.try_lock() {
+        if let Ok(mut awakened_set) = self.awakened_queue.try_lock() {
             // We only add if we can do so without increasing capacity, because increasing capacity
             // from an arbitrary thread may require reallocation, which we do not want to do on a
             // different thread than the one that owns the set.
             if awakened_set.len() < awakened_set.capacity() {
-                awakened_set.insert(self.task_ptr);
+                // If we experienced spurious awakenings, we might push the same task multiple
+                // times. That is fine - it is up to the receiver of the notifications to deal
+                // with spurious notifications (which may arrive anyway through other means).
+                awakened_set.push_back(self.task_ptr);
                 return;
             }
         }
@@ -217,23 +220,18 @@ unsafe fn resurrect_signal_ptr(ptr: *const ()) -> &'static WakeSignal {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
-
     use super::*;
 
     #[test]
     fn awaken_via_embedded_signal() {
-        let awakened_set = Arc::new(Mutex::new(HashSet::with_capacity_and_hasher(
-            10,
-            BuildPointerHasher::default(),
-        )));
+        let awakened_queue = Arc::new(Mutex::new(VecDeque::with_capacity(10)));
         let probe_embedded_wake_signals = Arc::new(AtomicBool::new(false));
 
         // We hold the lock - the signal cannot use the set.
-        let _awakened_set_lock_guard = awakened_set.lock().unwrap();
+        let _awakened_set_lock_guard = awakened_queue.lock().unwrap();
 
         let signal = WakeSignal::new(
-            Arc::clone(&awakened_set),
+            Arc::clone(&awakened_queue),
             Arc::clone(&probe_embedded_wake_signals),
         );
         let signal = unsafe { Pin::new_unchecked(&signal) };
@@ -269,14 +267,11 @@ mod tests {
 
     #[test]
     fn awaken_via_awakened_set() {
-        let awakened_set = Arc::new(Mutex::new(HashSet::with_capacity_and_hasher(
-            10,
-            BuildPointerHasher::default(),
-        )));
+        let awakened_queue = Arc::new(Mutex::new(VecDeque::with_capacity(10)));
         let probe_embedded_wake_signals = Arc::new(AtomicBool::new(false));
 
         let signal = WakeSignal::new(
-            Arc::clone(&awakened_set),
+            Arc::clone(&awakened_queue),
             Arc::clone(&probe_embedded_wake_signals),
         );
         let signal = unsafe { Pin::new_unchecked(&signal) };
@@ -301,7 +296,7 @@ mod tests {
         // It should not have set the embedded signal here because we use the awakened set.
         assert_eq!(false, probe_embedded_wake_signals.load(Ordering::Relaxed));
         assert!(!signal.consume_awakened());
-        assert!(!awakened_set.lock().unwrap().is_empty());
+        assert!(!awakened_queue.lock().unwrap().is_empty());
 
         assert!(!signal.is_inert());
 
@@ -314,15 +309,12 @@ mod tests {
 
     #[test]
     fn awaken_via_full_awakened_set() {
-        // Capacity is 0 so the set is not allowed to allocate (== is never used).
-        let awakened_set = Arc::new(Mutex::new(HashSet::with_capacity_and_hasher(
-            0,
-            BuildPointerHasher::default(),
-        )));
+        // Capacity is 0 so the queue is not allowed to allocate (== is never used).
+        let awakened_queue = Arc::new(Mutex::new(VecDeque::with_capacity(10)));
         let probe_embedded_wake_signals = Arc::new(AtomicBool::new(false));
 
         let signal = WakeSignal::new(
-            Arc::clone(&awakened_set),
+            Arc::clone(&awakened_queue),
             Arc::clone(&probe_embedded_wake_signals),
         );
         let signal = unsafe { Pin::new_unchecked(&signal) };

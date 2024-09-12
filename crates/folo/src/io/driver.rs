@@ -15,7 +15,7 @@ use windows_result::HRESULT;
 /// Known aspects of performance impact:
 /// * GetQueuedCompletionStatusEx duration seems linearly affected under non-concurrent synthetic
 ///   message load (e.g. 40 us for 1024 items).
-const IO_DEQUEUE_BATCH_SIZE: usize = 1024;
+pub const IO_DEQUEUE_BATCH_SIZE: usize = 1024;
 
 /// Processes I/O completion operations for a given thread as part of the async worker loop.
 ///
