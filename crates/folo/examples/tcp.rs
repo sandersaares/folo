@@ -34,7 +34,7 @@ async fn accept_connection(mut connection: TcpConnection) -> io::Result<()> {
         match receive_result {
             Ok(buffer) => {
                 event!(
-                    Level::INFO,
+                    Level::TRACE,
                     message = "received payload",
                     len = buffer.len()
                 );
