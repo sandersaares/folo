@@ -59,7 +59,7 @@ impl OperationStore {
     /// make into a new one of these operations. The caller provides a buffer for any input/output
     /// data, which the operation takes ownership of. Once the operation has completed, the buffer
     /// is returned to the caller for reading, reuse or disposal.
-    pub fn new_operation(&self, mut buffer: PinnedBuffer) -> Operation {
+    pub fn new_operation(&self, buffer: PinnedBuffer) -> Operation {
         OPERATIONS_ALLOCATED.with(Event::observe_unit);
 
         let mut items = self.items.borrow_mut();
