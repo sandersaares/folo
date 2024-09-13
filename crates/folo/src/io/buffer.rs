@@ -6,38 +6,66 @@ use core::slice;
 use negative_impl::negative_impl;
 use std::{
     cell::{RefCell, UnsafeCell},
+    mem::{self},
+    ops::Range,
     pin::Pin,
+    ptr,
 };
 
 /// A buffer of bytes for reading from or writing to as part of low level I/O operations. This is
 /// typically not visible to user code, rather it is used as the primitive inside the Folo I/O API.
 ///
+/// The buffer has an active region that is used for I/O operations (by default, the entire buffer).
+/// You can adjust the start/len fields as appropriate to adjust the active region (e.g. to fill
+/// or consume the buffer in multiple pieces).
+///
+/// We deliberately do not support receiving arbitrary references from user code, only allocating
+/// either from the pool or taking ownership of user-provided storage. This is because we must
+/// guarantee that the backing storage is kept alive as long as the buffer is alive; the buffer is
+/// kept alive for part of its lifecycle by I/O operations pending with the operating system,
+/// whereas arbitrary caller-provided references may be dropped at any given time (e.g. if someone
+/// were to give us a reference to a buffer defined in an async function, and then the future is
+/// dropped, we would have a problem if the operating system already co-owns the buffer).
+///
 /// This is a single threaded type - buffers cannot move between threads, all I/O stays within the
-/// same threat from start to finish.
+/// same thread from start to finish.
 #[derive(Debug)]
-pub struct Buffer<'a> {
-    mode: Mode<'a>,
+pub struct PinnedBuffer {
+    mode: Mode,
 
     // We might not always use the full capacity (though we do by default).
-    length: usize,
+    //
+    // This is the length of the "active" slice of the buffer, the one we are using for I/O.
+    len: usize,
+
+    // We might not always use the full capacity (though we do by default).
+    //
+    // This is the start offset at which we begin reading or writing. The region of the buffer
+    // before this point is treated as not part of the buffer for the purposes of I/O but you
+    // may access it later by resetting the start offset (e.g. when the buffer has been filled by
+    // multiple I/O operations).
+    start: usize,
 }
 
 #[derive(Debug)]
-enum Mode<'a> {
+enum Mode {
     Pooled {
         // This is the real storage of the bytes and determines the capacity.
-        inner: Pin<&'a mut [u8]>,
+        //
+        // We use 'static as the lifetime because in practice this is backed by storage that will
+        // life as long as the buffer lives, despite being a reference.
+        inner: Pin<&'static mut [u8]>,
 
-        // For the time being, we only support pooled buffers (though later we can also do custom).
         index_in_pool: usize,
     },
-    CallerProvided {
-        // This is the real storage of the bytes and determines the capacity.
-        inner: &'a mut [u8],
+    BoxedSlice {
+        // We allow the caller to retrieve the inner value from the buffer via
+        // `.into_inner_boxed_slice()` if they wish to reuse the storage later.
+        inner: Pin<Box<[u8]>>,
     },
 }
 
-impl<'a> Buffer<'a> {
+impl PinnedBuffer {
     /// Obtains a new buffer from the current thread's buffer pool.
     pub fn from_pool() -> Self {
         POOL.with(|pool| {
@@ -45,9 +73,9 @@ impl<'a> Buffer<'a> {
             let inserter = pool.begin_insert();
             let index = inserter.index();
 
-            let storage = inserter.insert(UnsafeCell::new([0; BUFFER_CAPACITY_BYTES]));
+            let storage = inserter.insert(UnsafeCell::new([0; POOL_BUFFER_CAPACITY_BYTES]));
 
-            ALLOCATED.with(Event::observe_unit);
+            POOL_ALLOCATED.with(Event::observe_unit);
 
             // SAFETY: The chain guarantees pinning, we just re-wrap Pin around the inner bytes.
             // We only ever hand out references derived from UnsafeCell, which are always valid
@@ -56,54 +84,95 @@ impl<'a> Buffer<'a> {
             let inner = unsafe {
                 Pin::new_unchecked(slice::from_raw_parts_mut(
                     storage.get() as *mut u8,
-                    BUFFER_CAPACITY_BYTES,
+                    POOL_BUFFER_CAPACITY_BYTES,
                 ))
             };
 
-            Buffer {
+            let len = inner.len();
+
+            PinnedBuffer {
                 mode: Mode::Pooled {
                     inner,
                     index_in_pool: index,
                 },
-                length: BUFFER_CAPACITY_BYTES,
+                len,
+                start: 0,
             }
         })
     }
 
-    /// References an existing buffer provided by the caller.
-    pub fn from_slice(slice: &'a mut [u8]) -> Self {
+    /// Creates a new buffer from a slice of bytes provided by the caller. Once the buffer has been
+    /// used up, the caller may get the inner slice back via `.into_inner_boxed_slice()`.
+    pub fn from_boxed_slice(slice: Box<[u8]>) -> Self {
         CALLER_BUFFERS_REFERENCED.with(Event::observe_unit);
 
-        let length = slice.len();
+        let len = slice.len();
 
-        Buffer {
-            mode: Mode::CallerProvided { inner: slice },
-            length,
+        PinnedBuffer {
+            mode: Mode::BoxedSlice {
+                inner: Pin::new(slice),
+            },
+            len,
+            start: 0,
         }
     }
 
     pub fn capacity(&self) -> usize {
         match &self.mode {
             Mode::Pooled { inner, .. } => inner.len(),
-            Mode::CallerProvided { inner } => inner.len(),
+            Mode::BoxedSlice { inner } => inner.len(),
         }
     }
 
     pub fn len(&self) -> usize {
-        self.length
+        self.len
     }
 
     pub fn set_len(&mut self, value: usize) {
-        assert!(value <= self.capacity());
+        assert!(self.start + value <= self.capacity());
 
-        self.length = value;
+        self.len = value;
+    }
+
+    pub fn start(&self) -> usize {
+        self.start
+    }
+
+    pub fn set_start(&mut self, value: usize) {
+        assert!(value + self.len <= self.capacity());
+
+        self.start = value;
+    }
+
+    /// Sets the length and start offset to cover the region of the buffer that is not yet used.
+    /// If the current active region extends to the end of the buffer, the result will be a zero-
+    /// sized buffer.
+    pub fn use_remainder(mut self) -> Self {
+        self.start = self.start + self.len;
+        self.len = self.capacity() - self.start;
+        self
+    }
+
+    /// Marks the buffer as used up to the end of the currently active area (extending it
+    /// maximally toward the start).
+    pub fn use_all_until_current(mut self) -> Self {
+        self.len = self.start + self.len;
+        self.start = 0;
+        self
+    }
+
+    /// Marks the entire buffer as the active area.
+    pub fn use_all(mut self) -> Self {
+        self.start = 0;
+        self.len = self.capacity();
+        self
     }
 
     /// Obtains a mutable view over the contents of the buffer.
     pub fn as_mut_slice(&mut self) -> &mut [u8] {
         match &mut self.mode {
-            Mode::Pooled { inner, .. } => &mut inner[..self.length],
-            Mode::CallerProvided { inner } => &mut inner[..self.length],
+            Mode::Pooled { inner, .. } => &mut inner[self.start..(self.start + self.len)],
+            Mode::BoxedSlice { inner } => &mut inner[self.start..(self.start + self.len)],
         }
     }
 
@@ -113,53 +182,80 @@ impl<'a> Buffer<'a> {
         self.set_len(length);
 
         match &mut self.mode {
-            Mode::Pooled { inner, .. } => &mut inner[..self.length],
-            Mode::CallerProvided { inner } => &mut inner[..self.length],
+            Mode::Pooled { inner, .. } => &mut inner[self.start..(self.start + self.len)],
+            Mode::BoxedSlice { inner } => &mut inner[self.start..(self.start + self.len)],
         }
     }
 
     /// Obtains an immutable view over the contents of the buffer.
     pub fn as_slice(&self) -> &[u8] {
         match &self.mode {
-            Mode::Pooled { inner, .. } => &inner[..self.length],
-            Mode::CallerProvided { inner } => &inner[..self.length],
+            Mode::Pooled { inner, .. } => &inner[self.start..(self.start + self.len)],
+            Mode::BoxedSlice { inner } => &inner[self.start..(self.start + self.len)],
+        }
+    }
+
+    pub fn active_region(&self) -> Range<usize> {
+        Range {
+            start: self.start,
+            end: self.start + self.len,
+        }
+    }
+
+    /// Consumes the buffer and returns the inner boxed slice that was used to create the object.
+    /// Note that the inner boxed slice will be returned in its full extent, ignoring active region.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the buffer was not created from a caller-provided boxed slice.
+    pub fn into_inner_boxed_slice(self) -> Box<[u8]> {
+        assert!(matches!(self.mode, Mode::BoxedSlice { .. }));
+
+        // We are destroying the buffer without going through the usual drop logic.
+        // SAFETY: We are forgetting self, so nobody should mind that we stole its contents.
+        let mode = unsafe { ptr::read(&self.mode) };
+        mem::forget(self);
+
+        match mode {
+            Mode::Pooled { .. } => unreachable!("we already asserted that this is a boxed slice"),
+            Mode::BoxedSlice { inner } => Pin::into_inner(inner),
         }
     }
 }
 
-impl Drop for Buffer<'_> {
+impl Drop for PinnedBuffer {
     fn drop(&mut self) {
         if let Mode::Pooled { index_in_pool, .. } = self.mode {
             POOL.with(|pool| {
                 let mut pool = pool.borrow_mut();
                 pool.remove(index_in_pool);
-                DROPPED.with(Event::observe_unit);
+                POOL_DROPPED.with(Event::observe_unit);
             });
         }
     }
 }
 
 #[negative_impl]
-impl !Send for Buffer<'_> {}
+impl !Send for PinnedBuffer {}
 #[negative_impl]
-impl !Sync for Buffer<'_> {}
+impl !Sync for PinnedBuffer {}
 
-const BUFFER_CAPACITY_BYTES: usize = 64 * 1024;
+const POOL_BUFFER_CAPACITY_BYTES: usize = 64 * 1024;
 
 thread_local! {
-    static POOL: RefCell<PinnedSlabChain<UnsafeCell<[u8; BUFFER_CAPACITY_BYTES]>>> = RefCell::new(PinnedSlabChain::new());
+    static POOL: RefCell<PinnedSlabChain<UnsafeCell<[u8; POOL_BUFFER_CAPACITY_BYTES]>>> = RefCell::new(PinnedSlabChain::new());
 
     static CALLER_BUFFERS_REFERENCED: Event = EventBuilder::new()
         .name("caller_buffers_referenced")
         .build()
         .unwrap();
 
-    static ALLOCATED: Event = EventBuilder::new()
+    static POOL_ALLOCATED: Event = EventBuilder::new()
         .name("pool_buffers_allocated")
         .build()
         .unwrap();
 
-    static DROPPED: Event = EventBuilder::new()
+    static POOL_DROPPED: Event = EventBuilder::new()
         .name("pool_buffers_dropped")
         .build()
         .unwrap();

@@ -15,7 +15,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
 
     tracing::subscriber::set_global_default(stdout_subscriber)?;
 
-    for _ in 0..25 {
+    for _ in 0..1 {
         match folo::fs::read(FILE_PATH).await {
             Ok(contents) => {
                 event!(

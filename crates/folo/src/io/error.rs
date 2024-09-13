@@ -6,8 +6,8 @@ pub enum Error {
     #[error("invalid options specified: {0}")]
     InvalidOptions(String),
 
-    #[error("Winsock error {0} ({})", .1.0)]
-    Winsock(i32, WSA_ERROR),
+    #[error("Winsock error {} ({})", .code, .detail.0)]
+    Winsock { code: i32, detail: WSA_ERROR },
 
     #[error(transparent)]
     External(#[from] windows_result::Error),

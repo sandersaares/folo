@@ -1,15 +1,13 @@
 use crate::constants::GENERAL_MILLISECONDS_BUCKETS;
-use crate::io::block::{BlockStore, PrepareBlock};
-use crate::io::{self, Buffer, CompletionPort, IoWaker, WAKE_UP_COMPLETION_KEY};
+use crate::io::operation::{Operation, OperationStore};
+use crate::io::{self, CompletionPort, IoPrimitive, IoWaker, PinnedBuffer, WAKE_UP_COMPLETION_KEY};
 use crate::metrics::{Event, EventBuilder, Magnitude};
 use std::mem::{self, MaybeUninit};
 use windows::Win32::{
-    Foundation::{STATUS_SUCCESS, WAIT_TIMEOUT},
+    Foundation::WAIT_TIMEOUT,
     System::IO::{GetQueuedCompletionStatusEx, OVERLAPPED_ENTRY},
 };
 use windows_result::HRESULT;
-
-use super::IoPrimitive;
 
 /// Max number of I/O operations to dequeue in one go. Presumably getting more data from the OS with
 /// a single call is desirable but the exact impact of different values on performance is not known.
@@ -30,9 +28,13 @@ pub const IO_DEQUEUE_BATCH_SIZE: usize = 1024;
 pub(crate) struct Driver {
     completion_port: CompletionPort,
 
-    // These are the I/O blocks that are currently in flight for operation started with the OS but
-    // result not yet received. Each such operation has one block in this store.
-    block_store: BlockStore,
+    // These are the I/O operations that are currently in flight with the OS but for which the
+    // result has not been processed yet. Items are added when operations are started and they are
+    // removed when the completion notification has been fully processed and the originator of the
+    // operation notified to pick up their results.
+    //
+    // This does not store the read/write buffers, only the operation metadata.
+    operation_store: OperationStore,
 }
 
 impl Driver {
@@ -42,14 +44,14 @@ impl Driver {
     pub(crate) unsafe fn new() -> Self {
         Self {
             completion_port: CompletionPort::new(),
-            block_store: BlockStore::new(),
+            operation_store: OperationStore::new(),
         }
     }
 
     /// Whether the driver has entered a state where it is safe to drop it. This requires that all
     /// ongoing I/O operations be completed and the completion notification received.
     pub fn is_inert(&self) -> bool {
-        self.block_store.is_empty()
+        self.operation_store.is_empty()
     }
 
     /// Binds an I/O primitive to the completion port of this driver, provided a handle to the I/O
@@ -62,17 +64,23 @@ impl Driver {
         self.completion_port.bind(handle)
     }
 
-    /// Starts preparing for a new I/O operation on some primitive bound to this driver.
+    /// Starts preparing for a new I/O operation on some primitive bound to this driver. The caller
+    /// must provide the buffer to pick up the data from or to deliver the data to.
+    ///
     /// The typical workflow is:
     ///
-    /// 1. Call `operation()` and pass it a buffer to start the preparations to operate on the
-    ///    buffer. You will get a `PrepareBlock` to configure the operation (e.g. set the offset).
-    /// 1. Call `PrepareBlock::begin()` to start the operation once all preparation is complete.
-    ///    You will need to provide a callback in which you provider the buffer + metadata object
-    ///    to the native I/O function of an I/O primitive bound to this driver.
-    /// 1. Await the result of `begin()`.
-    pub(crate) fn operation<'a, 'b>(&'a mut self, buffer: Buffer<'b>) -> PrepareBlock<'b> {
-        self.block_store.allocate(buffer)
+    /// 1. Call `new_operation()` and pass it a buffer to start the preparations to operate on the
+    ///    buffer. You will get an `Operation` that you can configure (e.g. to set the offset).
+    ///    Often, you will not need to do any preparation and can just proceed to the next step.
+    /// 2. Call `Operation::begin()` to start the operation once all preparation is complete.
+    ///    You will need to provide a callback through which you provider the buffer + OVERLAPPED
+    ///    metadata object + immediate completion byte count to the native I/O function of an I/O
+    ///    primitive bound to this driver.
+    /// 3. Await the result of `begin()`. You will receive back an `io::Result` with the buffer on
+    ///    success. In case of error, the buffer will be provided via `io::Error::OperationFailed`
+    ///    so you can reuse it if you wish. An empty buffer on reads signals end of stream.
+    pub(crate) fn new_operation(&mut self, buffer: PinnedBuffer) -> Operation {
+        self.operation_store.new_operation(buffer)
     }
 
     /// Obtains a waker that can be used to wake up the I/O driver from another thread when it
@@ -128,29 +136,17 @@ impl Driver {
             ASYNC_COMPLETIONS_DEQUEUED.with(|x| x.observe(completed_items as Magnitude));
 
             for index in 0..completed_items {
-                let entry = completed[index as usize].assume_init();
+                let overlapped_entry = completed[index as usize].assume_init();
 
                 // If the completion key matches our magic value, this is a wakeup packet and needs
                 // special processing.
-                if entry.lpCompletionKey == WAKE_UP_COMPLETION_KEY as usize {
+                if overlapped_entry.lpCompletionKey == WAKE_UP_COMPLETION_KEY as usize {
                     // This is not a normal I/O block. All it did was wake us up, we do no further
                     // processing here. The OVERLAPPED pointer will be null here!
                     continue;
                 }
 
-                let mut block = self.block_store.complete(entry);
-
-                let result_tx = block.result_tx();
-                let status = block.status();
-
-                // The operation may not have been successful, so we need to investigate the status.
-                if status != STATUS_SUCCESS {
-                    // We ignore the tx return value because the receiver may have dropped already.
-                    _ = result_tx.send(Err(io::Error::External(status.into())));
-                } else {
-                    // We ignore the tx return value because the receiver may have dropped already.
-                    _ = result_tx.send(Ok(block));
-                }
+                self.operation_store.complete_operation(overlapped_entry);
             }
         }
     }

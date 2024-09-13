@@ -1,7 +1,6 @@
+use crate::io;
 use std::sync::LazyLock;
 use windows::Win32::Networking::WinSock::{WSAGetLastError, WSAStartup, WSADATA};
-
-use crate::io;
 
 pub fn ensure_initialized() {
     _ = *WINSOCK_STARTUP;
@@ -25,6 +24,9 @@ pub fn to_io_result(winsock_result: i32) -> io::Result<()> {
         // SAFETY: Nothing unsafe here, just an FFI call.
         let specific_error = unsafe { WSAGetLastError() };
 
-        Err(io::Error::Winsock(winsock_result, specific_error))
+        Err(io::Error::Winsock {
+            code: winsock_result,
+            detail: specific_error,
+        })
     }
 }

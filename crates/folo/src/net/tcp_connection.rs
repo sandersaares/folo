@@ -1,7 +1,5 @@
-use core::slice;
-
 use crate::{
-    io::{self, Buffer},
+    io::{self, PinnedBuffer},
     net::winsock,
     rt::current_async_agent,
     util::OwnedHandle,
@@ -17,15 +15,15 @@ pub struct TcpConnection {
 }
 
 impl TcpConnection {
-    /// Receives the next buffer of data, with a result of `None` signaling the connection is
-    /// closed and no more data can be read.
-    pub async fn receive<'a>(&mut self, buffer: &mut io::Buffer<'a>) -> io::Result<Option<()>> {
-        // TODO: Errr, operation() wants to own the resulting buffer. So how can we just grab one
-        // to fill? Need to design proper lifetime handling here.
-
+    /// Receives the next buffer of data. The buffer will be returned with the active region set to
+    /// the bytes read, with a length of 0 if the connection was closed.
+    ///
+    /// TODO: We might need a better pattern so we can easily return buffers on failure.
+    /// Maybe OperationError + OperationResult, which also carry the buffers? Expose CompletedOperation?
+    pub async fn receive(&mut self, buffer: io::PinnedBuffer) -> io::Result<PinnedBuffer> {
         // SAFETY: We are required to pass the OVERLAPPED pointer to the completion routine. We do.
-        let result = unsafe {
-            current_async_agent::with_io(|io| io.operation(io::Buffer::from_pool())).begin(
+        unsafe {
+            current_async_agent::with_io(|io| io.new_operation(buffer)).begin(
                 |buffer, overlapped, immediate_bytes_transferred| {
                     let wsabuf = WSABUF {
                         len: buffer.len() as u32,
@@ -46,16 +44,12 @@ impl TcpConnection {
                 },
             )
         }
-        .await?;
-
-    // TODO: How to return result? We have a reference from CompleteBlock buuuuut...
-    // Use caller buffer instead, not returning one?
-
-        todo!()
+        .await
+        .map_err(|e| e.into_inner())
     }
 
     /// Sends a buffer of data.
-    pub async fn send<'b>(&mut self, buffer: io::Buffer<'b>) -> io::Result<()> {
+    pub async fn send(&mut self, buffer: io::PinnedBuffer) -> io::Result<()> {
         todo!()
     }
 }

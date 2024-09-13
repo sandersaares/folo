@@ -177,7 +177,7 @@ where
         //      outBufLen - ((sizeof (sockaddr_in) + 16) * 2),
         //      sizeof (sockaddr_in) + 16, sizeof (sockaddr_in) + 16,
         //      &dwBytes, &olOverlap);
-        let buffer = io::Buffer::from_pool();
+        let buffer = io::PinnedBuffer::from_pool();
 
         // The data length in the buffer (if we were to want to use some) would be the buffer size
         // minus double of this (local + remote address).
@@ -187,12 +187,12 @@ where
 
         let operation = current_async_agent::with_io(|io| {
             io.bind_io_primitive(&*connection_socket).unwrap();
-            io.operation(buffer)
+            io.new_operation(buffer)
         });
 
         // SAFETY: We are required to pass the OVERLAPPED struct to the native I/O function to avoid
         // a resource leak. We do.
-        let completed = unsafe {
+        let payload = unsafe {
             operation.begin(|buffer, overlapped, immediate_bytes_transferred| {
                 if AcceptEx(
                     *listen_socket,
@@ -220,8 +220,6 @@ where
 
         event!(Level::INFO, "AcceptEx completed");
 
-        let payload = completed.buffer();
-
         let mut local_addr: *mut SOCKADDR = std::ptr::null_mut();
         let mut local_addr_len: i32 = 0;
         let mut remote_addr: *mut SOCKADDR = std::ptr::null_mut();
@@ -230,7 +228,7 @@ where
         // SAFETY: As long as we pass in valid pointers that match the AcceptEx call, we are good.
         unsafe {
             GetAcceptExSockaddrs(
-                payload.as_ptr() as *const _,
+                payload.as_slice().as_ptr() as *const _,
                 0,
                 ADDRESS_LENGTH as u32,
                 ADDRESS_LENGTH as u32,

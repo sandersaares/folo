@@ -1,17 +1,15 @@
 use crate::{
-    io::{self, Buffer},
-    rt::{current_async_agent, spawn_sync, LocalJoinHandle, SynchronousTaskType},
+    io::{self, PinnedBuffer},
+    rt::{current_async_agent, spawn_sync, SynchronousTaskType},
     util::OwnedHandle,
 };
-use futures_concurrency::future::Join;
-use std::{ffi::CString, ops::ControlFlow, path::Path};
+use std::{ffi::CString, path::Path};
 use windows::{
     core::PCSTR,
     Win32::{
         Foundation::{HANDLE, STATUS_END_OF_FILE},
         Storage::FileSystem::{
-            CreateFileA, GetFileSizeEx, ReadFile, FILE_FLAG_OVERLAPPED, FILE_GENERIC_READ,
-            FILE_SHARE_READ, OPEN_EXISTING,
+            CreateFileA, GetFileSizeEx, ReadFile, FILE_FLAG_OVERLAPPED, FILE_FLAG_SEQUENTIAL_SCAN, FILE_GENERIC_READ, FILE_SHARE_READ, OPEN_EXISTING
         },
     },
 };
@@ -19,15 +17,17 @@ use windows::{
 // TODO: Review https://devblogs.microsoft.com/oldnewthing/20220425-00/?p=106526 for some good testing advice.
 
 pub async fn read(path: impl AsRef<Path>) -> io::Result<Vec<u8>> {
-    read_high_concurrency(path).await
+    read_large_buffer(path).await
 }
 
-/// Modern filesystems are fast, so no point reading less than 1 MB at a time.
-const CONCURRENT_CHUNK_SIZE: usize = 1 * 1024 * 1024;
+// Maximum size of a single read submitted to the OS. We repeat reads of up to this size until we
+// have read the entire file. This is a complicated tradeoff between different factors but
+// approximately speaking, a larger buffer means more time spent in ReadFile() which is somewhat bad
+// as it happens on an async worker thread, but may mean fewer syscalls and less tasking chatter.
+const MAX_READ_SIZE_BYTES: usize = 10 * 1024 * 1024;
 
-/// Read the contents of a file to a vector of bytes using one large buffer accessed concurrently
-/// by multiple read operations enqueued on the same file.
-pub async fn read_high_concurrency(path: impl AsRef<Path>) -> io::Result<Vec<u8>> {
+/// Read the contents of a file to a vector of bytes using one giant buffer for the entire file.
+pub async fn read_large_buffer(path: impl AsRef<Path>) -> io::Result<Vec<u8>> {
     let path_cstr = CString::new(path.as_ref().to_str().unwrap()).unwrap();
 
     unsafe {
@@ -42,7 +42,7 @@ pub async fn read_high_concurrency(path: impl AsRef<Path>) -> io::Result<Vec<u8>
                     FILE_SHARE_READ,
                     None,
                     OPEN_EXISTING,
-                    FILE_FLAG_OVERLAPPED,
+                    FILE_FLAG_OVERLAPPED | FILE_FLAG_SEQUENTIAL_SCAN,
                     None,
                 )?);
 
@@ -58,132 +58,70 @@ pub async fn read_high_concurrency(path: impl AsRef<Path>) -> io::Result<Vec<u8>
 
         current_async_agent::with_io(|io| io.bind_io_primitive(&*file_handle))?;
 
-        // We create a vector with what we think is the correct capacity and zero-initialize it.
-        let mut result = Vec::with_capacity(file_size as usize);
-        // We do not care what bytes are in there already - we are reading into them anyway and
-        // the only way the caller will ever see them is if the operation succeeds and we replaced
-        // all the bytes in this Vec.
+        // We create a boxed slice of the correct size to use as the target of the read operation.
+        // We must use a boxed slice because we need to pass ownership of the buffer to the I/O
+        // driver for the duration of the I/O operation, so it cannot be rooted in the stack, nor
+        // can we provide a reference while retaining ownership.
+        let mut buffer = Vec::with_capacity(file_size as usize);
+        buffer.set_len(buffer.capacity());
+        let mut buffer = PinnedBuffer::from_boxed_slice(buffer.into_boxed_slice());
 
-        // TODO: Unsure if this is really wise. On one hand, we never actually read from this until
-        // we have written into it, and it is not like u8 is some sort of complex type. Should try
-        // run this under some more verification to make sure.
-        result.set_len(file_size as usize);
+        let mut bytes_read = 0;
 
-        // Blatant lie to avoid having to invent some sort of async scoping. As long as we join
-        // the tasks before we throw this buffer away, all is well.
-        let eternal_result: &'static mut [u8] = std::mem::transmute(result.as_mut_slice());
+        // This does not account for the fact that the file size may theoretically change during
+        // the read operation. Not super interesting for our purposes - file is constant during
+        // benchmarking and this would just mean some reallocation/copying dynamically which we
+        // would in practice never run into.
+        loop {
+            // We ask the OS to read the entire file. It is within its rights to give us only a
+            // part of what we asked for, so we need to be prepared to loop no matter what.
+            buffer = read_buffer_from_file(&file_handle, bytes_read, buffer).await?;
+            bytes_read += buffer.len();
 
-        // Divide the file into chunks of up to CONCURRENT_CHUNK_SIZE bytes and read them in parallel.
-        let chunk_tasks = eternal_result
-            .chunks_mut(CONCURRENT_CHUNK_SIZE)
-            .enumerate()
-            .map(|(chunk_index, chunk)| -> LocalJoinHandle<io::Result<()>> {
-                let file_handle = file_handle.clone();
-                let chunk_start_offset = chunk_index * CONCURRENT_CHUNK_SIZE;
+            if buffer.len() == 0 {
+                // We have read the entire file (we think). We are done.
+                assert_eq!(
+                    bytes_read, file_size as usize,
+                    "file size changed during read"
+                );
 
-                crate::rt::spawn(async move {
-                    let mut bytes_read = 0;
-
-                    loop {
-                        let buffer = Buffer::from_slice(&mut chunk[bytes_read..]);
-
-                        match read_buffer_from_file(
-                            &file_handle,
-                            chunk_start_offset + bytes_read,
-                            buffer,
-                        )
-                        .await?
-                        {
-                            ControlFlow::Continue(bytes) => {
-                                bytes_read += bytes;
-
-                                if bytes_read == chunk.len() {
-                                    // We have read the entire chunk. We are done.
-                                    break;
-                                }
-                            }
-                            ControlFlow::Break(()) => {
-                                // We knew the size of the file in advance, so we should have read
-                                // it all in by the time we get an EOF signal.
-                                assert_eq!(bytes_read, chunk.len());
-                                break;
-                            }
-                        }
-                    }
-
-                    Ok(())
-                })
-            })
-            .collect::<Vec<_>>();
-
-        let results = chunk_tasks.join().await;
-
-        for result in results {
-            result?;
+                buffer = buffer.use_all_until_current();
+                let active_region = buffer.active_region();
+                let inner_slice = buffer.into_inner_boxed_slice();
+                let mut as_vec = inner_slice.into_vec();
+                as_vec.set_len(active_region.len());
+                return Ok(as_vec);
+            } else {
+                // More remains to be read.
+                buffer = buffer.use_remainder();
+            }
         }
-
-        Ok(result)
     }
 }
 
-/// Reads a chunk of bytes from a file at a given offset using a small intermediate buffer.
-async fn read_bytes_from_file(
-    file: &HANDLE,
-    offset: usize,
-    dest: &mut Vec<u8>,
-) -> io::Result<ControlFlow<()>> {
-    let mut operation = current_async_agent::with_io(|io| io.operation(io::Buffer::from_pool()));
-    operation.set_offset(offset);
-
-    // SAFETY: For safe usage of the I/O driver API, we are required to pass the `overlapped`
-    // argument to a native I/O call under all circumstances, to trigger an I/O completion. We do.
-    // We are also not allowed to use any of the callback arguments after the callback, even if
-    // the Rust compiler might allow us to.
-    let result = unsafe {
-        operation
-            .begin(|buffer, overlapped, bytes_transferred_immediately| {
-                Ok(ReadFile(
-                    *file,
-                    Some(buffer),
-                    Some(bytes_transferred_immediately as *mut _),
-                    Some(overlapped),
-                )?)
-            })
-            .await
-    };
-
-    match result {
-        // The errors here may come from the ReadFile call, or from the IO completion handler.
-        // We coalesce errors from both into the single result that we see here.
-        Ok(result) if result.buffer().is_empty() => Ok(ControlFlow::Break(())),
-        Ok(result) => {
-            dest.extend_from_slice(result.buffer());
-            Ok(ControlFlow::Continue(()))
-        }
-        Err(io::Error::External(e)) if e.code() == STATUS_END_OF_FILE.into() => {
-            Ok(ControlFlow::Break(()))
-        }
-        Err(e) => Err(e),
-    }
-}
-
-/// Reads a chunk of bytes from a file at a given offset and fills the provided buffer with them.
-/// This is a zero-copy read mechanism - data goes straight into the final buffer you provide.
+/// Reads a chunk of bytes from a file at a given offset and fills the provided buffer with them,
+/// appending the bytes to the beginning of the buffer's active region (without changing the
+/// region).
 ///
-/// Returns the number of bytes read into the buffer on success.
+/// Returns the buffer in every case, with the action region of the buffer set to the data read.
+/// A zero-sized active region indicates end of file.
 async fn read_buffer_from_file(
     file: &HANDLE,
     offset: usize,
-    buffer: Buffer<'_>,
-) -> io::Result<ControlFlow<(), usize>> {
-    let mut operation = current_async_agent::with_io(|io| io.operation(buffer));
+    mut buffer: PinnedBuffer,
+) -> io::Result<PinnedBuffer> {
+    if buffer.len() > MAX_READ_SIZE_BYTES {
+        buffer.set_len(MAX_READ_SIZE_BYTES);
+    }
+
+    let mut operation = current_async_agent::with_io(|io| io.new_operation(buffer));
     operation.set_offset(offset);
 
     // SAFETY: For safe usage of the I/O driver API, we are required to pass the `overlapped`
     // argument to a native I/O call under all circumstances, to trigger an I/O completion. We do.
     // We are also not allowed to use any of the callback arguments after the callback, even if
     // the Rust compiler might allow us to.
-    let result = unsafe {
+    match unsafe {
         operation
             .begin(|buffer, overlapped, bytes_transferred_immediately| {
                 Ok(ReadFile(
@@ -194,16 +132,12 @@ async fn read_buffer_from_file(
                 )?)
             })
             .await
-    };
-
-    match result {
-        // The errors here may come from the ReadFile call, or from the IO completion handler.
-        // We coalesce errors from both into the single result that we see here.
-        Ok(result) if result.buffer().is_empty() => Ok(ControlFlow::Break(())),
-        Ok(result) => Ok(ControlFlow::Continue(result.buffer().len())),
-        Err(io::Error::External(e)) if e.code() == STATUS_END_OF_FILE.into() => {
-            Ok(ControlFlow::Break(()))
-        }
-        Err(e) => Err(e),
+    } {
+        Ok(buffer) => Ok(buffer),
+        Err(io::OperationError {
+            inner: io::Error::External(external),
+            buffer,
+        }) if external.code() == STATUS_END_OF_FILE.into() => Ok(buffer),
+        Err(e) => Err(e.into_inner()),
     }
 }
