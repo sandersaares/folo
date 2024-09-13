@@ -27,3 +27,16 @@ impl OperationError {
 }
 
 pub type OperationResult = std::result::Result<PinnedBuffer, OperationError>;
+
+pub trait OperationResultExt {
+    fn into_inner(self) -> crate::io::Result<PinnedBuffer>;
+}
+
+impl OperationResultExt for OperationResult {
+    fn into_inner(self) -> crate::io::Result<PinnedBuffer> {
+        match self {
+            Ok(buffer) => Ok(buffer),
+            Err(OperationError { inner, .. }) => Err(inner),
+        }
+    }
+}

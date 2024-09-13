@@ -15,6 +15,7 @@ use std::{
 use tracing::{event, Level};
 use windows::Win32::{
     Foundation::{ERROR_IO_PENDING, NTSTATUS, STATUS_SUCCESS},
+    Networking::WinSock::{SOCKET_ERROR, WSA_IO_PENDING},
     System::IO::{OVERLAPPED, OVERLAPPED_ENTRY},
 };
 
@@ -382,6 +383,8 @@ impl Operation {
         match f(buffer, overlapped, immediate_bytes_transferred) {
             // The operation was started asynchronously. This is what we want to see.
             Err(io::Error::External(e)) if e.code() == ERROR_IO_PENDING.into() => {}
+            Err(io::Error::Winsock { code, detail })
+                if code == SOCKET_ERROR && detail == WSA_IO_PENDING => {}
 
             // The operation completed synchronously. This means we will not get a completion
             // notification and must handle the result inline (because we set a flag saying this

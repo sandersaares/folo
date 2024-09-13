@@ -1,5 +1,5 @@
 use crate::{
-    io::{self, PinnedBuffer},
+    io::{OperationResult, PinnedBuffer},
     net::winsock,
     rt::current_async_agent,
     util::OwnedHandle,
@@ -17,10 +17,7 @@ pub struct TcpConnection {
 impl TcpConnection {
     /// Receives the next buffer of data. The buffer will be returned with the active region set to
     /// the bytes read, with a length of 0 if the connection was closed.
-    ///
-    /// TODO: We might need a better pattern so we can easily return buffers on failure.
-    /// Maybe OperationError + OperationResult, which also carry the buffers? Expose CompletedOperation?
-    pub async fn receive(&mut self, buffer: io::PinnedBuffer) -> io::Result<PinnedBuffer> {
+    pub async fn receive(&mut self, buffer: PinnedBuffer) -> OperationResult {
         // SAFETY: We are required to pass the OVERLAPPED pointer to the completion routine. We do.
         unsafe {
             current_async_agent::with_io(|io| io.new_operation(buffer)).begin(
@@ -45,11 +42,10 @@ impl TcpConnection {
             )
         }
         .await
-        .map_err(|e| e.into_inner())
     }
 
     /// Sends a buffer of data.
-    pub async fn send(&mut self, buffer: io::PinnedBuffer) -> io::Result<()> {
+    pub async fn send(&mut self, buffer: PinnedBuffer) -> OperationResult {
         todo!()
     }
 }

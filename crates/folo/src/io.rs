@@ -7,10 +7,10 @@ mod operation_result;
 mod primitive;
 mod waker;
 
-pub(crate) use buffer::*;
+pub use buffer::*;
 pub(crate) use completion_port::*;
 pub(crate) use driver::*;
 pub use error::*;
-pub(crate) use operation_result::*;
+pub use operation_result::*;
 pub(crate) use primitive::*;
 pub(crate) use waker::*;
