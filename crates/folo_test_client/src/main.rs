@@ -31,7 +31,7 @@ async fn handle_connection(mut stream: TcpStream, throughput_bytes: Arc<AtomicU6
             Err(_) => break,
         };
 
-        throughput_bytes.fetch_add(total_bytes, Ordering::AcqRel);
+        throughput_bytes.fetch_add(total_bytes, Ordering::Relaxed);
     }
 }
 
@@ -55,7 +55,7 @@ async fn main() -> io::Result<()> {
         loop {
             interval.tick().await;
 
-            let interval_bytes = throughput_bytes.swap(0, Ordering::Acquire);
+            let interval_bytes = throughput_bytes.swap(0, Ordering::Relaxed);
             let mbps = (interval_bytes * 8 / 5) as f64 / 1_000_000.0;
 
             println!("Throughput: {:.2} Mbps", mbps);
