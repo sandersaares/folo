@@ -26,12 +26,12 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
 
 async fn accept_connection(mut connection: TcpConnection) -> io::Result<()> {
     loop {
-        let result = connection
+        let receive_result = connection
             .receive(io::PinnedBuffer::from_pool())
             .await
             .into_inner();
 
-        match result {
+        match receive_result {
             Ok(buffer) => {
                 event!(
                     Level::INFO,
@@ -42,6 +42,9 @@ async fn accept_connection(mut connection: TcpConnection) -> io::Result<()> {
                 if buffer.len() == 0 {
                     break;
                 }
+
+                // Echo back whatever was received, terminating if anything goes wrong.
+                connection.send(buffer).await.into_inner()?;
             }
             Err(e) => {
                 event!(

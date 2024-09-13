@@ -7,7 +7,7 @@ use crate::{
 use negative_impl::negative_impl;
 use windows::{
     core::PSTR,
-    Win32::Networking::WinSock::{WSARecv, SOCKET, WSABUF},
+    Win32::Networking::WinSock::{WSARecv, WSASend, SOCKET, WSABUF},
 };
 
 pub struct TcpConnection {
@@ -46,7 +46,29 @@ impl TcpConnection {
 
     /// Sends a buffer of data.
     pub async fn send(&mut self, buffer: PinnedBuffer) -> OperationResult {
-        todo!()
+        // SAFETY: We are required to pass the OVERLAPPED pointer to the completion routine. We do.
+        unsafe {
+            current_async_agent::with_io(|io| io.new_operation(buffer)).begin(
+                |buffer, overlapped, immediate_bytes_transferred| {
+                    let wsabuf = WSABUF {
+                        len: buffer.len() as u32,
+                        buf: PSTR::from_raw(buffer.as_mut_ptr()),
+                    };
+
+                    let wsabufs = [wsabuf];
+
+                    winsock::to_io_result(WSASend(
+                        *self.socket,
+                        &wsabufs,
+                        Some(immediate_bytes_transferred as *mut u32),
+                        0,
+                        Some(overlapped),
+                        None,
+                    ))
+                },
+            )
+        }
+        .await
     }
 }
 
