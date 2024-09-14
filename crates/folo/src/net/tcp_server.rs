@@ -303,8 +303,9 @@ where
 
         // TODO: Set send/receiver buffer sizes.
 
-        // TODO: Set SIO_CPU_AFFINITY.
-        // Note: this is the public form of the old private SIO_SET_PORT_SHARING_PER_PROC_SOCKET.
+        // If this were UDP, we would also set SIO_CPU_AFFINITY to match up the network-side (RSS)
+        // processor selection with the app-side processor selection. This is the new public name
+        // for the old private API SIO_SET_PORT_SHARING_PER_PROC_SOCKET. Only relevant for UDP.
 
         let mut addr = IN_ADDR::default();
         addr.S_un.S_addr = INADDR_ANY;
