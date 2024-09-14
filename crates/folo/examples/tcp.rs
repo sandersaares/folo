@@ -5,7 +5,7 @@ use folo::{
 use std::error::Error;
 use tracing::{event, Level};
 
-#[folo::main(print_metrics, max_processors = 2)]
+#[folo::main(print_metrics, max_processors = 1)]
 async fn main() -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
     tracing_subscriber::fmt::init();
 

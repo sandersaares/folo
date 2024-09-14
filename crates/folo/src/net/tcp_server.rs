@@ -6,12 +6,13 @@ use crate::{
 };
 use core::slice;
 use negative_impl::negative_impl;
-use std::{future::Future, mem, num::NonZeroU16, rc::Rc};
+use std::{ffi::c_void, future::Future, mem, num::NonZeroU16, rc::Rc, thread};
 use tracing::{event, Level};
 use windows::Win32::Networking::WinSock::{
-    bind, htons, listen, setsockopt, AcceptEx, GetAcceptExSockaddrs, WSASocketA, AF_INET,
-    INADDR_ANY, IN_ADDR, IPPROTO_TCP, SOCKADDR, SOCKADDR_IN, SOCKET, SOCK_STREAM, SOL_SOCKET,
-    SOMAXCONN, SO_REUSEADDR, SO_UPDATE_ACCEPT_CONTEXT, WSA_FLAG_OVERLAPPED,
+    bind, htons, listen, setsockopt, AcceptEx, GetAcceptExSockaddrs, WSAIoctl, WSASocketA, AF_INET,
+    INADDR_ANY, IN_ADDR, IOC_VENDOR, IPPROTO_TCP, SIO_CPU_AFFINITY, SIO_QUERY_RSS_PROCESSOR_INFO,
+    SOCKADDR, SOCKADDR_IN, SOCKET, SOCKET_PROCESSOR_AFFINITY, SOCK_STREAM, SOL_SOCKET, SOMAXCONN,
+    SO_UPDATE_ACCEPT_CONTEXT, WSA_FLAG_OVERLAPPED,
 };
 
 pub struct TcpServerBuilder<A, AF>
@@ -110,6 +111,12 @@ where
         let mut server_handle = TcpServerHandle::new(join_handles, shutdown_txs);
 
         if let Some(e) = first_error {
+            event!(
+                Level::ERROR,
+                message = "TCP server startup failed - terminating",
+                error = e.to_string()
+            );
+
             // If anything went wrong on startup, we tear it all down. It may be that some of the
             // workers started successfully and already accepted some requests, so this will wait
             // for those requests to end.
@@ -118,6 +125,12 @@ where
 
             return Err(e);
         }
+
+        event!(
+            Level::INFO,
+            message = "TCP server started",
+            port = port.get()
+        );
 
         Ok(server_handle)
     }
@@ -245,9 +258,17 @@ where
 
     async fn run(&mut self) {
         let startup_result = match self.startup().await {
-            Ok(x) => x,
+            Ok(x) => {
+                _ = self.startup_completed_tx.take().expect("we have completed startup so the tx must still be there because this is the only thing that uses it").send(Ok(()));
+                x
+            }
             Err(e) => {
                 // We ignore the result because it may be that nobody is listening anymore.
+                event!(
+                    Level::ERROR,
+                    message = "TCP worker startup failed",
+                    error = e.to_string()
+                );
                 _ = self.startup_completed_tx.take().expect("we have completed startup so the tx must still be there because this is the only thing that uses it").send(Err(e));
                 return;
             }
@@ -281,25 +302,52 @@ where
             )?)
         };
 
-        // We allow the same bind address to be used by multiple sockets. This is required because
-        // we have multiple workers listening on the same address.
-        let optval: u32 = 1;
+        // let processor_id: u16 = current_async_agent::with(|x| x.processor_id().id as u16);
 
-        // SAFETY: We are required to pass a valid slice to the native API, which we do. This is
-        // a read-only alternate view over the variable above, of the right size, which is safe.
-        let optval_as_slice = unsafe {
-            slice::from_raw_parts(&optval as *const u32 as *const u8, mem::size_of::<u32>())
-        };
+        // event!(
+        //     Level::INFO,
+        //     message = "setting socket CPU affinity",
+        //     processor_id = processor_id
+        // );
 
-        // SAFETY: Nothing unsafe as long as we pass correct pointers. No unexpected side-effects.
-        unsafe {
-            winsock::to_io_result(setsockopt(
-                *listen_socket,
-                SOL_SOCKET,
-                SO_REUSEADDR,
-                Some(optval_as_slice),
-            ))?;
-        };
+        // // TODO: Async.
+        // let mut bytes_returned: u32 = 0;
+
+        // unsafe {
+        //     winsock::to_io_result(WSAIoctl(
+        //         *listen_socket,
+        //         SIO_CPU_AFFINITY,
+        //         Some(mem::transmute::<_, *const c_void>(&processor_id)),
+        //         mem::size_of::<u16>() as u32,
+        //         None,
+        //         0,
+        //         &mut bytes_returned as *mut _,
+        //         None,
+        //         None,
+        //     ))?;
+        // }
+
+        //SIO_CPU_AFFINITY
+
+        // // We allow the same bind address to be used by multiple sockets. This is required because
+        // // we have multiple workers listening on the same address.
+        // let optval: u32 = 1;
+
+        // // SAFETY: We are required to pass a valid slice to the native API, which we do. This is
+        // // a read-only alternate view over the variable above, of the right size, which is safe.
+        // let optval_as_slice = unsafe {
+        //     slice::from_raw_parts(&optval as *const u32 as *const u8, mem::size_of::<u32>())
+        // };
+
+        // // SAFETY: Nothing unsafe as long as we pass correct pointers. No unexpected side-effects.
+        // unsafe {
+        //     winsock::to_io_result(setsockopt(
+        //         *listen_socket,
+        //         SOL_SOCKET,
+        //         SO_REUSEADDR,
+        //         Some(optval_as_slice),
+        //     ))?;
+        // };
 
         // TODO: Set send/receiver buffer sizes.
 
@@ -523,7 +571,7 @@ impl AcceptOne {
         .await
         .into_inner()?;
 
-        event!(Level::INFO, "completed AcceptEx");
+        event!(Level::INFO, message = "completed AcceptEx", thread = ?thread::current().id());
 
         let mut local_addr: *mut SOCKADDR = std::ptr::null_mut();
         let mut local_addr_len: i32 = 0;
@@ -568,6 +616,47 @@ impl AcceptOne {
         })?;
 
         event!(Level::INFO, "TcpConnection created");
+
+        let affinity_info: SOCKET_PROCESSOR_AFFINITY = SOCKET_PROCESSOR_AFFINITY::default();
+        let mut bytes_returned: u32 = 0;
+
+        // Prerequisite:
+        // 1) adapter must support RSS and have it enabled (e.g. not loopback)
+        // 2) adapter must be connected to peer
+        //
+        // Errors encountered if above conditions are not met:
+        // 10013 - WSAEACCES - An attempt was made to access a socket in a way forbidden by its access permissions.
+        // 10045 - WSAEOPNOTSUPP - The attempted operation is not supported for the type of object referenced.
+        // 
+        // Output will be something like:
+        // SOCKET_PROCESSOR_AFFINITY { Processor: PROCESSOR_NUMBER { Group: 0, Number: 18, Reserved: 0 }, NumaNodeId: 0, Reserved: 0 }
+        // Processor number will be different for different connections.
+        let affinity_result = unsafe {
+            winsock::to_io_result(WSAIoctl(
+                *connection_socket,
+                SIO_QUERY_RSS_PROCESSOR_INFO,
+                None,
+                0,
+                Some(&affinity_info as *const _ as *mut _),
+                mem::size_of::<SOCKET_PROCESSOR_AFFINITY>() as u32,
+                &mut bytes_returned as *mut _,
+                None,
+                None,
+            ))
+        };
+
+        match affinity_result {
+            Ok(()) => {
+                event!(Level::INFO, message = "RSS processor info", affinity_info = ?affinity_info);
+            }
+            Err(e) => {
+                event!(
+                    Level::ERROR,
+                    message = "error querying RSS processor info",
+                    error = e.to_string()
+                );
+            }
+        }
 
         // The new socket is connected and ready! Finally!
         Ok(TcpConnection {
