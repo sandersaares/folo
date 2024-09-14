@@ -29,7 +29,7 @@ futures = { version = "0", default-features = false, features = [
 ] }
 futures-concurrency = "7"
 negative-impl = "0"
-oneshot = "0"
+oneshot = { version = "0", features = ["async"] }
 pin-project = "1"
 thiserror = "1"
 tracing = "0"

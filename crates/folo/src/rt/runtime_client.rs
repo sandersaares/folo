@@ -92,6 +92,64 @@ impl RuntimeClient {
         join_handle
     }
 
+    /// Spawns a task to execute a future on every worker thread.
+    ///
+    /// There are two layers of callbacks involved here, with the overall sequence being:
+    /// 1. The first layer will be called on the originating thread, to create a callback for each
+    ///    worker thread we will be scheduling the task on.
+    /// 2. The result from the first callback will be a closure that we move to the target worker
+    ///    thread and execute.
+    /// 3. The second callback will be called on the target thread and return the future that
+    ///    becomes the subject of the task.
+    ///
+    /// So essentially you are providing a "give me one more clone of the task-creator" function.
+    pub fn spawn_on_all<FC, FN, F, R>(&self, mut clone_future_fn: FC) -> Box<[RemoteJoinHandle<R>]>
+    where
+        FC: FnMut() -> FN,
+        FN: FnOnce() -> F + Send + 'static,
+        F: Future<Output = R> + 'static,
+        R: Send + 'static,
+    {
+        let started = LowPrecisionInstant::now();
+        let worker_count = self.async_command_txs.len();
+
+        let mut join_handles = Vec::with_capacity(worker_count);
+
+        for worker_index in 0..worker_count {
+            let future_fn = clone_future_fn();
+
+            // Just because we are spawning a future on another thread does not mean it has to be a
+            // thread-safe future (although the return value has to be). Therefore, we kajigger it
+            // around via a remote join handle from the same thread, to allow a single-threaded future
+            // to execute, as long as the closure that creates it is thread-safe.
+            let thread_safe_wrapper_future = async move {
+                REMOTE_SPAWN_DELAY.with(|x| x.observe_millis(started.elapsed()));
+
+                // TODO: This seems inefficient. Surely we can do better?
+                // This is: RemoteJoinHandle -> RemoteJoinHandle -> LocalJoinHandle -> LocalJoinHandle
+                // Desired is: RemoteJoinHandle -> LocalJoinHandle
+                let join_handle: RemoteJoinHandle<R> = crate::rt::spawn(future_fn()).into();
+                join_handle.await
+            };
+
+            let task = RemoteTask::new(thread_safe_wrapper_future);
+            let join_handle = task.join_handle(self.current_thread_io_waker());
+
+            // We ignore the return value because it is theoretically possible that something is trying
+            // to schedule new work when we are in the middle of a shutdown process.
+            _ = self.async_command_txs[worker_index].send(AsyncAgentCommand::EnqueueTask {
+                erased_task: Box::pin(task),
+            });
+
+            // Wake up the agent if it might be sleeping and waiting for I/O.
+            self.async_io_wakers[worker_index].wake();
+
+            join_handles.push(join_handle);
+        }
+
+        join_handles.into_boxed_slice()
+    }
+
     /// Spawns a task on a synchronous worker thread suitable for the specific type of synchronous
     /// work requested, returning the result via a join handle suitable for use in asynchronous
     /// tasks.

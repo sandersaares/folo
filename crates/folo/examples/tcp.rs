@@ -2,29 +2,30 @@ use folo::{
     io::{self, OperationResultExt},
     net::{TcpConnection, TcpServerBuilder},
 };
-use std::{error::Error, thread, time::Duration};
-use tokio::task::yield_now;
+use std::error::Error;
 use tracing::{event, Level};
 
 #[folo::main(print_metrics, max_processors = 1)]
 async fn main() -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
     tracing_subscriber::fmt::init();
 
-    let server = TcpServerBuilder::new()
-        .port(1234)
+    let mut server = TcpServerBuilder::new()
+        .port(1234.try_into().unwrap())
         .on_accept(accept_connection)
-        .build()?;
+        .build()
+        .await?;
 
-    // Errr... well, we have nothing else to do here!
-    loop {
-        thread::sleep(Duration::from_millis(1));
-        yield_now().await;
-    }
+    server.wait().await;
 
     Ok(())
 }
 
 async fn accept_connection(mut connection: TcpConnection) -> io::Result<()> {
+    event!(
+        Level::INFO,
+        "handling a connection",
+    );
+
     loop {
         let receive_result = connection
             .receive(io::PinnedBuffer::from_pool())
@@ -34,7 +35,7 @@ async fn accept_connection(mut connection: TcpConnection) -> io::Result<()> {
         match receive_result {
             Ok(buffer) => {
                 event!(
-                    Level::TRACE,
+                    Level::INFO,
                     message = "received payload",
                     len = buffer.len()
                 );

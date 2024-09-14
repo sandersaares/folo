@@ -11,6 +11,11 @@ pub enum Error {
 
     #[error(transparent)]
     External(#[from] windows_result::Error),
+
+    // This is for unexpected situations like a thread disappearing without ever reporting status.
+    // Things that we are not expecting, things that are programming errors in the library itself.
+    #[error("internal error: {0}")]
+    Internal(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

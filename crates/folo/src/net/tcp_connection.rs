@@ -15,8 +15,13 @@ pub struct TcpConnection {
 }
 
 impl TcpConnection {
-    /// Receives the next buffer of data. The buffer will be returned with the active region set to
-    /// the bytes read, with a length of 0 if the connection was closed.
+    /// Receives the next buffer of data.
+    ///
+    /// The buffer will be returned in the result with the active region set to the bytes read, with
+    /// a length of 0 if the connection was closed.
+    ///
+    /// You should not call this multiple times concurrently because there is no guarantee that the
+    /// continuations will be called in a particular order.
     pub async fn receive(&mut self, buffer: PinnedBuffer) -> OperationResult {
         // SAFETY: We are required to pass the OVERLAPPED pointer to the completion routine. We do.
         unsafe {
@@ -44,7 +49,12 @@ impl TcpConnection {
         .await
     }
 
-    /// Sends a buffer of data.
+    /// Sends a buffer of data to the peer.
+    ///
+    /// The buffer will be returned in the result to allow reuse.
+    ///
+    /// You may call this multiple times concurrently. The buffers will be sent in the order they
+    /// are submitted.
     pub async fn send(&mut self, buffer: PinnedBuffer) -> OperationResult {
         // SAFETY: We are required to pass the OVERLAPPED pointer to the completion routine. We do.
         unsafe {
