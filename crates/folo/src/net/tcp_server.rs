@@ -6,12 +6,12 @@ use crate::{
 };
 use core::slice;
 use negative_impl::negative_impl;
-use tracing::{event, Level};
 use std::{future::Future, mem, num::NonZeroU16, rc::Rc};
+use tracing::{event, Level};
 use windows::Win32::Networking::WinSock::{
     bind, htons, listen, setsockopt, AcceptEx, GetAcceptExSockaddrs, WSASocketA, AF_INET,
     INADDR_ANY, IN_ADDR, IPPROTO_TCP, SOCKADDR, SOCKADDR_IN, SOCKET, SOCK_STREAM, SOL_SOCKET,
-    SOMAXCONN, SO_UPDATE_ACCEPT_CONTEXT, WSA_FLAG_OVERLAPPED,
+    SOMAXCONN, SO_REUSEADDR, SO_UPDATE_ACCEPT_CONTEXT, WSA_FLAG_OVERLAPPED,
 };
 
 pub struct TcpServerBuilder<A, AF>
@@ -281,9 +281,30 @@ where
             )?)
         };
 
+        // We allow the same bind address to be used by multiple sockets. This is required because
+        // we have multiple workers listening on the same address.
+        let optval: u32 = 1;
+
+        // SAFETY: We are required to pass a valid slice to the native API, which we do. This is
+        // a read-only alternate view over the variable above, of the right size, which is safe.
+        let optval_as_slice = unsafe {
+            slice::from_raw_parts(&optval as *const u32 as *const u8, mem::size_of::<u32>())
+        };
+
+        // SAFETY: Nothing unsafe as long as we pass correct pointers. No unexpected side-effects.
+        unsafe {
+            winsock::to_io_result(setsockopt(
+                *listen_socket,
+                SOL_SOCKET,
+                SO_REUSEADDR,
+                Some(optval_as_slice),
+            ))?;
+        };
+
         // TODO: Set send/receiver buffer sizes.
-        // TODO: Set "reuse address".
-        // TODO: Set SIO_SET_PORT_SHARING_PER_PROC_SOCKET.
+
+        // TODO: Set SIO_CPU_AFFINITY.
+        // Note: this is the public form of the old private SIO_SET_PORT_SHARING_PER_PROC_SOCKET.
 
         let mut addr = IN_ADDR::default();
         addr.S_un.S_addr = INADDR_ANY;
@@ -355,10 +376,7 @@ where
         // In realistic web services you need to shed load before shutting down anyway, so missing
         // the shutdown signal is a very theoretical concern only in artificial conditions.
         loop {
-            event!(
-                Level::INFO,
-                message = "awaiting connection or shutdown",
-            );
+            event!(Level::INFO, message = "awaiting connection or shutdown",);
 
             match select_future
                 .take()
@@ -367,10 +385,7 @@ where
             {
                 futures::future::Either::Left((accept_result, new_shutdown_received_fut)) => {
                     if let Ok(connection) = accept_result {
-                        event!(
-                            Level::INFO,
-                            message = "accepted connection",
-                        );
+                        event!(Level::INFO, message = "accepted connection",);
 
                         // New connection accepted! Spawn as task and detach.
                         let on_accept_clone = self.on_accept.clone();
@@ -400,10 +415,7 @@ where
                     ));
                 }
                 futures::future::Either::Right((_, _)) => {
-                    event!(
-                        Level::INFO,
-                        message = "received shutdown",
-                    );
+                    event!(Level::INFO, message = "received shutdown",);
 
                     // We are shutting down! We will not accept any new connections and have already
                     // dropped the "accept one" logic on the ground (via discard in match arm). We
