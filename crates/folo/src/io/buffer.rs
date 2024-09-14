@@ -73,7 +73,17 @@ impl PinnedBuffer {
             let inserter = pool.begin_insert();
             let index = inserter.index();
 
-            let storage = inserter.insert(UnsafeCell::new([0; POOL_BUFFER_CAPACITY_BYTES]));
+            // We do not initialize the buffer when we take it from the pool. It has whatever data
+            // it had at the start (maybe zeroes, maybe old I/O operation data).
+            let storage = inserter.insert_uninit();
+
+            // SAFETY: UnsafeCell<T> is layout-compatible with T in most cases (and definitely in
+            // this case), so we can convert that freely. Likewise, MaybeUninit<T> is layout-
+            // compatible with T. Finally, we do not care what bit patterns our buffers are
+            // initialized with because they will be overwritten by new data anyway as part of some
+            // I/O operation. We assume we do not need to worry about dirty contents being somehow
+            // dangerous/sensitive here (perhaps might want to consider zeroing per-usecase).
+            let storage = unsafe { (*storage).assume_init_mut() };
 
             POOL_ALLOCATED.with(Event::observe_unit);
 

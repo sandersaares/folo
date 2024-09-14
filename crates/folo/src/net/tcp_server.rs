@@ -452,6 +452,8 @@ struct AcceptOne {
 
 impl AcceptOne {
     async fn execute(self) -> io::Result<TcpConnection> {
+        event!(Level::INFO, "creating socket");
+
         // SAFETY: All we need to worry about here is cleanup, which we do via OwnedHandle.
         let connection_socket = unsafe {
             OwnedHandle::new(WSASocketA(
@@ -495,6 +497,8 @@ impl AcceptOne {
         // a resource leak. We do.
         let payload = unsafe {
             operation.begin(|buffer, overlapped, immediate_bytes_transferred| {
+                event!(Level::INFO, "starting AcceptEx");
+
                 if AcceptEx(
                     **self.listen_socket,
                     *connection_socket,
@@ -518,6 +522,8 @@ impl AcceptOne {
         }
         .await
         .into_inner()?;
+
+        event!(Level::INFO, "completed AcceptEx");
 
         let mut local_addr: *mut SOCKADDR = std::ptr::null_mut();
         let mut local_addr_len: i32 = 0;
@@ -560,6 +566,8 @@ impl AcceptOne {
                 Some(listen_socket_as_slice),
             )
         })?;
+
+        event!(Level::INFO, "TcpConnection created");
 
         // The new socket is connected and ready! Finally!
         Ok(TcpConnection {

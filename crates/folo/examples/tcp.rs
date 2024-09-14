@@ -21,10 +21,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
 }
 
 async fn accept_connection(mut connection: TcpConnection) -> io::Result<()> {
-    event!(
-        Level::INFO,
-        "handling a connection",
-    );
+    event!(Level::INFO, "connection received, echo starting",);
 
     loop {
         let receive_result = connection
@@ -34,12 +31,6 @@ async fn accept_connection(mut connection: TcpConnection) -> io::Result<()> {
 
         match receive_result {
             Ok(buffer) => {
-                event!(
-                    Level::INFO,
-                    message = "received payload",
-                    len = buffer.len()
-                );
-
                 if buffer.len() == 0 {
                     break;
                 }
@@ -50,7 +41,7 @@ async fn accept_connection(mut connection: TcpConnection) -> io::Result<()> {
             Err(e) => {
                 event!(
                     Level::ERROR,
-                    message = "error receiving payload",
+                    message = "error receiving payload - terminating echo",
                     error = e.to_string()
                 );
                 break;

@@ -326,6 +326,48 @@ impl<'s, T, const COUNT: usize> PinnedSlabInserter<'s, T, COUNT> {
 
         ptr
     }
+
+    /// Inserts an item without initializing it. Depending on the type T, the caller may want to
+    /// initialize it with all-zero bytes, skip initializing it entirely (if all bit patterns are
+    /// valid) or initialize it manually with some custom value or pointer writes.
+    pub fn insert_uninit(self) -> *mut MaybeUninit<T> {
+        // SAFETY: We did a bounds check and ensured in the ctor that every entry is initialized.
+        let slot = unsafe {
+            self.slab
+                .ptr
+                .add(self.index)
+                .as_mut()
+                .expect("we expect the resulting pointer to always be valid")
+        };
+
+        // We pretend that we are a slab of MaybeUninit<T> instead of T.
+        // SAFETY: MaybeUninit<T> is guaranteed to have the same memory layout as T. It is the
+        // caller's business how to ensure that the contents of the inserted T are valid - they
+        // have multiple options for that and the specifics are none of our concern.
+        let slot: &mut Entry<MaybeUninit<T>> = unsafe { mem::transmute(slot) };
+
+        let previous_entry = mem::replace(slot, Entry::Occupied { value: MaybeUninit::uninit() });
+
+        self.slab.next_free_index = match previous_entry {
+            Entry::Vacant { next_free_index } => next_free_index,
+            Entry::Occupied { .. } => panic!(
+                "entry {} was not vacant when we inserted into it",
+                self.index
+            ),
+        };
+
+        let ptr = match slot {
+            Entry::Occupied { value } => value as *mut MaybeUninit<T>,
+            Entry::Vacant { .. } => panic!(
+                "entry {} was not occupied after we inserted into it",
+                self.index
+            ),
+        };
+
+        self.slab.count += 1;
+
+        ptr
+    }
 }
 
 #[cfg(test)]

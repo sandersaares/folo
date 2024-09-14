@@ -1,5 +1,5 @@
 use super::{PinnedSlab, PinnedSlabInserter};
-use std::pin::Pin;
+use std::{mem::MaybeUninit, pin::Pin};
 
 /// Links up an arbitrary number of PinnedSlabs into a dynamically sized chain. The API surface is
 /// intended to be equivalent to that of a single PinnedSlab, but with the ability to grow beyond
@@ -116,9 +116,15 @@ impl<'s, T, const SLAB_SIZE: usize> PinnedSlabChainInserter<'s, T, SLAB_SIZE> {
         self.slab_inserter.insert(value)
     }
 
-    pub fn insert_raw(self, value: T) -> *mut T
-    {
+    pub fn insert_raw(self, value: T) -> *mut T {
         self.slab_inserter.insert_raw(value)
+    }
+
+    /// Inserts an item without initializing it. Depending on the type T, the caller may want to
+    /// initialize it with all-zero bytes, skip initializing it entirely (if all bit patterns are
+    /// valid) or initialize it manually with some custom value or pointer writes.
+    pub fn insert_uninit(self) -> *mut MaybeUninit<T> {
+        self.slab_inserter.insert_uninit()
     }
 
     pub fn index(&self) -> usize {
