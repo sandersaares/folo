@@ -5,6 +5,10 @@ use folo::{
 use std::error::Error;
 use tracing::{event, Level};
 
+/// This is a TCP server that accepts connections and echoes back whatever is sent to it.
+/// While functional, it is rather useless for benchmarking because no existing tooling is designed
+/// to validate TCP echo scenarios and building our own echo client would add too many variables for
+/// certainty in the results.
 #[folo::main(print_metrics)]
 async fn main() -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
     tracing_subscriber::fmt::init();
