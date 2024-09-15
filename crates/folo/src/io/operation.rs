@@ -129,7 +129,7 @@ impl OperationStore {
         // We ignore the tx return value because the receiver may have dropped already.
         if status != STATUS_SUCCESS {
             _ = result_tx.send(Err(io::OperationError::new(
-                io::Error::External(status.into()),
+                io::Error::Windows(status.into()),
                 buffer,
             )));
         } else {
@@ -382,7 +382,7 @@ impl Operation {
 
         match f(buffer, overlapped, immediate_bytes_transferred) {
             // The operation was started asynchronously. This is what we want to see.
-            Err(io::Error::External(e)) if e.code() == ERROR_IO_PENDING.into() => {}
+            Err(io::Error::Windows(e)) if e.code() == ERROR_IO_PENDING.into() => {}
             Err(io::Error::Winsock { code, detail })
                 if code == SOCKET_ERROR && detail == WSA_IO_PENDING => {}
 

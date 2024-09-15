@@ -1,18 +1,18 @@
 use crate::{
-    io::{self, Operation, OperationResultExt},
+    io::{self, OperationResultExt},
     net::{winsock, TcpConnection},
-    rt::{current_async_agent, spawn, spawn_on_all, RemoteJoinHandle},
+    rt::{current_async_agent, current_runtime, spawn_on_any, RemoteJoinHandle},
     util::OwnedHandle,
 };
 use core::slice;
 use negative_impl::negative_impl;
-use std::{ffi::c_void, future::Future, mem, num::NonZeroU16, rc::Rc, thread};
+use std::{future::Future, mem, num::NonZeroU16, rc::Rc, thread};
 use tracing::{event, Level};
 use windows::Win32::Networking::WinSock::{
     bind, htons, listen, setsockopt, AcceptEx, GetAcceptExSockaddrs, WSAIoctl, WSASocketA, AF_INET,
-    INADDR_ANY, IN_ADDR, IOC_VENDOR, IPPROTO_TCP, SIO_CPU_AFFINITY, SIO_QUERY_RSS_PROCESSOR_INFO,
-    SOCKADDR, SOCKADDR_IN, SOCKET, SOCKET_PROCESSOR_AFFINITY, SOCK_STREAM, SOL_SOCKET, SOMAXCONN,
-    SO_UPDATE_ACCEPT_CONTEXT, WSA_FLAG_OVERLAPPED,
+    INADDR_ANY, IN_ADDR, IPPROTO_TCP, SIO_QUERY_RSS_PROCESSOR_INFO, SOCKADDR, SOCKADDR_IN, SOCKET,
+    SOCKET_PROCESSOR_AFFINITY, SOCK_STREAM, SOL_SOCKET, SOMAXCONN, SO_UPDATE_ACCEPT_CONTEXT,
+    WSAEACCES, WSAEOPNOTSUPP, WSA_FLAG_OVERLAPPED,
 };
 
 pub struct TcpServerBuilder<A, AF>
@@ -64,67 +64,37 @@ where
             .on_accept
             .ok_or_else(|| io::Error::InvalidOptions("on_accept must be set".to_string()))?;
 
-        let mut startup_completed_rxs = Vec::new();
-        let mut shutdown_txs = Vec::new();
+        let (startup_completed_tx, startup_completed_rx) = oneshot::channel();
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
 
-        let join_handles = spawn_on_all(|| {
-            let on_accept_clone = on_accept.clone();
-
-            let (shutdown_tx, shutdown_rx) = oneshot::channel();
-            shutdown_txs.push(shutdown_tx);
-
-            let (startup_completed_tx, startup_completed_rx) = oneshot::channel();
-            startup_completed_rxs.push(startup_completed_rx);
-
-            move || async move {
-                TcpWorker::new(port, on_accept_clone, startup_completed_tx, shutdown_rx)
+        let join_handle = current_runtime::with(|x| {
+            x.spawn_tcp_dispatcher(move || async move {
+                TcpDispatcher::new(port, on_accept, startup_completed_tx, shutdown_rx)
                     .run()
                     .await
-            }
+            })
         });
 
-        // We wait for all to complete startup (or for some to fail). It is expected that each
-        // worker will signal failure also in its error reporting callback, so this error result
-        // here is more of a "shortcut" to afford an early-out rather than to receive all the
-        // details about what went wrong.
-        let mut first_error = None;
-
-        for rx in startup_completed_rxs {
-            // There are two things that can go wrong here:
-            // 1. The channel fails to receive (because the worker died before reporting startup).
-            // 2. The worker reports a startup error.
-            // We coalesce these into a single io::Result.
-
-            match rx.await {
-                Ok(Ok(())) => {}
-                Ok(Err(e)) => _ = first_error.get_or_insert(e),
-                Err(_) => {
-                    _ = first_error.get_or_insert(io::Error::Internal(
-                        "TCP worker died before reporting startup result".to_string(),
-                    ))
-                }
+        match startup_completed_rx.await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                event!(
+                    Level::ERROR,
+                    message = "TCP server startup failed - terminating",
+                    error = e.to_string()
+                );
+                return Err(e);
+            }
+            Err(_) => {
+                return Err(io::Error::Internal(
+                    "TCP dispatcher died before reporting startup result".to_string(),
+                ));
             }
         }
 
         // We create the server handle even if startup failed because we use it to command the stop
         // in case of a failed startup.
-        let mut server_handle = TcpServerHandle::new(join_handles, shutdown_txs);
-
-        if let Some(e) = first_error {
-            event!(
-                Level::ERROR,
-                message = "TCP server startup failed - terminating",
-                error = e.to_string()
-            );
-
-            // If anything went wrong on startup, we tear it all down. It may be that some of the
-            // workers started successfully and already accepted some requests, so this will wait
-            // for those requests to end.
-            server_handle.stop();
-            server_handle.wait().await;
-
-            return Err(e);
-        }
+        let server_handle = TcpServerHandle::new(join_handle, shutdown_tx);
 
         event!(
             Level::INFO,
@@ -155,46 +125,35 @@ where
 /// TCP server. Dropping this will not stop the server - you must explicitly call `stop()` to stop
 /// the server, and may call `wait()` to wait for the server to complete its shutdown process.
 pub struct TcpServerHandle {
-    join_handles: Box<[RemoteJoinHandle<()>]>,
+    dispatcher_join_handle: RemoteJoinHandle<()>,
 
     // Consumed after signal is sent.
-    shutdown_txs: Option<Vec<oneshot::Sender<()>>>,
+    dispatcher_shutdown_tx: Option<oneshot::Sender<()>>,
 }
 
 impl TcpServerHandle {
     fn new(
-        join_handles: Box<[RemoteJoinHandle<()>]>,
-        shutdown_txs: Vec<oneshot::Sender<()>>,
+        dispatcher_join_handle: RemoteJoinHandle<()>,
+        dispatcher_shutdown_tx: oneshot::Sender<()>,
     ) -> Self {
         Self {
-            join_handles,
-            shutdown_txs: Some(shutdown_txs),
+            dispatcher_join_handle: dispatcher_join_handle,
+            dispatcher_shutdown_tx: Some(dispatcher_shutdown_tx),
         }
     }
 
     /// Stop the server. This will signal the server that it is to stop accepting new connections,
-    /// and will start terminating existing connections. The method returns immediately. If you want
-    /// to wait for the server to complete its shutdown process, call `wait()` after calling this.
+    /// and will start terminating existing connections. The method returns immediately. It may take
+    /// some unspecified time for connection dispatch to actually stop and for ongoing connections
+    /// to finish processing - the TCP server handle does not facilitate waiting for that.
     pub fn stop(&mut self) {
-        let Some(shutdown_txs) = self.shutdown_txs.take() else {
+        let Some(dispatcher_shutdown_tx) = self.dispatcher_shutdown_tx.take() else {
             // Shutdown signal already sent.
             return;
         };
 
-        for tx in shutdown_txs {
-            // We ignore the result (maybe the remote side is already terminated).
-            let _ = tx.send(());
-        }
-    }
-
-    /// Wait for the server to complete its shutdown process. This will not return until the server
-    /// has stopped accepting new connections, and all existing connections have been closed.
-    pub async fn wait(&mut self) {
-        for join_handle in &mut *self.join_handles {
-            // We ignore the result because we are not interested in the result of the worker
-            // shutting down, only in the knowledge that it has shut down.
-            _ = join_handle.await;
-        }
+        // We ignore the result (maybe the remote side is already terminated).
+        let _ = dispatcher_shutdown_tx.send(());
     }
 }
 
@@ -203,10 +162,10 @@ impl !Send for TcpServerHandle {}
 #[negative_impl]
 impl !Sync for TcpServerHandle {}
 
-/// Current state of the TCP worker logic executing on a specific async worker thread.
-///
-/// When starting a TCP server, a TCP worker is spawned on every async worker thread.
-struct TcpWorker<A, AF>
+/// The TCP dispatcher manages the listen socket used to receive new connections. When a new
+/// connection is received, it is dispatched to be handled by the user-defined callback on a
+/// suitable worker, at which point the dispatcher is no longer involved.
+struct TcpDispatcher<A, AF>
 where
     A: Fn(TcpConnection) -> AF + Clone + Send + 'static,
     AF: Future<Output = io::Result<()>> + 'static,
@@ -219,24 +178,18 @@ where
     // If we receive a message from here, it means we need to shut down. Consumed on use.
     shutdown_rx: Option<oneshot::Receiver<()>>,
 
-    // If we have received the shutdown command, we close up shop and wait for existing connections
-    // to end. At present, there is no mechanism for a non-graceful shutdown - we give the
-    // connections as long as they need. That may be forever (TCP connections that do not send a
-    // single packet for DAYS are entirely valid and alive connections!).
-    shutting_down: bool,
-
     port: NonZeroU16,
 
     // Whenever we receive a new connection, we spawn a new task with this callback to handle it.
-    // We close the connection when this is done with the task. The worker observes the state of
-    // active connections handed over to this so that it can know when it is safe to shut down.
+    // Once we schedule a task to call this, the dispatcher forgets about the connection - anything
+    // that happens afterward is the responsibility of the TcpConnection to organize.
     on_accept: A,
     // TODO: on_connection_error (callback if connection fails, probably without affecting other connections or general health)
     // TODO: on_worker_error (callback if worker-level operation fails and we probably will not receive more traffic on this worker)
     // TODO: on_handler_error (callback if on_accept fails; do we need this or just let on_accept worry about it?)
 }
 
-impl<A, AF> TcpWorker<A, AF>
+impl<A, AF> TcpDispatcher<A, AF>
 where
     A: Fn(TcpConnection) -> AF + Clone + Send + 'static,
     AF: Future<Output = io::Result<()>> + 'static,
@@ -252,7 +205,6 @@ where
             on_accept,
             startup_completed_tx: Some(startup_completed_tx),
             shutdown_rx: Some(shutdown_rx),
-            shutting_down: false,
         }
     }
 
@@ -266,7 +218,7 @@ where
                 // We ignore the result because it may be that nobody is listening anymore.
                 event!(
                     Level::ERROR,
-                    message = "TCP worker startup failed",
+                    message = "TCP dispatcher startup failed",
                     error = e.to_string()
                 );
                 _ = self.startup_completed_tx.take().expect("we have completed startup so the tx must still be there because this is the only thing that uses it").send(Err(e));
@@ -274,15 +226,12 @@ where
             }
         };
 
-        // Now we are up and running. Until we receive a shutdown command, we will keep accepting new
-        // connections and sending them off to be handled by the user-defined callback.
+        // Now we are up and running. Until we receive a shutdown command, we will keep accepting
+        // new connections and dispatching them to be handled by the user-defined callback.
         self.run_accept_loop(startup_result).await;
-
-        // We wait for all active connections to end before we declare ourselves done.
-        self.run_shutdown_loop().await;
     }
 
-    async fn startup(&mut self) -> io::Result<StartedTcpWorker> {
+    async fn startup(&mut self) -> io::Result<StartedTcpDispatcher> {
         winsock::ensure_initialized();
 
         // NOTE: Measure overhead of these operations. In principle, they are synchronous, although
@@ -302,58 +251,7 @@ where
             )?)
         };
 
-        // let processor_id: u16 = current_async_agent::with(|x| x.processor_id().id as u16);
-
-        // event!(
-        //     Level::INFO,
-        //     message = "setting socket CPU affinity",
-        //     processor_id = processor_id
-        // );
-
-        // // TODO: Async.
-        // let mut bytes_returned: u32 = 0;
-
-        // unsafe {
-        //     winsock::to_io_result(WSAIoctl(
-        //         *listen_socket,
-        //         SIO_CPU_AFFINITY,
-        //         Some(mem::transmute::<_, *const c_void>(&processor_id)),
-        //         mem::size_of::<u16>() as u32,
-        //         None,
-        //         0,
-        //         &mut bytes_returned as *mut _,
-        //         None,
-        //         None,
-        //     ))?;
-        // }
-
-        //SIO_CPU_AFFINITY
-
-        // // We allow the same bind address to be used by multiple sockets. This is required because
-        // // we have multiple workers listening on the same address.
-        // let optval: u32 = 1;
-
-        // // SAFETY: We are required to pass a valid slice to the native API, which we do. This is
-        // // a read-only alternate view over the variable above, of the right size, which is safe.
-        // let optval_as_slice = unsafe {
-        //     slice::from_raw_parts(&optval as *const u32 as *const u8, mem::size_of::<u32>())
-        // };
-
-        // // SAFETY: Nothing unsafe as long as we pass correct pointers. No unexpected side-effects.
-        // unsafe {
-        //     winsock::to_io_result(setsockopt(
-        //         *listen_socket,
-        //         SOL_SOCKET,
-        //         SO_REUSEADDR,
-        //         Some(optval_as_slice),
-        //     ))?;
-        // };
-
-        // TODO: Set send/receiver buffer sizes.
-
-        // If this were UDP, we would also set SIO_CPU_AFFINITY to match up the network-side (RSS)
-        // processor selection with the app-side processor selection. This is the new public name
-        // for the old private API SIO_SET_PORT_SHARING_PER_PROC_SOCKET. Only relevant for UDP.
+        // TODO: Set send/receiver buffer sizes (will be inherited by spawned connections).
 
         let mut addr = IN_ADDR::default();
         addr.S_un.S_addr = INADDR_ANY;
@@ -382,27 +280,32 @@ where
             io.bind_io_primitive(&*listen_socket).unwrap();
         });
 
-        Ok(StartedTcpWorker {
+        Ok(StartedTcpDispatcher {
             listen_socket: Rc::new(listen_socket),
         })
     }
 
-    async fn run_accept_loop(&mut self, startup_result: StartedTcpWorker) {
+    async fn run_accept_loop(&mut self, startup_result: StartedTcpDispatcher) {
         let listen_socket = startup_result.listen_socket;
 
         // The act of accepting a connection is simply the first part of the lifecycle of a
         // TcpConnection, so we can think of this as just a very long drawn-out constructor.
         // On the other hand, accepting a connection does require use of resources owned by the
-        // worker, so it is not an entirely isolated concept. We ensure proper resource management
-        // by always polling the accept future directly from within the worker itself, so we do not
-        // need to create any complex resource sharing scheme for e.g. the socket because we stop
-        // polling if we release the resources. Any ongoing accept operations will be terminated
-        // when the socket is closed, after which the I/O driver will process a completion that will
-        // not be received by any awaiter any more and thus will be ignored. When we are shutting
-        // down, this operation will simply be abandoned.
+        // dispatcher, so it is not an entirely isolated concept. We ensure proper resource
+        // management by always polling the accept future directly from within the dispatcher
+        // itself, so we do not need to create any complex resource sharing scheme for e.g. the
+        // socket because we stop polling if we release the resources. Any ongoing accept operations
+        // will be terminated when the socket is closed, after which the I/O driver will process a
+        // completion that will not be received by any awaiter any more and thus will be ignored.
+        // When we are shutting down, this operation will simply be abandoned.
+        //
+        // TODO: If a completion is ignored, won't that leave a dangling socket? Actually it will
+        // end up with a panic: "no expected code path drops the I/O operation without signaling completion result: RecvError"
+        // We probably need some Operation::on_cancel() callback to clean up the socket in that case, and to ignore drops otherwise.
         //
         // Because we are doing two things concurrently (accepting connections + awaiting orders),
-        // we must use interior mutability - we cannot give an exclusive reference to both futures.
+        // we must use interior mutability or exclusive mutability only for one of these futures.
+        // We cannot give an exclusive reference to both futures.
 
         // TODO: Should we enqueue multiple accepts concurrently? There is no reason to limit
         // ourselves to just one at a time if we can get more throughput by doing more of them.
@@ -433,21 +336,26 @@ where
                 .await
             {
                 futures::future::Either::Left((accept_result, new_shutdown_received_fut)) => {
-                    if let Ok(connection) = accept_result {
+                    if let Ok(socket) = accept_result {
                         event!(Level::INFO, message = "accepted connection",);
 
                         // New connection accepted! Spawn as task and detach.
                         let on_accept_clone = self.on_accept.clone();
-                        _ = spawn(async move {
-                            _ = (on_accept_clone)(connection).await;
+
+                        // TODO: Spawn on optimal processor, not a random one.
+                        _ = spawn_on_any(move || async move {
+                            current_async_agent::with_io(|io| {
+                                io.bind_io_primitive(&*socket).unwrap()
+                            });
+
+                            let tcp_connection = TcpConnection { socket };
+
+                            _ = (on_accept_clone)(tcp_connection).await;
                             // TODO: If callback result is error, report this error.
                         });
                     }
 
                     // TODO: Report error if not successfully accepted..
-
-                    // TODO: We need to somehow somewhere remember it so we wait for it to complete
-                    // on shutdown. We could do it with a semaphore but we do not have a semaphore.
 
                     // We create a new accept task to accept the next connection and re-fill the
                     // select future with a brand new one.
@@ -476,14 +384,9 @@ where
             }
         }
     }
-
-    async fn run_shutdown_loop(&mut self) {
-        // TODO: We do not today have a semaphore that we could use to wait for all connections and
-        // we certainly do not want to maintain some giant list of tasks that we need to clean up.
-    }
 }
 
-struct StartedTcpWorker {
+struct StartedTcpDispatcher {
     // This is an Rc because we need to share it between the worker itself and the "AcceptOne"
     // subtasks that it spawns. We use Rc to avoid the need for AcceptOne to take a reference to
     // the worker, which would at the very least conflict with the worker itself using an exclusive
@@ -499,7 +402,7 @@ struct AcceptOne {
 }
 
 impl AcceptOne {
-    async fn execute(self) -> io::Result<TcpConnection> {
+    async fn execute(self) -> io::Result<OwnedHandle<SOCKET>> {
         event!(Level::INFO, "creating socket");
 
         // SAFETY: All we need to worry about here is cleanup, which we do via OwnedHandle.
@@ -536,10 +439,7 @@ impl AcceptOne {
 
         assert!(buffer.len() >= ADDRESS_LENGTH * 2);
 
-        let operation = current_async_agent::with_io(|io| -> io::Result<Operation> {
-            io.bind_io_primitive(&*connection_socket)?;
-            Ok(io.new_operation(buffer))
-        })?;
+        let operation = current_async_agent::with_io(|io| io.new_operation(buffer));
 
         // SAFETY: We are required to pass the OVERLAPPED struct to the native I/O function to avoid
         // a resource leak. We do.
@@ -615,7 +515,7 @@ impl AcceptOne {
             )
         })?;
 
-        event!(Level::INFO, "TcpConnection created");
+        event!(Level::INFO, "connection socket created");
 
         let affinity_info: SOCKET_PROCESSOR_AFFINITY = SOCKET_PROCESSOR_AFFINITY::default();
         let mut bytes_returned: u32 = 0;
@@ -627,10 +527,12 @@ impl AcceptOne {
         // Errors encountered if above conditions are not met:
         // 10013 - WSAEACCES - An attempt was made to access a socket in a way forbidden by its access permissions.
         // 10045 - WSAEOPNOTSUPP - The attempted operation is not supported for the type of object referenced.
-        // 
+        //
         // Output will be something like:
         // SOCKET_PROCESSOR_AFFINITY { Processor: PROCESSOR_NUMBER { Group: 0, Number: 18, Reserved: 0 }, NumaNodeId: 0, Reserved: 0 }
         // Processor number will be different for different connections.
+        // Not all processors will be used - typically only 16 processors are used for low level I/O.
+        // NB! This data may change during life of a connection - it is not fixed!
         let affinity_result = unsafe {
             winsock::to_io_result(WSAIoctl(
                 *connection_socket,
@@ -649,6 +551,14 @@ impl AcceptOne {
             Ok(()) => {
                 event!(Level::INFO, message = "RSS processor info", affinity_info = ?affinity_info);
             }
+            Err(io::Error::Winsock { detail, .. })
+                if detail == WSAEOPNOTSUPP || detail == WSAEACCES =>
+            {
+                event!(
+                    Level::INFO,
+                    message = "RSS not supported/enabled on network adapter"
+                );
+            }
             Err(e) => {
                 event!(
                     Level::ERROR,
@@ -659,21 +569,20 @@ impl AcceptOne {
         }
 
         // The new socket is connected and ready! Finally!
-        Ok(TcpConnection {
-            socket: connection_socket,
-        })
+        // TODO: Attach RSS info so it can actually be used for smart dispatch decisions.
+        Ok(connection_socket)
     }
 }
 
 #[negative_impl]
-impl<A, AF> !Send for TcpWorker<A, AF>
+impl<A, AF> !Send for TcpDispatcher<A, AF>
 where
     A: Fn(TcpConnection) -> AF + Clone + Send + 'static,
     AF: Future<Output = io::Result<()>> + 'static,
 {
 }
 #[negative_impl]
-impl<A, AF> !Sync for TcpWorker<A, AF>
+impl<A, AF> !Sync for TcpDispatcher<A, AF>
 where
     A: Fn(TcpConnection) -> AF + Clone + Send + 'static,
     AF: Future<Output = io::Result<()>> + 'static,

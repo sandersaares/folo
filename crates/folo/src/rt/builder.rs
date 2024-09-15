@@ -3,7 +3,7 @@ use super::{
     sync_agent::{SyncAgent, SyncAgentCommand},
 };
 use crate::{
-    io::IoWaker,
+    io::{self, IoWaker},
     metrics::ReportPage,
     rt::{
         async_agent::{AsyncAgent, AsyncAgentCommand},
@@ -83,7 +83,7 @@ impl RuntimeBuilder {
         self
     }
 
-    pub fn build(self) -> Result<RuntimeClient> {
+    pub fn build(self) -> io::Result<RuntimeClient> {
         if self.ad_hoc_entrypoint {
             // With ad-hoc entrypoints we reuse the runtime if it is already set.
             if let Some(runtime) = current_runtime::try_get() {
@@ -135,31 +135,33 @@ impl RuntimeBuilder {
 
             let processor_id = processor_ids[worker_index];
 
-            let join_handle = thread::spawn(move || {
-                (worker_init)();
+            let join_handle = thread::Builder::new()
+                .name(format!("async-{}", worker_index))
+                .spawn(move || {
+                    (worker_init)();
 
-                let agent = Rc::new(AsyncAgent::new(command_rx, metrics_tx, processor_id));
+                    let agent = Rc::new(AsyncAgent::new(command_rx, metrics_tx, processor_id));
 
-                // Signal that we are ready to start.
-                ready_tx
-                    .send(AsyncAgentReady {
-                        io_waker: agent.io().borrow().waker(),
-                    })
-                    .expect("runtime startup process failed in infallible code");
+                    // Signal that we are ready to start.
+                    ready_tx
+                        .send(AsyncAgentReady {
+                            io_waker: agent.io().borrow().waker(),
+                        })
+                        .expect("runtime startup process failed in infallible code");
 
-                // We first wait for the startup signal, which indicates that all agents have been
-                // created and registered with the runtime, and the runtime is ready to be used.
-                let start = start_rx
-                    .recv()
-                    .expect("runtime startup process failed in infallible code");
+                    // We first wait for the startup signal, which indicates that all agents have been
+                    // created and registered with the runtime, and the runtime is ready to be used.
+                    let start = start_rx
+                        .recv()
+                        .expect("runtime startup process failed in infallible code");
 
-                core_affinity::set_for_current(processor_id);
+                    core_affinity::set_for_current(processor_id);
 
-                current_async_agent::set(Rc::clone(&agent));
-                current_runtime::set(start.runtime_client);
+                    current_async_agent::set(Rc::clone(&agent));
+                    current_runtime::set(start.runtime_client);
 
-                agent.run();
-            });
+                    agent.run();
+                })?;
 
             join_handles.push(join_handle);
         }
@@ -195,7 +197,7 @@ impl RuntimeBuilder {
             sync_priority_task_queues_by_processor
                 .insert(*processor_id, Arc::clone(&sync_priority_task_queue));
 
-            for _ in 0..SYNC_WORKERS_PER_PROCESSOR {
+            for worker_index in 0..SYNC_WORKERS_PER_PROCESSOR {
                 let processor_id = processor_id.clone();
 
                 let (start_tx, start_rx) = channel::unbounded::<AgentStartArguments>();
@@ -221,34 +223,36 @@ impl RuntimeBuilder {
                 let sync_task_queue = Arc::clone(&sync_task_queue);
                 let sync_priority_task_queue = Arc::clone(&sync_priority_task_queue);
 
-                let join_handle = thread::spawn(move || {
-                    (worker_init)();
+                let join_handle = thread::Builder::new()
+                    .name(format!("sync-{}-{}", processor_id.id, worker_index))
+                    .spawn(move || {
+                        (worker_init)();
 
-                    let agent = Rc::new(SyncAgent::new(
-                        command_rx,
-                        metrics_tx,
-                        sync_task_queue,
-                        sync_priority_task_queue,
-                    ));
+                        let agent = Rc::new(SyncAgent::new(
+                            command_rx,
+                            metrics_tx,
+                            sync_task_queue,
+                            sync_priority_task_queue,
+                        ));
 
-                    // Signal that we are ready to start.
-                    ready_tx
-                        .send(SyncAgentReady {})
-                        .expect("runtime startup process failed in infallible code");
+                        // Signal that we are ready to start.
+                        ready_tx
+                            .send(SyncAgentReady {})
+                            .expect("runtime startup process failed in infallible code");
 
-                    // We first wait for the startup signal, which indicates that all agents have been
-                    // created and registered with the runtime, and the runtime is ready to be used.
-                    let start = start_rx
-                        .recv()
-                        .expect("runtime startup process failed in infallible code");
+                        // We first wait for the startup signal, which indicates that all agents have been
+                        // created and registered with the runtime, and the runtime is ready to be used.
+                        let start = start_rx
+                            .recv()
+                            .expect("runtime startup process failed in infallible code");
 
-                    core_affinity::set_for_current(processor_id);
+                        core_affinity::set_for_current(processor_id);
 
-                    current_sync_agent::set(Rc::clone(&agent));
-                    current_runtime::set(start.runtime_client);
+                        current_sync_agent::set(Rc::clone(&agent));
+                        current_runtime::set(start.runtime_client);
 
-                    agent.run();
-                });
+                        agent.run();
+                    })?;
 
                 join_handles.push(join_handle);
             }
@@ -277,39 +281,41 @@ impl RuntimeBuilder {
             None => None,
         };
 
-        let tcp_dispatcher_join_handle = thread::spawn(move || {
-            (tcp_dispatcher_worker_init)();
+        let tcp_dispatcher_join_handle = thread::Builder::new()
+            .name("tcp-dispatcher".to_string())
+            .spawn(move || {
+                (tcp_dispatcher_worker_init)();
 
-            // HACK: We hardcode the first processor ID here. It is used for synchronous work dispatch.
-            // Ideally, we would auto-detect this on the fly because the TCP dispatcher is not pinned.
-            let agent = Rc::new(AsyncAgent::new(
-                tcp_dispatcher_command_rx,
-                tcp_dispatcher_metrics_tx,
-                processor_ids[0],
-            ));
+                // HACK: We hardcode the first processor ID here. It is used for synchronous work dispatch.
+                // Ideally, we would auto-detect this on the fly because the TCP dispatcher is not pinned.
+                let agent = Rc::new(AsyncAgent::new(
+                    tcp_dispatcher_command_rx,
+                    tcp_dispatcher_metrics_tx,
+                    processor_ids[0],
+                ));
 
-            // Signal that we are ready to start.
-            tcp_dispatcher_ready_tx
-                .send(AsyncAgentReady {
-                    io_waker: agent.io().borrow().waker(),
-                })
-                .expect("runtime startup process failed in infallible code");
+                // Signal that we are ready to start.
+                tcp_dispatcher_ready_tx
+                    .send(AsyncAgentReady {
+                        io_waker: agent.io().borrow().waker(),
+                    })
+                    .expect("runtime startup process failed in infallible code");
 
-            // We first wait for the startup signal, which indicates that all agents have been
-            // created and registered with the runtime, and the runtime is ready to be used.
-            let start = tcp_dispatcher_start_rx
-                .recv()
-                .expect("runtime startup process failed in infallible code");
+                // We first wait for the startup signal, which indicates that all agents have been
+                // created and registered with the runtime, and the runtime is ready to be used.
+                let start = tcp_dispatcher_start_rx
+                    .recv()
+                    .expect("runtime startup process failed in infallible code");
 
-            // We deliberately do not set core affinity here because the TCP dispatcher is not
-            // pinned. As there can be only one, we do not want it starved of CPU time, so allow
-            // the OS to schedule it on any processor that it sees fit.
+                // We deliberately do not set core affinity here because the TCP dispatcher is not
+                // pinned. As there can be only one, we do not want it starved of CPU time, so allow
+                // the OS to schedule it on any processor that it sees fit.
 
-            current_async_agent::set(Rc::clone(&agent));
-            current_runtime::set(start.runtime_client);
+                current_async_agent::set(Rc::clone(&agent));
+                current_runtime::set(start.runtime_client);
 
-            agent.run();
-        });
+                agent.run();
+            })?;
 
         join_handles.push(tcp_dispatcher_join_handle);
 
@@ -400,9 +406,3 @@ struct SyncAgentReady {}
 struct AgentStartArguments {
     runtime_client: RuntimeClient,
 }
-
-#[derive(thiserror::Error, Debug)]
-#[error("failed to build the runtime for some mysterious reason")]
-pub struct Error {}
-
-pub type Result<T> = std::result::Result<T, Error>;

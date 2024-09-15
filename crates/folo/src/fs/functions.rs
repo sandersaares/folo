@@ -135,7 +135,7 @@ async fn read_buffer_from_file(
     } {
         Ok(buffer) => Ok(buffer),
         Err(io::OperationError {
-            inner: io::Error::External(external),
+            inner: io::Error::Windows(external),
             buffer,
         }) if external.code() == STATUS_END_OF_FILE.into() => Ok(buffer),
         Err(e) => Err(e.into_inner()),

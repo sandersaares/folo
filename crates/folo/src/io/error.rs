@@ -10,7 +10,10 @@ pub enum Error {
     Winsock { code: i32, detail: WSA_ERROR },
 
     #[error(transparent)]
-    External(#[from] windows_result::Error),
+    Windows(#[from] windows_result::Error),
+
+    #[error(transparent)]
+    StdIo(#[from] std::io::Error),
 
     // This is for unexpected situations like a thread disappearing without ever reporting status.
     // Things that we are not expecting, things that are programming errors in the library itself.

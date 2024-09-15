@@ -5,19 +5,22 @@ use folo::{
 use std::error::Error;
 use tracing::{event, Level};
 
-#[folo::main(print_metrics, max_processors = 1)]
+#[folo::main(print_metrics)]
 async fn main() -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
     tracing_subscriber::fmt::init();
 
-    let mut server = TcpServerBuilder::new()
+    let _server = TcpServerBuilder::new()
         .port(1234.try_into().unwrap())
         .on_accept(accept_connection)
         .build()
         .await?;
 
-    server.wait().await;
+    // We wait forever here because there is no good thing to wait for in this example.
+    // Really, we just want to wait for Control+C without spending any energy.
+    let (_tx, rx) = oneshot::channel::<()>();
+    rx.await.expect_err("this await should never complete");
 
-    Ok(())
+    unreachable!()
 }
 
 async fn accept_connection(mut connection: TcpConnection) -> io::Result<()> {
