@@ -10,6 +10,7 @@ use core_affinity::CoreId;
 use crossbeam::channel;
 use crossbeam::queue::SegQueue;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::{cell::Cell, future::Future, sync::Mutex, thread};
 
@@ -40,6 +41,9 @@ pub struct RuntimeClient {
     // This is None if `.wait()` has already been called - the field can be consumed only once,
     // typically done by the runtime client provided to the entry point thread.
     join_handles: Arc<Mutex<Option<Box<[thread::JoinHandle<()>]>>>>,
+
+    // This can be used by cleanup logic to detect that the runtime is not usable anymore.
+    is_stopping: Arc<AtomicBool>,
 }
 
 impl RuntimeClient {
@@ -52,6 +56,7 @@ impl RuntimeClient {
         sync_task_queues_by_processor: HashMap<CoreId, Arc<SegQueue<ErasedSyncTask>>>,
         sync_priority_task_queues_by_processor: HashMap<CoreId, Arc<SegQueue<ErasedSyncTask>>>,
         join_handles: Box<[thread::JoinHandle<()>]>,
+        is_stopping: Arc<AtomicBool>,
     ) -> Self {
         Self {
             async_command_txs,
@@ -62,6 +67,7 @@ impl RuntimeClient {
             sync_task_queues_by_processor,
             sync_priority_task_queues_by_processor,
             join_handles: Arc::new(Mutex::new(Some(join_handles))),
+            is_stopping,
         }
     }
 
@@ -105,44 +111,46 @@ impl RuntimeClient {
         join_handle
     }
 
-        /// Spawns a TCP connection dispatch task on the worker dedicated for connection dispatch,
-        /// creating the future via closure.
-        pub fn spawn_tcp_dispatcher<FN, F, R>(&self, future_fn: FN) -> RemoteJoinHandle<R>
-        where
-            FN: FnOnce() -> F + Send + 'static,
-            F: Future<Output = R> + 'static,
-            R: Send + 'static,
-        {
-            let started = LowPrecisionInstant::now();
-    
-            // Just because we are spawning a future on another thread does not mean it has to be a
-            // thread-safe future (although the return value has to be). Therefore, we kajigger it
-            // around via a remote join handle from the same thread, to allow a single-threaded future
-            // to execute, as long as the closure that creates it is thread-safe.
-            let thread_safe_wrapper_future = async move {
-                REMOTE_SPAWN_DELAY.with(|x| x.observe_millis(started.elapsed()));
-    
-                // TODO: This seems inefficient. Surely we can do better?
-                // This is: RemoteJoinHandle -> RemoteJoinHandle -> LocalJoinHandle -> LocalJoinHandle
-                // Desired is: RemoteJoinHandle -> LocalJoinHandle
-                let join_handle: RemoteJoinHandle<R> = crate::rt::spawn(future_fn()).into();
-                join_handle.await
-            };
-    
-            let task = RemoteTask::new(thread_safe_wrapper_future);
-            let join_handle = task.join_handle(self.current_thread_io_waker());
-    
-            // We ignore the return value because it is theoretically possible that something is trying
-            // to schedule new work when we are in the middle of a shutdown process.
-            _ = self.tcp_dispatcher_command_tx.send(AsyncAgentCommand::EnqueueTask {
+    /// Spawns a TCP connection dispatch task on the worker dedicated for connection dispatch,
+    /// creating the future via closure.
+    pub fn spawn_tcp_dispatcher<FN, F, R>(&self, future_fn: FN) -> RemoteJoinHandle<R>
+    where
+        FN: FnOnce() -> F + Send + 'static,
+        F: Future<Output = R> + 'static,
+        R: Send + 'static,
+    {
+        let started = LowPrecisionInstant::now();
+
+        // Just because we are spawning a future on another thread does not mean it has to be a
+        // thread-safe future (although the return value has to be). Therefore, we kajigger it
+        // around via a remote join handle from the same thread, to allow a single-threaded future
+        // to execute, as long as the closure that creates it is thread-safe.
+        let thread_safe_wrapper_future = async move {
+            REMOTE_SPAWN_DELAY.with(|x| x.observe_millis(started.elapsed()));
+
+            // TODO: This seems inefficient. Surely we can do better?
+            // This is: RemoteJoinHandle -> RemoteJoinHandle -> LocalJoinHandle -> LocalJoinHandle
+            // Desired is: RemoteJoinHandle -> LocalJoinHandle
+            let join_handle: RemoteJoinHandle<R> = crate::rt::spawn(future_fn()).into();
+            join_handle.await
+        };
+
+        let task = RemoteTask::new(thread_safe_wrapper_future);
+        let join_handle = task.join_handle(self.current_thread_io_waker());
+
+        // We ignore the return value because it is theoretically possible that something is trying
+        // to schedule new work when we are in the middle of a shutdown process.
+        _ = self
+            .tcp_dispatcher_command_tx
+            .send(AsyncAgentCommand::EnqueueTask {
                 erased_task: Box::pin(task),
             });
-    
-            // Wake up the agent if it might be sleeping and waiting for I/O.
-            self.tcp_dispatcher_io_waker.wake();
-    
-            join_handle
-        }
+
+        // Wake up the agent if it might be sleeping and waiting for I/O.
+        self.tcp_dispatcher_io_waker.wake();
+
+        join_handle
+    }
 
     /// Spawns a task to execute a future on every worker thread.
     ///
@@ -271,7 +279,8 @@ impl RuntimeClient {
 
         // We ignore the return value because if the worker has already stopped, the channel
         // may be closed in which case the send may simply fail.
-        _ = self.tcp_dispatcher_command_tx
+        _ = self
+            .tcp_dispatcher_command_tx
             .send(AsyncAgentCommand::Terminate);
 
         for txs in self.sync_command_txs_by_processor.values() {
@@ -281,6 +290,12 @@ impl RuntimeClient {
                 _ = tx.send(crate::rt::sync_agent::SyncAgentCommand::Terminate);
             }
         }
+    }
+
+    /// Returns `true` if the runtime has been asked to stop.
+    /// If so, enqueued tasks are unlikely to actually execute.
+    pub fn is_stopping(&self) -> bool {
+        self.is_stopping.load(Ordering::Relaxed)
     }
 
     /// Returns `true` if the runtime has stopped (i.e. calling `wait()` would not block).
@@ -313,6 +328,8 @@ impl RuntimeClient {
     ///
     /// If called more than once.
     pub fn wait(&self) {
+        self.is_stopping.store(true, Ordering::Relaxed);
+
         let mut join_handles = self.join_handles.lock().expect(constants::POISONED_LOCK);
 
         for join_handle in join_handles

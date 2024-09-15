@@ -78,8 +78,12 @@ where
 
         // It is possible that we are dropping this handle *after* the Folo runtime itself has been
         // shut down (e.g. because it is one of the handles that a runtime client was holding onto).
+        // Alternatively, we may be in the middle of shutting down but the runtime might still exist
+        // in a semi-functional state (reference exists but runtime is not accepting any more tasks).
         // In this case we just perform the drop synchronously because there is not much else to do.
-        if !crate::rt::current_runtime::is_some() {
+        if !crate::rt::current_runtime::is_some()
+            || crate::rt::current_runtime::with(|x| x.is_stopping())
+        {
             unsafe {
                 (*thread_safe).free();
             }

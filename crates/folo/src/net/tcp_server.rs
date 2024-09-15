@@ -6,7 +6,7 @@ use crate::{
 };
 use core::slice;
 use negative_impl::negative_impl;
-use std::{future::Future, mem, num::NonZeroU16, rc::Rc, thread};
+use std::{future::Future, mem, num::NonZeroU16, rc::Rc};
 use tracing::{event, Level};
 use windows::Win32::Networking::WinSock::{
     bind, htons, listen, setsockopt, AcceptEx, GetAcceptExSockaddrs, WSAIoctl, WSASocketA, AF_INET,
@@ -80,7 +80,7 @@ where
             Ok(Err(e)) => {
                 event!(
                     Level::ERROR,
-                    message = "TCP server startup failed - terminating",
+                    message = "TCP dispatcher startup failed - terminating",
                     error = e.to_string()
                 );
                 return Err(e);
@@ -328,8 +328,6 @@ where
         // In realistic web services you need to shed load before shutting down anyway, so missing
         // the shutdown signal is a very theoretical concern only in artificial conditions.
         loop {
-            event!(Level::INFO, message = "awaiting connection or shutdown",);
-
             match select_future
                 .take()
                 .expect("we always set this before looping")
@@ -337,8 +335,6 @@ where
             {
                 futures::future::Either::Left((accept_result, new_shutdown_received_fut)) => {
                     if let Ok(socket) = accept_result {
-                        event!(Level::INFO, message = "accepted connection",);
-
                         // New connection accepted! Spawn as task and detach.
                         let on_accept_clone = self.on_accept.clone();
 
@@ -372,7 +368,7 @@ where
                     ));
                 }
                 futures::future::Either::Right((_, _)) => {
-                    event!(Level::INFO, message = "received shutdown",);
+                    event!(Level::INFO, "TCP dispatcher shutting down",);
 
                     // We are shutting down! We will not accept any new connections and have already
                     // dropped the "accept one" logic on the ground (via discard in match arm). We
@@ -403,8 +399,6 @@ struct AcceptOne {
 
 impl AcceptOne {
     async fn execute(self) -> io::Result<OwnedHandle<SOCKET>> {
-        event!(Level::INFO, "creating socket");
-
         // SAFETY: All we need to worry about here is cleanup, which we do via OwnedHandle.
         let connection_socket = unsafe {
             OwnedHandle::new(WSASocketA(
@@ -445,8 +439,6 @@ impl AcceptOne {
         // a resource leak. We do.
         let payload = unsafe {
             operation.begin(|buffer, overlapped, immediate_bytes_transferred| {
-                event!(Level::INFO, "starting AcceptEx");
-
                 if AcceptEx(
                     **self.listen_socket,
                     *connection_socket,
@@ -470,8 +462,6 @@ impl AcceptOne {
         }
         .await
         .into_inner()?;
-
-        event!(Level::INFO, message = "completed AcceptEx", thread = ?thread::current().id());
 
         let mut local_addr: *mut SOCKADDR = std::ptr::null_mut();
         let mut local_addr_len: i32 = 0;
@@ -515,8 +505,6 @@ impl AcceptOne {
             )
         })?;
 
-        event!(Level::INFO, "connection socket created");
-
         let affinity_info: SOCKET_PROCESSOR_AFFINITY = SOCKET_PROCESSOR_AFFINITY::default();
         let mut bytes_returned: u32 = 0;
 
@@ -542,6 +530,8 @@ impl AcceptOne {
                 Some(&affinity_info as *const _ as *mut _),
                 mem::size_of::<SOCKET_PROCESSOR_AFFINITY>() as u32,
                 &mut bytes_returned as *mut _,
+                // TODO: Should we do this asynchronously? Note that we are doing this on the dispatcher thread
+                // whereas future use will be on an async worker thread - so a different completion port!
                 None,
                 None,
             ))
@@ -549,20 +539,21 @@ impl AcceptOne {
 
         match affinity_result {
             Ok(()) => {
-                event!(Level::INFO, message = "RSS processor info", affinity_info = ?affinity_info);
+                event!(Level::INFO, message = "RSS processor info for new connection", affinity_info = ?affinity_info);
             }
             Err(io::Error::Winsock { detail, .. })
                 if detail == WSAEOPNOTSUPP || detail == WSAEACCES =>
             {
                 event!(
                     Level::INFO,
-                    message = "RSS not supported/enabled on network adapter"
+                    message =
+                        "RSS not supported/enabled on network adapter used for new connection"
                 );
             }
             Err(e) => {
                 event!(
                     Level::ERROR,
-                    message = "error querying RSS processor info",
+                    message = "error querying RSS processor info for new connection",
                     error = e.to_string()
                 );
             }

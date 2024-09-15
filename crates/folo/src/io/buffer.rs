@@ -6,6 +6,7 @@ use core::slice;
 use negative_impl::negative_impl;
 use std::{
     cell::{RefCell, UnsafeCell},
+    fmt,
     mem::{self},
     ops::Range,
     pin::Pin,
@@ -47,7 +48,6 @@ pub struct PinnedBuffer {
     start: usize,
 }
 
-#[derive(Debug)]
 enum Mode {
     Pooled {
         // This is the real storage of the bytes and determines the capacity.
@@ -63,6 +63,18 @@ enum Mode {
         // `.into_inner_boxed_slice()` if they wish to reuse the storage later.
         inner: Pin<Box<[u8]>>,
     },
+}
+
+impl fmt::Debug for Mode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Pooled { index_in_pool, .. } => f
+                .debug_struct("Pooled")
+                .field("index_in_pool", index_in_pool)
+                .finish(),
+            Self::BoxedSlice { .. } => f.debug_struct("BoxedSlice").finish(),
+        }
+    }
 }
 
 impl PinnedBuffer {

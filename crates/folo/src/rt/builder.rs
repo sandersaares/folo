@@ -15,7 +15,7 @@ use std::{
     collections::HashMap,
     fmt::{self, Debug, Formatter},
     rc::Rc,
-    sync::Arc,
+    sync::{atomic::AtomicBool, Arc},
     thread,
 };
 use tracing::{event, Level};
@@ -329,6 +329,8 @@ impl RuntimeBuilder {
         // send a message to all the agents that they are now attached to a runtime and can start
         // doing their job.
 
+        let is_stopping = Arc::new(AtomicBool::new(false));
+
         let client = RuntimeClient::new(
             async_command_txs.into_boxed_slice(),
             async_io_wakers.into_boxed_slice(),
@@ -341,6 +343,7 @@ impl RuntimeBuilder {
             sync_task_queues_by_processor,
             sync_priority_task_queues_by_processor,
             join_handles.into_boxed_slice(),
+            Arc::clone(&is_stopping),
         );
 
         // In most cases, the entrypoint thread is merely parked. However, for interoperability
