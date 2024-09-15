@@ -166,12 +166,12 @@ impl RuntimeBuilder {
 
         let mut async_io_wakers = Vec::with_capacity(async_worker_count);
 
-        for start_ack_rx in async_ready_rxs {
-            let start_ack = start_ack_rx
+        for ready_rx in async_ready_rxs {
+            let ready = ready_rx
                 .recv()
                 .expect("async worker thread failed before even starting");
 
-            async_io_wakers.push(start_ack.io_waker);
+            async_io_wakers.push(ready.io_waker);
         }
 
         // # Sync workers
@@ -254,13 +254,68 @@ impl RuntimeBuilder {
             }
         }
 
-        for start_ack_rx in sync_ready_rxs {
-            _ = start_ack_rx
+        for ready_rx in sync_ready_rxs {
+            _ = ready_rx
                 .recv()
                 .expect("sync worker thread failed before even starting");
 
             // For now we just want to make sure we see the ACK. No actual state fanster needed.
         }
+
+        // # TCP dispatcher worker
+
+        let (tcp_dispatcher_start_tx, tcp_dispatcher_start_rx) =
+            channel::unbounded::<AgentStartArguments>();
+        let (tcp_dispatcher_ready_tx, tcp_dispatcher_ready_rx) =
+            channel::unbounded::<AsyncAgentReady>();
+        let (tcp_dispatcher_command_tx, tcp_dispatcher_command_rx) =
+            channel::unbounded::<AsyncAgentCommand>();
+
+        let tcp_dispatcher_worker_init = worker_init.clone();
+        let tcp_dispatcher_metrics_tx = match self.metrics_tx {
+            Some(ref tx) => Some(tx.clone()),
+            None => None,
+        };
+
+        let tcp_dispatcher_join_handle = thread::spawn(move || {
+            (tcp_dispatcher_worker_init)();
+
+            // HACK: We hardcode the first processor ID here. It is used for synchronous work dispatch.
+            // Ideally, we would auto-detect this on the fly because the TCP dispatcher is not pinned.
+            let agent = Rc::new(AsyncAgent::new(
+                tcp_dispatcher_command_rx,
+                tcp_dispatcher_metrics_tx,
+                processor_ids[0],
+            ));
+
+            // Signal that we are ready to start.
+            tcp_dispatcher_ready_tx
+                .send(AsyncAgentReady {
+                    io_waker: agent.io().borrow().waker(),
+                })
+                .expect("runtime startup process failed in infallible code");
+
+            // We first wait for the startup signal, which indicates that all agents have been
+            // created and registered with the runtime, and the runtime is ready to be used.
+            let start = tcp_dispatcher_start_rx
+                .recv()
+                .expect("runtime startup process failed in infallible code");
+
+            // We deliberately do not set core affinity here because the TCP dispatcher is not
+            // pinned. As there can be only one, we do not want it starved of CPU time, so allow
+            // the OS to schedule it on any processor that it sees fit.
+
+            current_async_agent::set(Rc::clone(&agent));
+            current_runtime::set(start.runtime_client);
+
+            agent.run();
+        });
+
+        join_handles.push(tcp_dispatcher_join_handle);
+
+        let tcp_dispatcher_ready = tcp_dispatcher_ready_rx
+            .recv()
+            .expect("TCP dispatcher worker thread failed before even starting");
 
         // # Start
 
@@ -271,6 +326,8 @@ impl RuntimeBuilder {
         let client = RuntimeClient::new(
             async_command_txs.into_boxed_slice(),
             async_io_wakers.into_boxed_slice(),
+            tcp_dispatcher_command_tx,
+            tcp_dispatcher_ready.io_waker,
             sync_command_txs_by_processor
                 .into_iter()
                 .map(|(k, v)| (k, v.into_boxed_slice()))
@@ -303,6 +360,12 @@ impl RuntimeBuilder {
             })
             .expect("runtime sync agent thread failed before it could be started");
         }
+
+        tcp_dispatcher_start_tx
+            .send(AgentStartArguments {
+                runtime_client: client.clone(),
+            })
+            .expect("runtime TCP dispatcher agent thread failed before it could be started");
 
         // All the agents are now running and the runtime is ready to be used.
         Ok(client)

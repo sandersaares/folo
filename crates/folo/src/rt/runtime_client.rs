@@ -22,6 +22,15 @@ pub struct RuntimeClient {
     async_command_txs: Box<[channel::Sender<AsyncAgentCommand>]>,
     async_io_wakers: Box<[IoWaker]>,
 
+    // The TCP dispatcher is a special-purpose async worker that only handles TCP listener tasks
+    // because Windows only supports one TCP listen socket per port and only the completion handling
+    // is feasible to parallelize. In our case we use one non-pinned thread for both initiating and
+    // completing TCP connection acceptance. Possible scale-out option is to parallelize completions
+    // later, although that implies making completion handling thread-safe, which is atypical for
+    // the rest of our architecture.
+    tcp_dispatcher_command_tx: channel::Sender<AsyncAgentCommand>,
+    tcp_dispatcher_io_waker: IoWaker,
+
     // We often prefer to give work to the same processor, so we split
     // the sync command architecture up by the processor ID.
     sync_command_txs_by_processor: HashMap<CoreId, Box<[channel::Sender<SyncAgentCommand>]>>,
@@ -37,6 +46,8 @@ impl RuntimeClient {
     pub(super) fn new(
         async_command_txs: Box<[channel::Sender<AsyncAgentCommand>]>,
         async_io_wakers: Box<[IoWaker]>,
+        tcp_dispatcher_command_tx: channel::Sender<AsyncAgentCommand>,
+        tcp_dispatcher_io_waker: IoWaker,
         sync_command_txs_by_processor: HashMap<CoreId, Box<[channel::Sender<SyncAgentCommand>]>>,
         sync_task_queues_by_processor: HashMap<CoreId, Arc<SegQueue<ErasedSyncTask>>>,
         sync_priority_task_queues_by_processor: HashMap<CoreId, Arc<SegQueue<ErasedSyncTask>>>,
@@ -45,6 +56,8 @@ impl RuntimeClient {
         Self {
             async_command_txs,
             async_io_wakers,
+            tcp_dispatcher_command_tx,
+            tcp_dispatcher_io_waker,
             sync_command_txs_by_processor,
             sync_task_queues_by_processor,
             sync_priority_task_queues_by_processor,
@@ -91,6 +104,45 @@ impl RuntimeClient {
 
         join_handle
     }
+
+        /// Spawns a TCP connection dispatch task on the worker dedicated for connection dispatch,
+        /// creating the future via closure.
+        pub fn spawn_tcp_dispatcher<FN, F, R>(&self, future_fn: FN) -> RemoteJoinHandle<R>
+        where
+            FN: FnOnce() -> F + Send + 'static,
+            F: Future<Output = R> + 'static,
+            R: Send + 'static,
+        {
+            let started = LowPrecisionInstant::now();
+    
+            // Just because we are spawning a future on another thread does not mean it has to be a
+            // thread-safe future (although the return value has to be). Therefore, we kajigger it
+            // around via a remote join handle from the same thread, to allow a single-threaded future
+            // to execute, as long as the closure that creates it is thread-safe.
+            let thread_safe_wrapper_future = async move {
+                REMOTE_SPAWN_DELAY.with(|x| x.observe_millis(started.elapsed()));
+    
+                // TODO: This seems inefficient. Surely we can do better?
+                // This is: RemoteJoinHandle -> RemoteJoinHandle -> LocalJoinHandle -> LocalJoinHandle
+                // Desired is: RemoteJoinHandle -> LocalJoinHandle
+                let join_handle: RemoteJoinHandle<R> = crate::rt::spawn(future_fn()).into();
+                join_handle.await
+            };
+    
+            let task = RemoteTask::new(thread_safe_wrapper_future);
+            let join_handle = task.join_handle(self.current_thread_io_waker());
+    
+            // We ignore the return value because it is theoretically possible that something is trying
+            // to schedule new work when we are in the middle of a shutdown process.
+            _ = self.tcp_dispatcher_command_tx.send(AsyncAgentCommand::EnqueueTask {
+                erased_task: Box::pin(task),
+            });
+    
+            // Wake up the agent if it might be sleeping and waiting for I/O.
+            self.tcp_dispatcher_io_waker.wake();
+    
+            join_handle
+        }
 
     /// Spawns a task to execute a future on every worker thread.
     ///
@@ -216,6 +268,11 @@ impl RuntimeClient {
             // may be closed in which case the send may simply fail.
             _ = tx.send(AsyncAgentCommand::Terminate);
         }
+
+        // We ignore the return value because if the worker has already stopped, the channel
+        // may be closed in which case the send may simply fail.
+        _ = self.tcp_dispatcher_command_tx
+            .send(AsyncAgentCommand::Terminate);
 
         for txs in self.sync_command_txs_by_processor.values() {
             for tx in txs {
