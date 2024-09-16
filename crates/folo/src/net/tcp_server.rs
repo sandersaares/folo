@@ -165,7 +165,7 @@ impl !Send for TcpServerHandle {}
 #[negative_impl]
 impl !Sync for TcpServerHandle {}
 
-const CONCURRENT_ACCEPT_OPERATIONS: usize = 10;
+const CONCURRENT_ACCEPT_OPERATIONS: usize = 1024;
 
 /// The TCP dispatcher manages the listen socket used to receive new connections. When a new
 /// connection is received, it is dispatched to be handled by the user-defined callback on a
