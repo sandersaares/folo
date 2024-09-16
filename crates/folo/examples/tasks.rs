@@ -8,7 +8,6 @@ const SUB_BATCH_SIZE: usize = 100;
 async fn main() -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
     for _ in 0..10000 {
         let tasks = (0..BATCH_SIZE)
-            .into_iter()
             .map(|_| {
                 spawn(async {
                     for _ in 0..SUB_BATCH_SIZE {

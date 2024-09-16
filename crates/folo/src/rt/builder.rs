@@ -128,10 +128,7 @@ impl RuntimeBuilder {
 
             let worker_init = worker_init.clone();
 
-            let metrics_tx = match self.metrics_tx {
-                Some(ref tx) => Some(tx.clone()),
-                None => None,
-            };
+            let metrics_tx = self.metrics_tx.clone();
 
             let processor_id = processor_ids[worker_index];
 
@@ -198,7 +195,7 @@ impl RuntimeBuilder {
                 .insert(*processor_id, Arc::clone(&sync_priority_task_queue));
 
             for worker_index in 0..SYNC_WORKERS_PER_PROCESSOR {
-                let processor_id = processor_id.clone();
+                let processor_id = *processor_id;
 
                 let (start_tx, start_rx) = channel::unbounded::<AgentStartArguments>();
                 sync_start_txs.push(start_tx);
@@ -215,10 +212,7 @@ impl RuntimeBuilder {
 
                 let worker_init = worker_init.clone();
 
-                let metrics_tx = match self.metrics_tx {
-                    Some(ref tx) => Some(tx.clone()),
-                    None => None,
-                };
+                let metrics_tx = self.metrics_tx.clone();
 
                 let sync_task_queue = Arc::clone(&sync_task_queue);
                 let sync_priority_task_queue = Arc::clone(&sync_priority_task_queue);
@@ -276,10 +270,7 @@ impl RuntimeBuilder {
             channel::unbounded::<AsyncAgentCommand>();
 
         let tcp_dispatcher_worker_init = worker_init.clone();
-        let tcp_dispatcher_metrics_tx = match self.metrics_tx {
-            Some(ref tx) => Some(tx.clone()),
-            None => None,
-        };
+        let tcp_dispatcher_metrics_tx = self.metrics_tx.clone();
 
         let tcp_dispatcher_join_handle = thread::Builder::new()
             .name("tcp-dispatcher".to_string())

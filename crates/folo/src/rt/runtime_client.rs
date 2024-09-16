@@ -250,10 +250,10 @@ impl RuntimeClient {
         // to schedule new work when we are in the middle of a shutdown process.
         match task_type {
             SynchronousTaskType::Syscall => {
-                _ = self.sync_task_queues_by_processor[&processor_id].push(Box::new(task));
+                self.sync_task_queues_by_processor[&processor_id].push(Box::new(task));
             }
             SynchronousTaskType::HighPrioritySyscall => {
-                _ = self.sync_priority_task_queues_by_processor[&processor_id].push(Box::new(task));
+                self.sync_priority_task_queues_by_processor[&processor_id].push(Box::new(task));
             }
             _ => unreachable!(),
         }

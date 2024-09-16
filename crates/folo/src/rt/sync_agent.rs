@@ -63,7 +63,7 @@ impl SyncAgent {
                     };
 
                     TASKS.with(Event::observe_unit);
-                    TASK_DURATION.with(|x| x.observe_duration_millis(|| (task)()));
+                    TASK_DURATION.with(|x| x.observe_duration_millis(task));
                 }
                 SyncAgentCommand::Terminate => {
                     event!(
@@ -81,7 +81,7 @@ impl SyncAgent {
         // memory).
         while let Some(task) = self.priority_task_queue.pop() {
             TASKS.with(Event::observe_unit);
-            TASK_DURATION.with(|x| x.observe_duration_millis(|| (task)()));
+            TASK_DURATION.with(|x| x.observe_duration_millis(task));
         }
 
         event!(

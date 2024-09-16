@@ -137,7 +137,7 @@ impl TcpServerHandle {
         dispatcher_shutdown_tx: oneshot::Sender<()>,
     ) -> Self {
         Self {
-            dispatcher_join_handle: dispatcher_join_handle,
+            dispatcher_join_handle,
             dispatcher_shutdown_tx: Some(dispatcher_shutdown_tx),
         }
     }
@@ -243,8 +243,8 @@ where
         let listen_socket = unsafe {
             OwnedHandle::new(WSASocketA(
                 AF_INET.0 as i32,
-                SOCK_STREAM.0 as i32,
-                IPPROTO_TCP.0 as i32,
+                SOCK_STREAM.0,
+                IPPROTO_TCP.0,
                 None,
                 0,
                 WSA_FLAG_OVERLAPPED,
@@ -403,8 +403,8 @@ impl AcceptOne {
         let connection_socket = unsafe {
             OwnedHandle::new(WSASocketA(
                 AF_INET.0 as i32,
-                SOCK_STREAM.0 as i32,
-                IPPROTO_TCP.0 as i32,
+                SOCK_STREAM.0,
+                IPPROTO_TCP.0,
                 None,
                 0,
                 WSA_FLAG_OVERLAPPED,

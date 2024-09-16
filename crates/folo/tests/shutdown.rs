@@ -160,7 +160,7 @@ fn runtime_stops_with_external_observer() {
     // Wait for the start signal before we give the task to the observer, to ensure it is running.
     // This prevents "stop before task even starts" which might make it too easy to pass the test.
     started_rx.recv().unwrap();
-    _ = tx.send(task).unwrap();
+    tx.send(task).unwrap();
 
     observer_thread.join().unwrap();
 }

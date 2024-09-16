@@ -69,7 +69,7 @@ async fn accept_connection(mut connection: TcpConnection) -> io::Result<()> {
         .starts_with(GET_INFINITE_STREAM_HEADER_LINE)
     {
         event!(Level::INFO, "Received GET /infinite");
-        return send_infinite_response(connection).await;
+        send_infinite_response(connection).await
     } else if request_buffer.as_slice().starts_with(GET_20KB_HEADER_LINE) {
         event!(Level::INFO, "Received GET /20kb");
         return send_20kb_response(connection).await;

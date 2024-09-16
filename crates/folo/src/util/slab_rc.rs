@@ -94,10 +94,10 @@ impl<T> SlabRcCell<T> {
         }
     }
 
-    pub fn insert_into_ref<'slab>(
+    pub fn insert_into_ref(
         self,
-        slab_chain: &'slab RefCell<PinnedSlabChain<SlabRcCell<T>>>,
-    ) -> RefSlabRc<'slab, T> {
+        slab_chain: &RefCell<PinnedSlabChain<SlabRcCell<T>>>,
+    ) -> RefSlabRc<'_, T> {
         let mut slab_chain_mut = slab_chain.borrow_mut();
         let inserter = slab_chain_mut.begin_insert();
         let index = inserter.index();
@@ -237,7 +237,7 @@ impl<T> RefSlabRc<'_, T> {
     pub fn deref_pin(&self) -> Pin<&T> {
         // SAFETY: We are the thing keeping the `value` pointer alive, so this is safe.
         // The value we point to is guaranteed pinned, so we are not at risk of unpinning anything.
-        unsafe { Pin::new_unchecked(&(&*self.value).value) }
+        unsafe { Pin::new_unchecked(&(*self.value).value) }
     }
 }
 
@@ -300,7 +300,7 @@ impl<T> RcSlabRc<T> {
     pub fn deref_pin(&self) -> Pin<&T> {
         // SAFETY: We are the thing keeping the `value` pointer alive, so this is safe.
         // The value we point to is guaranteed pinned, so we are not at risk of unpinning anything.
-        unsafe { Pin::new_unchecked(&(&*self.value).value) }
+        unsafe { Pin::new_unchecked(&(*self.value).value) }
     }
 }
 
@@ -370,7 +370,7 @@ impl<T> UnsafeSlabRc<T> {
     pub fn deref_pin(&self) -> Pin<&T> {
         // SAFETY: We are the thing keeping the `value` pointer alive, so this is safe.
         // The value we point to is guaranteed pinned, so we are not at risk of unpinning anything.
-        unsafe { Pin::new_unchecked(&(&*self.value).value) }
+        unsafe { Pin::new_unchecked(&(*self.value).value) }
     }
 }
 
