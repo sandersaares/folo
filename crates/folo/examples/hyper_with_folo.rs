@@ -30,16 +30,13 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
 
     let mut server = TcpServerBuilder::new()
         .port(1234.try_into().unwrap())
-        .on_accept(|conn| {
-            let io = FoloIo::new(conn);
-            async {
-                Builder::new(FoloExecutor::new())
-                    .serve_connection(io, service_fn(handle_request))
-                    .await
-                    .unwrap();
+        .on_accept(|conn| async {
+            Builder::new(FoloExecutor::new())
+                .serve_connection(FoloIo::new(conn), service_fn(handle_request))
+                .await
+                .unwrap();
 
-                folo::io::Result::Ok(())
-            }
+            folo::io::Result::Ok(())
         })
         .build()
         .await?;
