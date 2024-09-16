@@ -1,3 +1,5 @@
+#![allow(unused_variables)] // Spammy WIP code
+
 use std::{
     future::Future,
     pin::Pin,

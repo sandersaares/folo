@@ -8,8 +8,6 @@ use crate::{
 };
 use core::slice;
 use futures::{select, stream::FuturesUnordered, FutureExt, StreamExt};
-use futures_concurrency::future::FutureGroup;
-use futures_concurrency::prelude::*;
 use negative_impl::negative_impl;
 use std::{future::Future, mem, num::NonZeroU16, rc::Rc};
 use tracing::{event, Level};
