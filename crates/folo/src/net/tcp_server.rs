@@ -330,9 +330,7 @@ where
             }
 
             let accept_result = select! {
-                // We are ready to accept a new connection.
                 accept_result = accept_futures.select_next_some() => {
-                    // We will handle this in the next iteration.
                     accept_result
                 }
                 _ = shutdown_received_future => {
