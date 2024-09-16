@@ -15,6 +15,7 @@ crate-type = ["lib"]
 [features]
 # Enables Criterion integration (providing an async runtime adapter for it).
 criterion = ["dep:criterion"]
+fakes = []
 
 [dependencies]
 core_affinity = "0"

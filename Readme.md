@@ -24,7 +24,7 @@ supporting high-performance I/O primitives (IOCP, io_uring, ...). Primarily for 
 | Filesystem primitives      | Minimal |
 | Network primitives         | ❌       |
 | Synchronization primitives | ❌       |
-| Time primitives            | ❌       |
+| Time primitives            | ✅       |
 | Windows                    | ✅       |
 | Linux                      | ❌       |
 | `no_std`                   | ❌       |
