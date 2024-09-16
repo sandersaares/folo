@@ -1,24 +1,20 @@
-use super::{
-    current_sync_agent,
-    sync_agent::{SyncAgent, SyncAgentCommand},
-};
-use crate::{
-    io::{self, IoWaker},
-    metrics::ReportPage,
-    rt::{
-        async_agent::{AsyncAgent, AsyncAgentCommand},
-        current_async_agent, current_runtime, RuntimeClient,
-    },
-};
-use crossbeam::{channel, queue::SegQueue};
-use std::{
-    collections::HashMap,
-    fmt::{self, Debug, Formatter},
-    rc::Rc,
-    sync::{atomic::AtomicBool, Arc},
-    thread,
-};
+use std::collections::HashMap;
+use std::fmt::{self, Debug, Formatter};
+use std::rc::Rc;
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
+use std::thread;
+
+use crossbeam::channel;
+use crossbeam::queue::SegQueue;
 use tracing::{event, Level};
+
+use super::sync_agent::{SyncAgent, SyncAgentCommand};
+use super::{current_sync_agent, ErasedSyncTask};
+use crate::io::{self, IoWaker};
+use crate::metrics::ReportPage;
+use crate::rt::async_agent::{AsyncAgent, AsyncAgentCommand};
+use crate::rt::{current_async_agent, current_runtime, RuntimeClient};
 
 /// The thing with synchronous worker threads is that they often get blocked and spend time doing
 /// essentially nothing due to offloading blocking I/O onto these threads. Therefore, we spawn many
@@ -27,8 +23,15 @@ use tracing::{event, Level};
 /// fixed size might be acceptable.
 const SYNC_WORKERS_PER_PROCESSOR: usize = 2;
 
+struct AsyncAgentStartResult {
+    join_handle: std::thread::JoinHandle<()>,
+    start_tx: oneshot::Sender<AgentStartArguments>,
+    ready_rx: oneshot::Receiver<AsyncAgentReady>,
+    command_tx: channel::Sender<AsyncAgentCommand>,
+}
+
 pub struct RuntimeBuilder {
-    worker_init: Option<Arc<dyn Fn() + Send + Sync + 'static>>,
+    worker_init: Arc<dyn Fn() + Send + Sync + 'static>,
     ad_hoc_entrypoint: bool,
     metrics_tx: Option<channel::Sender<ReportPage>>,
     max_processors: Option<usize>,
@@ -37,7 +40,7 @@ pub struct RuntimeBuilder {
 impl RuntimeBuilder {
     pub fn new() -> Self {
         Self {
-            worker_init: None,
+            worker_init: Arc::new(||{}),
             ad_hoc_entrypoint: false,
             metrics_tx: None,
             max_processors: None,
@@ -49,7 +52,7 @@ impl RuntimeBuilder {
     where
         F: Fn() + Send + Sync + 'static,
     {
-        self.worker_init = Some(Arc::new(f));
+        self.worker_init = Arc::new(f);
         self
     }
 
@@ -83,6 +86,52 @@ impl RuntimeBuilder {
         self
     }
 
+    fn start_async_agent(
+        &self,
+        processor_id: core_affinity::CoreId,
+        worker_index: usize,
+    ) -> std::io::Result<AsyncAgentStartResult> {
+        let worker_init = Arc::clone(&self.worker_init);
+        let metrics_tx = self.metrics_tx.clone();
+        let (start_tx, start_rx) = oneshot::channel::<AgentStartArguments>();
+        let (ready_tx, ready_rx) = oneshot::channel::<AsyncAgentReady>();
+        let (command_tx, command_rx) = channel::unbounded::<AsyncAgentCommand>();
+
+        let join_handle = thread::Builder::new()
+            .name(format!("async-{}", worker_index))
+            .spawn(move || {
+                worker_init();
+
+                let agent = Rc::new(AsyncAgent::new(command_rx, metrics_tx, processor_id));
+
+                // Signal that we are ready to start.
+                ready_tx
+                    .send(AsyncAgentReady {
+                        io_waker: agent.io().borrow().waker(),
+                    })
+                    .expect("runtime startup process failed in infallible code");
+
+                // We first wait for the startup signal, which indicates that all agents have been
+                // created and registered with the runtime, and the runtime is ready to be used.
+                let start = start_rx
+                    .recv()
+                    .expect("runtime startup process failed in infallible code");
+
+                core_affinity::set_for_current(processor_id);
+                current_async_agent::set(Rc::clone(&agent));
+                current_runtime::set(start.runtime_client);
+
+                agent.run();
+            })?;
+
+        Ok(AsyncAgentStartResult {
+            join_handle,
+            start_tx,
+            ready_rx,
+            command_tx,
+        })
+    }
+
     pub fn build(self) -> io::Result<RuntimeClient> {
         if self.ad_hoc_entrypoint {
             // With ad-hoc entrypoints we reuse the runtime if it is already set.
@@ -108,8 +157,6 @@ impl RuntimeBuilder {
 
         event!(Level::INFO, processor_count);
 
-        let worker_init = self.worker_init.unwrap_or(Arc::new(|| {}));
-
         let mut join_handles = Vec::with_capacity(sync_worker_count + async_worker_count);
 
         // # Async workers
@@ -119,49 +166,17 @@ impl RuntimeBuilder {
         let mut async_ready_rxs = Vec::with_capacity(async_worker_count);
 
         for worker_index in 0..async_worker_count {
-            let (start_tx, start_rx) = channel::unbounded::<AgentStartArguments>();
-            async_start_txs.push(start_tx);
-
-            let (ready_tx, ready_rx) = channel::unbounded::<AsyncAgentReady>();
-            async_ready_rxs.push(ready_rx);
-
-            let (command_tx, command_rx) = channel::unbounded::<AsyncAgentCommand>();
-            async_command_txs.push(command_tx);
-
-            let worker_init = worker_init.clone();
-
-            let metrics_tx = self.metrics_tx.clone();
-
             let processor_id = processor_ids[worker_index];
+            let AsyncAgentStartResult {
+                join_handle,
+                start_tx,
+                ready_rx,
+                command_tx,
+            } = (&self).start_async_agent(processor_id, worker_index)?;
 
-            let join_handle = thread::Builder::new()
-                .name(format!("async-{}", worker_index))
-                .spawn(move || {
-                    (worker_init)();
-
-                    let agent = Rc::new(AsyncAgent::new(command_rx, metrics_tx, processor_id));
-
-                    // Signal that we are ready to start.
-                    ready_tx
-                        .send(AsyncAgentReady {
-                            io_waker: agent.io().borrow().waker(),
-                        })
-                        .expect("runtime startup process failed in infallible code");
-
-                    // We first wait for the startup signal, which indicates that all agents have been
-                    // created and registered with the runtime, and the runtime is ready to be used.
-                    let start = start_rx
-                        .recv()
-                        .expect("runtime startup process failed in infallible code");
-
-                    core_affinity::set_for_current(processor_id);
-
-                    current_async_agent::set(Rc::clone(&agent));
-                    current_runtime::set(start.runtime_client);
-
-                    agent.run();
-                })?;
-
+            async_start_txs.push(start_tx);
+            async_ready_rxs.push(ready_rx);
+            async_command_txs.push(command_tx);
             join_handles.push(join_handle);
         }
 
@@ -212,7 +227,7 @@ impl RuntimeBuilder {
                 let (command_tx, command_rx) = channel::unbounded::<SyncAgentCommand>();
                 sync_command_txs.push(command_tx);
 
-                let worker_init = worker_init.clone();
+                let worker_init = Arc::clone(&self.worker_init);
 
                 let metrics_tx = self.metrics_tx.clone();
 
