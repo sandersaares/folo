@@ -1,19 +1,17 @@
-use std::error::Error;
+use std::{error::Error, fs::File};
 use tracing::{event, Level};
 
-//const FILE_PATH: &str = "Cargo.lock";
-const FILE_PATH: &str = "c:\\Games\\X4 - Foundations\\01.dat";
-//const FILE_PATH: &str = "c:\\Games\\X4 - Foundations\\extensions\\ego_dlc_pirate\\ext_01.dat";
+const FILE_SIZE: usize = 10 * 1024 * 1024 * 1024;
+const FILE_PATH: &str = "testdata.bin";
 
 #[folo::main(print_metrics)]
 async fn main() -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
-    let stdout_subscriber = tracing_subscriber::fmt()
-        // NOTE: Enabling trace level logging slows everything way down because tracing is
-        // synchronous (application code is paused while it is slowly written to stdout).
-        //.with_max_level(level_filters::LevelFilter::TRACE)
-        .finish();
+    tracing_subscriber::fmt::init();
 
-    tracing::subscriber::set_global_default(stdout_subscriber)?;
+    File::create(FILE_PATH)
+        .unwrap()
+        .set_len(FILE_SIZE as u64)
+        .unwrap();
 
     for _ in 0..1 {
         match folo::fs::read(FILE_PATH).await {
@@ -29,6 +27,8 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
             }
         }
     }
+
+    std::fs::remove_file(FILE_PATH).unwrap();
 
     Ok(())
 }
