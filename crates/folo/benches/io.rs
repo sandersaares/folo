@@ -3,6 +3,7 @@ use folo::criterion::{ComparativeAdapter, FoloAdapter};
 use std::{
     cell::LazyCell,
     fs::File,
+    io::Read,
     path::{Path, PathBuf},
 };
 
@@ -31,6 +32,16 @@ fn file_io(c: &mut Criterion) {
         .set_len(SMALL_FILE_SIZE as u64)
         .unwrap();
 
+    {
+        // Read the files once to ensure all benchmarks start with the files in OS cache.
+        let mut temp = Vec::new();
+        let mut f = File::open(FILE_PATH).unwrap();
+        File::read_to_end(&mut f, &mut temp).unwrap();
+        let mut f = File::open(SMALL_FILE_PATH).unwrap();
+        temp.clear();
+        File::read_to_end(&mut f, &mut temp).unwrap();
+    }
+
     let mut group = c.benchmark_group("file_io");
 
     // This can take an eternity, so only repeat a few times.
@@ -44,7 +55,8 @@ fn file_io(c: &mut Criterion) {
                         folo::rt::spawn_on_any(|| async {
                             let file = folo::fs::read(FILE_PATH).await.unwrap();
                             assert_eq!(file.len(), FILE_SIZE);
-                        }).await;
+                        })
+                        .await;
                     })
                 }))
             },
@@ -60,7 +72,8 @@ fn file_io(c: &mut Criterion) {
                     _ = tokio::task::spawn(async {
                         let file = tokio::fs::read(FILE_PATH).await.unwrap();
                         assert_eq!(file.len(), FILE_SIZE);
-                    }).await;
+                    })
+                    .await;
                 }))
             },
             |prepared| prepared.run(),
