@@ -21,7 +21,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
 
     // Start a new thread that will send a shutdown signal in 5 minutes.
     _ = thread::spawn(move || {
-        thread::sleep(Duration::from_secs(10));
+        thread::sleep(Duration::from_secs(300));
         let _ = stop_tx.send(());
     });
 
