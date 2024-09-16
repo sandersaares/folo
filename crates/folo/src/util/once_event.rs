@@ -113,9 +113,9 @@ impl<T> OnceEvent<T> {
         OnceEventEmbeddedStorage::default()
     }
 
-    pub fn new_in_ref<'storage>(
-        storage: &'storage OnceEventSlabStorage<T>,
-    ) -> (RefSender<'storage, T>, RefReceiver<'storage, T>) {
+    pub fn new_in_ref(
+        storage: &OnceEventSlabStorage<T>,
+    ) -> (RefSender<'_, T>, RefReceiver<'_, T>) {
         let event = SlabRcCell::new(Self::new()).insert_into_ref(storage);
 
         (
@@ -217,7 +217,7 @@ impl<T> Future for RefReceiver<'_, T> {
     type Output = T;
 
     fn poll(self: Pin<&mut Self>, cx: &mut task::Context<'_>) -> task::Poll<Self::Output> {
-        let result = self.event.deref_pin().poll(&cx.waker());
+        let result = self.event.deref_pin().poll(cx.waker());
 
         match result {
             Some(result) => task::Poll::Ready(result),
@@ -248,7 +248,7 @@ impl<T> Future for RcReceiver<T> {
     type Output = T;
 
     fn poll(self: Pin<&mut Self>, cx: &mut task::Context<'_>) -> task::Poll<Self::Output> {
-        let result = self.event.deref_pin().poll(&cx.waker());
+        let result = self.event.deref_pin().poll(cx.waker());
 
         match result {
             Some(result) => task::Poll::Ready(result),
@@ -279,7 +279,7 @@ impl<T> Future for UnsafeReceiver<T> {
     type Output = T;
 
     fn poll(self: Pin<&mut Self>, cx: &mut task::Context<'_>) -> task::Poll<Self::Output> {
-        let result = self.event.deref_pin().poll(&cx.waker());
+        let result = self.event.deref_pin().poll(cx.waker());
 
         match result {
             Some(result) => task::Poll::Ready(result),
@@ -377,7 +377,7 @@ impl<T> Future for EmbeddedReceiver<T> {
             .get()
             .as_ref()
             .expect("OnceEvent must still exist because receiver exists")
-            .poll(&cx.waker());
+            .poll(cx.waker());
 
         match result {
             Some(result) => task::Poll::Ready(result),

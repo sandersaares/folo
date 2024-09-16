@@ -203,7 +203,7 @@ impl PinnedBuffer {
     /// If the current active region extends to the end of the buffer, the result will be a zero-
     /// sized buffer.
     pub fn use_remainder(mut self) -> Self {
-        self.start = self.start + self.len;
+        self.start += self.len;
         self.len = self.capacity() - self.start;
         self
     }
@@ -211,7 +211,7 @@ impl PinnedBuffer {
     /// Marks the buffer as used up to the end of the currently active area (extending it
     /// maximally toward the start).
     pub fn use_all_until_current(mut self) -> Self {
-        self.len = self.start + self.len;
+        self.len += self.start;
         self.start = 0;
         self
     }

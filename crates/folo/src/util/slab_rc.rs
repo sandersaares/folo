@@ -45,6 +45,8 @@ pub type SlabRcCellStorage<T> = RefCell<PinnedSlabChain<SlabRcCell<T>>>;
 /// Using `RefSlabRc` where each smart pointer maintains a direct reference to the storage:
 ///
 /// ```
+/// use folo::util::{SlabRcCell, RefSlabRc};
+/// 
 /// let storage = SlabRcCell::<usize>::new_storage_ref();
 ///
 /// let item = SlabRcCell::new(42).insert_into_ref(&storage);
@@ -57,6 +59,9 @@ pub type SlabRcCellStorage<T> = RefCell<PinnedSlabChain<SlabRcCell<T>>>;
 /// Using `RcSlabRc` where each smart pointer maintains a reference to the storage via an `Rc`:
 ///
 /// ```
+/// use std::rc::Rc;
+/// use folo::util::{SlabRcCell, RcSlabRc};
+/// 
 /// let storage = SlabRcCell::<usize>::new_storage_rc();
 ///
 /// let item = SlabRcCell::new(42).insert_into_rc(Rc::clone(&storage));
@@ -69,6 +74,8 @@ pub type SlabRcCellStorage<T> = RefCell<PinnedSlabChain<SlabRcCell<T>>>;
 /// Using `UnsafeSlabRc` where each smart pointer maintains a raw reference to the storage:
 ///
 /// ```
+/// use folo::util::{SlabRcCell, UnsafeSlabRc};
+/// 
 /// let storage = SlabRcCell::<usize>::new_storage_unsafe();
 ///
 /// // SAFETY: We are responsible for ensuring the slab chain outlives all the smart pointers.
@@ -94,10 +101,10 @@ impl<T> SlabRcCell<T> {
         }
     }
 
-    pub fn insert_into_ref<'slab>(
+    pub fn insert_into_ref(
         self,
-        slab_chain: &'slab RefCell<PinnedSlabChain<SlabRcCell<T>>>,
-    ) -> RefSlabRc<'slab, T> {
+        slab_chain: &RefCell<PinnedSlabChain<SlabRcCell<T>>>,
+    ) -> RefSlabRc<'_, T> {
         let mut slab_chain_mut = slab_chain.borrow_mut();
         let inserter = slab_chain_mut.begin_insert();
         let index = inserter.index();
@@ -237,7 +244,7 @@ impl<T> RefSlabRc<'_, T> {
     pub fn deref_pin(&self) -> Pin<&T> {
         // SAFETY: We are the thing keeping the `value` pointer alive, so this is safe.
         // The value we point to is guaranteed pinned, so we are not at risk of unpinning anything.
-        unsafe { Pin::new_unchecked(&(&*self.value).value) }
+        unsafe { Pin::new_unchecked(&(*self.value).value) }
     }
 }
 
@@ -300,7 +307,7 @@ impl<T> RcSlabRc<T> {
     pub fn deref_pin(&self) -> Pin<&T> {
         // SAFETY: We are the thing keeping the `value` pointer alive, so this is safe.
         // The value we point to is guaranteed pinned, so we are not at risk of unpinning anything.
-        unsafe { Pin::new_unchecked(&(&*self.value).value) }
+        unsafe { Pin::new_unchecked(&(*self.value).value) }
     }
 }
 
@@ -370,7 +377,7 @@ impl<T> UnsafeSlabRc<T> {
     pub fn deref_pin(&self) -> Pin<&T> {
         // SAFETY: We are the thing keeping the `value` pointer alive, so this is safe.
         // The value we point to is guaranteed pinned, so we are not at risk of unpinning anything.
-        unsafe { Pin::new_unchecked(&(&*self.value).value) }
+        unsafe { Pin::new_unchecked(&(*self.value).value) }
     }
 }
 

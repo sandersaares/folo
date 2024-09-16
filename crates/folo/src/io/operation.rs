@@ -407,11 +407,11 @@ impl Operation {
                 // given time, so there is no possibility of multiple exclusive references being created.
                 let core = overlapped as *mut OperationCore;
 
-                let buffer = (&mut *core).buffer.take().expect(
+                let buffer = (*core).buffer.take().expect(
                     "buffer must exist because we only remove it after completion or failure and right now we are doing the latter",
                 );
 
-                control_node.release((&*core).key);
+                control_node.release((*core).key);
 
                 return Err(io::OperationError::new(e, buffer));
             }

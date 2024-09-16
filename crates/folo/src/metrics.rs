@@ -113,7 +113,7 @@ impl EventBuilder {
 
         let bag = BAGS.with_borrow_mut(|bags| {
             Rc::clone(
-                &bags
+                bags
                     .entry(name.to_string())
                     .or_insert_with(|| Rc::new(ObservationBag::new(self.buckets))),
             )
@@ -219,6 +219,12 @@ pub fn report_page() -> ReportPage {
 
 pub struct ReportBuilder {
     pages: Vec<ReportPage>,
+}
+
+impl Default for ReportBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ReportBuilder {

@@ -140,7 +140,7 @@ impl Driver {
 
                 // If the completion key matches our magic value, this is a wakeup packet and needs
                 // special processing.
-                if overlapped_entry.lpCompletionKey == WAKE_UP_COMPLETION_KEY as usize {
+                if overlapped_entry.lpCompletionKey == WAKE_UP_COMPLETION_KEY {
                     // This is not a normal I/O block. All it did was wake us up, we do no further
                     // processing here. The OVERLAPPED pointer will be null here!
                     continue;
