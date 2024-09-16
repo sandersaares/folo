@@ -33,8 +33,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
         .on_accept(|conn| async {
             Builder::new(FoloExecutor::new())
                 .serve_connection(FoloIo::new(conn), service_fn(handle_request))
-                .await
-                .unwrap();
+                .await?;
 
             folo::io::Result::Ok(())
         })
