@@ -9,7 +9,7 @@ use crate::{
 use core::slice;
 use futures::{select, stream::FuturesUnordered, FutureExt, StreamExt};
 use negative_impl::negative_impl;
-use std::{future::Future, mem, num::NonZeroU16, rc::Rc, sync::Arc};
+use std::{future::Future, mem, num::NonZeroU16, sync::Arc};
 use tracing::{event, Level};
 use windows::Win32::Networking::WinSock::{
     bind, htons, listen, setsockopt, AcceptEx, GetAcceptExSockaddrs, WSAIoctl, WSASocketA, AF_INET,
@@ -286,7 +286,7 @@ where
         });
 
         Ok(StartedTcpDispatcher {
-            listen_socket: Rc::new(listen_socket),
+            listen_socket: Arc::new(listen_socket),
         })
     }
 
@@ -322,7 +322,7 @@ where
             while accept_futures.len() < CONCURRENT_ACCEPT_OPERATIONS {
                 accept_futures.push(
                     AcceptOne {
-                        listen_socket: Rc::clone(&listen_socket),
+                        listen_socket: Arc::clone(&listen_socket),
                     }
                     .execute()
                     .fuse(),
@@ -369,18 +369,18 @@ where
 }
 
 struct StartedTcpDispatcher {
-    // This is an Rc because we need to share it between the worker itself and the "AcceptOne"
-    // subtasks that it spawns. We use Rc to avoid the need for AcceptOne to take a reference to
+    // This is an Arc because we need to share it between the worker itself and the "AcceptOne"
+    // subtasks that it spawns. We use Arc to avoid the need for AcceptOne to take a reference to
     // the worker, which would at the very least conflict with the worker itself using an exclusive
-    // reference to itself.
-    listen_socket: Rc<OwnedHandle<SOCKET>>,
+    // reference to itself. We also share this with sync worker threads, so it needs to be Arc.
+    listen_socket: Arc<OwnedHandle<SOCKET>>,
 }
 
 /// The state of a single "accept one connection" operation. We create this separate type to more
 /// easily separate the resource management of the command-processing loop from the resource
 /// management of the connection-accepting tasks.
 struct AcceptOne {
-    listen_socket: Rc<OwnedHandle<SOCKET>>,
+    listen_socket: Arc<OwnedHandle<SOCKET>>,
 }
 
 impl AcceptOne {
@@ -462,10 +462,6 @@ impl AcceptOne {
         .await
         .into_inner()?;
 
-        // TODO: Consider moving this post-processing to a synchronous worker thread if it proves
-        // costly. We would have to pay a small extra price, though, because we would have to change
-        // listen_socket from Rc to Arc to support multithreaded ownership.
-
         let mut local_addr: *mut SOCKADDR = std::ptr::null_mut();
         let mut local_addr_len: i32 = 0;
         let mut remote_addr: *mut SOCKADDR = std::ptr::null_mut();
@@ -487,41 +483,43 @@ impl AcceptOne {
             )
         };
 
-        // We need to refer to this via pointer, so let's copy it out to a place first.
-        let listen_socket = self.listen_socket.0;
+        // This post-processing is synchronous work that is not free, so move it to a synchronous
+        // worker thread.
+        let listen_socket = Arc::clone(&self.listen_socket);
 
-        // SAFETY: The size is right, so creating the slice is OK. We only use it for the single
-        // call on the next line, so no lifetime concerns - the slice is gone before the storage
-        // goes away in all cases.
-        let listen_socket_as_slice = unsafe {
-            slice::from_raw_parts(
-                mem::transmute(&listen_socket as *const _),
-                mem::size_of::<usize>(),
-            )
-        };
-
-        // This does some internal updates in the socket. The documentation is a little vague about
-        // what this accomplishes but we might as well do it to be right and proper in all ways.
-        winsock::to_io_result(unsafe {
-            setsockopt(
-                *connection_socket,
-                SOL_SOCKET,
-                SO_UPDATE_ACCEPT_CONTEXT,
-                Some(listen_socket_as_slice),
-            )
-        })?;
-
-        // Inspect processor affinity configuration. We do not currently use this information but
-        // one day we might. We execute this in synchronous mode because we cannot bind the socket
-        // to our completion port - we are on the TCP dispatcher thread and the socket actually
-        // needs to be bound to the completion port of the thread where we dispatch it to. Which we
-        // do not know yet. So synchronous it is, on some synchronous worker thread.
-        // For the duration of the call, the task takes ownership of the socket to avoid us having
-        // to share ownership and adding some Arc.
-        let (connection_socket, _affinity_info) = current_runtime::with(|x| {
-            x.spawn_sync_on_any(
+        let (connection_socket, _affinity_info) = current_runtime::with(|runtime| {
+            runtime.spawn_sync_on_any(
                 SynchronousTaskType::Syscall,
                 move || -> io::Result<(OwnedHandle<SOCKET>, SOCKET_PROCESSOR_AFFINITY)> {
+                    // We need to refer to this via pointer, so let's copy it out to a place first.
+                    let listen_socket = (**listen_socket).0;
+
+                    // SAFETY: The size is right, so creating the slice is OK. We only use it for the single
+                    // call on the next line, so no lifetime concerns - the slice is gone before the storage
+                    // goes away in all cases.
+                    let listen_socket_as_slice = unsafe {
+                        slice::from_raw_parts(
+                            mem::transmute(&listen_socket as *const _),
+                            mem::size_of::<usize>(),
+                        )
+                    };
+
+                    // This does some internal updates in the socket. The documentation is a little vague about
+                    // what this accomplishes but we might as well do it to be right and proper in all ways.
+                    winsock::to_io_result(unsafe {
+                        setsockopt(
+                            *connection_socket,
+                            SOL_SOCKET,
+                            SO_UPDATE_ACCEPT_CONTEXT,
+                            Some(listen_socket_as_slice),
+                        )
+                    })?;
+
+                    // Inspect processor affinity configuration. We do not currently use this information but
+                    // one day we might. We execute this in synchronous mode because we cannot bind the socket
+                    // to our completion port - we are on the TCP dispatcher thread and the socket actually
+                    // needs to be bound to the completion port of the thread where we dispatch it to. Which we
+                    // do not know yet. So synchronous it is, on some synchronous worker thread.
                     let affinity_info: SOCKET_PROCESSOR_AFFINITY = SOCKET_PROCESSOR_AFFINITY::default();
                     let mut bytes_returned: u32 = 0;
 
