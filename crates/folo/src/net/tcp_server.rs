@@ -7,6 +7,9 @@ use crate::{
     util::OwnedHandle,
 };
 use core::slice;
+use futures::{select, stream::FuturesUnordered, FutureExt, StreamExt};
+use futures_concurrency::future::FutureGroup;
+use futures_concurrency::prelude::*;
 use negative_impl::negative_impl;
 use std::{future::Future, mem, num::NonZeroU16, rc::Rc};
 use tracing::{event, Level};
@@ -164,6 +167,8 @@ impl !Send for TcpServerHandle {}
 #[negative_impl]
 impl !Sync for TcpServerHandle {}
 
+const CONCURRENT_ACCEPT_OPERATIONS: usize = 10;
+
 /// The TCP dispatcher manages the listen socket used to receive new connections. When a new
 /// connection is received, it is dispatched to be handled by the user-defined callback on a
 /// suitable worker, at which point the dispatcher is no longer involved.
@@ -301,85 +306,67 @@ where
         // completion that will not be received by any awaiter any more and thus will be ignored.
         // When we are shutting down, this operation will simply be abandoned.
         //
-        // TODO: If a completion is ignored, won't that leave a dangling socket? Actually it will
-        // end up with a panic: "no expected code path drops the I/O operation without signaling completion result: RecvError"
-        // We probably need some Operation::on_cancel() callback to clean up the socket in that case, and to ignore drops otherwise.
+        // TODO: If a completion is ignored, won't that leave a dangling socket?
+        // Do we need some Operation::on_cancel() callback to clean up the socket in that case?
         //
         // Because we are doing two things concurrently (accepting connections + awaiting orders),
         // we must use interior mutability or exclusive mutability only for one of these futures.
         // We cannot give an exclusive reference to both futures.
 
-        // TODO: Should we enqueue multiple accepts concurrently? There is no reason to limit
-        // ourselves to just one at a time if we can get more throughput by doing more of them.
-        let mut accept_one_fut = Box::pin(
-            AcceptOne {
-                listen_socket: Rc::clone(&listen_socket),
-            }
-            .execute(),
-        );
+        let mut accept_futures = Box::pin(FuturesUnordered::new());
+        let mut shutdown_received_future = self
+            .shutdown_rx
+            .take()
+            .expect("we only take this once")
+            .fuse();
 
-        let shutdown_received_fut = self.shutdown_rx.take().expect("we only take this once");
-
-        let mut select_future = Some(futures::future::select(
-            accept_one_fut,
-            shutdown_received_fut,
-        ));
-
-        // Within each iteration, we will either accept a new connection or receive a command.
-        // There is no specific guarantee about which one we may process first if both complete.
-        // In realistic web services you need to shed load before shutting down anyway, so missing
-        // the shutdown signal is a very theoretical concern only in artificial conditions.
         loop {
-            match select_future
-                .take()
-                .expect("we always set this before looping")
-                .await
-            {
-                futures::future::Either::Left((accept_result, new_shutdown_received_fut)) => {
-                    if let Ok(socket) = accept_result {
-                        // New connection accepted! Spawn as task and detach.
-                        let on_accept_clone = self.on_accept.clone();
-
-                        // TODO: Spawn on optimal processor, not a random one.
-                        _ = spawn_on_any(move || async move {
-                            current_async_agent::with_io(|io| {
-                                io.bind_io_primitive(&*socket).unwrap()
-                            });
-
-                            let tcp_connection = TcpConnection { socket };
-
-                            _ = (on_accept_clone)(tcp_connection).await;
-                            // TODO: If callback result is error, report this error.
-                        });
+            while accept_futures.len() < CONCURRENT_ACCEPT_OPERATIONS {
+                accept_futures.push(
+                    AcceptOne {
+                        listen_socket: Rc::clone(&listen_socket),
                     }
+                    .execute()
+                    .fuse(),
+                );
+            }
 
-                    // TODO: Report error if not successfully accepted..
-
-                    // We create a new accept task to accept the next connection and re-fill the
-                    // select future with a brand new one.
-                    accept_one_fut = Box::pin(
-                        AcceptOne {
-                            listen_socket: Rc::clone(&listen_socket),
-                        }
-                        .execute(),
-                    );
-
-                    select_future = Some(futures::future::select(
-                        accept_one_fut,
-                        new_shutdown_received_fut,
-                    ));
+            let accept_result = select! {
+                // We are ready to accept a new connection.
+                accept_result = accept_futures.select_next_some() => {
+                    // We will handle this in the next iteration.
+                    accept_result
                 }
-                futures::future::Either::Right((_, _)) => {
+                _ = shutdown_received_future => {
                     event!(Level::INFO, "TCP dispatcher shutting down",);
-
-                    // We are shutting down! We will not accept any new connections and have already
-                    // dropped the "accept one" logic on the ground (via discard in match arm). We
-                    // return from the accept loop to also terminate the listen socket and enter the
-                    // shutdown loop, which waits for active connections to end. Returning from this
-                    // function closes the listen socket and cancels any connections queued on it.
+                    // We will not accept any new connections. The existing "accept one" operations
+                    // will be dropped soon and any pending I/O will likewise be canceled as soon
+                    // as the OwnedHandle is dropped and the socket gets closed.
                     return;
                 }
-            }
+            };
+
+            let Ok(connection_socket) = accept_result else {
+                // TODO: Report error if not successfully accepted..
+                continue;
+            };
+
+            // New connection accepted! Spawn as task and detach.
+            let on_accept_clone = self.on_accept.clone();
+
+            // TODO: Spawn on optimal processor, not a random one.
+            _ = spawn_on_any(move || async move {
+                current_async_agent::with_io(|io| {
+                    io.bind_io_primitive(&*connection_socket).unwrap()
+                });
+
+                let tcp_connection = TcpConnection {
+                    socket: connection_socket,
+                };
+
+                _ = (on_accept_clone)(tcp_connection).await;
+                // TODO: If callback result is error, report this error.
+            });
         }
     }
 }

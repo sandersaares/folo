@@ -28,7 +28,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
         .build()
         .await?;
 
-    // Stop the server after 5 minutes
+    // Stop the server after N minutes
     Delay::with_clock(&clock, Duration::from_secs(300)).await;
 
     // Calling this is optional - just validating that it works if called early.

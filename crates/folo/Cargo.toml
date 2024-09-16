@@ -29,6 +29,7 @@ folo_decl_macros = { path = "../folo_decl_macros", version = "0.1.0-main" }
 folo_proc_macros = { path = "../folo_proc_macros", version = "0.1.0-main" }
 futures = { version = "0", default-features = false, features = [
     "alloc",
+    "async-await",
     "executor",
     "std",
 ] }
