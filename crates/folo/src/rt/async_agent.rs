@@ -6,7 +6,7 @@ use crate::{
         async_task_engine::{AsyncTaskEngine, CycleResult},
         local_task::LocalTask,
         LocalJoinHandle,
-    },
+    }, time::advance_local_timers,
 };
 use core_affinity::CoreId;
 use crossbeam::channel;
@@ -15,7 +15,7 @@ use std::{
     collections::VecDeque,
     fmt::{self, Debug, Formatter},
     future::Future,
-    pin::Pin,
+    pin::Pin, time::Instant,
 };
 use tracing::{event, Level};
 use windows::Win32::System::Threading::INFINITE;
@@ -230,7 +230,13 @@ impl AsyncAgent {
 
             self.io.borrow_mut().process_completions(io_wait_time_ms);
 
-            // TODO: Process timers.
+            // TODO: Timers require that we provide an instant value. Some additional work we can explore:
+            //
+            // - What are the perf implications of this call?
+            // - Shall we pass the current instant to `execute_cycle` and get rid of low-resolution watch?
+            // - Shall we introduce some cached sink for current time (both relative and absolute) that is updated with each cycle?
+            let now = Instant::now();
+            advance_local_timers(now);
 
             {
                 let mut new_tasks = self.new_tasks.borrow_mut();
