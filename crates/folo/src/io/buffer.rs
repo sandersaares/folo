@@ -63,6 +63,10 @@ enum Mode {
         // `.into_inner_boxed_slice()` if they wish to reuse the storage later.
         inner: Pin<Box<[u8]>>,
     },
+    Ptr {
+        inner: *mut u8,
+        capacity: usize,
+    },
 }
 
 impl fmt::Debug for Mode {
@@ -73,6 +77,11 @@ impl fmt::Debug for Mode {
                 .field("index_in_pool", index_in_pool)
                 .finish(),
             Self::BoxedSlice { .. } => f.debug_struct("BoxedSlice").finish(),
+            Self::Ptr { inner, capacity } => f
+                .debug_struct("Ptr")
+                .field("inner", &format_args!("{:p}", inner))
+                .field("capacity", capacity)
+                .finish(),
         }
     }
 }
@@ -139,10 +148,34 @@ impl PinnedBuffer {
         }
     }
 
+    /// Creates a new buffer from a pinned pointer with a specified capacity.
+    ///
+    /// # Safety
+    ///
+    /// The caller is responsible for ensuring that the provided pointer remains valid for the
+    /// entire lifetime of the PinnedBuffer (including any I/O operations started that reference
+    /// the PinnedBuffer, including after the operation is canceled, up to the moment the completion
+    /// or cancellation notification is received from the operating system).
+    ///
+    /// The caller is responsible for ensuring that the pointer is actually to pinned memory.
+    pub fn from_ptr(ptr: *mut u8, capacity: usize) -> Self {
+        CALLER_POINTERS_REFERENCED.with(Event::observe_unit);
+
+        PinnedBuffer {
+            mode: Mode::Ptr {
+                inner: ptr,
+                capacity,
+            },
+            len: capacity,
+            start: 0,
+        }
+    }
+
     pub fn capacity(&self) -> usize {
         match &self.mode {
             Mode::Pooled { inner, .. } => inner.len(),
             Mode::BoxedSlice { inner } => inner.len(),
+            Mode::Ptr { capacity, .. } => *capacity,
         }
     }
 
@@ -195,6 +228,9 @@ impl PinnedBuffer {
         match &mut self.mode {
             Mode::Pooled { inner, .. } => &mut inner[self.start..(self.start + self.len)],
             Mode::BoxedSlice { inner } => &mut inner[self.start..(self.start + self.len)],
+            Mode::Ptr { inner, .. } => unsafe {
+                slice::from_raw_parts_mut(inner.add(self.start), self.len)
+            },
         }
     }
 
@@ -203,10 +239,7 @@ impl PinnedBuffer {
     pub fn as_mut_slice_with_len(&mut self, length: usize) -> &mut [u8] {
         self.set_len(length);
 
-        match &mut self.mode {
-            Mode::Pooled { inner, .. } => &mut inner[self.start..(self.start + self.len)],
-            Mode::BoxedSlice { inner } => &mut inner[self.start..(self.start + self.len)],
-        }
+        self.as_mut_slice()
     }
 
     /// Obtains an immutable view over the contents of the buffer.
@@ -214,6 +247,9 @@ impl PinnedBuffer {
         match &self.mode {
             Mode::Pooled { inner, .. } => &inner[self.start..(self.start + self.len)],
             Mode::BoxedSlice { inner } => &inner[self.start..(self.start + self.len)],
+            Mode::Ptr { inner, .. } => unsafe {
+                slice::from_raw_parts(inner.add(self.start), self.len)
+            },
         }
     }
 
@@ -239,7 +275,9 @@ impl PinnedBuffer {
         mem::forget(self);
 
         match mode {
-            Mode::Pooled { .. } => unreachable!("we already asserted that this is a boxed slice"),
+            Mode::Pooled { .. } | Mode::Ptr { .. } => {
+                unreachable!("we already asserted that this is a boxed slice")
+            }
             Mode::BoxedSlice { inner } => Pin::into_inner(inner),
         }
     }
@@ -269,6 +307,11 @@ thread_local! {
 
     static CALLER_BUFFERS_REFERENCED: Event = EventBuilder::new()
         .name("caller_buffers_referenced")
+        .build()
+        .unwrap();
+
+    static CALLER_POINTERS_REFERENCED: Event = EventBuilder::new()
+        .name("caller_pointers_referenced")
         .build()
         .unwrap();
 
