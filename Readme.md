@@ -22,8 +22,8 @@ supporting high-performance I/O primitives (IOCP, io_uring, ...). Primarily for 
 | Blocking task execution    | Partial |
 | Compute task execution     | ❌       |
 | Filesystem primitives      | Minimal |
-| Network primitives         | ❌       |
-| Synchronization primitives | ❌       |
+| Network primitives         | Minimal |
+| Synchronization primitives | Minimal |
 | Time primitives            | ✅       |
 | Windows                    | ✅       |
 | Linux                      | ❌       |
