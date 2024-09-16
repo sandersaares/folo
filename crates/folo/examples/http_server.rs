@@ -2,7 +2,8 @@
 
 use folo::{
     io::{self, OperationResultExt, PinnedBuffer},
-    net::{TcpConnection, TcpServerBuilder}, time::{Clock, Delay},
+    net::{TcpConnection, TcpServerBuilder},
+    time::{Clock, Delay},
 };
 use std::{error::Error, time::Duration};
 use tracing::{event, Level};
@@ -11,13 +12,15 @@ use tracing::{event, Level};
 /// It runs for 5 minutes and then stops so the metrics can be emitted and results analyzed.
 #[folo::main(print_metrics)]
 async fn main() -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
+    // Logging to stdout will happen on background thread to avoid synchronous slowdowns.
+    let (non_blocking_stdout, _guard) = tracing_appender::non_blocking(std::io::stdout());
+    tracing_subscriber::fmt().with_writer(non_blocking_stdout).init();
+
     // Can the clock be provided by the FOLO runtime?
     // For example, using scoped API or even the main could optionally accept a "FoloRuntime"?
     // main(runtime: &FoloRuntime)
     // let clock = runtime.clock();
     let clock = Clock::new();
-
-    tracing_subscriber::fmt::init();
 
     let mut server = TcpServerBuilder::new()
         .port(1234.try_into().unwrap())
