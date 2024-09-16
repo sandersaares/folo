@@ -45,6 +45,8 @@ pub type SlabRcCellStorage<T> = RefCell<PinnedSlabChain<SlabRcCell<T>>>;
 /// Using `RefSlabRc` where each smart pointer maintains a direct reference to the storage:
 ///
 /// ```
+/// use folo::util::{SlabRcCell, RefSlabRc};
+/// 
 /// let storage = SlabRcCell::<usize>::new_storage_ref();
 ///
 /// let item = SlabRcCell::new(42).insert_into_ref(&storage);
@@ -57,6 +59,9 @@ pub type SlabRcCellStorage<T> = RefCell<PinnedSlabChain<SlabRcCell<T>>>;
 /// Using `RcSlabRc` where each smart pointer maintains a reference to the storage via an `Rc`:
 ///
 /// ```
+/// use std::rc::Rc;
+/// use folo::util::{SlabRcCell, RcSlabRc};
+/// 
 /// let storage = SlabRcCell::<usize>::new_storage_rc();
 ///
 /// let item = SlabRcCell::new(42).insert_into_rc(Rc::clone(&storage));
@@ -69,6 +74,8 @@ pub type SlabRcCellStorage<T> = RefCell<PinnedSlabChain<SlabRcCell<T>>>;
 /// Using `UnsafeSlabRc` where each smart pointer maintains a raw reference to the storage:
 ///
 /// ```
+/// use folo::util::{SlabRcCell, UnsafeSlabRc};
+/// 
 /// let storage = SlabRcCell::<usize>::new_storage_unsafe();
 ///
 /// // SAFETY: We are responsible for ensuring the slab chain outlives all the smart pointers.
