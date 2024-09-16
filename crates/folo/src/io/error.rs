@@ -19,6 +19,9 @@ pub enum Error {
     // Things that we are not expecting, things that are programming errors in the library itself.
     #[error("internal error: {0}")]
     Internal(String),
+
+    #[error(transparent)]
+    Other(#[from] Box<dyn std::error::Error + Send + Sync>), 
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
