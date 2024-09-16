@@ -33,7 +33,6 @@ futures = { version = "0", default-features = false, features = [
     "executor",
     "std",
 ] }
-futures-concurrency = "7"
 hyper = { version = "1.4.1", features = [
     "http1",
     "http2",
