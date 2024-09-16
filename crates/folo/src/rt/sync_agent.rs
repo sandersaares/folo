@@ -20,7 +20,9 @@ pub struct SyncAgent {
     // a task waiting for us because another sync agent sharing the same queue may have taken it.
     // Tasks in this queue are executed first, over `task_queue`. This is usually because they are
     // of a "beneficial" nature such as releasing resources, so doing them first will help the
-    // process overall work more efficiently.
+    // process overall work more efficiently. These tasks are also executed even when we are
+    // shutting down because they may be used to release critical resources that are blocking
+    // shutdown.
     priority_task_queue: Arc<SegQueue<ErasedSyncTask>>,
 }
 
@@ -59,13 +61,28 @@ impl SyncAgent {
                     TASK_DURATION.with(|x| x.observe_duration_millis(|| (task)()));
                 }
                 SyncAgentCommand::Terminate => {
-                    event!(Level::TRACE, "Shutting down");
+                    event!(
+                        Level::TRACE,
+                        "shutting down after executing high-priority tasks"
+                    );
                     break;
                 }
             }
         }
 
-        event!(Level::TRACE, "shutdown completed");
+        // During shutdown, high priority tasks are still executed! This is because these will often
+        // be cleanup tasks that are required to release resources owned by the operating system,
+        // without which we cannot safely shut down (because the OS is holding references into our
+        // memory).
+        while let Some(task) = self.priority_task_queue.pop() {
+            TASKS.with(Event::observe_unit);
+            TASK_DURATION.with(|x| x.observe_duration_millis(|| (task)()));
+        }
+
+        event!(
+            Level::TRACE,
+            "shutdown completed - no high-priority tasks remaining"
+        );
 
         if let Some(tx) = &self.metrics_tx {
             _ = tx.send(metrics::report_page());

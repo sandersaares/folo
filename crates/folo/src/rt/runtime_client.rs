@@ -354,7 +354,10 @@ pub enum SynchronousTaskType {
     Syscall,
 
     /// A high-priority syscall whose execution we benefit from in some way. For example, this may
-    /// release resources, thereby improving our overall efficiency.
+    /// release resources, thereby improving our overall efficiency. The high-priority tasks are
+    /// always executed, even if the runtime is shutting down. This is because they may be cleanup
+    /// tasks to release resources that are blocking shutdown (e.g. because the operating system is
+    /// referencing memory owned by us and this is the task to remove that reference).
     HighPrioritySyscall,
 
     /// The task may occupy a thread with a compute workload for a nontrivial duration (> 10 ms)
