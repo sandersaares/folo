@@ -21,6 +21,9 @@ pub mod util;
 ///    starts.
 /// * `worker_init_fn` - name of a function that will be called once on each worker thread before
 ///    it starts.
+/// * `print_metrics` - if present, the runtime will print metrics to stdout on shutdown.
+/// * `max_processors` - maximum number of processors to execute on. Potentially useful to test
+///    single-threaded versus multithreaded performance of something.
 ///
 /// # Examples
 ///
