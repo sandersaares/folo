@@ -76,6 +76,7 @@ harness = false
 [[bench]]
 name = "io"
 harness = false
+required-features = ["criterion"]
 
 [[bench]]
 name = "once_event"
@@ -84,6 +85,7 @@ harness = false
 [[bench]]
 name = "spawning"
 harness = false
+required-features = ["criterion"]
 
 [[bench]]
 name = "win32"
