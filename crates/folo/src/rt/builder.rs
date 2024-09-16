@@ -98,6 +98,8 @@ impl RuntimeBuilder {
             processor_ids.truncate(max_processors);
         }
 
+        let processor_ids = processor_ids.into_boxed_slice();
+
         // We will spawn one agent of each type (async + sync) for each processor.
         let processor_count = processor_ids.len();
 
@@ -272,17 +274,19 @@ impl RuntimeBuilder {
         let tcp_dispatcher_worker_init = worker_init.clone();
         let tcp_dispatcher_metrics_tx = self.metrics_tx.clone();
 
+        // HACK: We hardcode the first processor ID here. It is used for synchronous work dispatch.
+        // Ideally, we would auto-detect this on the fly because the TCP dispatcher is not pinned.
+        let tcp_dispatcher_processor_id = processor_ids[0];
+
         let tcp_dispatcher_join_handle = thread::Builder::new()
             .name("tcp-dispatcher".to_string())
             .spawn(move || {
                 (tcp_dispatcher_worker_init)();
 
-                // HACK: We hardcode the first processor ID here. It is used for synchronous work dispatch.
-                // Ideally, we would auto-detect this on the fly because the TCP dispatcher is not pinned.
                 let agent = Rc::new(AsyncAgent::new(
                     tcp_dispatcher_command_rx,
                     tcp_dispatcher_metrics_tx,
-                    processor_ids[0],
+                    tcp_dispatcher_processor_id,
                 ));
 
                 // Signal that we are ready to start.
@@ -333,6 +337,7 @@ impl RuntimeBuilder {
                 .collect(),
             sync_task_queues_by_processor,
             sync_priority_task_queues_by_processor,
+            processor_ids.clone(),
             join_handles.into_boxed_slice(),
             Arc::clone(&is_stopping),
         );

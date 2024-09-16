@@ -106,4 +106,9 @@ thread_local! {
         .name("io_primitives_bound")
         .build()
         .unwrap();
+
+    static PRIMITIVES_UNBOUND: Event = EventBuilder::new()
+        .name("io_primitives_UNbound")
+        .build()
+        .unwrap();
 }

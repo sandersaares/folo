@@ -1,7 +1,9 @@
 use crate::{
     io::{self, OperationResultExt},
     net::{winsock, TcpConnection},
-    rt::{current_async_agent, current_runtime, spawn_on_any, RemoteJoinHandle},
+    rt::{
+        current_async_agent, current_runtime, spawn_on_any, RemoteJoinHandle, SynchronousTaskType,
+    },
     util::OwnedHandle,
 };
 use core::slice;
@@ -399,17 +401,27 @@ struct AcceptOne {
 
 impl AcceptOne {
     async fn execute(self) -> io::Result<OwnedHandle<SOCKET>> {
-        // SAFETY: All we need to worry about here is cleanup, which we do via OwnedHandle.
-        let connection_socket = unsafe {
-            OwnedHandle::new(WSASocketA(
-                AF_INET.0 as i32,
-                SOCK_STREAM.0,
-                IPPROTO_TCP.0,
-                None,
-                0,
-                WSA_FLAG_OVERLAPPED,
-            )?)
-        };
+        // Creating the socket is an expensive synchronous operation, so do it on a synchronous
+        // worker thread.
+        let connection_socket = current_runtime::with(|x| {
+            x.spawn_sync_on_any(
+                SynchronousTaskType::Syscall,
+                move || -> io::Result<OwnedHandle<SOCKET>> {
+                    // SAFETY: All we need to worry about here is cleanup, which we do via OwnedHandle.
+                    Ok(unsafe {
+                        OwnedHandle::new(WSASocketA(
+                            AF_INET.0 as i32,
+                            SOCK_STREAM.0,
+                            IPPROTO_TCP.0,
+                            None,
+                            0,
+                            WSA_FLAG_OVERLAPPED,
+                        )?)
+                    })
+                },
+            )
+        })
+        .await?;
 
         // NOTE: AcceptEx supports immediately pasting the first block of received data in here,
         // which may provide a performance boost when accepting the connection. This is optional
@@ -433,12 +445,15 @@ impl AcceptOne {
 
         assert!(buffer.len() >= ADDRESS_LENGTH * 2);
 
-        let operation = current_async_agent::with_io(|io| io.new_operation(buffer));
+        // NOTE: This is an operation on the **listen socket**, not on the connection socekt, so it
+        // is bound to the completion port of the listen socket. Note that we have not yet bound the
+        // connection socket to any completion port.
+        let accept_operation = current_async_agent::with_io(|io| io.new_operation(buffer));
 
         // SAFETY: We are required to pass the OVERLAPPED struct to the native I/O function to avoid
         // a resource leak. We do.
-        let payload = unsafe {
-            operation.begin(|buffer, overlapped, immediate_bytes_transferred| {
+        let accept_result = unsafe {
+            accept_operation.begin(|buffer, overlapped, immediate_bytes_transferred| {
                 if AcceptEx(
                     **self.listen_socket,
                     *connection_socket,
@@ -463,15 +478,21 @@ impl AcceptOne {
         .await
         .into_inner()?;
 
+        // TODO: Consider moving this post-processing to a synchronous worker thread if it proves
+        // costly. We would have to pay a small extra price, though, because we would have to change
+        // listen_socket from Rc to Arc to support multithreaded ownership.
+
         let mut local_addr: *mut SOCKADDR = std::ptr::null_mut();
         let mut local_addr_len: i32 = 0;
         let mut remote_addr: *mut SOCKADDR = std::ptr::null_mut();
         let mut remote_addr_len: i32 = 0;
 
+        // This function will replace the pointer above to point to the actual data in question.
+        // Calling this is optional - we do not currently use this data, but we would in a real app.
         // SAFETY: As long as we pass in valid pointers that match the AcceptEx call, we are good.
         unsafe {
             GetAcceptExSockaddrs(
-                payload.as_slice().as_ptr() as *const _,
+                accept_result.as_slice().as_ptr() as *const _,
                 0,
                 ADDRESS_LENGTH as u32,
                 ADDRESS_LENGTH as u32,
@@ -482,8 +503,9 @@ impl AcceptOne {
             )
         };
 
-        // We need to refer to this via pointer, so let's copy it out to an lvalue first.
+        // We need to refer to this via pointer, so let's copy it out to a place first.
         let listen_socket = self.listen_socket.0;
+
         // SAFETY: The size is right, so creating the slice is OK. We only use it for the single
         // call on the next line, so no lifetime concerns - the slice is gone before the storage
         // goes away in all cases.
@@ -505,59 +527,73 @@ impl AcceptOne {
             )
         })?;
 
-        let affinity_info: SOCKET_PROCESSOR_AFFINITY = SOCKET_PROCESSOR_AFFINITY::default();
-        let mut bytes_returned: u32 = 0;
+        // Inspect processor affinity configuration. We do not currently use this information but
+        // one day we might. We execute this in synchronous mode because we cannot bind the socket
+        // to our completion port - we are on the TCP dispatcher thread and the socket actually
+        // needs to be bound to the completion port of the thread where we dispatch it to. Which we
+        // do not know yet. So synchronous it is, on some synchronous worker thread.
+        // For the duration of the call, the task takes ownership of the socket to avoid us having
+        // to share ownership and adding some Arc.
+        let (connection_socket, _affinity_info) = current_runtime::with(|x| {
+            x.spawn_sync_on_any(
+                SynchronousTaskType::Syscall,
+                move || -> io::Result<(OwnedHandle<SOCKET>, SOCKET_PROCESSOR_AFFINITY)> {
+                    let affinity_info: SOCKET_PROCESSOR_AFFINITY = SOCKET_PROCESSOR_AFFINITY::default();
+                    let mut bytes_returned: u32 = 0;
 
-        // Prerequisite:
-        // 1) adapter must support RSS and have it enabled (e.g. not loopback)
-        // 2) adapter must be connected to peer
-        //
-        // Errors encountered if above conditions are not met:
-        // 10013 - WSAEACCES - An attempt was made to access a socket in a way forbidden by its access permissions.
-        // 10045 - WSAEOPNOTSUPP - The attempted operation is not supported for the type of object referenced.
-        //
-        // Output will be something like:
-        // SOCKET_PROCESSOR_AFFINITY { Processor: PROCESSOR_NUMBER { Group: 0, Number: 18, Reserved: 0 }, NumaNodeId: 0, Reserved: 0 }
-        // Processor number will be different for different connections.
-        // Not all processors will be used - typically only 16 processors are used for low level I/O.
-        // NB! This data may change during life of a connection - it is not fixed!
-        let affinity_result = unsafe {
-            winsock::to_io_result(WSAIoctl(
-                *connection_socket,
-                SIO_QUERY_RSS_PROCESSOR_INFO,
-                None,
-                0,
-                Some(&affinity_info as *const _ as *mut _),
-                mem::size_of::<SOCKET_PROCESSOR_AFFINITY>() as u32,
-                &mut bytes_returned as *mut _,
-                // TODO: Should we do this asynchronously? Note that we are doing this on the dispatcher thread
-                // whereas future use will be on an async worker thread - so a different completion port!
-                None,
-                None,
-            ))
-        };
+                    // Prerequisite:
+                    // 1) adapter must support RSS and have it enabled (e.g. not loopback)
+                    // 2) adapter must be connected to peer
+                    //
+                    // Errors encountered if above conditions are not met:
+                    // 10013 - WSAEACCES - An attempt was made to access a socket in a way forbidden by its access permissions.
+                    // 10045 - WSAEOPNOTSUPP - The attempted operation is not supported for the type of object referenced.
+                    //
+                    // Output will be something like:
+                    // SOCKET_PROCESSOR_AFFINITY { Processor: PROCESSOR_NUMBER { Group: 0, Number: 18, Reserved: 0 }, NumaNodeId: 0, Reserved: 0 }
+                    // Processor number will be different for different connections.
+                    // Not all processors will be used - typically only 16 processors are used for low level I/O.
+                    // NB! This data may change during life of a connection - it is not fixed!
+                    let affinity_result = unsafe {
+                        winsock::to_io_result(WSAIoctl(
+                            *connection_socket,
+                            SIO_QUERY_RSS_PROCESSOR_INFO,
+                            None,
+                            0,
+                            Some(&affinity_info as *const _ as *mut _),
+                            mem::size_of::<SOCKET_PROCESSOR_AFFINITY>() as u32,
+                            &mut bytes_returned as *mut _,
+                            None,
+                            None,
+                        ))
+                    };
 
-        match affinity_result {
-            Ok(()) => {
-                event!(Level::TRACE, message = "RSS processor info for new connection", affinity_info = ?affinity_info);
-            }
-            Err(io::Error::Winsock { detail, .. })
-                if detail == WSAEOPNOTSUPP || detail == WSAEACCES =>
-            {
-                event!(
-                    Level::TRACE,
-                    message =
-                        "RSS not supported/enabled on network adapter used for new connection"
-                );
-            }
-            Err(e) => {
-                event!(
-                    Level::ERROR,
-                    message = "error querying RSS processor info for new connection",
-                    error = e.to_string()
-                );
-            }
-        }
+                    match affinity_result {
+                        Ok(()) => {
+                            event!(Level::TRACE, message = "RSS processor info for new connection", affinity_info = ?affinity_info);
+                        }
+                        Err(io::Error::Winsock { detail, .. })
+                            if detail == WSAEOPNOTSUPP || detail == WSAEACCES =>
+                        {
+                            event!(
+                                Level::TRACE,
+                                message =
+                                    "RSS not supported/enabled on network adapter used for new connection"
+                            );
+                        }
+                        Err(e) => {
+                            event!(
+                                Level::ERROR,
+                                message = "error querying RSS processor info for new connection",
+                                error = e.to_string()
+                            );
+                        }
+                    }
+
+                    Ok((connection_socket, affinity_info))
+                },
+            )
+        }).await?;
 
         // The new socket is connected and ready! Finally!
         // TODO: Attach RSS info so it can actually be used for smart dispatch decisions.

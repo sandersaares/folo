@@ -38,6 +38,8 @@ pub struct RuntimeClient {
     sync_task_queues_by_processor: HashMap<CoreId, Arc<SegQueue<ErasedSyncTask>>>,
     sync_priority_task_queues_by_processor: HashMap<CoreId, Arc<SegQueue<ErasedSyncTask>>>,
 
+    processor_ids: Box<[CoreId]>,
+
     // This is None if `.wait()` has already been called - the field can be consumed only once,
     // typically done by the runtime client provided to the entry point thread.
     join_handles: Arc<Mutex<Option<Box<[thread::JoinHandle<()>]>>>>,
@@ -55,6 +57,7 @@ impl RuntimeClient {
         sync_command_txs_by_processor: HashMap<CoreId, Box<[channel::Sender<SyncAgentCommand>]>>,
         sync_task_queues_by_processor: HashMap<CoreId, Arc<SegQueue<ErasedSyncTask>>>,
         sync_priority_task_queues_by_processor: HashMap<CoreId, Arc<SegQueue<ErasedSyncTask>>>,
+        processor_ids: Box<[CoreId]>,
         join_handles: Box<[thread::JoinHandle<()>]>,
         is_stopping: Arc<AtomicBool>,
     ) -> Self {
@@ -66,6 +69,7 @@ impl RuntimeClient {
             sync_command_txs_by_processor,
             sync_task_queues_by_processor,
             sync_priority_task_queues_by_processor,
+            processor_ids,
             join_handles: Arc::new(Mutex::new(Some(join_handles))),
             is_stopping,
         }
@@ -241,7 +245,7 @@ impl RuntimeClient {
             result_box_tx.set(f())
         };
 
-        // TODO: Support spawn_blocking from arbitrary threads, not just async worker threads.
+        // TODO: Support this from arbitrary threads, not just async worker threads.
         // While not relevant for private I/O (first/current motivation for this to exist), it
         // would be relevant for user workloads.
         let processor_id = current_async_agent::with(|x| x.processor_id());
@@ -257,6 +261,52 @@ impl RuntimeClient {
             }
             _ => unreachable!(),
         }
+
+        for tx in &self.sync_command_txs_by_processor[&processor_id] {
+            // We ignore the return value because it is theoretically possible that something is trying
+            // to schedule new work when we are in the middle of a shutdown process.
+            _ = tx.send(SyncAgentCommand::CheckForTasks);
+        }
+
+        RemoteJoinHandle::new(result_box_rx, self.current_thread_io_waker())
+    }
+
+    /// Spawns a task on a synchronous worker thread suitable for the specific type of synchronous
+    /// work requested, returning the result via a join handle suitable for use in asynchronous
+    /// tasks.
+    ///
+    /// The task will be spawned on an arbitrary synchronous worker thread.
+    pub fn spawn_sync_on_any<F, R>(
+        &self,
+        task_type: SynchronousTaskType,
+        f: F,
+    ) -> RemoteJoinHandle<R>
+    where
+        F: FnOnce() -> R + Send + 'static,
+        R: Send + 'static,
+    {
+        if task_type != SynchronousTaskType::Syscall {
+            panic!("spawn_sync_on_any only supports SynchronousTaskType::Syscall");
+        }
+
+        let result_box_rx = Arc::new(RemoteResultBox::new());
+        let result_box_tx = Arc::clone(&result_box_rx);
+
+        let started = LowPrecisionInstant::now();
+
+        let task = move || {
+            SYNC_SPAWN_DELAY_LOW_PRIORITY.with(|x| x.observe_millis(started.elapsed()));
+            result_box_tx.set(f())
+        };
+
+        // We pick an arbitrary processor. The assumption being that whoever is calling this has
+        // so much work that it is unlikely to scale on one one processor, so they want to spread
+        // the load around.
+        let processor_id = self.processor_ids[next_sync_processor(self.processor_ids.len())];
+
+        // We ignore the return value because it is theoretically possible that something is trying
+        // to schedule new work when we are in the middle of a shutdown process.
+        self.sync_task_queues_by_processor[&processor_id].push(Box::new(task));
 
         for tx in &self.sync_command_txs_by_processor[&processor_id] {
             // We ignore the return value because it is theoretically possible that something is trying
@@ -370,9 +420,19 @@ thread_local! {
     static NEXT_ASYNC_WORKER_INDEX: Cell<usize> = const { Cell::new(0) };
 }
 
+thread_local! {
+    static NEXT_SYNC_PROCESSOR_INDEX: Cell<usize> = const { Cell::new(0) };
+}
+
 fn next_async_worker(max: usize) -> usize {
     let next = NEXT_ASYNC_WORKER_INDEX.get();
     NEXT_ASYNC_WORKER_INDEX.set((next + 1) % max);
+    next
+}
+
+fn next_sync_processor(max: usize) -> usize {
+    let next = NEXT_SYNC_PROCESSOR_INDEX.get();
+    NEXT_SYNC_PROCESSOR_INDEX.set((next + 1) % max);
     next
 }
 
