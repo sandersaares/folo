@@ -3,15 +3,24 @@
 use folo::{
     io::{self, OperationResultExt, PinnedBuffer},
     net::{TcpConnection, TcpServerBuilder},
+    time::{Clock, Delay},
 };
-use std::{error::Error, thread, time::Duration};
+use std::{error::Error, time::Duration};
 use tracing::{event, Level};
 
 /// This is a fake HTTP server that streams data at every caller in an infinite series of sends.
 /// It runs for 5 minutes and then stops so the metrics can be emitted and results analyzed.
 #[folo::main(print_metrics)]
 async fn main() -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
-    tracing_subscriber::fmt::init();
+    // Logging to stdout will happen on background thread to avoid synchronous slowdowns.
+    let (non_blocking_stdout, _guard) = tracing_appender::non_blocking(std::io::stdout());
+    tracing_subscriber::fmt().with_writer(non_blocking_stdout).init();
+
+    // Can the clock be provided by the FOLO runtime?
+    // For example, using scoped API or even the main could optionally accept a "FoloRuntime"?
+    // main(runtime: &FoloRuntime)
+    // let clock = runtime.clock();
+    let clock = Clock::new();
 
     let mut server = TcpServerBuilder::new()
         .port(1234.try_into().unwrap())
@@ -19,15 +28,8 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
         .build()
         .await?;
 
-    let (stop_tx, stop_rx) = oneshot::channel::<()>();
-
-    // Start a new thread that will send a shutdown signal in 5 minutes.
-    _ = thread::spawn(move || {
-        thread::sleep(Duration::from_secs(300));
-        let _ = stop_tx.send(());
-    });
-
-    _ = stop_rx.await.unwrap();
+    // Stop the server after 5 minutes
+    Delay::with_clock(&clock, Duration::from_secs(300)).await;
 
     // Calling this is optional - just validating that it works if called early.
     // If we do not call this, it will happen automatically when the runtime shuts down workers.
@@ -38,23 +40,50 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
     Ok(())
 }
 
-const HTTP_RESPONSE_HEADERS: &[u8] = b"HTTP/1.1 200 OK\r\nConnection: Clone\r\nContent-Type: application/octet-stream\r\nTransfer-Encoding: Chunked\r\n\r\n";
+const GET_INFINITE_STREAM_HEADER_LINE: &[u8] = b"GET /infinite HTTP/1.1\r\n";
+const GET_20KB_HEADER_LINE: &[u8] = b"GET /20kb HTTP/1.1\r\n";
+
+const INFINITE_STREAM_RESPONSE_HEADERS: &[u8] = b"HTTP/1.1 200 OK\r\nConnection: Close\r\nContent-Type: application/octet-stream\r\nTransfer-Encoding: Chunked\r\n\r\n";
 const NEWLINE: &[u8] = b"\r\n";
-const LAST_CHUNK: &[u8] = b"0\r\n\r\n";
 const ONE_MEGABYTE_CHUNK_HEADER: &[u8] = b"100000\r\n";
 
-async fn accept_connection(connection: TcpConnection) -> io::Result<()> {
+const TWENTY_KB_RESPONSE_HEADERS: &[u8] = b"HTTP/1.1 200 OK\r\nConnection: Close\r\nContent-Type: application/octet-stream\r\nContent-Length: 20480\r\n\r\n";
+const TWENTY_KB_RESPONSE_BODY: &[u8] = &[b'x'; 20480];
+
+const ERROR_RESPONSE_HEADERS: &[u8] = b"HTTP/1.1 500 Internal Server Error\r\nConnection: Close\r\nContent-Type: text/plain\r\nContent-Length: 0\r\n\r\n";
+const NOT_FOUND_RESPONSE_HEADERS: &[u8] = b"HTTP/1.1 404 Not Found\r\nConnection: Close\r\nContent-Type: text/plain\r\nContent-Length: 0\r\n\r\n";
+
+async fn accept_connection(mut connection: TcpConnection) -> io::Result<()> {
     event!(Level::INFO, "Connection received; reading HTTP request");
 
-    // We do not yet care about the HTTP request - we do not even read it. Instead, we directly
-    // start transmitting the HTTP response headers and the response data.
+    let request_buffer = PinnedBuffer::from_pool();
 
-    send_infinite_response(connection).await
+    // The operating system is not required to give us any specific number of bytes here. This could
+    // be only part of the HTTP request. It is highly likely to be the entire thing, however, so we
+    // just assume it is - if there is another chunk coming after this, we will simply never see it.
+    let request_buffer = connection.receive(request_buffer).await.into_inner()?;
+
+    // We just care about the first line in the request to know what the caller wants from us.
+    if request_buffer
+        .as_slice()
+        .starts_with(GET_INFINITE_STREAM_HEADER_LINE)
+    {
+        event!(Level::INFO, "Received GET /infinite");
+        return send_infinite_response(connection).await;
+    } else if request_buffer.as_slice().starts_with(GET_20KB_HEADER_LINE) {
+        event!(Level::INFO, "Received GET /20kb");
+        return send_20kb_response(connection).await;
+    } else {
+        event!(Level::INFO, "Received unknown request");
+        return send_not_found_response(connection).await;
+    }
 }
 
 async fn send_infinite_response(mut connection: TcpConnection) -> io::Result<()> {
     connection
-        .send(PinnedBuffer::from_boxed_slice(HTTP_RESPONSE_HEADERS.into()))
+        .send(PinnedBuffer::from_boxed_slice(
+            INFINITE_STREAM_RESPONSE_HEADERS.into(),
+        ))
         .await
         .into_inner()?;
 
@@ -91,4 +120,33 @@ async fn send_infinite_response(mut connection: TcpConnection) -> io::Result<()>
             }
         }
     }
+}
+
+async fn send_20kb_response(mut connection: TcpConnection) -> io::Result<()> {
+    connection
+        .send(PinnedBuffer::from_boxed_slice(
+            TWENTY_KB_RESPONSE_HEADERS.into(),
+        ))
+        .await
+        .into_inner()?;
+
+    connection
+        .send(PinnedBuffer::from_boxed_slice(
+            TWENTY_KB_RESPONSE_BODY.into(),
+        ))
+        .await
+        .into_inner()?;
+
+    Ok(())
+}
+
+async fn send_not_found_response(mut connection: TcpConnection) -> io::Result<()> {
+    connection
+        .send(PinnedBuffer::from_boxed_slice(
+            NOT_FOUND_RESPONSE_HEADERS.into(),
+        ))
+        .await
+        .into_inner()?;
+
+    Ok(())
 }

@@ -60,6 +60,7 @@ windows-result = "0"
 criterion = { version = "0", features = ["async_tokio"] }
 folo_testing = { path = "../folo_testing", version = "0.1.0-main" }
 tokio = { version = "1", features = ["fs", "rt-multi-thread", "macros"] }
+tracing-appender = "0"
 tracing-subscriber = "0"
 hyper-util = { version = "0.1.8", features = ["full"] }
 hyper = { version = "1.4.1", features = ["full"] }
