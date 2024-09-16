@@ -199,7 +199,7 @@ impl RuntimeBuilder {
             for worker_index in 0..SYNC_WORKERS_PER_PROCESSOR {
                 let processor_id = *processor_id;
 
-                let (start_tx, start_rx) = channel::unbounded::<AgentStartArguments>();
+                let (start_tx, start_rx) = oneshot::channel::<AgentStartArguments>();
                 sync_start_txs.push(start_tx);
 
                 let (ready_tx, ready_rx) = channel::unbounded::<SyncAgentReady>();
