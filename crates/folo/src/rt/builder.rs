@@ -202,7 +202,7 @@ impl RuntimeBuilder {
                 let (start_tx, start_rx) = oneshot::channel::<AgentStartArguments>();
                 sync_start_txs.push(start_tx);
 
-                let (ready_tx, ready_rx) = channel::unbounded::<SyncAgentReady>();
+                let (ready_tx, ready_rx) = oneshot::channel::<SyncAgentReady>();
                 sync_ready_rxs.push(ready_rx);
 
                 let sync_command_txs = sync_command_txs_by_processor
