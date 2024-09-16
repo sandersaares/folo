@@ -158,7 +158,7 @@ impl PinnedBuffer {
     /// or cancellation notification is received from the operating system).
     ///
     /// The caller is responsible for ensuring that the pointer is actually to pinned memory.
-    pub fn from_ptr(ptr: *mut u8, capacity: usize) -> Self {
+    pub unsafe fn from_ptr(ptr: *mut u8, capacity: usize) -> Self {
         CALLER_POINTERS_REFERENCED.with(Event::observe_unit);
 
         PinnedBuffer {
