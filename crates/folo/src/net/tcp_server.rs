@@ -9,7 +9,7 @@ use crate::{
 use core::slice;
 use futures::{select, stream::FuturesUnordered, FutureExt, StreamExt};
 use negative_impl::negative_impl;
-use std::{future::Future, mem, num::NonZeroU16, rc::Rc};
+use std::{future::Future, mem, num::NonZeroU16, rc::Rc, sync::Arc};
 use tracing::{event, Level};
 use windows::Win32::Networking::WinSock::{
     bind, htons, listen, setsockopt, AcceptEx, GetAcceptExSockaddrs, WSAIoctl, WSASocketA, AF_INET,
@@ -359,10 +359,11 @@ where
                 });
 
                 let tcp_connection = TcpConnection {
-                    socket: connection_socket,
+                    socket: Arc::new(connection_socket),
                 };
 
                 _ = (on_accept_clone)(tcp_connection).await;
+
                 // TODO: If callback result is error, report this error.
             });
         }

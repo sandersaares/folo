@@ -69,17 +69,19 @@ async fn accept_connection(mut connection: TcpConnection) -> io::Result<()> {
         .starts_with(GET_INFINITE_STREAM_HEADER_LINE)
     {
         event!(Level::DEBUG, "Received GET /infinite");
-        send_infinite_response(connection).await
+        send_infinite_response(&mut connection).await?;
     } else if request_buffer.as_slice().starts_with(GET_20KB_HEADER_LINE) {
         event!(Level::DEBUG, "Received GET /20kb");
-        return send_20kb_response(connection).await;
+        send_20kb_response(&mut connection).await?;
     } else {
         event!(Level::DEBUG, "Received unknown request");
-        return send_not_found_response(connection).await;
+        send_not_found_response(&mut connection).await?;
     }
+
+    connection.shutdown().await
 }
 
-async fn send_infinite_response(mut connection: TcpConnection) -> io::Result<()> {
+async fn send_infinite_response(connection: &mut TcpConnection) -> io::Result<()> {
     connection
         .send(PinnedBuffer::from_boxed_slice(
             INFINITE_STREAM_RESPONSE_HEADERS.into(),
@@ -122,7 +124,7 @@ async fn send_infinite_response(mut connection: TcpConnection) -> io::Result<()>
     }
 }
 
-async fn send_20kb_response(mut connection: TcpConnection) -> io::Result<()> {
+async fn send_20kb_response(connection: &mut TcpConnection) -> io::Result<()> {
     connection
         .send(PinnedBuffer::from_boxed_slice(
             TWENTY_KB_RESPONSE_HEADERS.into(),
@@ -140,7 +142,7 @@ async fn send_20kb_response(mut connection: TcpConnection) -> io::Result<()> {
     Ok(())
 }
 
-async fn send_not_found_response(mut connection: TcpConnection) -> io::Result<()> {
+async fn send_not_found_response(connection: &mut TcpConnection) -> io::Result<()> {
     connection
         .send(PinnedBuffer::from_boxed_slice(
             NOT_FOUND_RESPONSE_HEADERS.into(),
