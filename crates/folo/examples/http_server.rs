@@ -1,3 +1,5 @@
+#![allow(dead_code)] // WIP
+
 use folo::{
     io::{self, OperationResultExt, PinnedBuffer},
     net::{TcpConnection, TcpServerBuilder},
@@ -89,6 +91,4 @@ async fn send_infinite_response(mut connection: TcpConnection) -> io::Result<()>
             }
         }
     }
-
-    unreachable!()
 }
