@@ -23,6 +23,11 @@ pub struct SyncAgent {
     // process overall work more efficiently. These tasks are also executed even when we are
     // shutting down because they may be used to release critical resources that are blocking
     // shutdown.
+    //
+    // TODO: It feels like there is a race here. One thread might add a task before it knows that
+    // we are shutting down, whereas another may already have signaled shutdown, which was seen by
+    // all the agents and the agents terminated. But then the first thread's task lands and nobody
+    // is looking for it anymore.
     priority_task_queue: Arc<SegQueue<ErasedSyncTask>>,
 }
 
