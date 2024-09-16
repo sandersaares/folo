@@ -14,6 +14,9 @@ pub mod sync;
 pub mod util;
 pub mod time;
 
+#[cfg(feature = "hyper")]
+pub mod hyper;
+
 /// Marks a `main()` function as the async entry point of an app based on the Folo runtime.
 ///
 /// # Arguments
