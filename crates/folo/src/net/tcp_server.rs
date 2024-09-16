@@ -539,13 +539,13 @@ impl AcceptOne {
 
         match affinity_result {
             Ok(()) => {
-                event!(Level::INFO, message = "RSS processor info for new connection", affinity_info = ?affinity_info);
+                event!(Level::TRACE, message = "RSS processor info for new connection", affinity_info = ?affinity_info);
             }
             Err(io::Error::Winsock { detail, .. })
                 if detail == WSAEOPNOTSUPP || detail == WSAEACCES =>
             {
                 event!(
-                    Level::INFO,
+                    Level::TRACE,
                     message =
                         "RSS not supported/enabled on network adapter used for new connection"
                 );

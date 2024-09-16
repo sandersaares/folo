@@ -54,7 +54,7 @@ const ERROR_RESPONSE_HEADERS: &[u8] = b"HTTP/1.1 500 Internal Server Error\r\nCo
 const NOT_FOUND_RESPONSE_HEADERS: &[u8] = b"HTTP/1.1 404 Not Found\r\nConnection: Close\r\nContent-Type: text/plain\r\nContent-Length: 0\r\n\r\n";
 
 async fn accept_connection(mut connection: TcpConnection) -> io::Result<()> {
-    event!(Level::INFO, "Connection received; reading HTTP request");
+    event!(Level::DEBUG, "Connection received; reading HTTP request");
 
     let request_buffer = PinnedBuffer::from_pool();
 
@@ -68,13 +68,13 @@ async fn accept_connection(mut connection: TcpConnection) -> io::Result<()> {
         .as_slice()
         .starts_with(GET_INFINITE_STREAM_HEADER_LINE)
     {
-        event!(Level::INFO, "Received GET /infinite");
+        event!(Level::DEBUG, "Received GET /infinite");
         send_infinite_response(connection).await
     } else if request_buffer.as_slice().starts_with(GET_20KB_HEADER_LINE) {
-        event!(Level::INFO, "Received GET /20kb");
+        event!(Level::DEBUG, "Received GET /20kb");
         return send_20kb_response(connection).await;
     } else {
-        event!(Level::INFO, "Received unknown request");
+        event!(Level::DEBUG, "Received unknown request");
         return send_not_found_response(connection).await;
     }
 }
