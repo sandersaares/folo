@@ -305,7 +305,7 @@ impl RuntimeBuilder {
         let (tcp_dispatcher_command_tx, tcp_dispatcher_command_rx) =
             channel::unbounded::<AsyncAgentCommand>();
 
-        let tcp_dispatcher_worker_init = worker_init.clone();
+        let tcp_dispatcher_worker_init = self.worker_init.clone();
         let tcp_dispatcher_metrics_tx = self.metrics_tx.clone();
     
         // HACK: We hardcode the first processor ID here. It is used for synchronous work dispatch.
