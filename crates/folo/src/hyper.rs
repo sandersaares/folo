@@ -132,6 +132,7 @@ impl Write for FoloIo {
     }
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), std::io::Error>> {
+        // Flushing is not relevant yet.
         Poll::Ready(Ok(()))
     }
 
