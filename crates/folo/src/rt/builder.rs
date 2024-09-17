@@ -1,24 +1,20 @@
-use super::{
-    current_sync_agent,
-    sync_agent::{SyncAgent, SyncAgentCommand},
-};
-use crate::{
-    io::{self, IoWaker},
-    metrics::ReportPage,
-    rt::{
-        async_agent::{AsyncAgent, AsyncAgentCommand},
-        current_async_agent, current_runtime, RuntimeClient,
-    },
-};
-use crossbeam::{channel, queue::SegQueue};
-use std::{
-    collections::HashMap,
-    fmt::{self, Debug, Formatter},
-    rc::Rc,
-    sync::{atomic::AtomicBool, Arc},
-    thread,
-};
+use std::collections::HashMap;
+use std::fmt::{self, Debug, Formatter};
+use std::rc::Rc;
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
+use std::thread;
+
+use crossbeam::channel;
+use crossbeam::queue::SegQueue;
 use tracing::{event, Level};
+
+use super::sync_agent::{SyncAgent, SyncAgentCommand};
+use super::{current_sync_agent, ErasedSyncTask};
+use crate::io::{self, IoWaker};
+use crate::metrics::ReportPage;
+use crate::rt::async_agent::{AsyncAgent, AsyncAgentCommand};
+use crate::rt::{current_async_agent, current_runtime, RuntimeClient};
 
 /// The thing with synchronous worker threads is that they often get blocked and spend time doing
 /// essentially nothing due to offloading blocking I/O onto these threads. Therefore, we spawn many
@@ -27,8 +23,15 @@ use tracing::{event, Level};
 /// fixed size might be acceptable.
 const SYNC_WORKERS_PER_PROCESSOR: usize = 2;
 
+struct ThreadStartResult<AgentReady, R> {
+    join_handle: std::thread::JoinHandle<()>,
+    start_tx: oneshot::Sender<AgentStartArguments>,
+    ready_rx: oneshot::Receiver<AgentReady>,
+    result: R,
+}
+
 pub struct RuntimeBuilder {
-    worker_init: Option<Arc<dyn Fn() + Send + Sync + 'static>>,
+    worker_init: Arc<dyn Fn() + Send + Sync + 'static>,
     ad_hoc_entrypoint: bool,
     metrics_tx: Option<channel::Sender<ReportPage>>,
     max_processors: Option<usize>,
@@ -37,7 +40,7 @@ pub struct RuntimeBuilder {
 impl RuntimeBuilder {
     pub fn new() -> Self {
         Self {
-            worker_init: None,
+            worker_init: Arc::new(|| {}),
             ad_hoc_entrypoint: false,
             metrics_tx: None,
             max_processors: None,
@@ -49,7 +52,7 @@ impl RuntimeBuilder {
     where
         F: Fn() + Send + Sync + 'static,
     {
-        self.worker_init = Some(Arc::new(f));
+        self.worker_init = Arc::new(f);
         self
     }
 
@@ -83,6 +86,159 @@ impl RuntimeBuilder {
         self
     }
 
+    fn start_async_agent(
+        &self,
+        processor_id: core_affinity::CoreId,
+        worker_index: usize,
+    ) -> std::io::Result<ThreadStartResult<AsyncAgentReady, channel::Sender<AsyncAgentCommand>>>
+    {
+        let worker_init = Arc::clone(&self.worker_init);
+        let metrics_tx = self.metrics_tx.clone();
+        let (start_tx, start_rx) = oneshot::channel::<AgentStartArguments>();
+        let (ready_tx, ready_rx) = oneshot::channel::<AsyncAgentReady>();
+        let (command_tx, command_rx) = channel::unbounded::<AsyncAgentCommand>();
+
+        let join_handle = thread::Builder::new()
+            .name(format!("async-{}", worker_index))
+            .spawn(move || {
+                worker_init();
+
+                let agent = Rc::new(AsyncAgent::new(command_rx, metrics_tx, processor_id));
+
+                // Signal that we are ready to start.
+                ready_tx
+                    .send(AsyncAgentReady {
+                        io_waker: agent.io().borrow().waker(),
+                    })
+                    .expect("runtime startup process failed in infallible code");
+
+                // We first wait for the startup signal, which indicates that all agents have been
+                // created and registered with the runtime, and the runtime is ready to be used.
+                let start = start_rx
+                    .recv()
+                    .expect("runtime startup process failed in infallible code");
+
+                core_affinity::set_for_current(processor_id);
+                current_async_agent::set(Rc::clone(&agent));
+                current_runtime::set(start.runtime_client);
+
+                agent.run();
+            })?;
+
+        Ok(ThreadStartResult {
+            join_handle,
+            start_tx,
+            ready_rx,
+            result: command_tx,
+        })
+    }
+
+    fn start_sync_agent(
+        &self,
+        processor_id: core_affinity::CoreId,
+        worker_index: usize,
+        task_queue: Arc<SegQueue<ErasedSyncTask>>,
+        priority_task_queue: Arc<SegQueue<ErasedSyncTask>>,
+    ) -> std::io::Result<ThreadStartResult<SyncAgentReady, channel::Sender<SyncAgentCommand>>> {
+        let worker_init = Arc::clone(&self.worker_init);
+        let metrics_tx = self.metrics_tx.clone();
+        let (start_tx, start_rx) = oneshot::channel::<AgentStartArguments>();
+        let (ready_tx, ready_rx) = oneshot::channel::<SyncAgentReady>();
+        let (command_tx, command_rx) = channel::unbounded::<SyncAgentCommand>();
+
+        let join_handle = thread::Builder::new()
+            .name(format!("sync-{}-{}", processor_id.id, worker_index))
+            .spawn(move || {
+                (worker_init)();
+
+                let agent = Rc::new(SyncAgent::new(
+                    command_rx,
+                    metrics_tx,
+                    task_queue,
+                    priority_task_queue,
+                ));
+
+                // Signal that we are ready to start.
+                ready_tx
+                    .send(SyncAgentReady {})
+                    .expect("runtime startup process failed in infallible code");
+
+                // We first wait for the startup signal, which indicates that all agents have been
+                // created and registered with the runtime, and the runtime is ready to be used.
+                let start = start_rx
+                    .recv()
+                    .expect("runtime startup process failed in infallible code");
+
+                core_affinity::set_for_current(processor_id);
+
+                current_sync_agent::set(Rc::clone(&agent));
+                current_runtime::set(start.runtime_client);
+
+                agent.run();
+            })?;
+
+        Ok(ThreadStartResult {
+            join_handle,
+            start_tx,
+            ready_rx,
+            result: command_tx,
+        })
+    }
+
+    fn start_tcp_thread(
+        &self,
+        tcp_dispatcher_processor_id: core_affinity::CoreId,
+    ) -> std::io::Result<ThreadStartResult<AsyncAgentReady, channel::Sender<AsyncAgentCommand>>>
+    {
+        let (start_tx, start_rx) = oneshot::channel::<AgentStartArguments>();
+        let (ready_tx, ready_rx) = oneshot::channel::<AsyncAgentReady>();
+        let (command_tx, command_rx) = channel::unbounded::<AsyncAgentCommand>();
+
+        let worker_init = self.worker_init.clone();
+        let metrics_tx = self.metrics_tx.clone();
+
+        let join_handle = thread::Builder::new()
+            .name("tcp-dispatcher".to_string())
+            .spawn(move || {
+                (worker_init)();
+
+                let agent = Rc::new(AsyncAgent::new(
+                    command_rx,
+                    metrics_tx,
+                    tcp_dispatcher_processor_id,
+                ));
+
+                // Signal that we are ready to start.
+                ready_tx
+                    .send(AsyncAgentReady {
+                        io_waker: agent.io().borrow().waker(),
+                    })
+                    .expect("runtime startup process failed in infallible code");
+
+                // We first wait for the startup signal, which indicates that all agents have been
+                // created and registered with the runtime, and the runtime is ready to be used.
+                let start = start_rx
+                    .recv()
+                    .expect("runtime startup process failed in infallible code");
+
+                // We deliberately do not set core affinity here because the TCP dispatcher is not
+                // pinned. As there can be only one, we do not want it starved of CPU time, so allow
+                // the OS to schedule it on any processor that it sees fit.
+
+                current_async_agent::set(Rc::clone(&agent));
+                current_runtime::set(start.runtime_client);
+
+                agent.run();
+            })?;
+
+        Ok(ThreadStartResult {
+            join_handle,
+            start_tx,
+            ready_rx,
+            result: command_tx,
+        })
+    }
+
     pub fn build(self) -> io::Result<RuntimeClient> {
         if self.ad_hoc_entrypoint {
             // With ad-hoc entrypoints we reuse the runtime if it is already set.
@@ -108,8 +264,6 @@ impl RuntimeBuilder {
 
         event!(Level::INFO, processor_count);
 
-        let worker_init = self.worker_init.unwrap_or(Arc::new(|| {}));
-
         let mut join_handles = Vec::with_capacity(sync_worker_count + async_worker_count);
 
         // # Async workers
@@ -119,61 +273,26 @@ impl RuntimeBuilder {
         let mut async_ready_rxs = Vec::with_capacity(async_worker_count);
 
         for worker_index in 0..async_worker_count {
-            let (start_tx, start_rx) = channel::unbounded::<AgentStartArguments>();
-            async_start_txs.push(start_tx);
-
-            let (ready_tx, ready_rx) = channel::unbounded::<AsyncAgentReady>();
-            async_ready_rxs.push(ready_rx);
-
-            let (command_tx, command_rx) = channel::unbounded::<AsyncAgentCommand>();
-            async_command_txs.push(command_tx);
-
-            let worker_init = worker_init.clone();
-
-            let metrics_tx = self.metrics_tx.clone();
-
             let processor_id = processor_ids[worker_index];
+            let ThreadStartResult {
+                join_handle,
+                start_tx,
+                ready_rx,
+                result: command_tx,
+            } = self.start_async_agent(processor_id, worker_index)?;
 
-            let join_handle = thread::Builder::new()
-                .name(format!("async-{}", worker_index))
-                .spawn(move || {
-                    (worker_init)();
-
-                    let agent = Rc::new(AsyncAgent::new(command_rx, metrics_tx, processor_id));
-
-                    // Signal that we are ready to start.
-                    ready_tx
-                        .send(AsyncAgentReady {
-                            io_waker: agent.io().borrow().waker(),
-                        })
-                        .expect("runtime startup process failed in infallible code");
-
-                    // We first wait for the startup signal, which indicates that all agents have been
-                    // created and registered with the runtime, and the runtime is ready to be used.
-                    let start = start_rx
-                        .recv()
-                        .expect("runtime startup process failed in infallible code");
-
-                    core_affinity::set_for_current(processor_id);
-
-                    current_async_agent::set(Rc::clone(&agent));
-                    current_runtime::set(start.runtime_client);
-
-                    agent.run();
-                })?;
-
+            async_start_txs.push(start_tx);
+            async_ready_rxs.push(ready_rx);
+            async_command_txs.push(command_tx);
             join_handles.push(join_handle);
         }
 
-        let mut async_io_wakers = Vec::with_capacity(async_worker_count);
-
-        for ready_rx in async_ready_rxs {
-            let ready = ready_rx
-                .recv()
-                .expect("async worker thread failed before even starting");
-
-            async_io_wakers.push(ready.io_waker);
-        }
+        let async_io_wakers: Vec<_> = async_ready_rxs
+            .into_iter()
+            .map(|ready_rx| {
+                ready_rx.recv().expect("async worker thread failed before even starting").io_waker
+            })
+            .collect();
 
         // # Sync workers
 
@@ -197,120 +316,46 @@ impl RuntimeBuilder {
                 .insert(*processor_id, Arc::clone(&sync_priority_task_queue));
 
             for worker_index in 0..SYNC_WORKERS_PER_PROCESSOR {
-                let processor_id = *processor_id;
+                let ThreadStartResult {
+                    join_handle,
+                    start_tx,
+                    ready_rx,
+                    result: command_tx,
+                } = self.start_sync_agent(
+                    processor_id.clone(),
+                    worker_index,
+                    Arc::clone(&sync_task_queue),
+                    Arc::clone(&sync_priority_task_queue),
+                )?;
 
-                let (start_tx, start_rx) = channel::unbounded::<AgentStartArguments>();
                 sync_start_txs.push(start_tx);
-
-                let (ready_tx, ready_rx) = channel::unbounded::<SyncAgentReady>();
                 sync_ready_rxs.push(ready_rx);
 
                 let sync_command_txs = sync_command_txs_by_processor
                     .entry(processor_id)
                     .or_insert_with(|| Vec::with_capacity(sync_worker_count));
-
-                let (command_tx, command_rx) = channel::unbounded::<SyncAgentCommand>();
                 sync_command_txs.push(command_tx);
-
-                let worker_init = worker_init.clone();
-
-                let metrics_tx = self.metrics_tx.clone();
-
-                let sync_task_queue = Arc::clone(&sync_task_queue);
-                let sync_priority_task_queue = Arc::clone(&sync_priority_task_queue);
-
-                let join_handle = thread::Builder::new()
-                    .name(format!("sync-{}-{}", processor_id.id, worker_index))
-                    .spawn(move || {
-                        (worker_init)();
-
-                        let agent = Rc::new(SyncAgent::new(
-                            command_rx,
-                            metrics_tx,
-                            sync_task_queue,
-                            sync_priority_task_queue,
-                        ));
-
-                        // Signal that we are ready to start.
-                        ready_tx
-                            .send(SyncAgentReady {})
-                            .expect("runtime startup process failed in infallible code");
-
-                        // We first wait for the startup signal, which indicates that all agents have been
-                        // created and registered with the runtime, and the runtime is ready to be used.
-                        let start = start_rx
-                            .recv()
-                            .expect("runtime startup process failed in infallible code");
-
-                        core_affinity::set_for_current(processor_id);
-
-                        current_sync_agent::set(Rc::clone(&agent));
-                        current_runtime::set(start.runtime_client);
-
-                        agent.run();
-                    })?;
-
                 join_handles.push(join_handle);
             }
         }
 
-        for ready_rx in sync_ready_rxs {
-            _ = ready_rx
-                .recv()
-                .expect("sync worker thread failed before even starting");
-
+        sync_ready_rxs.into_iter().for_each(|ready_rx| {
+            ready_rx.recv().expect("sync worker thread failed before even starting");
             // For now we just want to make sure we see the ACK. No actual state fanster needed.
-        }
+        });
 
         // # TCP dispatcher worker
-
-        let (tcp_dispatcher_start_tx, tcp_dispatcher_start_rx) =
-            channel::unbounded::<AgentStartArguments>();
-        let (tcp_dispatcher_ready_tx, tcp_dispatcher_ready_rx) =
-            channel::unbounded::<AsyncAgentReady>();
-        let (tcp_dispatcher_command_tx, tcp_dispatcher_command_rx) =
-            channel::unbounded::<AsyncAgentCommand>();
-
-        let tcp_dispatcher_worker_init = worker_init.clone();
-        let tcp_dispatcher_metrics_tx = self.metrics_tx.clone();
 
         // HACK: We hardcode the first processor ID here. It is used for synchronous work dispatch.
         // Ideally, we would auto-detect this on the fly because the TCP dispatcher is not pinned.
         let tcp_dispatcher_processor_id = processor_ids[0];
 
-        let tcp_dispatcher_join_handle = thread::Builder::new()
-            .name("tcp-dispatcher".to_string())
-            .spawn(move || {
-                (tcp_dispatcher_worker_init)();
-
-                let agent = Rc::new(AsyncAgent::new(
-                    tcp_dispatcher_command_rx,
-                    tcp_dispatcher_metrics_tx,
-                    tcp_dispatcher_processor_id,
-                ));
-
-                // Signal that we are ready to start.
-                tcp_dispatcher_ready_tx
-                    .send(AsyncAgentReady {
-                        io_waker: agent.io().borrow().waker(),
-                    })
-                    .expect("runtime startup process failed in infallible code");
-
-                // We first wait for the startup signal, which indicates that all agents have been
-                // created and registered with the runtime, and the runtime is ready to be used.
-                let start = tcp_dispatcher_start_rx
-                    .recv()
-                    .expect("runtime startup process failed in infallible code");
-
-                // We deliberately do not set core affinity here because the TCP dispatcher is not
-                // pinned. As there can be only one, we do not want it starved of CPU time, so allow
-                // the OS to schedule it on any processor that it sees fit.
-
-                current_async_agent::set(Rc::clone(&agent));
-                current_runtime::set(start.runtime_client);
-
-                agent.run();
-            })?;
+        let ThreadStartResult {
+            join_handle: tcp_dispatcher_join_handle,
+            start_tx: tcp_dispatcher_start_tx,
+            ready_rx: tcp_dispatcher_ready_rx,
+            result: tcp_dispatcher_command_tx,
+        } = self.start_tcp_thread(tcp_dispatcher_processor_id)?;
 
         join_handles.push(tcp_dispatcher_join_handle);
 
@@ -333,7 +378,7 @@ impl RuntimeBuilder {
             tcp_dispatcher_ready.io_waker,
             sync_command_txs_by_processor
                 .into_iter()
-                .map(|(k, v)| (k, v.into_boxed_slice()))
+                .map(|(k, v)| (k.clone(), v.into_boxed_slice()))
                 .collect(),
             sync_task_queues_by_processor,
             sync_priority_task_queues_by_processor,
