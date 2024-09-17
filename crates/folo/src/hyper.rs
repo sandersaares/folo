@@ -40,6 +40,7 @@ where
 pub struct FoloIo {
     connection: TcpConnection,
     active_read: Option<OperationResultFuture>,
+    active_write: Option<OperationResultFuture>,
 }
 
 impl FoloIo {
@@ -47,6 +48,7 @@ impl FoloIo {
         Self {
             connection,
             active_read: None,
+            active_write: None,
         }
     }
 }
@@ -58,8 +60,6 @@ impl Read for FoloIo {
         mut buf: ReadBufCursor<'_>,
     ) -> Poll<Result<(), std::io::Error>> {
         let io = self.get_mut();
-
-        dbg!(&io);
 
         if let Some(active_read) = io.active_read.as_mut() {
             println!("has value");
@@ -74,6 +74,7 @@ impl Read for FoloIo {
 
                     return Poll::Ready(match result {
                         Ok(r) => {
+                            println!("read {} bytes", r.len());
                             unsafe {
                                 buf.advance(r.len());
                             }
@@ -94,9 +95,10 @@ impl Read for FoloIo {
             unsafe { PinnedBuffer::from_ptr(buf.as_mut().as_ptr() as *mut u8, buf.as_mut().len()) };
 
         io.active_read = Some(io.connection.receive(buffer));
-        
-        Poll::Pending
 
+        // call poll in self
+        let pinned = pin!(io);
+        pinned.poll_read(cx, buf)
     }
 }
 
@@ -106,11 +108,43 @@ impl Write for FoloIo {
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<Result<usize, std::io::Error>> {
-        todo!()
+        let io = self.get_mut();
+
+        if let Some(active_write) = io.active_write.as_mut() {
+            // We know that while there is something in the active_read, it's location in th memory won't change.
+            let pinned = pin!(active_write);
+
+            match pinned.poll(cx) {
+                Poll::Ready(result) => {
+                    // This future is finished, set it to none.
+                    io.active_write = None;
+
+                    return Poll::Ready(match result {
+                        Ok(r) => {
+                            println!("wrote {} bytes", r.len());
+                            Ok(r.len())
+                        }
+                        Err(e) => Err(e.into_inner().into()),
+                    });
+                }
+
+                Poll::Pending => return Poll::Pending,
+            }
+        }
+
+        // If there's no active read, start a new one
+        let buffer =
+            unsafe { PinnedBuffer::from_ptr(buf.as_ptr() as *mut u8, buf.len()) };
+
+        io.active_write = Some(io.connection.send(buffer));
+
+        // call poll in self
+        let pinned = pin!(io);
+        pinned.poll_write(cx, buf)
     }
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), std::io::Error>> {
-        todo!()
+        Poll::Ready(Ok(()))
     }
 
     fn poll_shutdown(
