@@ -14,7 +14,9 @@ use tracing::{event, Level};
 async fn main() -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
     // Logging to stdout will happen on background thread to avoid synchronous slowdowns.
     let (non_blocking_stdout, _guard) = tracing_appender::non_blocking(std::io::stdout());
-    tracing_subscriber::fmt().with_writer(non_blocking_stdout).init();
+    tracing_subscriber::fmt()
+        //.with_max_level(tracing::Level::TRACE)
+        .with_writer(non_blocking_stdout).init();
 
     // Can the clock be provided by the FOLO runtime?
     // For example, using scoped API or even the main could optionally accept a "FoloRuntime"?

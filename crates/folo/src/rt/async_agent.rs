@@ -3,9 +3,7 @@ use crate::{
     io,
     metrics::{self, Event, EventBuilder, ReportPage},
     rt::{
-        async_task_engine::{AsyncTaskEngine, CycleResult},
-        local_task::LocalTask,
-        LocalJoinHandle,
+        async_task_engine::{AsyncTaskEngine, CycleResult}, current_runtime, local_task::LocalTask, LocalJoinHandle
     }, time::advance_local_timers,
 };
 use core_affinity::CoreId;
@@ -246,7 +244,13 @@ impl AsyncAgent {
                 }
             }
 
-            match engine.execute_cycle() {
+            let execute_cycle_result = engine.execute_cycle();
+
+            // The async task engine may have scheduled some runtime commands to be sent out.
+            // Deliver them to runtime agents now so we ensure commands are sent every cycle.
+            current_runtime::with(|runtime| runtime.submit_pending_tasks());
+
+            match execute_cycle_result {
                 CycleResult::Continue => {
                     // The async task engine believes there may be more work to do, so no sleep.
                     allow_io_sleep = false;

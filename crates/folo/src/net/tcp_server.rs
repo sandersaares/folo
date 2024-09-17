@@ -7,10 +7,14 @@ use crate::{
     util::OwnedHandle,
 };
 use core::slice;
-use futures::{select, stream::FuturesUnordered, FutureExt, StreamExt};
+use futures::{
+    future::{select, Either},
+    stream::FuturesUnordered,
+    StreamExt,
+};
 use negative_impl::negative_impl;
 use std::{future::Future, mem, num::NonZeroU16, sync::Arc};
-use tracing::{event, Level};
+use tracing::{event, level_filters::LevelFilter, Level};
 use windows::Win32::Networking::WinSock::{
     bind, htons, listen, setsockopt, AcceptEx, GetAcceptExSockaddrs, WSAIoctl, WSASocketA, AF_INET,
     INADDR_ANY, IN_ADDR, IPPROTO_TCP, SIO_QUERY_RSS_PROCESSOR_INFO, SOCKADDR, SOCKADDR_IN, SOCKET,
@@ -100,7 +104,7 @@ where
         let server_handle = TcpServerHandle::new(join_handle, shutdown_tx);
 
         event!(
-            Level::INFO,
+            Level::DEBUG,
             message = "TCP server started",
             port = port.get()
         );
@@ -156,6 +160,7 @@ impl TcpServerHandle {
         };
 
         // We ignore the result (maybe the remote side is already terminated).
+        event!(Level::TRACE, "signaling TCP dispatcher to stop");
         let _ = dispatcher_shutdown_tx.send(());
     }
 }
@@ -239,10 +244,6 @@ where
     async fn startup(&mut self) -> io::Result<StartedTcpDispatcher> {
         winsock::ensure_initialized();
 
-        // NOTE: Measure overhead of these operations. In principle, they are synchronous, although
-        // sockets also have some thread-specific behaviors so we may want to avoid using them from
-        // multiple threads. However, if this can incur significant latency, maybe consider it?
-
         // SAFETY: We are required to close the handle once we are done with it,
         // which we do via OwnedHandle that closes the handle on drop.
         let listen_socket = unsafe {
@@ -285,6 +286,8 @@ where
             io.bind_io_primitive(&*listen_socket).unwrap();
         });
 
+        event!(Level::TRACE, "opened TCP socket for accepting connections");
+
         Ok(StartedTcpDispatcher {
             listen_socket: Arc::new(listen_socket),
         })
@@ -311,12 +314,12 @@ where
         // we must use interior mutability or exclusive mutability only for one of these futures.
         // We cannot give an exclusive reference to both futures.
 
+        // All the ongoing accept operations. We will keep this filled up to the limit of
+        // CONCURRENT_ACCEPT_OPERATIONS, so whenever some get accepted, more accepts get queued.
         let mut accept_futures = Box::pin(FuturesUnordered::new());
-        let mut shutdown_received_future = self
-            .shutdown_rx
-            .take()
-            .expect("we only take this once")
-            .fuse();
+
+        // If this completes, we shut down the dispatcher.
+        let mut shutdown_received_future = self.shutdown_rx.take().expect("we only take this once");
 
         loop {
             while accept_futures.len() < CONCURRENT_ACCEPT_OPERATIONS {
@@ -324,17 +327,27 @@ where
                     AcceptOne {
                         listen_socket: Arc::clone(&listen_socket),
                     }
-                    .execute()
-                    .fuse(),
+                    .execute(),
                 );
             }
 
-            let accept_result = select! {
-                accept_result = accept_futures.select_next_some() => {
+            event!(
+                Level::TRACE,
+                message = "waiting for new connection or shutdown",
+                accept_futures_len = accept_futures.len(),
+            );
+
+            let accept_result = match select(accept_futures.next(), shutdown_received_future).await
+            {
+                Either::Left((Some(accept_result), new_shutdown_received_future)) => {
+                    shutdown_received_future = new_shutdown_received_future;
                     accept_result
                 }
-                _ = shutdown_received_future => {
-                    event!(Level::INFO, "TCP dispatcher shutting down",);
+                Either::Left((None, _)) => {
+                    panic!("accept_futures stream ended unexpectedly - we are supposed to refill it before checking");
+                }
+                Either::Right(_) => {
+                    event!(Level::DEBUG, "TCP dispatcher shutting down",);
                     // We will not accept any new connections. The existing "accept one" operations
                     // will be dropped soon and any pending I/O will likewise be canceled as soon
                     // as the OwnedHandle is dropped and the socket gets closed.
@@ -342,8 +355,20 @@ where
                 }
             };
 
+            event!(
+                Level::TRACE,
+                message = "detected incoming TCP connection (or error)",
+                accept_futures_len = accept_futures.len(),
+                ?accept_result
+            );
+
             let Ok(connection_socket) = accept_result else {
-                // TODO: Report error if not successfully accepted..
+                event!(
+                    Level::ERROR,
+                    message = "error accepting new connection - ignoring",
+                    error = accept_result.unwrap_err().to_string()
+                );
+                // TODO: Report error to callback if not successfully accepted..
                 continue;
             };
 
@@ -385,12 +410,19 @@ struct AcceptOne {
 
 impl AcceptOne {
     async fn execute(self) -> io::Result<OwnedHandle<SOCKET>> {
+        event!(Level::TRACE, "listening for an incoming connection");
+
         // Creating the socket is an expensive synchronous operation, so do it on a synchronous
         // worker thread.
-        let connection_socket = current_runtime::with(|x| {
+        let connection_socket = current_runtime::with(move |x| {
             x.spawn_sync_on_any(
                 SynchronousTaskType::Syscall,
                 move || -> io::Result<OwnedHandle<SOCKET>> {
+                    event!(
+                        Level::TRACE,
+                        "creating fresh socket for next incoming connection"
+                    );
+
                     // SAFETY: All we need to worry about here is cleanup, which we do via OwnedHandle.
                     Ok(unsafe {
                         OwnedHandle::new(WSASocketA(
@@ -406,6 +438,8 @@ impl AcceptOne {
             )
         })
         .await?;
+
+        event!(Level::TRACE, "socket created for next incoming connection");
 
         // NOTE: AcceptEx supports immediately pasting the first block of received data in here,
         // which may provide a performance boost when accepting the connection. This is optional
@@ -433,6 +467,8 @@ impl AcceptOne {
         // is bound to the completion port of the listen socket. Note that we have not yet bound the
         // connection socket to any completion port.
         let accept_operation = current_async_agent::with_io(|io| io.new_operation(buffer));
+
+        event!(Level::TRACE, "waiting for incoming connection to arrive");
 
         // SAFETY: We are required to pass the OVERLAPPED struct to the native I/O function to avoid
         // a resource leak. We do.
@@ -462,6 +498,11 @@ impl AcceptOne {
         .await
         .into_inner()?;
 
+        event!(
+            Level::TRACE,
+            "incoming connection accepted; identifying addresses"
+        );
+
         let mut local_addr: *mut SOCKADDR = std::ptr::null_mut();
         let mut local_addr_len: i32 = 0;
         let mut remote_addr: *mut SOCKADDR = std::ptr::null_mut();
@@ -487,10 +528,17 @@ impl AcceptOne {
         // worker thread.
         let listen_socket = Arc::clone(&self.listen_socket);
 
-        let (connection_socket, _affinity_info) = current_runtime::with(|runtime| {
+        event!(
+            Level::TRACE,
+            "configuring socket for incoming connection (part 1)"
+        );
+
+        let (connection_socket, _affinity_info) = current_runtime::with(move |runtime| {
             runtime.spawn_sync_on_any(
                 SynchronousTaskType::Syscall,
                 move || -> io::Result<(OwnedHandle<SOCKET>, SOCKET_PROCESSOR_AFFINITY)> {
+                    event!(Level::TRACE, "configuring socket for incoming connection (part 2)");
+
                     // We need to refer to this via pointer, so let's copy it out to a place first.
                     let listen_socket = (**listen_socket).0;
 
@@ -571,6 +619,8 @@ impl AcceptOne {
                             );
                         }
                     }
+
+                    event!(Level::TRACE, "socket configured for incoming connection");
 
                     Ok((connection_socket, affinity_info))
                 },

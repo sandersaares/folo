@@ -47,7 +47,7 @@ impl SyncAgent {
     }
 
     pub fn run(&self) {
-        event!(Level::TRACE, "Started");
+        event!(Level::TRACE, "sync agent starting");
 
         // We simply process commands one by one until we receive a terminate command.
         // There is a risk of a huge buildup of commands with a pending terminate at the very end
@@ -57,13 +57,13 @@ impl SyncAgent {
         {
             match command {
                 SyncAgentCommand::CheckForTasks => {
-                    let Some(task) = self.next_task() else {
-                        // Some other worker cleared the queue already.
-                        continue;
-                    };
+                    while let Some(task) = self.next_task() {
+                        let task_addr = format!("{:p}", &*task);
+                        event!(Level::TRACE, message = "executing task", task_addr);
 
-                    TASKS.with(Event::observe_unit);
-                    TASK_DURATION.with(|x| x.observe_duration_millis(task));
+                        TASKS.with(Event::observe_unit);
+                        TASK_DURATION.with(|x| x.observe_duration_millis(task));
+                    }
                 }
                 SyncAgentCommand::Terminate => {
                     event!(

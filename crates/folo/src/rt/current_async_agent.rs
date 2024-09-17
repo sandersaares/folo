@@ -51,6 +51,10 @@ where
     })
 }
 
+pub fn is_some() -> bool {
+    CURRENT_AGENT.with_borrow(|agent| agent.is_some())
+}
+
 pub fn set(value: Rc<AsyncAgent>) {
     CURRENT_AGENT.with_borrow_mut(|agent| {
         if agent.is_some() {

@@ -3,13 +3,17 @@ use crate::{
     rt::{current_async_agent, spawn_sync, SynchronousTaskType},
     util::OwnedHandle,
 };
-use std::{ffi::CString, path::Path};
+use std::{
+    ffi::CString,
+    path::Path,
+};
 use windows::{
     core::PCSTR,
     Win32::{
         Foundation::{HANDLE, STATUS_END_OF_FILE},
         Storage::FileSystem::{
-            CreateFileA, GetFileSizeEx, ReadFile, FILE_FLAG_OVERLAPPED, FILE_FLAG_SEQUENTIAL_SCAN, FILE_GENERIC_READ, FILE_SHARE_READ, OPEN_EXISTING
+            CreateFileA, GetFileSizeEx, ReadFile, FILE_FLAG_OVERLAPPED, FILE_FLAG_SEQUENTIAL_SCAN,
+            FILE_GENERIC_READ, FILE_SHARE_READ, OPEN_EXISTING,
         },
     },
 };
@@ -62,7 +66,8 @@ pub async fn read_large_buffer(path: impl AsRef<Path>) -> io::Result<Vec<u8>> {
         // We must use a boxed slice because we need to pass ownership of the buffer to the I/O
         // driver for the duration of the I/O operation, so it cannot be rooted in the stack, nor
         // can we provide a reference while retaining ownership.
-        let mut buffer = Vec::with_capacity(file_size as usize);
+        let mut buffer = Vec::<u8>::with_capacity(file_size as usize);
+        #[allow(clippy::uninit_vec)] // They are just bytes destined for overwriting, meaningless.
         buffer.set_len(buffer.capacity());
         let mut buffer = PinnedBuffer::from_boxed_slice(buffer.into_boxed_slice());
 
