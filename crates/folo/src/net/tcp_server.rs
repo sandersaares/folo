@@ -181,6 +181,8 @@ impl !Send for TcpServerHandle {}
 impl !Sync for TcpServerHandle {}
 
 const CONCURRENT_ACCEPT_OPERATIONS: usize = 1024;
+// The default assigned by the OS seems to be around 128, which is not enough under high load.
+const PENDING_CONNECTION_LIMIT: i32 = 4096;
 
 /// The TCP dispatcher manages the listen socket used to receive new connections. When a new
 /// connection is received, it is dispatched to be handled by the user-defined callback on a
@@ -288,7 +290,7 @@ where
                 mem::size_of::<SOCKADDR_IN>() as i32,
             ))?;
 
-            winsock::to_io_result(listen(*listen_socket, SOMAXCONN as i32))?;
+            winsock::to_io_result(listen(*listen_socket, PENDING_CONNECTION_LIMIT))?;
         };
 
         // Bind the socket to the I/O completion port so we can process I/O completions.
