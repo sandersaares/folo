@@ -140,7 +140,8 @@ impl Write for FoloIo {
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Result<(), std::io::Error>> {
-        todo!()
+        // TODO: Do a proper shutdown.
+        Poll::Ready(Ok(()))
     }
 }
 
