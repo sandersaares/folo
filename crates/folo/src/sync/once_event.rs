@@ -1,6 +1,6 @@
 use crate::mem::PinnedSlabChain;
-use crate::util::{LocalCell, RcSlabRc, RefSlabRc, SlabRcCell, SlabRcCellStorage, UnsafeSlabRc};
-use negative_impl::negative_impl;
+use crate::util::{RcSlabRc, RefSlabRc, SlabRcCell, SlabRcCellStorage, UnsafeSlabRc, WithRefCount};
+use std::marker::PhantomPinned;
 use std::{
     cell::UnsafeCell,
     future::Future,
@@ -15,8 +15,15 @@ use std::{
 /// layer of types inside this type.
 pub type OnceEventSlabStorage<T> = SlabRcCellStorage<OnceEvent<T>>;
 
-/// An event that can be triggered at most once to deliver a value of type T to at most
+/// An asynchronous event that can be triggered at most once to deliver a value of type T to at most
 /// one listener awaiting that value.
+///
+/// Usage:
+///
+/// 1. Allocate the storage for the event using one of the `new*_storage*()` methods.
+/// 2. Create the event in the allocated storage using one of the `new_in_*()` methods. This will
+///    return a sender and receiver pair.
+/// 3. Call `set()` or `poll()` at most once to read or write the value through the sender/receiver.
 ///
 /// # Efficiency
 ///
@@ -29,12 +36,15 @@ pub type OnceEventSlabStorage<T> = SlabRcCellStorage<OnceEvent<T>>;
 ///
 /// # Thread safety
 ///
-/// The event is single-threaded.
+/// This type is `?Send + !Sync`. It is safe to send across threads as long as `T` supports that.
+/// Methods on this type may not be called across threads.
+///
+/// See `OnceEventShared` for a thread-safe version.
 #[derive(Debug)]
 pub struct OnceEvent<T> {
     // We only have a get() and a set() that access the state and we guarantee this happens on the
-    // same thread, so there is no point in wasting cycles on borrow counting at runtime. We
-    // downgrade this from a RefCell to an UnsafeCell to remove the overhead of borrow counting.
+    // same thread (because UnsafeCell is !Sync), so there is no point in wasting cycles on borrow
+    // counting at runtime with RefCell.
     state: UnsafeCell<EventState<T>>,
 }
 
@@ -102,16 +112,27 @@ impl<T> OnceEvent<T> {
         }
     }
 
-    /// Creates a new instance of the backing storage for OnceEvent instances. You may need to
-    /// further wrap this depending on which storage-referencing mode you are using.
+    /// Creates a new instance of the backing storage for OnceEvent instances. The storage will be
+    /// borrow checked at runtime using `RefCell` for safety.
+    /// 
+    /// You may need to further wrap this depending on which storage-referencing mode you are using.
+    /// For example:
+    /// 
+    /// * If referencing the storage by reference (`new_in_ref()`), nothing more is needed.
+    /// * If referencing the storage via `Rc` (`new_in_rc()`), wrap this in an `Rc`.
     pub fn new_slab_storage() -> OnceEventSlabStorage<T> {
         SlabRcCellStorage::new(PinnedSlabChain::new())
     }
 
-    pub fn new_embedded_storage() -> OnceEventEmbeddedStorage<T> {
+    /// This embeds a single event directly into a data structure owned by the caller. It is the
+    /// caller's responsibility to ensure that the storage outlives the event inserted into it.
+    /// The storage must be pinned at all times once an event is created in it.
+    pub fn new_embedded_storage_single() -> OnceEventEmbeddedStorage<T> {
         OnceEventEmbeddedStorage::default()
     }
 
+    /// Creates an event in storage that is referenced by a direct shared reference. This is a cheap
+    /// and efficient mechanism but requires the caller to track lifetimes across the type graph.
     pub fn new_in_ref(storage: &OnceEventSlabStorage<T>) -> (RefSender<'_, T>, RefReceiver<'_, T>) {
         let event = SlabRcCell::new(Self::new()).insert_into_ref(storage);
 
@@ -123,6 +144,9 @@ impl<T> OnceEvent<T> {
         )
     }
 
+    /// Creates an event in storage that is referenced by `Rc`. This is relatively cheap, though
+    /// incurs minor reference counting overhead. At the same time, it saves you from lifetimes
+    /// while ensuring safety.
     pub fn new_in_rc(storage: Rc<OnceEventSlabStorage<T>>) -> (RcSender<T>, RcReceiver<T>) {
         let event = SlabRcCell::new(Self::new()).insert_into_rc(storage);
 
@@ -134,9 +158,14 @@ impl<T> OnceEvent<T> {
         )
     }
 
+    /// Creates an event in storage that is referenced via unsafe memory access. This avoids any
+    /// reference counting overhead and the need to track lifetimes but requires the caller to
+    /// guarantee safety.
+    /// 
     /// # Safety
     ///
-    /// The caller is responsible for ensuring that the event does not outlive the storage.
+    /// The caller is responsible for ensuring that the storage is not dropped until both the
+    /// sender and receiver have been dropped (once an event has been created in the storage).
     pub unsafe fn new_in_unsafe(
         storage: Pin<&OnceEventSlabStorage<T>>,
     ) -> (UnsafeSender<T>, UnsafeReceiver<T>) {
@@ -150,6 +179,13 @@ impl<T> OnceEvent<T> {
         )
     }
 
+    /// Creates an event in embedded storage that is referenced via unsafe memory access. This
+    /// avoids any reference counting overhead and the need to track lifetimes but requires the
+    /// caller to guarantee safety.
+    /// 
+    /// Embedding the storage directly into a data structure owned by the caller can be more
+    /// efficient than managing a pool of events, if a suitable data structure is already available.
+    /// 
     /// # Safety
     ///
     /// The caller is responsible for ensuring that the event does not outlive the storage.
@@ -158,14 +194,14 @@ impl<T> OnceEvent<T> {
     pub unsafe fn new_embedded(
         storage: Pin<&OnceEventEmbeddedStorage<T>>,
     ) -> (EmbeddedSender<T>, EmbeddedReceiver<T>) {
-        let mut local_cell = LocalCell::new(Some(Self::new()));
+        let mut with_ref_count = WithRefCount::new(Some(Self::new()));
 
         // Sender + Receiver
-        local_cell.inc_ref();
-        local_cell.inc_ref();
+        with_ref_count.inc_ref();
+        with_ref_count.inc_ref();
 
         let storage_ref = &mut *storage.inner.get();
-        *storage_ref = local_cell;
+        *storage_ref = with_ref_count;
 
         let event = Pin::into_inner_unchecked(storage);
         (EmbeddedSender { event }, EmbeddedReceiver { event })
@@ -186,11 +222,6 @@ enum EventState<T> {
     /// The event has been set and the result has been consumed.
     Consumed,
 }
-
-#[negative_impl]
-impl<T> !Send for OnceEvent<T> {}
-#[negative_impl]
-impl<T> !Sync for OnceEvent<T> {}
 
 // ############## Ref ##############
 
@@ -298,7 +329,9 @@ impl<T> Future for UnsafeReceiver<T> {
 /// performance for this commonly used primitive.
 #[derive(Debug)]
 pub struct OnceEventEmbeddedStorage<T> {
-    inner: UnsafeCell<LocalCell<Option<OnceEvent<T>>>>,
+    inner: UnsafeCell<WithRefCount<Option<OnceEvent<T>>>>,
+
+    _must_pin: PhantomPinned,
 }
 
 impl<T> OnceEventEmbeddedStorage<T> {
@@ -320,7 +353,8 @@ impl<T> OnceEventEmbeddedStorage<T> {
 impl<T> Default for OnceEventEmbeddedStorage<T> {
     fn default() -> Self {
         Self {
-            inner: UnsafeCell::new(LocalCell::new(None)),
+            inner: UnsafeCell::new(WithRefCount::new(None)),
+            _must_pin: PhantomPinned,
         }
     }
 }
@@ -490,7 +524,7 @@ mod tests {
 
     #[test]
     fn get_after_set_embedded() {
-        let storage = Box::pin(OnceEvent::new_embedded_storage());
+        let storage = Box::pin(OnceEvent::new_embedded_storage_single());
         let (sender, mut receiver) = unsafe { OnceEvent::new_embedded(storage.as_ref()) };
 
         sender.set(42);
@@ -503,7 +537,7 @@ mod tests {
 
     #[test]
     fn get_before_set_embedded() {
-        let storage = Box::pin(OnceEvent::new_embedded_storage());
+        let storage = Box::pin(OnceEvent::new_embedded_storage_single());
         let (sender, mut receiver) = unsafe { OnceEvent::new_embedded(storage.as_ref()) };
 
         let cx = &mut task::Context::from_waker(noop_waker_ref());

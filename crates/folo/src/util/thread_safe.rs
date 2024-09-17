@@ -15,7 +15,8 @@ unsafe impl<T> Sync for ThreadSafe<T> {}
 impl<T> ThreadSafe<T> {
     /// # Safety
     ///
-    /// The caller must ensure that the inner value truly is thread-safe.
+    /// The caller must ensure that the inner value truly is thread-safe,
+    /// both for sending and for referencing (`Send` and `Sync`).
     pub unsafe fn new(inner: T) -> Self {
         Self { inner }
     }

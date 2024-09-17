@@ -1,11 +1,11 @@
-/// Just a value and a reference count, for use in custom reference counting logic.
+/// Just combines a value and a reference count, for use in custom reference counting logic.
 #[derive(Debug)]
-pub struct LocalCell<T> {
+pub struct WithRefCount<T> {
     value: T,
     ref_count: usize,
 }
 
-impl<T> LocalCell<T> {
+impl<T> WithRefCount<T> {
     pub fn new(value: T) -> Self {
         Self {
             value,
@@ -38,7 +38,7 @@ impl<T> LocalCell<T> {
     }
 }
 
-impl<T> Default for LocalCell<T>
+impl<T> Default for WithRefCount<T>
 where
     T: Default,
 {

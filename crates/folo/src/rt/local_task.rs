@@ -1,7 +1,7 @@
 use crate::{
     rt::erased_async_task::ErasedResultAsyncTask,
     rt::LocalJoinHandle,
-    util::once_event::{self, OnceEvent, OnceEventEmbeddedStorage},
+    sync::once_event::{self, OnceEvent, OnceEventEmbeddedStorage},
 };
 use negative_impl::negative_impl;
 use pin_project::pin_project;
@@ -60,7 +60,7 @@ where
             future: RefCell::new(Some(future)),
             result_tx: None,
             result_rx: None,
-            result: OnceEvent::new_embedded_storage(),
+            result: OnceEvent::new_embedded_storage_single(),
         });
 
         let (tx, rx) = {

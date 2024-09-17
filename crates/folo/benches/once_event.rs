@@ -1,7 +1,7 @@
 use std::{rc::Rc, task};
 
 use criterion::{criterion_group, criterion_main, Criterion};
-use folo::util::once_event::OnceEvent;
+use folo::sync::once_event::OnceEvent;
 use futures::{task::noop_waker_ref, FutureExt};
 
 criterion_group!(benches, once_event);
@@ -15,7 +15,7 @@ fn once_event(c: &mut Criterion) {
     let ref_storage = OnceEvent::<usize>::new_slab_storage();
     let rc_storage = Rc::new(OnceEvent::<usize>::new_slab_storage());
     let unsafe_storage = Box::pin(OnceEvent::<usize>::new_slab_storage());
-    let embedded_storage = Box::pin(OnceEvent::new_embedded_storage());
+    let embedded_storage = Box::pin(OnceEvent::new_embedded_storage_single());
 
     let cx = &mut task::Context::from_waker(noop_waker_ref());
 

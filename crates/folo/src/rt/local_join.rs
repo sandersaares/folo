@@ -1,4 +1,4 @@
-use crate::util::once_event;
+use crate::sync::once_event;
 use futures::FutureExt;
 use negative_impl::negative_impl;
 use std::{future::Future, pin::Pin, task};
