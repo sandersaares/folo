@@ -1,14 +1,19 @@
-use super::{OperationResult, PinnedBuffer};
 use crate::{
     constants::{GENERAL_BYTES_BUCKETS, GENERAL_MILLISECONDS_BUCKETS},
-    io,
+    io::{self, OperationResult, PinnedBuffer},
+    mem::PinnedSlabChain,
     metrics::{Event, EventBuilder, Magnitude},
-    util::{LowPrecisionInstant, PinnedSlabChain},
+    util::LowPrecisionInstant,
 };
 use negative_impl::negative_impl;
 use pin_project::pin_project;
 use std::{
-    cell::{RefCell, UnsafeCell}, fmt, future::Future, mem::{self, ManuallyDrop}, ptr, task::Poll
+    cell::{RefCell, UnsafeCell},
+    fmt,
+    future::Future,
+    mem::{self, ManuallyDrop},
+    ptr,
+    task::Poll,
 };
 use tracing::{event, Level};
 use windows::Win32::{
@@ -413,7 +418,7 @@ impl Operation {
                 return OperationResultFuture {
                     receiver: result_rx,
                     error: Some(io::OperationError::new(e, buffer)),
-                }
+                };
             }
         }
 
@@ -461,7 +466,7 @@ impl Operation {
 pub struct OperationResultFuture {
     #[pin]
     receiver: oneshot::Receiver<io::OperationResult>,
-    error: Option<io::OperationError>
+    error: Option<io::OperationError>,
 }
 
 impl Future for OperationResultFuture {
@@ -480,7 +485,6 @@ impl Future for OperationResultFuture {
         }
     }
 }
-
 
 impl Drop for Operation {
     fn drop(&mut self) {

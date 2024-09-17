@@ -8,6 +8,7 @@ pub mod criterion;
 pub mod fs;
 pub mod io;
 pub mod net;
+pub mod mem;
 pub mod metrics;
 pub mod rt;
 pub mod sync;

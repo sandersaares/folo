@@ -1,6 +1,5 @@
-use super::{
-    LocalCell, PinnedSlabChain, RcSlabRc, RefSlabRc, SlabRcCell, SlabRcCellStorage, UnsafeSlabRc,
-};
+use crate::mem::PinnedSlabChain;
+use crate::util::{LocalCell, RcSlabRc, RefSlabRc, SlabRcCell, SlabRcCellStorage, UnsafeSlabRc};
 use negative_impl::negative_impl;
 use std::{
     cell::UnsafeCell,
@@ -113,9 +112,7 @@ impl<T> OnceEvent<T> {
         OnceEventEmbeddedStorage::default()
     }
 
-    pub fn new_in_ref(
-        storage: &OnceEventSlabStorage<T>,
-    ) -> (RefSender<'_, T>, RefReceiver<'_, T>) {
+    pub fn new_in_ref(storage: &OnceEventSlabStorage<T>) -> (RefSender<'_, T>, RefReceiver<'_, T>) {
         let event = SlabRcCell::new(Self::new()).insert_into_ref(storage);
 
         (

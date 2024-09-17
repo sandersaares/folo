@@ -1,6 +1,6 @@
 use crate::{
+    mem::PinnedSlabChain,
     metrics::{Event, EventBuilder},
-    util::PinnedSlabChain,
 };
 use core::slice;
 use negative_impl::negative_impl;

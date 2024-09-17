@@ -1,4 +1,4 @@
-use super::PinnedSlabChain;
+use crate::mem::PinnedSlabChain;
 use std::{
     cell::{Cell, RefCell},
     pin::Pin,
@@ -46,7 +46,7 @@ pub type SlabRcCellStorage<T> = RefCell<PinnedSlabChain<SlabRcCell<T>>>;
 ///
 /// ```
 /// use folo::util::{SlabRcCell, RefSlabRc};
-/// 
+///
 /// let storage = SlabRcCell::<usize>::new_storage_ref();
 ///
 /// let item = SlabRcCell::new(42).insert_into_ref(&storage);
@@ -61,7 +61,7 @@ pub type SlabRcCellStorage<T> = RefCell<PinnedSlabChain<SlabRcCell<T>>>;
 /// ```
 /// use std::rc::Rc;
 /// use folo::util::{SlabRcCell, RcSlabRc};
-/// 
+///
 /// let storage = SlabRcCell::<usize>::new_storage_rc();
 ///
 /// let item = SlabRcCell::new(42).insert_into_rc(Rc::clone(&storage));
@@ -75,7 +75,7 @@ pub type SlabRcCellStorage<T> = RefCell<PinnedSlabChain<SlabRcCell<T>>>;
 ///
 /// ```
 /// use folo::util::{SlabRcCell, UnsafeSlabRc};
-/// 
+///
 /// let storage = SlabRcCell::<usize>::new_storage_unsafe();
 ///
 /// // SAFETY: We are responsible for ensuring the slab chain outlives all the smart pointers.
