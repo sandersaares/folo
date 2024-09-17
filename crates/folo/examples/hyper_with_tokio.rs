@@ -43,10 +43,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
     let mut join_set = JoinSet::new();
     loop {
         let (stream, addr) = match tcp_listener.accept().await {
-            Ok(x) => {
-                println!("Accepted connection: {:?}", x.1);
-                x
-            },
+            Ok(x) => x,
             Err(e) => {
                 eprintln!("failed to accept connection: {e}");
                 continue;
