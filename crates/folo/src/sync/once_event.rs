@@ -1,5 +1,7 @@
-use crate::mem::PinnedSlabChain;
-use crate::util::{RcSlabRc, RefSlabRc, SlabRcCell, SlabRcCellStorage, UnsafeSlabRc, WithRefCount};
+use crate::mem::{
+    PinnedSlabChain, RcSlabRc, RefSlabRc, SlabRcCell, SlabRcCellStorage, UnsafeSlabRc,
+};
+use crate::util::WithRefCount;
 use std::marker::PhantomPinned;
 use std::{
     cell::UnsafeCell,
@@ -114,10 +116,10 @@ impl<T> OnceEvent<T> {
 
     /// Creates a new instance of the backing storage for OnceEvent instances. The storage will be
     /// borrow checked at runtime using `RefCell` for safety.
-    /// 
+    ///
     /// You may need to further wrap this depending on which storage-referencing mode you are using.
     /// For example:
-    /// 
+    ///
     /// * If referencing the storage by reference (`new_in_ref()`), nothing more is needed.
     /// * If referencing the storage via `Rc` (`new_in_rc()`), wrap this in an `Rc`.
     pub fn new_slab_storage() -> OnceEventSlabStorage<T> {
@@ -161,7 +163,7 @@ impl<T> OnceEvent<T> {
     /// Creates an event in storage that is referenced via unsafe memory access. This avoids any
     /// reference counting overhead and the need to track lifetimes but requires the caller to
     /// guarantee safety.
-    /// 
+    ///
     /// # Safety
     ///
     /// The caller is responsible for ensuring that the storage is not dropped until both the
@@ -182,10 +184,10 @@ impl<T> OnceEvent<T> {
     /// Creates an event in embedded storage that is referenced via unsafe memory access. This
     /// avoids any reference counting overhead and the need to track lifetimes but requires the
     /// caller to guarantee safety.
-    /// 
+    ///
     /// Embedding the storage directly into a data structure owned by the caller can be more
     /// efficient than managing a pool of events, if a suitable data structure is already available.
-    /// 
+    ///
     /// # Safety
     ///
     /// The caller is responsible for ensuring that the event does not outlive the storage.
