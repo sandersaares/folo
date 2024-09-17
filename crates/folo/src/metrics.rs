@@ -156,20 +156,21 @@ impl ObservationBag {
         // the type while it may still be mutated, so we can be certain that references are legal.
         let bucket_counts = unsafe { &mut *self.bucket_counts.get() };
 
-        let bucket_index = self
-            .bucket_magnitudes
-            .iter()
-            .enumerate()
-            .find_map(|(i, &bucket_magnitude)| {
-                if magnitude <= bucket_magnitude {
-                    Some(i)
-                } else {
-                    None
-                }
-            })
-            .expect("the last bucket is ::MAX so there must be a match");
-
-        bucket_counts[bucket_index] += count;
+        // This may be none if we have no buckets (i.e. it is a counter, not histogram).
+        if let Some(bucket_index) =
+            self.bucket_magnitudes
+                .iter()
+                .enumerate()
+                .find_map(|(i, &bucket_magnitude)| {
+                    if magnitude <= bucket_magnitude {
+                        Some(i)
+                    } else {
+                        None
+                    }
+                })
+        {
+            bucket_counts[bucket_index] += count;
+        }
     }
 
     fn new(buckets: &'static [Magnitude]) -> Self {
