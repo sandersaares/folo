@@ -28,6 +28,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
 
 const GET_INFINITE_STREAM_HEADER_LINE: &[u8] = b"GET /infinite HTTP/1.1\r\n";
 const GET_20KB_HEADER_LINE: &[u8] = b"GET /20kb HTTP/1.1\r\n";
+const GET_64MB_HEADER_LINE: &[u8] = b"GET /64mb HTTP/1.1\r\n";
 
 const INFINITE_STREAM_RESPONSE_HEADERS: &[u8] = b"HTTP/1.1 200 OK\r\nConnection: Close\r\nContent-Type: application/octet-stream\r\nTransfer-Encoding: Chunked\r\n\r\n";
 const NEWLINE: &[u8] = b"\r\n";
@@ -35,6 +36,10 @@ const ONE_MEGABYTE_CHUNK_HEADER: &[u8] = b"100000\r\n";
 
 const TWENTY_KB_RESPONSE_HEADERS: &[u8] = b"HTTP/1.1 200 OK\r\nConnection: Close\r\nContent-Type: application/octet-stream\r\nContent-Length: 20480\r\n\r\n";
 const TWENTY_KB_RESPONSE_BODY: &[u8] = &[b'x'; 20480];
+
+// 64 MB file, simulating large chunks in blob storage.
+const BIG_FILE_RESPONSE_HEADERS: &[u8] = b"HTTP/1.1 200 OK\r\nConnection: Close\r\nContent-Type: application/octet-stream\r\nContent-Length: 67108864\r\n\r\n";
+static BIG_FILE_BODY_CHUNK: &[u8] = &[b'y'; 64 * 1024];
 
 const NOT_FOUND_RESPONSE_HEADERS: &[u8] = b"HTTP/1.1 404 Not Found\r\nConnection: Close\r\nContent-Type: text/plain\r\nContent-Length: 0\r\n\r\n";
 
@@ -52,6 +57,9 @@ async fn accept_connection(mut connection: TcpStream) -> std::io::Result<()> {
     } else if request.starts_with(GET_20KB_HEADER_LINE) {
         event!(Level::DEBUG, "Received GET /20kb");
         send_20kb_response(&mut connection).await?;
+    } else if request.starts_with(GET_64MB_HEADER_LINE) {
+        event!(Level::DEBUG, "Received GET /64mb");
+        send_64mb_response(&mut connection).await?;
     } else {
         event!(Level::DEBUG, "Received unknown request");
         send_not_found_response(&mut connection).await?;
@@ -95,9 +103,27 @@ async fn send_infinite_response(connection: &mut TcpStream) -> std::io::Result<(
     }
 }
 
+// Below, we copy all the slices into boxed slices to simulate a "copy from somewhere", for a more
+// realistic benchmark (after all, real data will not all immediately be in output buffers).
+
 async fn send_20kb_response(connection: &mut TcpStream) -> std::io::Result<()> {
-    connection.write_all(TWENTY_KB_RESPONSE_HEADERS).await?;
-    connection.write_all(TWENTY_KB_RESPONSE_BODY).await?;
+    let headers = Box::from(TWENTY_KB_RESPONSE_HEADERS);
+    let body = Box::from(TWENTY_KB_RESPONSE_BODY);
+
+    connection.write_all(&headers).await?;
+    connection.write_all(&body).await?;
+
+    Ok(())
+}
+
+async fn send_64mb_response(connection: &mut TcpStream) -> std::io::Result<()> {
+    let headers = Box::from(BIG_FILE_RESPONSE_HEADERS);
+    connection.write_all(&headers).await?;
+
+    for _ in 0..1024 {
+        let chunk = Box::from(BIG_FILE_BODY_CHUNK);
+        connection.write_all(&chunk).await?;
+    }
 
     Ok(())
 }

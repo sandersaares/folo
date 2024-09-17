@@ -14,7 +14,8 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
     let (non_blocking_stdout, _guard) = tracing_appender::non_blocking(std::io::stdout());
     tracing_subscriber::fmt()
         //.with_max_level(tracing::Level::TRACE)
-        .with_writer(non_blocking_stdout).init();
+        .with_writer(non_blocking_stdout)
+        .init();
 
     // Can the clock be provided by the FOLO runtime?
     // For example, using scoped API or even the main could optionally accept a "FoloRuntime"?
@@ -42,6 +43,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
 
 const GET_INFINITE_STREAM_HEADER_LINE: &[u8] = b"GET /infinite HTTP/1.1\r\n";
 const GET_20KB_HEADER_LINE: &[u8] = b"GET /20kb HTTP/1.1\r\n";
+const GET_64MB_HEADER_LINE: &[u8] = b"GET /64mb HTTP/1.1\r\n";
 
 const INFINITE_STREAM_RESPONSE_HEADERS: &[u8] = b"HTTP/1.1 200 OK\r\nConnection: Close\r\nContent-Type: application/octet-stream\r\nTransfer-Encoding: Chunked\r\n\r\n";
 const NEWLINE: &[u8] = b"\r\n";
@@ -49,6 +51,10 @@ const ONE_MEGABYTE_CHUNK_HEADER: &[u8] = b"100000\r\n";
 
 const TWENTY_KB_RESPONSE_HEADERS: &[u8] = b"HTTP/1.1 200 OK\r\nConnection: Close\r\nContent-Type: application/octet-stream\r\nContent-Length: 20480\r\n\r\n";
 const TWENTY_KB_RESPONSE_BODY: &[u8] = &[b'x'; 20480];
+
+// 64 MB file, simulating large chunks in blob storage.
+const BIG_FILE_RESPONSE_HEADERS: &[u8] = b"HTTP/1.1 200 OK\r\nConnection: Close\r\nContent-Type: application/octet-stream\r\nContent-Length: 67108864\r\n\r\n";
+static BIG_FILE_BODY_CHUNK: &[u8] = &[b'y'; 64 * 1024];
 
 const NOT_FOUND_RESPONSE_HEADERS: &[u8] = b"HTTP/1.1 404 Not Found\r\nConnection: Close\r\nContent-Type: text/plain\r\nContent-Length: 0\r\n\r\n";
 
@@ -72,6 +78,9 @@ async fn accept_connection(mut connection: TcpConnection) -> io::Result<()> {
     } else if request_buffer.as_slice().starts_with(GET_20KB_HEADER_LINE) {
         event!(Level::DEBUG, "Received GET /20kb");
         send_20kb_response(&mut connection).await?;
+    } else if request_buffer.as_slice().starts_with(GET_64MB_HEADER_LINE) {
+        event!(Level::DEBUG, "Received GET /64mb");
+        send_64mb_response(&mut connection).await?;
     } else {
         event!(Level::DEBUG, "Received unknown request");
         send_not_found_response(&mut connection).await?;
@@ -123,6 +132,9 @@ async fn send_infinite_response(connection: &mut TcpConnection) -> io::Result<()
     }
 }
 
+// Below, we copy all the slices into boxed slices to simulate a "copy from somewhere", for a more
+// realistic benchmark (after all, real data will not all immediately be in output buffers).
+
 async fn send_20kb_response(connection: &mut TcpConnection) -> io::Result<()> {
     connection
         .send(PinnedBuffer::from_boxed_slice(
@@ -137,6 +149,26 @@ async fn send_20kb_response(connection: &mut TcpConnection) -> io::Result<()> {
         ))
         .await
         .into_inner()?;
+
+    Ok(())
+}
+
+async fn send_64mb_response(connection: &mut TcpConnection) -> io::Result<()> {
+    connection
+        .send(PinnedBuffer::from_boxed_slice(
+            BIG_FILE_RESPONSE_HEADERS.into(),
+        ))
+        .await
+        .into_inner()?;
+
+    // In general, we would be stream-copying this in chunks of 64 KB or so, not all at once,
+    // so for a realistic benchmark we also emit it here in chunks (total 1024 x 64 KB == 64 MB).
+    for _ in 0..1024 {
+        connection
+            .send(PinnedBuffer::from_boxed_slice(BIG_FILE_BODY_CHUNK.into()))
+            .await
+            .into_inner()?;
+    }
 
     Ok(())
 }
