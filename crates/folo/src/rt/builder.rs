@@ -287,15 +287,12 @@ impl RuntimeBuilder {
             join_handles.push(join_handle);
         }
 
-        let mut async_io_wakers = Vec::with_capacity(async_worker_count);
-
-        for ready_rx in async_ready_rxs {
-            let ready = ready_rx
-                .recv()
-                .expect("async worker thread failed before even starting");
-
-            async_io_wakers.push(ready.io_waker);
-        }
+        let async_io_wakers: Vec<_> = async_ready_rxs
+            .into_iter()
+            .map(|ready_rx| {
+                ready_rx.recv().expect("async worker thread failed before even starting").io_waker
+            })
+            .collect();
 
         // # Sync workers
 
@@ -342,13 +339,10 @@ impl RuntimeBuilder {
             }
         }
 
-        for ready_rx in sync_ready_rxs {
-            _ = ready_rx
-                .recv()
-                .expect("sync worker thread failed before even starting");
-
+        sync_ready_rxs.into_iter().for_each(|ready_rx| {
+            ready_rx.recv().expect("sync worker thread failed before even starting");
             // For now we just want to make sure we see the ACK. No actual state fanster needed.
-        }
+        });
 
         // # TCP dispatcher worker
 
