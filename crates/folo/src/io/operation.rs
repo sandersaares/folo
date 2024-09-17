@@ -1,4 +1,4 @@
-use super::PinnedBuffer;
+use super::{OperationResult, PinnedBuffer};
 use crate::{
     constants::{GENERAL_BYTES_BUCKETS, GENERAL_MILLISECONDS_BUCKETS},
     io,
@@ -6,11 +6,9 @@ use crate::{
     util::{LowPrecisionInstant, PinnedSlabChain},
 };
 use negative_impl::negative_impl;
+use pin_project::pin_project;
 use std::{
-    cell::{RefCell, UnsafeCell},
-    fmt,
-    mem::{self, ManuallyDrop},
-    ptr,
+    cell::{RefCell, UnsafeCell}, fmt, future::Future, mem::{self, ManuallyDrop}, ptr, task::Poll
 };
 use tracing::{event, Level};
 use windows::Win32::{
@@ -364,7 +362,7 @@ impl Operation {
     ///
     /// TODO: Replace 'static lifetimes with something that makes it clear that the values
     /// have some temporary lifetime only valid for the duration of the callback.
-    pub async unsafe fn begin<F>(self, f: F) -> io::OperationResult
+    pub unsafe fn begin<F>(self, f: F) -> OperationResultFuture
     where
         F: FnOnce(&'static mut [u8], *mut OVERLAPPED, &mut u32) -> io::Result<()>,
     {
@@ -377,7 +375,6 @@ impl Operation {
         // We clone the control node because we may need to release the operation core if the
         // callback fails or even resurrect it immediately if the callback completes synchronously.
         let mut control_node = self.control.clone();
-
         let (buffer, overlapped, immediate_bytes_transferred) = self.into_callback_arguments();
 
         match f(buffer, overlapped, immediate_bytes_transferred) {
@@ -413,13 +410,17 @@ impl Operation {
 
                 control_node.release((*core).key);
 
-                return Err(io::OperationError::new(e, buffer));
+                return OperationResultFuture {
+                    receiver: result_rx,
+                    error: Some(io::OperationError::new(e, buffer)),
+                }
             }
         }
 
-        result_rx.await.expect(
-            "no expected code path drops the I/O operation without signaling completion result",
-        )
+        OperationResultFuture {
+            receiver: result_rx,
+            error: None,
+        }
     }
 
     fn into_callback_arguments(self) -> (&'static mut [u8], *mut OVERLAPPED, &'static mut u32) {
@@ -454,6 +455,32 @@ impl Operation {
         )
     }
 }
+
+#[pin_project]
+#[derive(Debug)]
+pub struct OperationResultFuture {
+    #[pin]
+    receiver: oneshot::Receiver<io::OperationResult>,
+    error: Option<io::OperationError>
+}
+
+impl Future for OperationResultFuture {
+    type Output = OperationResult;
+
+    fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
+        let this = self.project();
+
+        if let Some(err) = this.error.take() {
+            return Poll::Ready(Err(err));
+        }
+
+        match this.receiver.poll(cx) {
+            Poll::Ready(v) => Poll::Ready(v.expect("")),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
 
 impl Drop for Operation {
     fn drop(&mut self) {

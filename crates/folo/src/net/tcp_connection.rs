@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::{
-    io::{self, OperationResult, OperationResultExt, PinnedBuffer},
+    io::{self, OperationResultExt, OperationResultFuture, PinnedBuffer},
     net::winsock,
     rt::{current_async_agent, current_runtime, SynchronousTaskType},
     util::OwnedHandle,
@@ -12,6 +12,7 @@ use windows::{
     Win32::Networking::WinSock::{WSARecv, WSASend, WSASendDisconnect, SOCKET, WSABUF},
 };
 
+#[derive(Debug)]
 pub struct TcpConnection {
     // This is an Arc because some operations (e.g. shutdown) involve synchronous logic and
     // therefore we must share the socket between multiple threads.
@@ -26,7 +27,7 @@ impl TcpConnection {
     ///
     /// You should not call this multiple times concurrently because there is no guarantee that the
     /// continuations will be called in a particular order.
-    pub async fn receive(&mut self, buffer: PinnedBuffer) -> OperationResult {
+    pub fn receive(&mut self, buffer: PinnedBuffer) -> OperationResultFuture {
         // SAFETY: We are required to pass the OVERLAPPED pointer to the completion routine. We do.
         unsafe {
             current_async_agent::with_io(|io| io.new_operation(buffer)).begin(
@@ -50,7 +51,6 @@ impl TcpConnection {
                 },
             )
         }
-        .await
     }
 
     /// Sends a buffer of data to the peer.
@@ -59,7 +59,7 @@ impl TcpConnection {
     ///
     /// You may call this multiple times concurrently. The buffers will be sent in the order they
     /// are submitted.
-    pub async fn send(&mut self, buffer: PinnedBuffer) -> OperationResult {
+    pub fn send(&mut self, buffer: PinnedBuffer) -> OperationResultFuture {
         // SAFETY: We are required to pass the OVERLAPPED pointer to the completion routine. We do.
         unsafe {
             current_async_agent::with_io(|io| io.new_operation(buffer)).begin(
@@ -82,7 +82,6 @@ impl TcpConnection {
                 },
             )
         }
-        .await
     }
 
     /// Performs a graceful shutdown of the connection, allowing time for all pending data transfers
