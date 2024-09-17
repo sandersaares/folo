@@ -121,3 +121,16 @@ impl TcpConnection {
 impl !Send for TcpConnection {}
 #[negative_impl]
 impl !Sync for TcpConnection {}
+
+impl From<std::net::TcpStream> for TcpConnection {
+    fn from(stream: std::net::TcpStream) -> Self {
+        use std::os::windows::io::{RawSocket, IntoRawSocket};
+
+        let raw_socket: RawSocket = stream.into_raw_socket();
+        let socket = SOCKET(raw_socket as usize);
+        let owned_handle = unsafe { OwnedHandle::new(socket) };
+        Self {
+            socket: Arc::new(owned_handle),
+        }
+    }
+}
