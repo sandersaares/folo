@@ -3,25 +3,44 @@ use std::alloc::{alloc, dealloc, Layout};
 use std::mem::{self, MaybeUninit};
 use std::pin::Pin;
 
-/// A pinned fixed-size heap-allocated slab of values. Works similar to a Vec
-/// but pinned and with a fixed size, operating using an index for lookup.
+/// This is the backing storage of a `PinnedSlabChain` and is not meant to be directly used unless
+/// you specifically require a fixed-capacity collection.
 ///
-/// Mutation of items is possible but be aware that taking an exclusive `&mut` reference to an item
-/// via `get_mut()` will exclusively borrow the slab itself. If you wish to preserve an exclusive
-/// reference for a longer duration, you must use interior mutability in your items.
+/// A pinned fixed-capacity heap-allocated collection. Works similar to a Vec but all items are
+/// pinned and the collection has a fixed capacity, operating using an index for lookup. When you
+/// insert an item, you cam get back the index to use for accessing or removing the item.
+///
+/// There are multiple ways to insert items into the collection:
+///
+/// * `insert()` - inserts a value and returns the index. This is the simplest way to add an item
+///   but requires you to later look it up by the index. That lookup is fast but not free.
+/// * `begin_insert().insert()` - returns a shared reference to the inserted item; you may also
+///   obtain the index in advance from the inserter through `index()` which may be useful if the
+///   item needs to know its own index in the collection.
+/// * `begin_insert().insert_raw()` - returns a mutable pointer to the inserted item, for cases
+///   where you want to access the item through unsafe code (e.g. to disable borrow checking).
+/// * `begin_insert().insert_uninit()` - returns a mutable `MaybeUninit<T>` pointer to an
+///   uninitialized version of the item. This is useful for in-place initialization, to avoid
+///   copying the item from the stack into the collection.
+///  
+/// All the items are dropped when the collection is dropped.
+///
+/// To share the collection between threads, wrapping in `Mutex` is the recommended approach.
+///
+/// The collection itself does not need to be pinned - only the contents are pinned.
 #[derive(Debug)]
 pub struct PinnedSlab<T, const CAPACITY: usize> {
     ptr: *mut Entry<T>,
 
-    /// Index of the next free slot in the slab. Think of this as a virtual stack, with the stack
-    /// entries stored in the slab entries themselves. This will point out of bounds if the slab
-    /// is full.
+    /// Index of the next free slot in the collection. Think of this as a virtual stack, with the
+    /// stack entries stored in the collection entries themselves. This will point out of bounds if
+    /// the collection is full.
     next_free_index: usize,
 
-    /// The total number of items in the slab. This is not used by the slab itself but
-    /// may be valuable to callers who want to know if the slab is empty because in many use
-    /// cases the slab is the backing store for a custom allocation/pinning scheme and may not
-    /// be dropped when any items are still present.
+    /// The total number of items in the collection. This is not used by the collection itself but
+    /// may be valuable to callers who want to know if the collection is empty because in many use
+    /// cases the collection is the backing store for a custom allocation/pinning scheme and may not
+    /// be safe to drop when any items are still present.
     count: usize,
 }
 
@@ -33,11 +52,13 @@ enum Entry<T> {
 
 impl<T, const CAPACITY: usize> PinnedSlab<T, CAPACITY> {
     pub fn new() -> Self {
+        // SAFETY: MaybeUninit is a ZST, so its layout is guaranteed to match Entry<T>.
         let ptr = unsafe { alloc(Self::layout()) as *mut MaybeUninit<Entry<T>> };
 
         // Initialize them all to `Vacant` to start with.
-        // We can now assume the slab is initialized - safe to access without causing UB.
         for index in 0..CAPACITY {
+            // SAFETY: We ensure in `layout()` that there is enough space for all items up to our
+            // indicated capacity.
             unsafe {
                 let slot = ptr.add(index);
                 (*slot).write(Entry::Vacant {
@@ -46,14 +67,10 @@ impl<T, const CAPACITY: usize> PinnedSlab<T, CAPACITY> {
             }
         }
 
+        // We can now assume the collection is initialized - safe to access without causing UB.
         Self {
             // SAFETY: MaybeUninit is a ZST, so the layout is guaranteed to match.
-            ptr: unsafe {
-                mem::transmute::<
-                    *mut MaybeUninit<Entry<T>>,
-                    *mut Entry<T>,
-                >(ptr)
-            },
+            ptr: unsafe { mem::transmute::<*mut MaybeUninit<Entry<T>>, *mut Entry<T>>(ptr) },
             next_free_index: 0,
             count: 0,
         }
@@ -76,6 +93,9 @@ impl<T, const CAPACITY: usize> PinnedSlab<T, CAPACITY> {
         self.next_free_index >= CAPACITY
     }
 
+    /// # Panics
+    ///
+    /// Panics if the index is out of bounds or is not associated with an item.
     pub fn get(&self, index: usize) -> Pin<&T> {
         assert!(index < CAPACITY, "get({index}) index out of bounds");
 
@@ -86,12 +106,15 @@ impl<T, const CAPACITY: usize> PinnedSlab<T, CAPACITY> {
                 .as_ref()
                 .expect("we expect the resulting pointer to always be valid")
         } {
-            // SAFETY: Items are always pinned - that is the point of this collection.
+            // SAFETY: Items are always guaranteed pinned in this collection.
             Entry::Occupied { value } => unsafe { Pin::new_unchecked(value) },
             Entry::Vacant { .. } => panic!("get({index}) entry was vacant"),
         }
     }
 
+    /// # Panics
+    ///
+    /// Panics if the index is out of bounds or is not associated with an item.
     pub fn get_mut(&mut self, index: usize) -> Pin<&mut T> {
         assert!(index < CAPACITY, "index {index} out of bounds");
 
@@ -108,6 +131,9 @@ impl<T, const CAPACITY: usize> PinnedSlab<T, CAPACITY> {
         }
     }
 
+    /// # Panics
+    ///
+    /// Panics if the collection is full.
     pub fn begin_insert<'s, 'i>(&'s mut self) -> PinnedSlabInserter<'i, T, CAPACITY>
     where
         's: 'i,
@@ -125,6 +151,9 @@ impl<T, const CAPACITY: usize> PinnedSlab<T, CAPACITY> {
         }
     }
 
+    /// # Panics
+    ///
+    /// Panics if the collection is full.
     pub fn insert(&mut self, value: T) -> usize {
         let inserter = self.begin_insert();
         let index = inserter.index();
@@ -132,6 +161,9 @@ impl<T, const CAPACITY: usize> PinnedSlab<T, CAPACITY> {
         index
     }
 
+    /// # Panics
+    ///
+    /// Panics if the index is out of bounds or is not associated with an item.
     pub fn remove(&mut self, index: usize) {
         assert!(index < CAPACITY, "remove({index}) index out of bounds");
 
@@ -147,19 +179,9 @@ impl<T, const CAPACITY: usize> PinnedSlab<T, CAPACITY> {
             panic!("remove({index}) entry was vacant");
         }
 
-        // SAFETY: We know the slot is valid, as per above. We want to explicit run the drop logic
-        // in-place because the slots are pinned - we do not want to move the value out in order
-        // to drop it.
-        unsafe {
-            // We know it is initialized, we just use this to facilitate the in-place drop.
-            let slot: *mut MaybeUninit<Entry<T>> =
-                slot as *mut Entry<T> as *mut MaybeUninit<Entry<T>>;
-            (*slot).assume_init_drop();
-
-            slot.write(MaybeUninit::new(Entry::Vacant {
-                next_free_index: self.next_free_index,
-            }))
-        }
+        *slot = Entry::Vacant {
+            next_free_index: self.next_free_index,
+        };
 
         self.next_free_index = index;
         self.count -= 1;
@@ -239,17 +261,17 @@ impl<T, const CAPACITY: usize> Default for PinnedSlab<T, CAPACITY> {
     }
 }
 
-impl<T, const COUNT: usize> Drop for PinnedSlab<T, COUNT> {
+impl<T, const CAPACITY: usize> Drop for PinnedSlab<T, CAPACITY> {
     fn drop(&mut self) {
-        let ptr = self.ptr as *mut MaybeUninit<Entry<T>>;
-
-        // SAFETY: MaybeUninit is a ZST, so the layout is guaranteed to match.
-        // We ensure that all slots are initialized in the ctor, so they are OK to touch.
-        // The slot type itself takes care of any drop logic, we just give it the opportunity.
+        // SAFETY: All slots were already initialized by the ctor so nothing can be invalid here.
+        // We are using the correct size and the same layout as was used in the ctor, everything OK.
         unsafe {
-            for index in 0..COUNT {
-                let slot = ptr.add(index);
-                (*slot).as_mut_ptr().drop_in_place();
+            // Initialize them all to `Vacant` to drop any occupied data.
+            for index in 0..CAPACITY {
+                let slot = self.ptr.add(index);
+                *slot = Entry::Vacant {
+                    next_free_index: index + 1,
+                };
             }
 
             dealloc(self.ptr as *mut u8, Self::layout());
@@ -257,14 +279,18 @@ impl<T, const COUNT: usize> Drop for PinnedSlab<T, COUNT> {
     }
 }
 
-pub struct PinnedSlabInserter<'s, T, const COUNT: usize> {
-    slab: &'s mut PinnedSlab<T, COUNT>,
+// Yes, there are raw pointers in there but nothing inherently non-thread-safe about it, as long as
+// T itself can move between threads.
+unsafe impl<T: Send, const CAPACITY: usize> Send for PinnedSlab<T, CAPACITY> {}
+
+pub struct PinnedSlabInserter<'s, T, const CAPACITY: usize> {
+    slab: &'s mut PinnedSlab<T, CAPACITY>,
 
     /// Index at which the item will be inserted.
     index: usize,
 }
 
-impl<'s, T, const COUNT: usize> PinnedSlabInserter<'s, T, COUNT> {
+impl<'s, T, const CAPACITY: usize> PinnedSlabInserter<'s, T, CAPACITY> {
     pub fn index(&self) -> usize {
         self.index
     }
@@ -393,6 +419,8 @@ mod tests {
     use std::{
         cell::{Cell, RefCell},
         rc::Rc,
+        sync::{Arc, Mutex},
+        thread,
     };
 
     #[test]
@@ -569,5 +597,41 @@ mod tests {
         slab.remove(a);
 
         assert!(dropped.get());
+    }
+
+    #[test]
+    fn multithreaded_via_mutex() {
+        let slab = Arc::new(Mutex::new(PinnedSlab::<u32, 3>::new()));
+
+        let a;
+        let b;
+        let c;
+
+        {
+            let mut slab = slab.lock().unwrap();
+            a = slab.insert(42);
+            b = slab.insert(43);
+            c = slab.insert(44);
+
+            assert_eq!(*slab.get(a), 42);
+            assert_eq!(*slab.get(b), 43);
+            assert_eq!(*slab.get(c), 44);
+        }
+
+        let slab_clone = Arc::clone(&slab);
+        thread::spawn(move || {
+            let mut slab = slab_clone.lock().unwrap();
+
+            slab.remove(b);
+
+            let d = slab.insert(45);
+
+            assert_eq!(*slab.get(a), 42);
+            assert_eq!(*slab.get(c), 44);
+            assert_eq!(*slab.get(d), 45);
+        });
+
+        let slab = slab.lock().unwrap();
+        assert!(slab.is_full());
     }
 }

@@ -1,21 +1,38 @@
 use super::{PinnedSlab, PinnedSlabInserter};
 use std::{mem::MaybeUninit, pin::Pin};
 
-/// Links up an arbitrary number of PinnedSlabs into a dynamically sized chain. The API surface is
-/// intended to be equivalent to that of a single PinnedSlab, but with the ability to grow beyond
-/// a single slab.
+/// Links up an arbitrary number of PinnedSlabs into a dynamically sized chain that contains any
+/// number of items. The capacity grows automatically as needed, to meet demand, creating room
+/// for SLAB_CAPACITY more items linearly each time the chain grows.
 ///
-/// Mutation of items is possible but be aware that taking an exclusive `&mut` reference to an item
-/// via `get_mut()` will exclusively borrow the chain itself. If you wish to preserve an exclusive
-/// reference for a longer duration, you must use interior mutability in your items.
+/// There are multiple ways to insert items into the collection:
+///
+/// * `insert()` - inserts a value and returns the index. This is the simplest way to add an item
+///   but requires you to later look it up by the index. That lookup is fast but not free.
+/// * `begin_insert().insert()` - returns a shared reference to the inserted item; you may also
+///   obtain the index in advance from the inserter through `index()` which may be useful if the
+///   item needs to know its own index in the collection.
+/// * `begin_insert().insert_raw()` - returns a mutable pointer to the inserted item, for cases
+///   where you want to access the item through unsafe code (e.g. to disable borrow checking).
+/// * `begin_insert().insert_uninit()` - returns a mutable `MaybeUninit<T>` pointer to an
+///   uninitialized version of the item. This is useful for in-place initialization, to avoid
+///   copying the item from the stack into the collection.
+///  
+/// All the items are dropped when the collection is dropped.
+///
+/// To share the collection between threads, wrapping in `Mutex` is the recommended approach.
+///
+/// The collection itself does not need to be pinned - only the contents are pinned.
+///
+/// As of today, the collection never shrinks, though future versions may do so.
 #[derive(Debug)]
-pub struct PinnedSlabChain<T, const SLAB_SIZE: usize = 1024> {
+pub struct PinnedSlabChain<T, const SLAB_CAPACITY: usize = 128> {
     /// The slabs in the chain. We use a Vec here to allow for dynamic sizing.
     /// For now, we only grow the Vec but in theory, one could implement shrinking as well.
-    slabs: Vec<PinnedSlab<T, SLAB_SIZE>>,
+    slabs: Vec<PinnedSlab<T, SLAB_CAPACITY>>,
 }
 
-impl<T, const SLAB_SIZE: usize> PinnedSlabChain<T, SLAB_SIZE> {
+impl<T, const SLAB_CAPACITY: usize> PinnedSlabChain<T, SLAB_CAPACITY> {
     pub fn new() -> Self {
         Self { slabs: Vec::new() }
     }
@@ -28,8 +45,11 @@ impl<T, const SLAB_SIZE: usize> PinnedSlabChain<T, SLAB_SIZE> {
         self.slabs.iter().all(|slab| slab.is_empty())
     }
 
+    /// # Panics
+    ///
+    /// Panics if the index is out of bounds or is not associated with an item.
     pub fn get(&self, index: usize) -> Pin<&T> {
-        let index = ChainIndex::<SLAB_SIZE>::from_whole(index);
+        let index = ChainIndex::<SLAB_CAPACITY>::from_whole(index);
 
         self.slabs
             .get(index.slab)
@@ -37,8 +57,11 @@ impl<T, const SLAB_SIZE: usize> PinnedSlabChain<T, SLAB_SIZE> {
             .expect("index was out of bounds of slab chain")
     }
 
+    /// # Panics
+    ///
+    /// Panics if the index is out of bounds or is not associated with an item.
     pub fn get_mut(&mut self, index: usize) -> Pin<&mut T> {
-        let index = ChainIndex::<SLAB_SIZE>::from_whole(index);
+        let index = ChainIndex::<SLAB_CAPACITY>::from_whole(index);
 
         self.slabs
             .get_mut(index.slab)
@@ -46,7 +69,7 @@ impl<T, const SLAB_SIZE: usize> PinnedSlabChain<T, SLAB_SIZE> {
             .expect("index was out of bounds of slab chain")
     }
 
-    pub fn begin_insert<'a, 'b>(&'a mut self) -> PinnedSlabChainInserter<'b, T, SLAB_SIZE>
+    pub fn begin_insert<'a, 'b>(&'a mut self) -> PinnedSlabChainInserter<'b, T, SLAB_CAPACITY>
     where
         'a: 'b,
     {
@@ -71,8 +94,11 @@ impl<T, const SLAB_SIZE: usize> PinnedSlabChain<T, SLAB_SIZE> {
         index
     }
 
+    /// # Panics
+    ///
+    /// Panics if the index is out of bounds or is not associated with an item.
     pub fn remove(&mut self, index: usize) {
-        let index = ChainIndex::<SLAB_SIZE>::from_whole(index);
+        let index = ChainIndex::<SLAB_CAPACITY>::from_whole(index);
 
         let Some(slab) = self.slabs.get_mut(index.slab) else {
             panic!("index was out of bounds of slab chain")
@@ -103,18 +129,18 @@ impl<T, const SLAB_SIZE: usize> PinnedSlabChain<T, SLAB_SIZE> {
     }
 }
 
-impl<T, const SLAB_SIZE: usize> Default for PinnedSlabChain<T, SLAB_SIZE> {
+impl<T, const SLAB_CAPACITY: usize> Default for PinnedSlabChain<T, SLAB_CAPACITY> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-pub struct PinnedSlabChainInserter<'s, T, const SLAB_SIZE: usize> {
-    slab_inserter: PinnedSlabInserter<'s, T, SLAB_SIZE>,
+pub struct PinnedSlabChainInserter<'s, T, const SLAB_CAPACITY: usize> {
+    slab_inserter: PinnedSlabInserter<'s, T, SLAB_CAPACITY>,
     slab_index: usize,
 }
 
-impl<'s, T, const SLAB_SIZE: usize> PinnedSlabChainInserter<'s, T, SLAB_SIZE> {
+impl<'s, T, const SLAB_CAPACITY: usize> PinnedSlabChainInserter<'s, T, SLAB_CAPACITY> {
     pub fn insert<'v>(self, value: T) -> Pin<&'v T>
     where
         's: 'v,
@@ -134,16 +160,17 @@ impl<'s, T, const SLAB_SIZE: usize> PinnedSlabChainInserter<'s, T, SLAB_SIZE> {
     }
 
     pub fn index(&self) -> usize {
-        ChainIndex::<SLAB_SIZE>::from_parts(self.slab_index, self.slab_inserter.index()).to_whole()
+        ChainIndex::<SLAB_CAPACITY>::from_parts(self.slab_index, self.slab_inserter.index())
+            .to_whole()
     }
 }
 
-struct ChainIndex<const SLAB_SIZE: usize> {
+struct ChainIndex<const SLAB_CAPACITY: usize> {
     slab: usize,
     index_in_slab: usize,
 }
 
-impl<const SLAB_SIZE: usize> ChainIndex<SLAB_SIZE> {
+impl<const SLAB_CAPACITY: usize> ChainIndex<SLAB_CAPACITY> {
     fn from_parts(slab: usize, index_in_slab: usize) -> Self {
         Self {
             slab,
@@ -153,20 +180,20 @@ impl<const SLAB_SIZE: usize> ChainIndex<SLAB_SIZE> {
 
     fn from_whole(whole: usize) -> Self {
         Self {
-            slab: whole / SLAB_SIZE,
-            index_in_slab: whole % SLAB_SIZE,
+            slab: whole / SLAB_CAPACITY,
+            index_in_slab: whole % SLAB_CAPACITY,
         }
     }
 
     fn to_whole(&self) -> usize {
-        self.slab * SLAB_SIZE + self.index_in_slab
+        self.slab * SLAB_CAPACITY + self.index_in_slab
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::RefCell;
+    use std::{cell::RefCell, sync::{Arc, Mutex}, thread};
 
     #[test]
     fn smoke_test() {
@@ -338,5 +365,41 @@ mod tests {
             let chain = chain.borrow();
             assert_eq!(*chain.get(0), 42);
         }
+    }
+
+    #[test]
+    fn multithreaded_via_mutex() {
+        let chain = Arc::new(Mutex::new(PinnedSlabChain::<u32, 3>::new()));
+
+        let a;
+        let b;
+        let c;
+
+        {
+            let mut chain = chain.lock().unwrap();
+            a = chain.insert(42);
+            b = chain.insert(43);
+            c = chain.insert(44);
+
+            assert_eq!(*chain.get(a), 42);
+            assert_eq!(*chain.get(b), 43);
+            assert_eq!(*chain.get(c), 44);
+        }
+
+        let chain_clone = Arc::clone(&chain);
+        thread::spawn(move || {
+            let mut chain = chain_clone.lock().unwrap();
+
+            chain.remove(b);
+
+            let d = chain.insert(45);
+
+            assert_eq!(*chain.get(a), 42);
+            assert_eq!(*chain.get(c), 44);
+            assert_eq!(*chain.get(d), 45);
+        });
+
+        let chain = chain.lock().unwrap();
+        assert!(!chain.is_empty());
     }
 }
