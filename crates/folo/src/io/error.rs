@@ -28,3 +28,12 @@ pub enum Error {
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
+
+impl From<Error> for std::io::Error {
+    fn from(value: Error) -> Self {
+        match value {
+            Error::StdIo(error) => error,
+            _ => std::io::Error::other(value)
+        }
+    }
+}
