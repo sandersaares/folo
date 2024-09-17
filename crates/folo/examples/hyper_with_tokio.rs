@@ -36,7 +36,7 @@ async fn handle_request(
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
-    let listen_addr = "127.0.0.1:1234";
+    let listen_addr = "0.0.0.0:1234";
     let tcp_listener = TcpListener::bind(listen_addr).await?;
     println!("Listening on http://{listen_addr}");
 
