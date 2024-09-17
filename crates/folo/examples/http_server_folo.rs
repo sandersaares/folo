@@ -1,5 +1,3 @@
-#![allow(dead_code)] // WIP
-
 use folo::{
     io::{self, OperationResultExt, PinnedBuffer},
     net::{TcpConnection, TcpServerBuilder},
@@ -52,7 +50,6 @@ const ONE_MEGABYTE_CHUNK_HEADER: &[u8] = b"100000\r\n";
 const TWENTY_KB_RESPONSE_HEADERS: &[u8] = b"HTTP/1.1 200 OK\r\nConnection: Close\r\nContent-Type: application/octet-stream\r\nContent-Length: 20480\r\n\r\n";
 const TWENTY_KB_RESPONSE_BODY: &[u8] = &[b'x'; 20480];
 
-const ERROR_RESPONSE_HEADERS: &[u8] = b"HTTP/1.1 500 Internal Server Error\r\nConnection: Close\r\nContent-Type: text/plain\r\nContent-Length: 0\r\n\r\n";
 const NOT_FOUND_RESPONSE_HEADERS: &[u8] = b"HTTP/1.1 404 Not Found\r\nConnection: Close\r\nContent-Type: text/plain\r\nContent-Length: 0\r\n\r\n";
 
 async fn accept_connection(mut connection: TcpConnection) -> io::Result<()> {
