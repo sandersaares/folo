@@ -3,7 +3,7 @@ use std::sync::LazyLock;
 use windows::Win32::Networking::WinSock::{WSAGetLastError, WSAStartup, WSADATA};
 
 pub fn ensure_initialized() {
-    _ = *WINSOCK_STARTUP;
+    *WINSOCK_STARTUP;
 }
 
 static WINSOCK_STARTUP: LazyLock<()> = LazyLock::new(|| {
@@ -12,8 +12,6 @@ static WINSOCK_STARTUP: LazyLock<()> = LazyLock::new(|| {
     // cleanup afterwards, we intentionally do not do this - we expect to keep Winsock active
     // for the entire life of the process. If it fails, we panic and expect the process to die.
     assert_eq!(0, unsafe { WSAStartup(0x202, &mut data as *mut _) });
-
-    ()
 });
 
 /// Converts a Winsock result into an IO result.

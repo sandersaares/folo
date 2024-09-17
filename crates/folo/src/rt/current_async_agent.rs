@@ -45,10 +45,7 @@ pub fn try_with_io<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&mut io::Driver) -> R,
 {
-    CURRENT_AGENT.with_borrow(|agent| match agent {
-        Some(agent) => Some(f(&mut agent.io().borrow_mut())),
-        None => None,
-    })
+    CURRENT_AGENT.with_borrow(|agent| agent.as_ref().map(|agent| f(&mut agent.io().borrow_mut())))
 }
 
 pub fn is_some() -> bool {

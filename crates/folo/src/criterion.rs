@@ -174,7 +174,7 @@ impl ComparativeAdapter {
             .send(work_order)
             .unwrap();
 
-        _ = ready_rx.recv().unwrap();
+        ready_rx.recv().unwrap();
 
         PreparedBenchmark {
             start_tx,
@@ -200,7 +200,7 @@ impl ComparativeAdapter {
             .send(work_order)
             .unwrap();
 
-        _ = ready_rx.recv().unwrap();
+        ready_rx.recv().unwrap();
 
         PreparedBenchmark {
             start_tx,
@@ -247,7 +247,7 @@ pub struct PreparedBenchmark {
 
 impl PreparedBenchmark {
     pub fn run(self) {
-        _ = self.start_tx.send(()).unwrap();
-        _ = self.completed_rx.recv().unwrap();
+        self.start_tx.send(()).unwrap();
+        self.completed_rx.recv().unwrap();
     }
 }

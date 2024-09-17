@@ -73,7 +73,7 @@ impl OperationStore {
         Operation {
             // SAFETY: The core is only referenced by either Operation or the operating system at any
             // given time, so there is no possibility of multiple exclusive references being created.
-            core: unsafe { mem::transmute(&mut *core.get()) },
+            core: unsafe { &mut *core.get() },
             control: self.control_node(),
         }
     }
@@ -196,7 +196,7 @@ impl OperationStore {
             // SAFETY: We pretend that the store is 'static to avoid overcomplex lifetime
             // annotations. This is embedded into operations, which anyway require us to keep the
             // store alive for the duration of their life, so it does not raise expectations.
-            store: unsafe { mem::transmute(self) },
+            store: unsafe { mem::transmute::<&OperationStore, &OperationStore>(self) },
         }
     }
 }
@@ -437,7 +437,7 @@ impl Operation {
             // SAFETY: Sets the lifetime to 'static because I cannot figure out a straightforward way to declare lifetimes here.
             // As long as the value is only used during the callback, this is fine (caller is responsible for not using it afterwards).
             unsafe {
-                mem::transmute(
+                mem::transmute::<&mut [u8], &mut [u8]>(
                     operation
                         .buffer
                         .as_mut()
@@ -448,7 +448,9 @@ impl Operation {
             &mut operation.overlapped as *mut _,
             // SAFETY: Sets the lifetime to 'static because I cannot figure out a straightforward way to declare lifetimes here.
             // As long as the value is only used during the callback, this is fine (caller is responsible for not using it afterwards).
-            unsafe { mem::transmute(&mut operation.immediate_bytes_transferred) },
+            unsafe {
+                mem::transmute::<&mut u32, &mut u32>(&mut operation.immediate_bytes_transferred)
+            },
         )
     }
 }

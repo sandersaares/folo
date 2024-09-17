@@ -183,6 +183,11 @@ impl PinnedBuffer {
         self.len
     }
 
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     pub fn set_len(&mut self, value: usize) {
         assert!(self.start + value <= self.capacity());
 

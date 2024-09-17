@@ -110,7 +110,10 @@ impl Driver {
                         ***self.completion_port.handle(),
                         // MaybeUninit is a ZST and binary-compatible. We use it to avoid
                         // initializing the array, which is only used for collecting output.
-                        mem::transmute(completed.as_mut_slice()),
+                        mem::transmute::<
+                            &mut [std::mem::MaybeUninit<OVERLAPPED_ENTRY>],
+                            &mut [OVERLAPPED_ENTRY],
+                        >(completed.as_mut_slice()),
                         &mut completed_items as *mut _,
                         max_wait_time_ms,
                         false,

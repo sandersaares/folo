@@ -48,7 +48,12 @@ impl<T, const CAPACITY: usize> PinnedSlab<T, CAPACITY> {
 
         Self {
             // SAFETY: MaybeUninit is a ZST, so the layout is guaranteed to match.
-            ptr: unsafe { mem::transmute(ptr) },
+            ptr: unsafe {
+                mem::transmute::<
+                    *mut MaybeUninit<Entry<T>>,
+                    *mut Entry<T>,
+                >(ptr)
+            },
             next_free_index: 0,
             count: 0,
         }
@@ -147,7 +152,8 @@ impl<T, const CAPACITY: usize> PinnedSlab<T, CAPACITY> {
         // to drop it.
         unsafe {
             // We know it is initialized, we just use this to facilitate the in-place drop.
-            let slot: *mut MaybeUninit<Entry<T>> = mem::transmute(slot);
+            let slot: *mut MaybeUninit<Entry<T>> =
+                slot as *mut Entry<T> as *mut MaybeUninit<Entry<T>>;
             (*slot).assume_init_drop();
 
             slot.write(MaybeUninit::new(Entry::Vacant {
@@ -224,6 +230,12 @@ impl<T, const CAPACITY: usize> PinnedSlab<T, CAPACITY> {
                 );
             }
         }
+    }
+}
+
+impl<T, const CAPACITY: usize> Default for PinnedSlab<T, CAPACITY> {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -346,7 +358,12 @@ impl<'s, T, const COUNT: usize> PinnedSlabInserter<'s, T, COUNT> {
         // have multiple options for that and the specifics are none of our concern.
         let slot: &mut Entry<MaybeUninit<T>> = unsafe { mem::transmute(slot) };
 
-        let previous_entry = mem::replace(slot, Entry::Occupied { value: MaybeUninit::uninit() });
+        let previous_entry = mem::replace(
+            slot,
+            Entry::Occupied {
+                value: MaybeUninit::uninit(),
+            },
+        );
 
         self.slab.next_free_index = match previous_entry {
             Entry::Vacant { next_free_index } => next_free_index,

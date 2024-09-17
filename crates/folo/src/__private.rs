@@ -38,6 +38,12 @@ impl MetricsCollector {
     }
 }
 
+impl Default for MetricsCollector {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Drop for MetricsCollector {
     fn drop(&mut self) {
         self.publish_report();

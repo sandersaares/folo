@@ -14,7 +14,7 @@ use futures::{
 };
 use negative_impl::negative_impl;
 use std::{future::Future, mem, num::NonZeroU16, sync::Arc};
-use tracing::{event, level_filters::LevelFilter, Level};
+use tracing::{event, Level};
 use windows::Win32::Networking::WinSock::{
     bind, htons, listen, setsockopt, AcceptEx, GetAcceptExSockaddrs, WSAIoctl, WSASocketA, AF_INET,
     INADDR_ANY, IN_ADDR, IPPROTO_TCP, SIO_QUERY_RSS_PROCESSOR_INFO, SOCKADDR, SOCKADDR_IN, SOCKET,
@@ -110,6 +110,16 @@ where
         );
 
         Ok(server_handle)
+    }
+}
+
+impl<A, AF> Default for TcpServerBuilder<A, AF>
+where
+    A: Fn(TcpConnection) -> AF + Clone + Send + 'static,
+    AF: Future<Output = io::Result<()>> + 'static,
+{
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -540,14 +550,14 @@ impl AcceptOne {
                     event!(Level::TRACE, "configuring socket for incoming connection (part 2)");
 
                     // We need to refer to this via pointer, so let's copy it out to a place first.
-                    let listen_socket = (**listen_socket).0;
+                    let listen_socket = listen_socket.0;
 
                     // SAFETY: The size is right, so creating the slice is OK. We only use it for the single
                     // call on the next line, so no lifetime concerns - the slice is gone before the storage
                     // goes away in all cases.
                     let listen_socket_as_slice = unsafe {
                         slice::from_raw_parts(
-                            mem::transmute(&listen_socket as *const _),
+                            mem::transmute::<*const usize, *const u8>(&listen_socket as *const _),
                             mem::size_of::<usize>(),
                         )
                     };

@@ -113,13 +113,18 @@ impl EventBuilder {
 
         let bag = BAGS.with_borrow_mut(|bags| {
             Rc::clone(
-                bags
-                    .entry(name.to_string())
+                bags.entry(name.to_string())
                     .or_insert_with(|| Rc::new(ObservationBag::new(self.buckets))),
             )
         });
 
         Ok(Event::new(bag))
+    }
+}
+
+impl Default for EventBuilder {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -151,11 +156,20 @@ impl ObservationBag {
         // the type while it may still be mutated, so we can be certain that references are legal.
         let bucket_counts = unsafe { &mut *self.bucket_counts.get() };
 
-        self.bucket_magnitudes
+        let bucket_index = self
+            .bucket_magnitudes
             .iter()
             .enumerate()
-            .find(|(_, &bucket_magnitude)| magnitude <= bucket_magnitude)
-            .map(|(i, _)| bucket_counts[i] += count);
+            .find_map(|(i, &bucket_magnitude)| {
+                if magnitude <= bucket_magnitude {
+                    Some(i)
+                } else {
+                    None
+                }
+            })
+            .expect("the last bucket is ::MAX so there must be a match");
+
+        bucket_counts[bucket_index] += count;
     }
 
     fn new(buckets: &'static [Magnitude]) -> Self {

@@ -38,7 +38,7 @@ async fn accept_connection(mut connection: TcpConnection) -> io::Result<()> {
 
         match receive_result {
             Ok(buffer) => {
-                if buffer.len() == 0 {
+                if buffer.is_empty() {
                     break;
                 }
 

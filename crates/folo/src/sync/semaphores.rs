@@ -36,6 +36,12 @@ impl<const MAX: usize> LocalSemaphore<MAX> {
     }
 }
 
+impl<const MAX: usize> Default for LocalSemaphore<MAX> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[negative_impl]
 impl<const MAX: usize> !Send for LocalSemaphore<MAX> {}
 #[negative_impl]

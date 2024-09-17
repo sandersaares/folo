@@ -83,7 +83,7 @@ pub async fn read_large_buffer(path: impl AsRef<Path>) -> io::Result<Vec<u8>> {
             buffer = read_buffer_from_file(&file_handle, bytes_read, buffer).await?;
             bytes_read += buffer.len();
 
-            if buffer.len() == 0 {
+            if buffer.is_empty() {
                 // We have read the entire file (we think). We are done.
                 assert_eq!(
                     bytes_read, file_size as usize,

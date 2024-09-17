@@ -33,7 +33,7 @@ impl<T, const SLAB_SIZE: usize> PinnedSlabChain<T, SLAB_SIZE> {
 
         self.slabs
             .get(index.slab)
-            .and_then(|slab| Some(slab.get(index.index_in_slab)))
+            .map(|slab| slab.get(index.index_in_slab))
             .expect("index was out of bounds of slab chain")
     }
 
@@ -42,7 +42,7 @@ impl<T, const SLAB_SIZE: usize> PinnedSlabChain<T, SLAB_SIZE> {
 
         self.slabs
             .get_mut(index.slab)
-            .and_then(|slab| Some(slab.get_mut(index.index_in_slab)))
+            .map(|slab| slab.get_mut(index.index_in_slab))
             .expect("index was out of bounds of slab chain")
     }
 
@@ -100,6 +100,12 @@ impl<T, const SLAB_SIZE: usize> PinnedSlabChain<T, SLAB_SIZE> {
         for slab in &self.slabs {
             slab.integrity_check();
         }
+    }
+}
+
+impl<T, const SLAB_SIZE: usize> Default for PinnedSlabChain<T, SLAB_SIZE> {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

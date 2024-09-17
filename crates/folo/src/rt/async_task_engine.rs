@@ -126,6 +126,7 @@ impl AsyncTaskEngine {
             tasks: PinnedSlabChain::new(),
             active: VecDeque::new(),
             inactive: HashSet::with_hasher(BuildPointerHasher::default()),
+            #[allow(clippy::arc_with_non_send_sync)] // Clippy false positive? That's a big fat mutex!
             awakened: Arc::new(Mutex::new(VecDeque::with_capacity(AWAKENED_CAPACITY))),
             probe_embedded_wake_signals: Arc::new(AtomicBool::new(false)),
             completed: VecDeque::new(),

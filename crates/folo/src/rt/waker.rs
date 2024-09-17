@@ -224,6 +224,7 @@ mod tests {
 
     #[test]
     fn awaken_via_embedded_signal() {
+        #[allow(clippy::arc_with_non_send_sync)] // False positive? Or needs more annotations in type layers?
         let awakened_queue = Arc::new(Mutex::new(VecDeque::with_capacity(10)));
         let probe_embedded_wake_signals = Arc::new(AtomicBool::new(false));
 
@@ -253,7 +254,7 @@ mod tests {
         assert!(!signal.consume_awakened());
 
         waker.wake_by_ref();
-        assert_eq!(true, probe_embedded_wake_signals.load(Ordering::Relaxed));
+        assert!(probe_embedded_wake_signals.load(Ordering::Relaxed));
         assert!(signal.consume_awakened());
 
         assert!(!signal.is_inert());
@@ -267,6 +268,7 @@ mod tests {
 
     #[test]
     fn awaken_via_awakened_set() {
+        #[allow(clippy::arc_with_non_send_sync)] // False positive? Or needs more annotations in type layers?
         let awakened_queue = Arc::new(Mutex::new(VecDeque::with_capacity(10)));
         let probe_embedded_wake_signals = Arc::new(AtomicBool::new(false));
 
@@ -294,7 +296,7 @@ mod tests {
 
         waker.wake_by_ref();
         // It should not have set the embedded signal here because we use the awakened set.
-        assert_eq!(false, probe_embedded_wake_signals.load(Ordering::Relaxed));
+        assert!(!probe_embedded_wake_signals.load(Ordering::Relaxed));
         assert!(!signal.consume_awakened());
         assert!(!awakened_queue.lock().unwrap().is_empty());
 
@@ -310,6 +312,7 @@ mod tests {
     #[test]
     fn awaken_via_full_awakened_set() {
         // Capacity is 0 so the queue is not allowed to allocate (== is never used).
+        #[allow(clippy::arc_with_non_send_sync)] // False positive? Or needs more annotations in type layers?
         let awakened_queue = Arc::new(Mutex::new(VecDeque::with_capacity(0)));
         let probe_embedded_wake_signals = Arc::new(AtomicBool::new(false));
 
@@ -337,7 +340,7 @@ mod tests {
 
         waker.wake_by_ref();
         // Even though it could lock the set, it could not use it because it was at capacity.
-        assert_eq!(true, probe_embedded_wake_signals.load(Ordering::Relaxed));
+        assert!(probe_embedded_wake_signals.load(Ordering::Relaxed));
         assert!(signal.consume_awakened());
 
         assert!(!signal.is_inert());

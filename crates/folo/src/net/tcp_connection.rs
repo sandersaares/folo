@@ -111,7 +111,7 @@ impl TcpConnection {
 
         let received_data = self.receive(PinnedBuffer::from_pool()).await.into_inner()?;
 
-        if received_data.len() > 0 {
+        if !received_data.is_empty() {
             return Err(io::Error::LogicError("socket received data when shutting down - this may be an error depending on the communication protocol in use".to_string()));
         }
 

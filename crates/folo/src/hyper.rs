@@ -82,6 +82,12 @@ impl FoloTimer {
     }
 }
 
+impl Default for FoloTimer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Timer for FoloTimer {
     fn sleep(&self, duration: std::time::Duration) -> std::pin::Pin<Box<dyn hyper::rt::Sleep>> {
         todo!()

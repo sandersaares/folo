@@ -13,7 +13,7 @@ criterion_main!(benches);
 const FILE_SIZE: usize = 10 * 1024 * 1024 * 1024;
 const FILE_PATH: &str = "testdata.bin";
 
-const SMALL_FILE_SIZE: usize = 1 * 1024 * 1024 * 1024;
+const SMALL_FILE_SIZE: usize = 1024 * 1024 * 1024;
 const SMALL_FILE_COUNT: usize = 32;
 const SMALL_FILE_PATH: &str = "testdata_small.bin";
 
