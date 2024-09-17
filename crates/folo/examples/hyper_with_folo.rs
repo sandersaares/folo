@@ -40,10 +40,11 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
         .build()
         .await?;
 
-    println!("Listening on http://localhost:1234");
-    Delay::with_clock(&clock, Duration::from_secs(30)).await;
-    println!("Shutting down the server...");
+    // Stop the server after N minutes
+    Delay::with_clock(&clock, Duration::from_secs(300)).await;
 
+    // Calling this is optional - just validating that it works if called early.
+    // If we do not call this, it will happen automatically when the runtime shuts down workers.
     server.stop();
 
     Ok(())

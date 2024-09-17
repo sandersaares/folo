@@ -42,26 +42,17 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
 
     let mut join_set = JoinSet::new();
     loop {
-        let (stream, addr) = match tcp_listener.accept().await {
+        let (stream, _) = match tcp_listener.accept().await {
             Ok(x) => x,
-            Err(e) => {
-                eprintln!("failed to accept connection: {e}");
+            Err(_) => {
                 continue;
             }
         };
 
         let serve_connection = async move {
-            println!("handling a request from {addr}");
-
-            let result = Builder::new(TokioExecutor::new())
+            Builder::new(TokioExecutor::new())
                 .serve_connection(TokioIo::new(stream), service_fn(handle_request))
-                .await;
-
-            if let Err(e) = result {
-                eprintln!("error serving {addr}: {e}");
-            }
-
-            println!("handled a request from {addr}");
+                .await
         };
 
         join_set.spawn(serve_connection);
