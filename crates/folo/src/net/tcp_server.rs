@@ -290,7 +290,9 @@ where
                 mem::size_of::<SOCKADDR_IN>() as i32,
             ))?;
 
-            winsock::to_io_result(listen(*listen_socket, PENDING_CONNECTION_LIMIT))?;
+            // A raw value for the queue length must be wrapped in the SOMAXCONN_HINT macro,
+            // which really is just negation - a negative value means "use the absolute value".
+            winsock::to_io_result(listen(*listen_socket, -PENDING_CONNECTION_LIMIT))?;
         };
 
         // Bind the socket to the I/O completion port so we can process I/O completions.
