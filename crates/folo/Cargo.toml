@@ -68,6 +68,13 @@ http = "1.0"
 http-body = "1.0.0"
 bytes = "1.7.1"
 http-body-util = "0.1.0"
+tower = "0.5.1"
+# required for gRPC
+tonic =  { version = "0.12.2", default-features = false, features = ["codegen", "prost"] }
+prost = "0.13"
+
+[build-dependencies]
+tonic-build = "0.12"
 
 [[bench]]
 name = "comm_primitives"
