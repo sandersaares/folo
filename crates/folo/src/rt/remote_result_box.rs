@@ -1,7 +1,7 @@
 use crate::{
     constants::{self, GENERAL_MILLISECONDS_BUCKETS},
     metrics::{Event, EventBuilder},
-    util::LowPrecisionInstant,
+    time::LowPrecisionInstant,
 };
 use std::{mem, sync::Mutex, task::Waker};
 

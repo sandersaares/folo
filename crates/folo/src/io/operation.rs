@@ -3,7 +3,7 @@ use crate::{
     io::{self, OperationResult, PinnedBuffer},
     mem::PinnedSlabChain,
     metrics::{Event, EventBuilder, Magnitude},
-    util::LowPrecisionInstant,
+    time::LowPrecisionInstant,
 };
 use negative_impl::negative_impl;
 use pin_project::pin_project;

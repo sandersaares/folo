@@ -1,11 +1,11 @@
-use super::remote_result_box::RemoteResultBox;
-use super::sync_agent::SyncAgentCommand;
-use super::{current_async_agent, ErasedSyncTask};
 use crate::constants::{self, GENERAL_MILLISECONDS_BUCKETS};
 use crate::io::IoWaker;
 use crate::metrics::{Event, EventBuilder};
-use crate::rt::{async_agent::AsyncAgentCommand, remote_task::RemoteTask, RemoteJoinHandle};
-use crate::util::LowPrecisionInstant;
+use crate::rt::{
+    async_agent::AsyncAgentCommand, current_async_agent, remote_result_box::RemoteResultBox,
+    remote_task::RemoteTask, sync_agent::SyncAgentCommand, ErasedSyncTask, RemoteJoinHandle,
+};
+use crate::time::LowPrecisionInstant;
 use core_affinity::CoreId;
 use crossbeam::channel;
 use crossbeam::queue::SegQueue;

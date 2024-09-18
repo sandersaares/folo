@@ -5,7 +5,7 @@ use crate::{
     mem::PinnedSlabChain,
     metrics::{Event, EventBuilder},
     rt::{erased_async_task::ErasedResultAsyncTask, waker::WakeSignal},
-    util::LowPrecisionInstant,
+    time::LowPrecisionInstant,
 };
 use negative_impl::negative_impl;
 use pin_project::pin_project;

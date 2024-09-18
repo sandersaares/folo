@@ -1,3 +1,4 @@
+use crate::time::LowPrecisionInstant;
 use negative_impl::negative_impl;
 use std::{
     borrow::Cow,
@@ -10,8 +11,6 @@ use std::{
     rc::Rc,
     time::Duration,
 };
-
-use crate::util::LowPrecisionInstant;
 
 pub type Magnitude = i64;
 
