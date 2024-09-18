@@ -77,6 +77,7 @@ impl GrpcClient {
     }
 }
 
+// Implementation of this trait allows gRPC client to be used when in "GreeterClient::with_origin" constructor.
 impl Service<Request<BoxBody>> for GrpcClient {
     type Response = Response<Incoming>;
     type Error = hyper::Error;
