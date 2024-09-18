@@ -20,8 +20,8 @@ use std::{
 /// You can adjust the start/len fields as appropriate to adjust the active region (e.g. to fill
 /// or consume the buffer in multiple pieces).
 ///
-/// This is a single threaded type - buffers cannot move between threads, all I/O performed on this
-/// buffer stays within the same thread from start to finish.
+/// This is a single threaded type - these buffers cannot move between threads, all I/O performed
+/// on these buffers stays within the same thread from start to finish.
 ///
 /// For a thread-safe variant, see `PinnedBufferShared`.
 #[derive(Debug)]
@@ -97,7 +97,8 @@ impl PinnedBuffer {
             // compatible with T. Finally, we do not care what bit patterns our buffers are
             // initialized with because they will be overwritten by new data anyway as part of some
             // I/O operation. We assume we do not need to worry about dirty contents being somehow
-            // dangerous/sensitive here (perhaps might want to consider zeroing per-usecase).
+            // dangerous/sensitive here (perhaps might want to consider zeroing per-usecase but that
+            // would be the responsibility of whoever put sensitive data in there, before dropping).
             let storage = unsafe { (*storage).assume_init_mut() };
 
             POOL_ALLOCATED.with(Event::observe_unit);
