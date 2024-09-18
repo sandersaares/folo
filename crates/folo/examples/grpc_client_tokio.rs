@@ -20,7 +20,7 @@ pub mod hello_world {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    let uri = "http://localhost:5026".parse::<hyper::Uri>()?;
+    let uri = "http://localhost:1234".parse::<hyper::Uri>()?;
     let client = GrpcClient::connect(uri.clone()).await?;
     let mut client = GreeterClient::with_origin(client, uri);
 
