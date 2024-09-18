@@ -13,7 +13,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
     // Logging to stdout will happen on background thread to avoid synchronous slowdowns.
     let (non_blocking_stdout, _guard) = tracing_appender::non_blocking(std::io::stdout());
     tracing_subscriber::fmt()
-        //.with_max_level(tracing::Level::TRACE)
+        .with_max_level(tracing::Level::TRACE)
         .with_writer(non_blocking_stdout)
         .init();
 

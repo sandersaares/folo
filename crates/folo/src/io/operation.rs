@@ -100,6 +100,8 @@ impl OperationStore {
     /// You must also have received a completion notification from the OS, saying that the operation
     /// has completed.
     pub unsafe fn complete_operation(&self, overlapped_entry: OVERLAPPED_ENTRY) {
+        event!(Level::TRACE, message = "I/O operation completed asynchronously", overlapped_ptr = overlapped_entry.lpOverlapped as usize);
+
         let bytes_transferred = overlapped_entry.dwNumberOfBytesTransferred as usize;
         let status = NTSTATUS(overlapped_entry.Internal as i32);
 
@@ -163,6 +165,8 @@ impl OperationStore {
     /// `Operation::begin()` earlier, which received a response from the OS saying that the
     /// operation completed immediately.
     unsafe fn complete_immediately(&self, overlapped: *mut OVERLAPPED) {
+        event!(Level::TRACE, message = "I/O operation completed immediately", overlapped_ptr = ?overlapped);
+
         // SAFETY: The core is only referenced by either Operation or the operating system at any
         // given time, so there is no possibility of multiple exclusive references being created.
         let core = &mut *(overlapped as *mut OperationCore);

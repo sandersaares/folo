@@ -1,5 +1,5 @@
 use crate::{
-    io::{self, OperationResultExt},
+    io::{self, OperationResultSharedExt},
     net::{winsock, TcpConnection},
     rt::{current_async_agent, current_runtime, spawn, RemoteJoinHandle, SynchronousTaskType},
     windows::OwnedHandle,
@@ -146,7 +146,7 @@ where
         };
 
         // Bind the socket to the I/O completion port so we can process I/O completions.
-        current_async_agent::with_io(|io| {
+        current_async_agent::with_io_shared(|io| {
             io.bind_io_primitive(&*listen_socket).unwrap();
         });
 
@@ -373,8 +373,8 @@ impl AcceptOne {
 
         // Creating the socket is an expensive synchronous operation, so do it on a synchronous
         // worker thread.
-        let connection_socket = current_runtime::with(move |x| {
-            x.spawn_sync(
+        let connection_socket = current_runtime::with(move |runtime| {
+            runtime.spawn_sync(
                 SynchronousTaskType::Syscall,
                 move || -> io::Result<OwnedHandle<SOCKET>> {
                     event!(
@@ -414,7 +414,7 @@ impl AcceptOne {
         //      outBufLen - ((sizeof (sockaddr_in) + 16) * 2),
         //      sizeof (sockaddr_in) + 16, sizeof (sockaddr_in) + 16,
         //      &dwBytes, &olOverlap);
-        let buffer = io::PinnedBuffer::from_pool();
+        let buffer = io::PinnedBufferShared::from_pool();
 
         // The data length in the buffer (if we were to want to use some) would be the buffer size
         // minus double of this (local + remote address).
@@ -425,7 +425,7 @@ impl AcceptOne {
         // NOTE: This is an operation on the **listen socket**, not on the connection socekt, so it
         // is bound to the completion port of the listen socket. Note that we have not yet bound the
         // connection socket to any completion port.
-        let accept_operation = current_async_agent::with_io(|io| io.new_operation(buffer));
+        let accept_operation = current_async_agent::with_io_shared(|io| io.new_operation(buffer));
 
         event!(Level::TRACE, "waiting for incoming connection to arrive");
 

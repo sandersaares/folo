@@ -37,6 +37,25 @@ where
     })
 }
 
+/// Executes a closure that receives the multithreaded I/O driver for the runtime that owns the
+/// current thread. This is the mechanism used to start I/O operations. Only available on async
+/// worker threads because only those threads can perform I/O using the Folo runtime.
+///
+/// # Panics
+///
+/// Panics if the current thread is not an async worker thread owned by the Folo runtime.
+pub fn with_io_shared<F, R>(f: F) -> R
+where
+    F: FnOnce(&io::DriverShared) -> R,
+{
+    CURRENT_AGENT.with_borrow(|agent| {
+        agent
+            .as_ref()
+            .expect("this thread is not an async worker thread owned by the Folo runtime")
+            .with_io_shared(f)
+    })
+}
+
 /// Executes a closure that receives the current thread's I/O driver for the runtime that owns the
 /// current thread. This is the mechanism used to start I/O operations. Only available on async
 /// worker threads because only those threads can perform I/O using the Folo runtime.
