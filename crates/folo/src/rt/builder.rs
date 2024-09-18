@@ -322,7 +322,7 @@ impl RuntimeBuilder {
                     ready_rx,
                     result: command_tx,
                 } = self.start_sync_agent(
-                    processor_id.clone(),
+                    *processor_id,
                     worker_index,
                     Arc::clone(&sync_task_queue),
                     Arc::clone(&sync_priority_task_queue),
@@ -378,7 +378,7 @@ impl RuntimeBuilder {
             tcp_dispatcher_ready.io_waker,
             sync_command_txs_by_processor
                 .into_iter()
-                .map(|(k, v)| (k.clone(), v.into_boxed_slice()))
+                .map(|(k, v)| (*k, v.into_boxed_slice()))
                 .collect(),
             sync_task_queues_by_processor,
             sync_priority_task_queues_by_processor,
