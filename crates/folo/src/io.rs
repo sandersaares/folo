@@ -4,6 +4,7 @@ mod error;
 mod operation;
 mod operation_result;
 mod pinned_buffer;
+mod pinned_buffer_shared;
 mod primitive;
 mod waker;
 
@@ -14,5 +15,6 @@ pub use error::*;
 pub(crate) use operation::*;
 pub use operation_result::*;
 pub use pinned_buffer::*;
+pub use pinned_buffer_shared::*;
 pub(crate) use primitive::*;
 pub(crate) use waker::*;

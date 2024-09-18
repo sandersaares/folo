@@ -14,6 +14,7 @@ use std::sync::{Arc, Mutex};
 ///
 /// The standard pattern is a `link_ref!` static variable where you store an instance of this.
 #[linked::object]
+#[derive(Debug)]
 pub struct SharedArrayPool<const LEN: usize> {
     // This is the shared backing storage where every item is located for the duration of its life.
     // This collection guarantees that all items are pinned.
@@ -118,6 +119,7 @@ impl<const LEN: usize> Default for SharedArrayPool<LEN> {
 
 /// A handle to an array that was obtained from a pool.
 /// It will be returned to the pool when the handle is dropped.
+#[derive(Debug)]
 pub struct PooledArray<const LEN: usize> {
     ptr: *mut u8,
 
@@ -125,6 +127,7 @@ pub struct PooledArray<const LEN: usize> {
 }
 
 /// A temporary lease entitling the holder to own a pooled array until the lease is dropped.
+#[derive(Debug)]
 pub struct PooledArrayLease<const LEN: usize> {
     inner: Option<PooledArray<LEN>>,
     return_to: Rc<RefCell<VecDeque<PooledArray<LEN>>>>,
