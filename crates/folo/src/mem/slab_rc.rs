@@ -106,7 +106,7 @@ impl<T> SlabRcBox<T> {
     }
 
     /// Inserts the boxed value into a slab chain that will be referenced via direct reference.
-    /// 
+    ///
     /// You can easily allocate such a slab chain via `new_storage_ref()`.
     pub fn insert_into_ref(
         self,
@@ -136,7 +136,7 @@ impl<T> SlabRcBox<T> {
     }
 
     /// Inserts the boxed value into a slab chain that will be referenced via `Rc`.
-    /// 
+    ///
     /// You can easily allocate such a slab chain via `new_storage_rc()`.
     pub fn insert_into_rc(
         self,
@@ -172,9 +172,9 @@ impl<T> SlabRcBox<T> {
     }
 
     /// Inserts the boxed value into a slab chain that will be referenced via a raw pointer.
-    /// 
+    ///
     /// You can easily allocate such a slab chain via `new_storage_unsafe()`.
-    /// 
+    ///
     /// # Safety
     ///
     /// The caller must guarantee that the slab chain outlives every box inserted into it.
@@ -211,6 +211,11 @@ impl<T> SlabRcBox<T> {
         }
     }
 
+    /// Allocates a new `SlabRc` storage intended for use with `insert_into_ref()`.
+    ///
+    /// # Panics
+    ///
+    /// All `SlabRc` values must be dropped by the time the storage is dropped or it will panic.
     pub fn new_storage_ref() -> RefCell<PinnedSlabChain<SlabRcBox<T>>> {
         // We configure "must not drop items" policy because if all the SlabRcs are holding
         // references to the slab then they should be cleaning up items when the SlabRcs are
@@ -219,18 +224,32 @@ impl<T> SlabRcBox<T> {
         RefCell::new(PinnedSlabChain::new(DropPolicy::MustNotDropItems))
     }
 
+    /// Allocates a new `SlabRc` storage intended for use with `insert_into_rc()`.
+    ///
+    /// # Panics
+    ///
+    /// All `SlabRc` values must be dropped by the time the storage is dropped or it will panic.
     pub fn new_storage_rc() -> Rc<RefCell<PinnedSlabChain<SlabRcBox<T>>>> {
         // We configure "must not drop items" policy because if all the SlabRcs are holding
         // references to the slab via Rc then it should be impossible for the slab chain to drop
         // first because the references from its own items should be holding it alive.
-        Rc::new(RefCell::new(PinnedSlabChain::new(DropPolicy::MustNotDropItems)))
+        Rc::new(RefCell::new(PinnedSlabChain::new(
+            DropPolicy::MustNotDropItems,
+        )))
     }
 
+    /// Allocates a new `SlabRc` storage intended for use with `insert_into_unsafe()`.
+    ///
+    /// # Panics
+    ///
+    /// All `SlabRc` values must be dropped by the time the storage is dropped or it will panic.
     pub fn new_storage_unsafe() -> Pin<Box<RefCell<PinnedSlabChain<SlabRcBox<T>>>>> {
         // It is the responsibility of the caller to ensure that the slab chain outlives all the
         // smart pointers that point into it. Dropping the slab chain while there are still items
         // in it here indicates that the caller failed to perform their duty.
-        Box::pin(RefCell::new(PinnedSlabChain::new(DropPolicy::MustNotDropItems)))
+        Box::pin(RefCell::new(PinnedSlabChain::new(
+            DropPolicy::MustNotDropItems,
+        )))
     }
 }
 
@@ -242,14 +261,15 @@ impl<T> From<T> for SlabRcBox<T> {
 
 // ################## RefSlabRc ################## //
 
-/// A reference-counting smart pointer to an item stored in a PinnedSlabChain<AsSlabRc<T>>. You can
+/// A reference-counting smart pointer to an item stored in a PinnedSlabChain<SlabRcBox<T>>. You can
 /// get a pinned reference to the item via `deref_pin()` and you can clone the smart pointer and
 /// that's about it.
 ///
 /// # Panics
 ///
-/// Dropping the last reference to an item via `SlabRc` while holding an exclusive reference to the
-/// slab chain itself will panic.
+/// Dropping a `SlabRc` may take an exclusive reference on the slab chain via runtime borrow
+/// checking. Make sure you are not holding any references to the slab chain yourself when dropping
+/// any `SlabRc` values or the drop will panic.
 #[derive(Debug)]
 pub struct RefSlabRc<'slab, T> {
     // We may need to mutate the chain at any time, so we require it to be in a RefCell.
@@ -305,14 +325,15 @@ impl<T> Drop for RefSlabRc<'_, T> {
 
 // ################## RcSlabRc ################## //
 
-/// A reference-counting smart pointer to an item stored in a PinnedSlabChain<AsSlabRc<T>>. You can
+/// A reference-counting smart pointer to an item stored in a PinnedSlabChain<SlabRcBox<T>>. You can
 /// get a pinned reference to the item via `deref_pin()` and you can clone the smart pointer and
 /// that's about it.
 ///
 /// # Panics
 ///
-/// Dropping the last reference to an item via `SlabRc` while holding an exclusive reference to the
-/// slab chain itself will panic.
+/// Dropping a `SlabRc` may take an exclusive reference on the slab chain via runtime borrow
+/// checking. Make sure you are not holding any references to the slab chain yourself when dropping
+/// any `SlabRc` values or the drop will panic.
 #[derive(Debug)]
 pub struct RcSlabRc<T> {
     // We may need to mutate the chain at any time, so we require it to be in a RefCell.
@@ -368,7 +389,7 @@ impl<T> Drop for RcSlabRc<T> {
 
 // ################## UnsafeSlabRc ################## //
 
-/// A reference-counting smart pointer to an item stored in a PinnedSlabChain<AsSlabRc<T>>. You can
+/// A reference-counting smart pointer to an item stored in a PinnedSlabChain<SlabRcBox<T>>. You can
 /// get a pinned reference to the item via `deref_pin()` and you can clone the smart pointer and
 /// that's about it.
 ///
@@ -380,8 +401,9 @@ impl<T> Drop for RcSlabRc<T> {
 ///
 /// # Panics
 ///
-/// Dropping the last reference to an item via `SlabRc` while holding an exclusive reference to the
-/// slab chain itself will panic.
+/// Dropping a `SlabRc` may take an exclusive reference on the slab chain via runtime borrow
+/// checking. Make sure you are not holding any references to the slab chain yourself when dropping
+/// any `SlabRc` values or the drop will panic.
 #[derive(Debug)]
 pub struct UnsafeSlabRc<T> {
     // We may need to mutate the chain at any time, so we require it to be in a RefCell.
