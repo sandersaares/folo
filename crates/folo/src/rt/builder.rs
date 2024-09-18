@@ -279,7 +279,7 @@ impl RuntimeBuilder {
                 start_tx: async_start_tx,
                 ready_rx: async_ready_rx,
                 result: async_command_tx,
-            } = self.start_async_agent(processor_id.clone(), worker_index)?;
+            } = self.start_async_agent(processor_id, worker_index)?;
 
             async_start_txs.push(async_start_tx);
             join_handles.push(async_join_handle);
@@ -302,7 +302,7 @@ impl RuntimeBuilder {
                     ready_rx,
                     result: command_tx,
                 } = self.start_sync_agent(
-                    processor_id.clone(),
+                    processor_id,
                     worker_index,
                     Arc::clone(&sync_task_queue),
                     Arc::clone(&sync_priority_task_queue),
@@ -323,7 +323,7 @@ impl RuntimeBuilder {
             });
 
             let proc = runtime_client::CoreProcessors::new(
-                processor_id.clone(),
+                processor_id,
                 async_command_tx,
                 async_io_waker,
                 sync_command_txs.into_boxed_slice(),
