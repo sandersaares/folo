@@ -1,10 +1,8 @@
 use crate::{
-    io::{self, IoPrimitive, IoWaker},
+    io::{self, IoPrimitive},
     metrics::{Event, EventBuilder},
     windows::OwnedHandle,
 };
-use negative_impl::negative_impl;
-use std::sync::Arc;
 use windows::Win32::{
     Foundation::{HANDLE, INVALID_HANDLE_VALUE},
     Storage::FileSystem::SetFileCompletionNotificationModes,
@@ -25,22 +23,15 @@ use windows::Win32::{
 /// 2. There is a shared I/O completion port used for multithreaded I/O operations. All async worker
 ///    threads share this and process I/O whose completion is scheduled via this port.
 ///
-/// This is a thread-isolated completion port that can only be used to process completions on a
-/// single thread. Note that I/O events may still be added to the completion port from other
-/// threads - this is used to implement I/O wake signals via `IoWaker`. While the CompletionPort
-/// type itself is single-threaded, the `CompletionPortHandle` is thread-safe and can be used to
-/// schedule I/O completions from any thread.
-/// 
-/// Uses interior mutability for simplicity of operation - synchronization happens on OS level.
+/// This is the multithreaded completion port that is shared by all async workers and used for I/O
+/// that spans across threads. Just wrap it in an Arc. Interior mutability is used - no need to take
+/// any exclusive references.
 #[derive(Debug)]
-pub(crate) struct CompletionPort {
-    // The CompletionPort itself holds the only strong reference to the handle. Any `IoWakers` that
-    // are spawned for the purpose of remote I/O wakeup hold only weak references so they become
-    // inert if the completion port is dropped before the wakers.
-    handle: Arc<OwnedHandle<HANDLE>>,
+pub(crate) struct CompletionPortShared {
+    handle: OwnedHandle<HANDLE>,
 }
 
-impl CompletionPort {
+impl CompletionPortShared {
     pub(crate) fn new() -> Self {
         // SAFETY: We wrap it in OwnedHandle, ensuring it is released when dropped. I/O completion
         // ports are safe to close from any thread, as required by the OwnedHandle API contract.
@@ -48,12 +39,15 @@ impl CompletionPort {
             OwnedHandle::new(CreateIoCompletionPort(
                 INVALID_HANDLE_VALUE,
                 HANDLE::default(),
-                0, // Ignored as we are not binding a handle to the port.
-                1, // The port is only to be read from by one thread (the current thread).
+                // Ignored as we are not binding a handle to the port.
+                0,
+                // The port may be read by one thread per processor (which also happens to be
+                // the max number of async worker threads Folo can create)
+                0,
             ).expect("creating an I/O completion port should never fail unless the OS is critically out of resources"))
         };
 
-        Self { handle: Arc::new(handle) }
+        Self { handle }
     }
 
     /// Binds an I/O primitive to the completion port when provided a handle to the I/O primitive.
@@ -65,7 +59,7 @@ impl CompletionPort {
         // We have to assume the user provided a valid handle (but if not, it will just be an
         // error result). We ignore the return value because it is our own handle on success.
         unsafe {
-            CreateIoCompletionPort(handle, **self.handle, 0, 1)?;
+            CreateIoCompletionPort(handle, *self.handle, 0, 1)?;
         }
 
         // Why FILE_SKIP_SET_EVENT_ON_HANDLE: https://devblogs.microsoft.com/oldnewthing/20200221-00/?p=103466/
@@ -90,26 +84,15 @@ impl CompletionPort {
         Ok(())
     }
 
-    /// Obtains a waker that can be used to schedule a no-op completion on the I/O completion port,
-    /// bringing any I/O driver out of a blocking wait state.
-    pub(crate) fn waker(&self) -> IoWaker {
-        IoWaker::new(Arc::downgrade(&self.handle))
-    }
-
     /// Returns the native handle that is necessary for invoking operating system I/O APIs.
     pub(crate) fn as_native_handle(&self) -> &HANDLE {
         &self.handle
     }
 }
 
-#[negative_impl]
-impl !Send for CompletionPort {}
-#[negative_impl]
-impl !Sync for CompletionPort {}
-
 thread_local! {
     static PRIMITIVES_BOUND: Event = EventBuilder::new()
-        .name("isolated_io_primitives_bound")
+        .name("shared_io_primitives_bound")
         .build()
         .unwrap();
 }

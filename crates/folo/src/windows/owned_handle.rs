@@ -92,8 +92,14 @@ where
             return;
         }
 
+        // TODO: I am not convinced the above check saves us, there still feels like a race here
+        // where we can stick our task into a queue where it is never picked up. Need a more
+        // foolproof mechanism? Triple-check this logic, it is Very Suspect.
+
         // We select the high priority option because closing a handle could release valuable
-        // resources that the app can put to use for other things.
+        // resources that the app can put to use for other things. Furthermore, the high priority
+        // queue is processed even when shutting down the runtime, as these resources can block
+        // the shutdown process itself.
         _ = crate::rt::spawn_sync(SynchronousTaskType::HighPrioritySyscall, move || {
             let mut thread_safe = thread_safe;
 

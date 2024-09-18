@@ -86,7 +86,7 @@ impl Driver {
     /// Obtains a waker that can be used to wake up the I/O driver from another thread when it
     /// is waiting for I/O.
     pub(crate) fn waker(&self) -> IoWaker {
-        IoWaker::new(self.completion_port.handle())
+        self.completion_port.waker()
     }
 
     /// Process any I/O completion notifications and return their results to the callers. If there
@@ -107,7 +107,7 @@ impl Driver {
             let result = GET_COMPLETED_DURATION.with(|x| {
                 x.observe_duration_millis(|| {
                     GetQueuedCompletionStatusEx(
-                        **self.completion_port.handle(),
+                        *self.completion_port.as_native_handle(),
                         // MaybeUninit is a ZST and binary-compatible. We use it to avoid
                         // initializing the array, which is only used for collecting output.
                         mem::transmute::<

@@ -1,5 +1,6 @@
-use crate::io::CompletionPortHandle;
-use windows::Win32::System::IO::PostQueuedCompletionStatus;
+use crate::windows::OwnedHandle;
+use std::sync::Weak;
+use windows::Win32::{Foundation::HANDLE, System::IO::PostQueuedCompletionStatus};
 
 // Value is meaningless, just has to be unique.
 pub(crate) const WAKE_UP_COMPLETION_KEY: usize = 0x23546789897;
@@ -14,18 +15,24 @@ pub(crate) const WAKE_UP_COMPLETION_KEY: usize = 0x23546789897;
 /// `WAKE_UP_COMPLETION_KEY`. The OVERLAPPED pointer is null for these messages.
 #[derive(Clone, Debug)]
 pub(crate) struct IoWaker {
-    completion_port: CompletionPortHandle,
+    completion_port: Weak<OwnedHandle<HANDLE>>,
 }
 
 impl IoWaker {
-    pub(crate) fn new(completion_port: CompletionPortHandle) -> Self {
+    pub(crate) fn new(completion_port: Weak<OwnedHandle<HANDLE>>) -> Self {
         Self { completion_port }
     }
 
     /// Wakes up the target thread via the I/O driver by sending a completion packet to its
     /// completion port. This is a non-blocking operation.
     pub(crate) fn wake(&self) {
-        // SAFETY: Nothing to worry about - we keep our handle alive via Arc, so it must be valid.
+        let completion_port = match self.completion_port.upgrade() {
+            Some(port) => port,
+            None => return,
+        };
+
+        // SAFETY: We just need to be concerned with the completion port being valid. This is
+        // ensured by OwnedHandle.
         unsafe {
             // Note that OVERLAPPED is null here - we do not need to provide one for this operation
             // because only real operations require it - plain notifications do not.
@@ -33,12 +40,7 @@ impl IoWaker {
             // We ignore the result from this because it does not really matter - if anything goes
             // wrong, the target thread fails to wake up and that's too bad but nothing for us to
             // worry about - probably the entire app is going away if that happened anyway.
-            _ = PostQueuedCompletionStatus(
-                **self.completion_port,
-                0,
-                WAKE_UP_COMPLETION_KEY,
-                None,
-            );
+            _ = PostQueuedCompletionStatus(**completion_port, 0, WAKE_UP_COMPLETION_KEY, None);
         }
     }
 }

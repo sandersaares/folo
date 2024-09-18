@@ -1,4 +1,5 @@
 mod completion_port;
+mod completion_port_shared;
 mod driver;
 mod error;
 mod operation;
@@ -9,6 +10,7 @@ mod primitive;
 mod waker;
 
 pub(crate) use completion_port::*;
+pub(crate) use completion_port_shared::*;
 pub(crate) use driver::*;
 pub use error::*;
 #[allow(unused_imports)] // Just WIP, shut up compiler.
