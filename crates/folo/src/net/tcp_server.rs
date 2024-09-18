@@ -1,9 +1,7 @@
 use crate::{
     io::{self, OperationResultExt},
     net::{winsock, TcpConnection},
-    rt::{
-        current_async_agent, current_runtime, spawn_on_any, RemoteJoinHandle, SynchronousTaskType,
-    },
+    rt::{current_async_agent, current_runtime, spawn, RemoteJoinHandle, SynchronousTaskType},
     windows::OwnedHandle,
 };
 use core::slice;
@@ -69,39 +67,32 @@ where
             .ok_or_else(|| io::Error::InvalidOptions("port must be set".to_string()))?;
         let on_accept = self
             .on_accept
+            .clone()
             .ok_or_else(|| io::Error::InvalidOptions("on_accept must be set".to_string()))?;
 
-        let (startup_completed_tx, startup_completed_rx) = oneshot::channel();
-        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let listen_socket = Arc::new(Self::create_listen_socket(port).await?);
 
-        let join_handle = current_runtime::with(|x| {
-            x.spawn_tcp_dispatcher(move || async move {
-                TcpDispatcher::new(port, on_accept, startup_completed_tx, shutdown_rx)
-                    .run()
-                    .await
+        // We spawn a dispatcher on every async worker.
+        let mut shutdown_txs = Vec::new();
+
+        let join_handles = current_runtime::with(|runtime| {
+            runtime.spawn_on_all(|| {
+                // This code runs on the originating thread and allows us to wire up per-worker.
+                let (shutdown_tx, shutdown_rx) = oneshot::channel();
+
+                shutdown_txs.push(shutdown_tx);
+
+                let on_accept_clone = on_accept.clone();
+                let listen_socket_clone = Arc::clone(&listen_socket);
+
+                || async move {
+                    // This code will run on each worker thread.
+                    TcpDispatcher::new(listen_socket_clone, on_accept_clone, shutdown_rx)
+                        .run()
+                        .await
+                }
             })
         });
-
-        match startup_completed_rx.await {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => {
-                event!(
-                    Level::ERROR,
-                    message = "TCP dispatcher startup failed - terminating",
-                    error = e.to_string()
-                );
-                return Err(e);
-            }
-            Err(_) => {
-                return Err(io::Error::Internal(
-                    "TCP dispatcher died before reporting startup result".to_string(),
-                ));
-            }
-        }
-
-        // We create the server handle even if startup failed because we use it to command the stop
-        // in case of a failed startup.
-        let server_handle = TcpServerHandle::new(join_handle, shutdown_tx);
 
         event!(
             Level::DEBUG,
@@ -109,7 +100,58 @@ where
             port = port.get()
         );
 
-        Ok(server_handle)
+        Ok(TcpServerHandle::new(join_handles, shutdown_txs))
+    }
+
+    async fn create_listen_socket(port: NonZeroU16) -> io::Result<OwnedHandle<SOCKET>> {
+        winsock::ensure_initialized();
+
+        // SAFETY: We are required to close the handle once we are done with it,
+        // which we do via OwnedHandle that closes the handle on drop.
+        let listen_socket = unsafe {
+            OwnedHandle::new(WSASocketA(
+                AF_INET.0 as i32,
+                SOCK_STREAM.0,
+                IPPROTO_TCP.0,
+                None,
+                0,
+                WSA_FLAG_OVERLAPPED,
+            )?)
+        };
+
+        // TODO: Set send/receiver buffer sizes (will be inherited by spawned connections).
+
+        let mut addr = IN_ADDR::default();
+        addr.S_un.S_addr = INADDR_ANY;
+
+        let socket_addr = SOCKADDR_IN {
+            sin_family: AF_INET,
+            // SAFETY: Nothing unsafe here, just an FFI call.
+            sin_port: unsafe { htons(port.get()) },
+            sin_addr: addr,
+            sin_zero: [0; 8],
+        };
+
+        // SAFETY: All we need to be concerned about is passing in valid arguments, which we do.
+        unsafe {
+            winsock::to_io_result(bind(
+                *listen_socket,
+                &socket_addr as *const _ as *const _,
+                mem::size_of::<SOCKADDR_IN>() as i32,
+            ))?;
+
+            // A raw value for the queue length must be wrapped in the SOMAXCONN_HINT macro,
+            // which really is just negation - a negative value means "use the absolute value".
+            winsock::to_io_result(listen(*listen_socket, -PENDING_CONNECTION_LIMIT))?;
+        };
+
+        // Bind the socket to the I/O completion port so we can process I/O completions.
+        current_async_agent::with_io(|io| {
+            io.bind_io_primitive(&*listen_socket).unwrap();
+        });
+
+        event!(Level::TRACE, "created TCP socket for accepting connections");
+        Ok(listen_socket)
     }
 }
 
@@ -142,20 +184,18 @@ where
 /// TCP server. Dropping this will not stop the server - you must explicitly call `stop()` to stop
 /// the server, and may call `wait()` to wait for the server to complete its shutdown process.
 pub struct TcpServerHandle {
-    dispatcher_join_handle: RemoteJoinHandle<()>,
-
-    // Consumed after signal is sent.
-    dispatcher_shutdown_tx: Option<oneshot::Sender<()>>,
+    dispatcher_join_handles: Box<[RemoteJoinHandle<()>]>,
+    dispatcher_shutdown_txs: Vec<oneshot::Sender<()>>,
 }
 
 impl TcpServerHandle {
     fn new(
-        dispatcher_join_handle: RemoteJoinHandle<()>,
-        dispatcher_shutdown_tx: oneshot::Sender<()>,
+        dispatcher_join_handles: Box<[RemoteJoinHandle<()>]>,
+        dispatcher_shutdown_txs: Vec<oneshot::Sender<()>>,
     ) -> Self {
         Self {
-            dispatcher_join_handle,
-            dispatcher_shutdown_tx: Some(dispatcher_shutdown_tx),
+            dispatcher_join_handles,
+            dispatcher_shutdown_txs,
         }
     }
 
@@ -164,14 +204,12 @@ impl TcpServerHandle {
     /// some unspecified time for connection dispatch to actually stop and for ongoing connections
     /// to finish processing - the TCP server handle does not facilitate waiting for that.
     pub fn stop(&mut self) {
-        let Some(dispatcher_shutdown_tx) = self.dispatcher_shutdown_tx.take() else {
-            // Shutdown signal already sent.
-            return;
-        };
+        event!(Level::TRACE, "signaling TCP dispatcher tasks to stop");
 
-        // We ignore the result (maybe the remote side is already terminated).
-        event!(Level::TRACE, "signaling TCP dispatcher to stop");
-        let _ = dispatcher_shutdown_tx.send(());
+        for tx in self.dispatcher_shutdown_txs.drain(..) {
+            // We ignore the result (maybe the remote side is already terminated).
+            let _ = tx.send(());
+        }
     }
 }
 
@@ -180,7 +218,8 @@ impl !Send for TcpServerHandle {}
 #[negative_impl]
 impl !Sync for TcpServerHandle {}
 
-const CONCURRENT_ACCEPT_OPERATIONS: usize = 1024;
+const CONCURRENT_ACCEPT_OPERATIONS_PER_DISPATCHER: usize = 100;
+
 // The default assigned by the OS seems to be around 128, which is not enough under high load.
 const PENDING_CONNECTION_LIMIT: i32 = 4096;
 
@@ -192,15 +231,10 @@ where
     A: Fn(TcpConnection) -> AF + Clone + Send + 'static,
     AF: Future<Output = io::Result<()>> + 'static,
 {
-    // We signal this once we are ready to receive connections (or when startup fails).
-    // If this is an error, you can expect that this (or a similar) error will also be included in
-    // the result of `TcpServerHandle::wait()`. Consumed on use.
-    startup_completed_tx: Option<oneshot::Sender<io::Result<()>>>,
-
     // If we receive a message from here, it means we need to shut down. Consumed on use.
     shutdown_rx: Option<oneshot::Receiver<()>>,
 
-    port: NonZeroU16,
+    listen_socket: Arc<OwnedHandle<SOCKET>>,
 
     // Whenever we receive a new connection, we spawn a new task with this callback to handle it.
     // Once we schedule a task to call this, the dispatcher forgets about the connection - anything
@@ -217,99 +251,18 @@ where
     AF: Future<Output = io::Result<()>> + 'static,
 {
     fn new(
-        port: NonZeroU16,
+        listen_socket: Arc<OwnedHandle<SOCKET>>,
         on_accept: A,
-        startup_completed_tx: oneshot::Sender<io::Result<()>>,
         shutdown_rx: oneshot::Receiver<()>,
     ) -> Self {
         Self {
-            port,
+            listen_socket,
             on_accept,
-            startup_completed_tx: Some(startup_completed_tx),
             shutdown_rx: Some(shutdown_rx),
         }
     }
 
     async fn run(&mut self) {
-        let startup_result = match self.startup().await {
-            Ok(x) => {
-                _ = self.startup_completed_tx.take().expect("we have completed startup so the tx must still be there because this is the only thing that uses it").send(Ok(()));
-                x
-            }
-            Err(e) => {
-                // We ignore the result because it may be that nobody is listening anymore.
-                event!(
-                    Level::ERROR,
-                    message = "TCP dispatcher startup failed",
-                    error = e.to_string()
-                );
-                _ = self.startup_completed_tx.take().expect("we have completed startup so the tx must still be there because this is the only thing that uses it").send(Err(e));
-                return;
-            }
-        };
-
-        // Now we are up and running. Until we receive a shutdown command, we will keep accepting
-        // new connections and dispatching them to be handled by the user-defined callback.
-        self.run_accept_loop(startup_result).await;
-    }
-
-    async fn startup(&mut self) -> io::Result<StartedTcpDispatcher> {
-        winsock::ensure_initialized();
-
-        // SAFETY: We are required to close the handle once we are done with it,
-        // which we do via OwnedHandle that closes the handle on drop.
-        let listen_socket = unsafe {
-            OwnedHandle::new(WSASocketA(
-                AF_INET.0 as i32,
-                SOCK_STREAM.0,
-                IPPROTO_TCP.0,
-                None,
-                0,
-                WSA_FLAG_OVERLAPPED,
-            )?)
-        };
-
-        // TODO: Set send/receiver buffer sizes (will be inherited by spawned connections).
-
-        let mut addr = IN_ADDR::default();
-        addr.S_un.S_addr = INADDR_ANY;
-
-        let socket_addr = SOCKADDR_IN {
-            sin_family: AF_INET,
-            // SAFETY: Nothing unsafe here, just an FFI call.
-            sin_port: unsafe { htons(self.port.get()) },
-            sin_addr: addr,
-            sin_zero: [0; 8],
-        };
-
-        // SAFETY: All we need to be concerned about is passing in valid arguments, which we do.
-        unsafe {
-            winsock::to_io_result(bind(
-                *listen_socket,
-                &socket_addr as *const _ as *const _,
-                mem::size_of::<SOCKADDR_IN>() as i32,
-            ))?;
-
-            // A raw value for the queue length must be wrapped in the SOMAXCONN_HINT macro,
-            // which really is just negation - a negative value means "use the absolute value".
-            winsock::to_io_result(listen(*listen_socket, -PENDING_CONNECTION_LIMIT))?;
-        };
-
-        // Bind the socket to the I/O completion port so we can process I/O completions.
-        current_async_agent::with_io(|io| {
-            io.bind_io_primitive(&*listen_socket).unwrap();
-        });
-
-        event!(Level::TRACE, "opened TCP socket for accepting connections");
-
-        Ok(StartedTcpDispatcher {
-            listen_socket: Arc::new(listen_socket),
-        })
-    }
-
-    async fn run_accept_loop(&mut self, startup_result: StartedTcpDispatcher) {
-        let listen_socket = startup_result.listen_socket;
-
         // The act of accepting a connection is simply the first part of the lifecycle of a
         // TcpConnection, so we can think of this as just a very long drawn-out constructor.
         // On the other hand, accepting a connection does require use of resources owned by the
@@ -336,10 +289,10 @@ where
         let mut shutdown_received_future = self.shutdown_rx.take().expect("we only take this once");
 
         loop {
-            while accept_futures.len() < CONCURRENT_ACCEPT_OPERATIONS {
+            while accept_futures.len() < CONCURRENT_ACCEPT_OPERATIONS_PER_DISPATCHER {
                 accept_futures.push(
                     AcceptOne {
-                        listen_socket: Arc::clone(&listen_socket),
+                        listen_socket: Arc::clone(&self.listen_socket),
                     }
                     .execute(),
                 );
@@ -389,8 +342,8 @@ where
             // New connection accepted! Spawn as task and detach.
             let on_accept_clone = self.on_accept.clone();
 
-            // TODO: Spawn on optimal processor, not a random one.
-            _ = spawn_on_any(move || async move {
+            // We spawn it on the same async worker that caught the connection.
+            _ = spawn(async move {
                 current_async_agent::with_io(|io| {
                     io.bind_io_primitive(&*connection_socket).unwrap()
                 });
@@ -407,14 +360,6 @@ where
     }
 }
 
-struct StartedTcpDispatcher {
-    // This is an Arc because we need to share it between the worker itself and the "AcceptOne"
-    // subtasks that it spawns. We use Arc to avoid the need for AcceptOne to take a reference to
-    // the worker, which would at the very least conflict with the worker itself using an exclusive
-    // reference to itself. We also share this with sync worker threads, so it needs to be Arc.
-    listen_socket: Arc<OwnedHandle<SOCKET>>,
-}
-
 /// The state of a single "accept one connection" operation. We create this separate type to more
 /// easily separate the resource management of the command-processing loop from the resource
 /// management of the connection-accepting tasks.
@@ -429,7 +374,7 @@ impl AcceptOne {
         // Creating the socket is an expensive synchronous operation, so do it on a synchronous
         // worker thread.
         let connection_socket = current_runtime::with(move |x| {
-            x.spawn_sync_on_any(
+            x.spawn_sync(
                 SynchronousTaskType::Syscall,
                 move || -> io::Result<OwnedHandle<SOCKET>> {
                     event!(
@@ -548,7 +493,7 @@ impl AcceptOne {
         );
 
         let (connection_socket, _affinity_info) = current_runtime::with(move |runtime| {
-            runtime.spawn_sync_on_any(
+            runtime.spawn_sync(
                 SynchronousTaskType::Syscall,
                 move || -> io::Result<(OwnedHandle<SOCKET>, SOCKET_PROCESSOR_AFFINITY)> {
                     event!(Level::TRACE, "configuring socket for incoming connection (part 2)");
