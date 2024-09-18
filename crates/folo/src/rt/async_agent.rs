@@ -3,8 +3,12 @@ use crate::{
     io,
     metrics::{self, Event, EventBuilder, ReportPage},
     rt::{
-        async_task_engine::{AsyncTaskEngine, CycleResult}, current_runtime, local_task::LocalTask, LocalJoinHandle
-    }, time::advance_local_timers,
+        async_task_engine::{AsyncTaskEngine, CycleResult},
+        current_runtime,
+        local_task::LocalTask,
+        LocalJoinHandle,
+    },
+    time::advance_local_timers,
 };
 use core_affinity::CoreId;
 use crossbeam::channel;
@@ -13,7 +17,8 @@ use std::{
     collections::VecDeque,
     fmt::{self, Debug, Formatter},
     future::Future,
-    pin::Pin, time::Instant,
+    pin::Pin,
+    time::Instant,
 };
 use tracing::{event, Level};
 use windows::Win32::System::Threading::INFINITE;
@@ -27,6 +32,7 @@ use windows::Win32::System::Threading::INFINITE;
 ///    and communication channels so all the pieces can operate together.
 /// 2. Running - the agent is executing tasks and processing commands from other threads.
 /// 3. Shutting down - the agent is cleaning up and preparing to terminate.
+/// 4. Resources are released (I/O driver, async task engine).
 ///
 /// The shutdown process is not exposed to user code for the most part - after each worker thread
 /// receives the shutdown command, it acknowledges it, after which the public API of the runtime
@@ -35,14 +41,21 @@ use windows::Win32::System::Threading::INFINITE;
 /// This takes place independently on each task - there is no "runtime" anymore and the worker
 /// threads are disconnected from each other by this point, though the runtime client can still
 /// be used to wait for them to complete.
+///
+/// Importantly, the shutdown process must have completed by the time the agent is dropped because
+/// it may be too late to release resources by the time the agent is dropped due to the need to
+/// access thread-local data during resource release (which is a problem because thread-local data
+/// is not released in a guaranteed order).
 pub struct AsyncAgent {
     command_rx: channel::Receiver<AsyncAgentCommand>,
     metrics_tx: Option<channel::Sender<ReportPage>>,
     processor_id: CoreId,
 
-    engine: RefCell<AsyncTaskEngine>,
+    // Becomes None when `run()` has finished and we are safe top drop the AsyncAgent.
+    engine: RefCell<Option<AsyncTaskEngine>>,
 
-    io: RefCell<io::Driver>,
+    // Becomes None when `run()` has finished and we are safe top drop the AsyncAgent.
+    io: RefCell<Option<io::Driver>>,
 
     // Tasks that have been enqueued but have not yet been handed over to the async task engine.
     // Includes both locally queued tasks and tasks enqueued from another thread, which are both
@@ -66,10 +79,10 @@ impl AsyncAgent {
             processor_id,
             // SAFETY: The async task engine must not be dropped until we get a
             // `CycleResult::Shutdown` from it. We do wait for this in `run()`.
-            engine: RefCell::new(unsafe { AsyncTaskEngine::new() }),
+            engine: RefCell::new(Some(unsafe { AsyncTaskEngine::new() })),
             // SAFETY: The I/O driver must not be dropped while there are pending I/O operations.
             // We ensure this by waiting for I/O to complete before returning from `run()`.
-            io: RefCell::new(unsafe { io::Driver::new() }),
+            io: RefCell::new(Some(unsafe { io::Driver::new() })),
             new_tasks: RefCell::new(VecDeque::new()),
             shutting_down: Cell::new(false),
         }
@@ -79,8 +92,28 @@ impl AsyncAgent {
         self.processor_id
     }
 
-    pub fn io(&self) -> &RefCell<io::Driver> {
-        &self.io
+    pub fn with_io<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(&io::Driver) -> R,
+    {
+        let io = self.io.borrow();
+        let io_ref = io
+            .as_ref()
+            .expect("value is only cleared when agent shuts down, so must be set now");
+
+        f(io_ref)
+    }
+
+    pub fn with_io_mut<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(&mut io::Driver) -> R,
+    {
+        let mut io = self.io.borrow_mut();
+        let io_ref = io
+            .as_mut()
+            .expect("value is only cleared when agent shuts down, so must be set now");
+
+        f(io_ref)
     }
 
     /// Spawns a task to execute a future on the current async worker thread.
@@ -165,7 +198,10 @@ impl AsyncAgent {
         let mut allow_io_sleep = false;
 
         // We are the only one referencing the engine, so just keep the reference around for good.
-        let mut engine = self.engine.borrow_mut();
+        let mut engine_guard = self.engine.borrow_mut();
+        let engine = engine_guard
+            .as_mut()
+            .expect("the engine is only removed on shutdown so it must still be there");
 
         loop {
             match self.process_commands() {
@@ -226,7 +262,11 @@ impl AsyncAgent {
                 0
             };
 
-            self.io.borrow_mut().process_completions(io_wait_time_ms);
+            self.io
+                .borrow_mut()
+                .as_mut()
+                .expect("the I/O driver is only removed on shutdown so it must still be there")
+                .process_completions(io_wait_time_ms);
 
             // TODO: Timers require that we provide an instant value. Some additional work we can explore:
             //
@@ -272,7 +312,10 @@ impl AsyncAgent {
         }
 
         {
-            let mut io = self.io.borrow_mut();
+            let mut io_guard = self.io.borrow_mut();
+            let io = io_guard.as_mut().expect(
+                "the I/O driver must still be there because it is only removed on shutdown",
+            );
 
             if io.is_inert() {
                 event!(
@@ -290,7 +333,14 @@ impl AsyncAgent {
                     io.process_completions(INFINITE);
                 }
             }
+
+            // We are shutting down, so we need to drop the I/O driver now and release any resources
+            // it holds (such as the completion port).
+            *io_guard = None;
         }
+
+        // Release resources before we finish shutdown, as now is a good time to clean up.
+        *engine_guard = None;
 
         event!(Level::TRACE, "shutdown completed");
 
@@ -351,7 +401,8 @@ impl AsyncAgent {
 }
 
 /// How often to poll for cross-thread work, in milliseconds. We do not have cross-thread real time
-/// signals and use polling to check for arriving work. This sets our maximum sleep time, although
+/// signals for everything (though we have for most things, just not always guaranteed) and use
+/// polling to check for arriving work. This sets our maximum sleep time, although
 /// we will often check much more often if activity on the current thread wakes us up.
 const CROSS_THREAD_WORK_POLL_INTERVAL_MS: u32 = 10;
 
@@ -363,6 +414,20 @@ impl Debug for AsyncAgent {
             .field("io", &self.io)
             .field("shutting_down", &self.shutting_down)
             .finish()
+    }
+}
+
+impl Drop for AsyncAgent {
+    fn drop(&mut self) {
+        // AsyncAgent is stored in a thread-local variable. However, when it is dropped it is
+        // already too late to do any non-trivial cleanup because this may depend on other thread-
+        // local variables (e.g. calling out to the runtime via current_runtime) and thread-local
+        // variables may be destroyed in any order. Therefore, the agent must already be shut down
+        // by the time it is dropped, so no nontrivial logic runs here.
+        assert!(self.shutting_down.get());
+        assert!(self.new_tasks.borrow().is_empty());
+        assert!(self.io.borrow().is_none());
+        assert!(self.engine.borrow().is_none());
     }
 }
 

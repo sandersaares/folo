@@ -108,7 +108,7 @@ impl RuntimeBuilder {
                 // Signal that we are ready to start.
                 ready_tx
                     .send(AsyncAgentReady {
-                        io_waker: agent.io().borrow().waker(),
+                        io_waker: agent.with_io(|io| io.waker()),
                     })
                     .expect("runtime startup process failed in infallible code");
 
@@ -119,8 +119,8 @@ impl RuntimeBuilder {
                     .expect("runtime startup process failed in infallible code");
 
                 core_affinity::set_for_current(processor_id);
-                current_async_agent::set(Rc::clone(&agent));
                 current_runtime::set(start.runtime_client);
+                current_async_agent::set(Rc::clone(&agent));
 
                 agent.run();
             })?;
@@ -211,7 +211,7 @@ impl RuntimeBuilder {
                 // Signal that we are ready to start.
                 ready_tx
                     .send(AsyncAgentReady {
-                        io_waker: agent.io().borrow().waker(),
+                        io_waker: agent.with_io(|io| io.waker()),
                     })
                     .expect("runtime startup process failed in infallible code");
 
