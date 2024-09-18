@@ -80,6 +80,8 @@ impl CoreClient {
         F: Future<Output = R> + Send + 'static,
         R: Send + 'static,
     {
+        // We ignore the return value because it is theoretically possible that something is trying
+        // to schedule new work when we are in the middle of a shutdown process.
         _ = self.async_command_tx.send(AsyncAgentCommand::EnqueueTask {
             erased_task: Box::pin(task),
         });
