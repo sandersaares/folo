@@ -322,7 +322,7 @@ impl RuntimeBuilder {
                 // For now we just want to make sure we see the ACK. No actual state fanster needed.
             });
 
-            let proc = runtime_client::CoreProcessors::new(
+            let proc = runtime_client::CoreClient::new(
                 processor_id,
                 async_command_tx,
                 async_io_waker,

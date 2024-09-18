@@ -33,7 +33,7 @@ use crate::time::LowPrecisionInstant;
 // the answer is "yes" but they are something like 1% of the use cases - can we do better?
 
 #[derive(Clone)]
-pub(super) struct CoreProcessors {
+pub(super) struct CoreClient {
     processor_id: CoreId,
 
     async_command_tx: channel::Sender<AsyncAgentCommand>,
@@ -54,7 +54,7 @@ pub(super) struct CoreProcessors {
     pub pending_sync_priority_tasks: Arc<SegQueue<ErasedSyncTask>>,
 }
 
-impl CoreProcessors {
+impl CoreClient {
     pub(super) fn new(
         processor_id: CoreId,
         async_command_tx: channel::Sender<AsyncAgentCommand>,
@@ -149,9 +149,9 @@ impl CoreProcessors {
     }
 }
 
-impl fmt::Debug for CoreProcessors {
+impl fmt::Debug for CoreClient {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("CoreProcessors")
+        f.debug_struct("CoreClient")
             .field("processor_id", &self.processor_id)
             .field("async_command_tx", &self.async_command_tx)
             .field("async_io_waker", &self.async_io_waker)
@@ -187,7 +187,7 @@ impl fmt::Debug for CoreProcessors {
 /// This type is thread-safe.
 #[derive(Clone)]
 pub struct RuntimeClient {
-    all_processors: HashMap<CoreId, CoreProcessors>,
+    core_clients: HashMap<CoreId, CoreClient>,
 
     // The TCP dispatcher is a special-purpose async worker that only handles TCP listener tasks
     // because Windows only supports one TCP listen socket per port and only the completion handling
@@ -212,7 +212,7 @@ pub struct RuntimeClient {
 impl RuntimeClient {
     #[allow(clippy::too_many_arguments)] // Ssssshhhhh, sleep little Clippy!
     pub(super) fn new(
-        all_processors: HashMap<CoreId, CoreProcessors>,
+        core_clients: HashMap<CoreId, CoreClient>,
         tcp_dispatcher_command_tx: channel::Sender<AsyncAgentCommand>,
         tcp_dispatcher_io_waker: IoWaker,
         processor_ids: Box<[CoreId]>,
@@ -220,7 +220,7 @@ impl RuntimeClient {
         is_stopping: Arc<AtomicBool>,
     ) -> Self {
         Self {
-            all_processors,
+            core_clients,
             tcp_dispatcher_command_tx,
             tcp_dispatcher_io_waker,
             processor_ids,
@@ -256,7 +256,7 @@ impl RuntimeClient {
         let join_handle = task.join_handle(self.current_thread_io_waker());
 
         let processor_id = self.processor_ids[next_async_worker(self.processor_ids.len())];
-        self.all_processors[&processor_id].enqueue_async_task(task);
+        self.core_clients[&processor_id].enqueue_async_task(task);
 
         join_handle
     }
@@ -322,9 +322,9 @@ impl RuntimeClient {
     {
         let started = LowPrecisionInstant::now();
         
-        let mut join_handles = Vec::with_capacity(self.all_processors.len());
+        let mut join_handles = Vec::with_capacity(self.core_clients.len());
 
-        for (_, proc) in &self.all_processors {
+        for (_, proc) in &self.core_clients {
             let future_fn = clone_future_fn();
 
             // Just because we are spawning a future on another thread does not mean it has to be a
@@ -397,7 +397,7 @@ impl RuntimeClient {
         // We just add it to the pending task queue for now, to be submitted at the end of the cycle.
         match task_type {
             SynchronousTaskType::Syscall => {
-                self.all_processors[&processor_id].pending_sync_tasks.push(Box::new(task));
+                self.core_clients[&processor_id].pending_sync_tasks.push(Box::new(task));
                 event!(
                     Level::TRACE,
                     message = "queued task",
@@ -406,7 +406,7 @@ impl RuntimeClient {
                 );
             }
             SynchronousTaskType::HighPrioritySyscall => {
-                self.all_processors[&processor_id].pending_sync_priority_tasks.push(Box::new(task));
+                self.core_clients[&processor_id].pending_sync_priority_tasks.push(Box::new(task));
                 event!(
                     Level::TRACE,
                     message = "queued priority task",
@@ -464,7 +464,7 @@ impl RuntimeClient {
         // We just add it to the pending task queue for now, to be submitted at the end of the cycle.
         let boxed_task = Box::new(task);
         let task_addr = format!("{:p}", &*boxed_task);
-        self.all_processors[&processor_id].pending_sync_tasks.push(boxed_task);
+        self.core_clients[&processor_id].pending_sync_tasks.push(boxed_task);
         event!(
             Level::TRACE,
             message = "queued task",
@@ -480,10 +480,10 @@ impl RuntimeClient {
     /// the current thread's agent at the end of every execution loop that could potentially have
     /// added some tasks.
     pub fn submit_pending_tasks(&self) {
-        for (_, proc) in &self.all_processors {
+        for (_, proc) in &self.core_clients {
             proc.submit_pending_sync_tasks();
         }
-        for (_, proc) in &self.all_processors {
+        for (_, proc) in &self.core_clients {
             proc.submit_pending_sync_priority_tasks();
         }
     }
@@ -492,7 +492,7 @@ impl RuntimeClient {
     ///
     /// This returns immediately. To wait for the runtime to stop, use `wait()`.
     pub fn stop(&self) {
-        for (_, proc) in &self.all_processors {
+        for (_, proc) in &self.core_clients {
             proc.terminate();
         }
 
@@ -559,7 +559,7 @@ impl RuntimeClient {
 impl fmt::Debug for RuntimeClient {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("RuntimeClient")
-            .field("all_processors", &self.all_processors)
+            .field("core_clients", &self.core_clients)
             .field("tcp_dispatcher_command_tx", &self.tcp_dispatcher_command_tx)
             .field("tcp_dispatcher_io_waker", &self.tcp_dispatcher_io_waker)
             .field("processor_ids", &self.processor_ids)
