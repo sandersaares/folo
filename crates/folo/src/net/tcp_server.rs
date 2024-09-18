@@ -4,7 +4,7 @@ use crate::{
     rt::{
         current_async_agent, current_runtime, spawn_on_any, RemoteJoinHandle, SynchronousTaskType,
     },
-    util::OwnedHandle,
+    windows::OwnedHandle,
 };
 use core::slice;
 use futures::{

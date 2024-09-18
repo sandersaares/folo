@@ -34,7 +34,7 @@ impl IoWaker {
             // wrong, the target thread fails to wake up and that's too bad but nothing for us to
             // worry about - probably the entire app is going away if that happened anyway.
             _ = PostQueuedCompletionStatus(
-                ***self.completion_port,
+                **self.completion_port,
                 0,
                 WAKE_UP_COMPLETION_KEY,
                 None,

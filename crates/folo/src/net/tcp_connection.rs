@@ -1,12 +1,11 @@
-use std::sync::Arc;
-
 use crate::{
     io::{self, OperationResultExt, OperationResultFuture, PinnedBuffer},
     net::winsock,
     rt::{current_async_agent, current_runtime, SynchronousTaskType},
-    util::OwnedHandle,
+    windows::OwnedHandle,
 };
 use negative_impl::negative_impl;
+use std::sync::Arc;
 use windows::{
     core::PSTR,
     Win32::Networking::WinSock::{WSARecv, WSASend, WSASendDisconnect, SOCKET, WSABUF},

@@ -1,5 +1,5 @@
-use super::ThreadSafe;
 use crate::rt::SynchronousTaskType;
+use crate::util::ThreadSafe;
 use std::mem;
 use std::ops::Deref;
 use windows::{
@@ -73,7 +73,8 @@ where
     T: Free + Copy + 'static,
 {
     fn drop(&mut self) {
-        // We require that this type is only used with thread-safe handles.
+        // We require that this type is only used with thread-safe handles,
+        // even if they do not always say so by implementing Send/Sync.
         let mut thread_safe = unsafe { ThreadSafe::new(self.inner) };
 
         // It is possible that we are dropping this handle *after* the Folo runtime itself has been

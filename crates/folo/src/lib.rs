@@ -14,6 +14,7 @@ pub mod rt;
 pub mod sync;
 pub mod util;
 pub mod time;
+pub mod windows;
 
 #[cfg(feature = "hyper")]
 pub mod hyper;

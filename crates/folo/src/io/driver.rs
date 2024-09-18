@@ -107,7 +107,7 @@ impl Driver {
             let result = GET_COMPLETED_DURATION.with(|x| {
                 x.observe_duration_millis(|| {
                     GetQueuedCompletionStatusEx(
-                        ***self.completion_port.handle(),
+                        **self.completion_port.handle(),
                         // MaybeUninit is a ZST and binary-compatible. We use it to avoid
                         // initializing the array, which is only used for collecting output.
                         mem::transmute::<

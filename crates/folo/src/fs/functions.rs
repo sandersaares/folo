@@ -1,12 +1,9 @@
 use crate::{
     io::{self, PinnedBuffer},
     rt::{current_async_agent, spawn_sync, SynchronousTaskType},
-    util::OwnedHandle,
+    windows::OwnedHandle,
 };
-use std::{
-    ffi::CString,
-    path::Path,
-};
+use std::{ffi::CString, path::Path};
 use windows::{
     core::PCSTR,
     Win32::{

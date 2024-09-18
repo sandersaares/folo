@@ -1,7 +1,7 @@
 use crate::{
     io::{self, IoPrimitive},
     metrics::{Event, EventBuilder},
-    util::{OwnedHandle, ThreadSafe},
+    windows::OwnedHandle,
 };
 use negative_impl::negative_impl;
 use std::sync::Arc;
@@ -18,7 +18,7 @@ use windows::Win32::{
 // messages via the completion port. Typically, HANDLE is not thread-safe but that is merely
 // because HANDLE is overly general and not all types of handles are legitimately shared across
 // threads.
-pub(crate) type CompletionPortHandle = Arc<ThreadSafe<OwnedHandle<HANDLE>>>;
+pub(crate) type CompletionPortHandle = Arc<OwnedHandle<HANDLE>>;
 
 /// The I/O completion port is used to notify the I/O driver that an I/O operation has completed.
 /// It must be associated with each file/socket/handle that is capable of asynchronous I/O. We do
@@ -50,7 +50,7 @@ impl CompletionPort {
         };
 
         // SAFETY: See comment on CompletionPortHandle.
-        let handle = Arc::new(unsafe { ThreadSafe::new(handle) });
+        let handle = Arc::new(handle);
 
         Self { handle }
     }
@@ -64,7 +64,7 @@ impl CompletionPort {
         // We have to assume the user provided a valid handle (but if not, it will just be an
         // error result). We ignore the return value because it is our own handle on success.
         unsafe {
-            CreateIoCompletionPort(handle, ***self.handle, 0, 1)?;
+            CreateIoCompletionPort(handle, **self.handle, 0, 1)?;
         }
 
         // Why FILE_SKIP_SET_EVENT_ON_HANDLE: https://devblogs.microsoft.com/oldnewthing/20200221-00/?p=103466/
