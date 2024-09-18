@@ -33,6 +33,7 @@ futures = { version = "0", default-features = false, features = [
     "executor",
     "std",
 ] }
+hash_hasher = "2"
 hyper = { version = "1.4.1", features = [
     "http1",
     "http2",
@@ -41,6 +42,7 @@ hyper = { version = "1.4.1", features = [
 ], optional = true }
 negative-impl = "0"
 oneshot = { version = "0", features = ["async"] }
+paste = "1"
 pin-project = "1"
 thiserror = "1"
 tracing = "0"

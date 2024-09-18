@@ -8,13 +8,14 @@ mod constants;
 pub mod criterion;
 pub mod fs;
 pub mod io;
-pub mod net;
+pub mod linked;
 pub mod mem;
 pub mod metrics;
+pub mod net;
 pub mod rt;
 pub mod sync;
-pub mod util;
 pub mod time;
+pub mod util;
 pub mod windows;
 
 #[cfg(feature = "hyper")]
@@ -68,3 +69,9 @@ pub use folo_proc_macros::__macro_main as main;
 
 /// Same as [`#[folo::main]`][main] but also marks the entrypoint as a test.
 pub use folo_proc_macros::__macro_test as test;
+
+// This is so macros can produce code which refers to
+// ::folo::* which will work both in the crate and in the
+// service code.
+#[doc(hidden)]
+extern crate self as folo;

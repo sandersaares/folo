@@ -23,7 +23,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 ///
 /// ```
 /// use std::time::Duration;
-/// use oxidizer::time::{Clock, Error, Timestamp};
+/// use folo::time::{Clock, Error, Timestamp};
 ///
 /// let clock = Clock::new();
 /// let timestamp = clock.now();

@@ -335,6 +335,7 @@ dependencies = [
  "folo_proc_macros",
  "folo_testing",
  "futures",
+ "hash_hasher",
  "http",
  "http-body",
  "http-body-util",
@@ -342,6 +343,7 @@ dependencies = [
  "hyper-util",
  "negative-impl",
  "oneshot",
+ "paste",
  "pin-project",
  "thiserror",
  "tokio",
@@ -504,6 +506,12 @@ dependencies = [
  "cfg-if",
  "crunchy",
 ]
+
+[[package]]
+name = "hash_hasher"
+version = "2.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "74721d007512d0cb3338cd20f0654ac913920061a4c4d0d8708edb3f2a698c0c"
 
 [[package]]
 name = "hashbrown"
@@ -784,6 +792,12 @@ name = "overload"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b15813163c1d831bf4a13c3610c05c0d03b39feb07f7e09fa234dac9b15aaf39"
+
+[[package]]
+name = "paste"
+version = "1.0.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
 
 [[package]]
 name = "pin-project"

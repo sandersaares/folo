@@ -20,3 +20,8 @@ pub fn __macro_test(attr: TokenStream, item: TokenStream) -> TokenStream {
     )
     .into()
 }
+
+#[proc_macro_attribute]
+pub fn __macro_linked_object(attr: TokenStream, item: TokenStream) -> TokenStream {
+    folo_proc_macros_impl::linked_object::entrypoint(attr.into(), item.into()).into()
+}
