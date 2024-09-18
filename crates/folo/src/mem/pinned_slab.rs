@@ -1,5 +1,7 @@
+use crate::mem::DropPolicy;
 use core::panic;
 use std::alloc::{alloc, dealloc, Layout};
+use std::any::type_name;
 use std::mem::{self, MaybeUninit};
 use std::pin::Pin;
 
@@ -23,7 +25,7 @@ use std::pin::Pin;
 ///   uninitialized version of the item. This is useful for in-place initialization, to avoid
 ///   copying the item from the stack into the collection.
 ///  
-/// All the items are dropped when the collection is dropped.
+/// What happens to dropped items depends on the `DropPolicy` configured on the type.
 ///
 /// To share the collection between threads, wrapping in `Mutex` is the recommended approach.
 ///
@@ -42,6 +44,8 @@ pub struct PinnedSlab<T, const CAPACITY: usize> {
     /// cases the collection is the backing store for a custom allocation/pinning scheme and may not
     /// be safe to drop when any items are still present.
     count: usize,
+
+    drop_policy: DropPolicy,
 }
 
 enum Entry<T> {
@@ -51,7 +55,11 @@ enum Entry<T> {
 }
 
 impl<T, const CAPACITY: usize> PinnedSlab<T, CAPACITY> {
-    pub fn new() -> Self {
+    /// Creates a new slab with the specified drop policy. If the caller takes raw pointers to the
+    /// contents of the slab contents, it is ultimately their responsibility to ensure the pointers
+    /// do not outlive the slab itself. A drop policy may help safeguard this by panicking if the
+    /// slab still contains items when it is dropped.
+    pub fn new(drop_policy: DropPolicy) -> Self {
         // SAFETY: MaybeUninit is a ZST, so its layout is guaranteed to match Entry<T>.
         let ptr = unsafe { alloc(Self::layout()) as *mut MaybeUninit<Entry<T>> };
 
@@ -73,6 +81,7 @@ impl<T, const CAPACITY: usize> PinnedSlab<T, CAPACITY> {
             ptr: unsafe { mem::transmute::<*mut MaybeUninit<Entry<T>>, *mut Entry<T>>(ptr) },
             next_free_index: 0,
             count: 0,
+            drop_policy,
         }
     }
 
@@ -97,7 +106,11 @@ impl<T, const CAPACITY: usize> PinnedSlab<T, CAPACITY> {
     ///
     /// Panics if the index is out of bounds or is not associated with an item.
     pub fn get(&self, index: usize) -> Pin<&T> {
-        assert!(index < CAPACITY, "get({index}) index out of bounds");
+        assert!(
+            index < CAPACITY,
+            "get({index}) index out of bounds in slab of {}",
+            type_name::<T>()
+        );
 
         // SAFETY: We did a bounds check and ensured in the ctor that every entry is initialized.
         match unsafe {
@@ -108,7 +121,10 @@ impl<T, const CAPACITY: usize> PinnedSlab<T, CAPACITY> {
         } {
             // SAFETY: Items are always guaranteed pinned in this collection.
             Entry::Occupied { value } => unsafe { Pin::new_unchecked(value) },
-            Entry::Vacant { .. } => panic!("get({index}) entry was vacant"),
+            Entry::Vacant { .. } => panic!(
+                "get({index}) entry was vacant in slab of {}",
+                type_name::<T>()
+            ),
         }
     }
 
@@ -127,7 +143,10 @@ impl<T, const CAPACITY: usize> PinnedSlab<T, CAPACITY> {
         } {
             // SAFETY: Items are always pinned - that is the point of this collection.
             Entry::Occupied { ref mut value } => unsafe { Pin::new_unchecked(value) },
-            Entry::Vacant { .. } => panic!("get_mut({index}) entry was vacant"),
+            Entry::Vacant { .. } => panic!(
+                "get_mut({index}) entry was vacant in slab of {}",
+                type_name::<T>()
+            ),
         }
     }
 
@@ -141,7 +160,11 @@ impl<T, const CAPACITY: usize> PinnedSlab<T, CAPACITY> {
         #[cfg(test)]
         self.integrity_check();
 
-        assert!(!self.is_full(), "cannot insert into a full slab");
+        assert!(
+            !self.is_full(),
+            "cannot insert into a full slab of {}",
+            type_name::<T>()
+        );
 
         let next_free_index = self.next_free_index;
 
@@ -165,7 +188,11 @@ impl<T, const CAPACITY: usize> PinnedSlab<T, CAPACITY> {
     ///
     /// Panics if the index is out of bounds or is not associated with an item.
     pub fn remove(&mut self, index: usize) {
-        assert!(index < CAPACITY, "remove({index}) index out of bounds");
+        assert!(
+            index < CAPACITY,
+            "remove({index}) index out of bounds in slab of {}",
+            type_name::<T>()
+        );
 
         // SAFETY: We did a bounds check and ensured in the ctor that every entry is initialized.
         let slot = unsafe {
@@ -176,7 +203,10 @@ impl<T, const CAPACITY: usize> PinnedSlab<T, CAPACITY> {
         };
 
         if matches!(slot, Entry::Vacant { .. }) {
-            panic!("remove({index}) entry was vacant");
+            panic!(
+                "remove({index}) entry was vacant in slab of {}",
+                type_name::<T>()
+            );
         }
 
         *slot = Entry::Vacant {
@@ -214,15 +244,18 @@ impl<T, const CAPACITY: usize> PinnedSlab<T, CAPACITY> {
 
         if self.next_free_index < CAPACITY && !observed_is_vacant[self.next_free_index].unwrap() {
             panic!(
-                "self.next_free_index points to an occupied slot: {}",
-                self.next_free_index
+                "self.next_free_index points to an occupied slot {} in slab of {}",
+                self.next_free_index,
+                type_name::<T>()
             );
         }
 
         if self.count != observed_occupied_count {
             panic!(
-                "self.count {} does not match the observed occupied count {}",
-                self.count, observed_occupied_count
+                "self.count {} does not match the observed occupied count {} in slab of {}",
+                self.count,
+                observed_occupied_count,
+                type_name::<T>()
             );
         }
 
@@ -240,29 +273,30 @@ impl<T, const CAPACITY: usize> PinnedSlab<T, CAPACITY> {
 
             if next_free_index > CAPACITY {
                 panic!(
-                    "entry {} is vacant but has an out-of-bounds next_free_index beyond COUNT: {}",
-                    index, next_free_index
+                    "entry {} is vacant but has an out-of-bounds next_free_index beyond COUNT {} in slab of {}",
+                    index, next_free_index, type_name::<T>()
                 );
             }
 
             if !observed_is_vacant[next_free_index].unwrap() {
                 panic!(
-                    "entry {} is vacant but its next_free_index {} points to an occupied slot",
-                    index, next_free_index
+                    "entry {} is vacant but its next_free_index {} points to an occupied slot in slab of {}",
+                    index, next_free_index, type_name::<T>()
                 );
             }
         }
     }
 }
 
-impl<T, const CAPACITY: usize> Default for PinnedSlab<T, CAPACITY> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl<T, const CAPACITY: usize> Drop for PinnedSlab<T, CAPACITY> {
     fn drop(&mut self) {
+        if self.drop_policy == DropPolicy::MustNotDropItems {
+            assert!(
+                self.is_empty(),
+                "dropped a non-empty slab of {} with a policy that says it must be empty when dropped", type_name::<T>()
+            );
+        }
+
         // SAFETY: All slots were already initialized by the ctor so nothing can be invalid here.
         // We are using the correct size and the same layout as was used in the ctor, everything OK.
         unsafe {
@@ -313,8 +347,9 @@ impl<'s, T, const CAPACITY: usize> PinnedSlabInserter<'s, T, CAPACITY> {
         self.slab.next_free_index = match previous_entry {
             Entry::Vacant { next_free_index } => next_free_index,
             Entry::Occupied { .. } => panic!(
-                "entry {} was not vacant when we inserted into it",
-                self.index
+                "entry {} was not vacant when we inserted into it in slab of {}",
+                self.index,
+                type_name::<T>()
             ),
         };
 
@@ -322,8 +357,9 @@ impl<'s, T, const CAPACITY: usize> PinnedSlabInserter<'s, T, CAPACITY> {
             // SAFETY: Items are always pinned - that is the point of this collection.
             Entry::Occupied { value } => unsafe { Pin::new_unchecked(value) },
             Entry::Vacant { .. } => panic!(
-                "entry {} was not occupied after we inserted into it",
-                self.index
+                "entry {} was not occupied after we inserted into it in slab of {}",
+                self.index,
+                type_name::<T>()
             ),
         };
 
@@ -347,16 +383,18 @@ impl<'s, T, const CAPACITY: usize> PinnedSlabInserter<'s, T, CAPACITY> {
         self.slab.next_free_index = match previous_entry {
             Entry::Vacant { next_free_index } => next_free_index,
             Entry::Occupied { .. } => panic!(
-                "entry {} was not vacant when we inserted into it",
-                self.index
+                "entry {} was not vacant when we inserted into it in slab of {}",
+                self.index,
+                type_name::<T>()
             ),
         };
 
         let ptr = match slot {
             Entry::Occupied { value } => value as *mut T,
             Entry::Vacant { .. } => panic!(
-                "entry {} was not occupied after we inserted into it",
-                self.index
+                "entry {} was not occupied after we inserted into it in slab of {}",
+                self.index,
+                type_name::<T>()
             ),
         };
 
@@ -394,16 +432,18 @@ impl<'s, T, const CAPACITY: usize> PinnedSlabInserter<'s, T, CAPACITY> {
         self.slab.next_free_index = match previous_entry {
             Entry::Vacant { next_free_index } => next_free_index,
             Entry::Occupied { .. } => panic!(
-                "entry {} was not vacant when we inserted into it",
-                self.index
+                "entry {} was not vacant when we inserted into it in slab of {}",
+                self.index,
+                type_name::<T>()
             ),
         };
 
         let ptr = match slot {
             Entry::Occupied { value } => value as *mut MaybeUninit<T>,
             Entry::Vacant { .. } => panic!(
-                "entry {} was not occupied after we inserted into it",
-                self.index
+                "entry {} was not occupied after we inserted into it in slab of {}",
+                self.index,
+                type_name::<T>()
             ),
         };
 
@@ -425,7 +465,7 @@ mod tests {
 
     #[test]
     fn smoke_test() {
-        let mut slab = PinnedSlab::<u32, 3>::new();
+        let mut slab = PinnedSlab::<u32, 3>::new(DropPolicy::MayDropItems);
 
         let a = slab.insert(42);
         let b = slab.insert(43);
@@ -449,7 +489,7 @@ mod tests {
     #[test]
     #[should_panic]
     fn panic_when_full() {
-        let mut slab = PinnedSlab::<u32, 3>::new();
+        let mut slab = PinnedSlab::<u32, 3>::new(DropPolicy::MayDropItems);
 
         slab.insert(42);
         slab.insert(43);
@@ -461,7 +501,7 @@ mod tests {
     #[test]
     #[should_panic]
     fn panic_when_oob_get() {
-        let mut slab = PinnedSlab::<u32, 3>::new();
+        let mut slab = PinnedSlab::<u32, 3>::new(DropPolicy::MayDropItems);
 
         slab.insert(42);
         slab.get(1234);
@@ -469,7 +509,7 @@ mod tests {
 
     #[test]
     fn begin_insert_returns_correct_key() {
-        let mut slab = PinnedSlab::<u32, 3>::new();
+        let mut slab = PinnedSlab::<u32, 3>::new(DropPolicy::MayDropItems);
 
         let inserter = slab.begin_insert();
         assert_eq!(inserter.index(), 0);
@@ -489,7 +529,7 @@ mod tests {
 
     #[test]
     fn abandoned_inserter_is_noop() {
-        let mut slab = PinnedSlab::<u32, 3>::new();
+        let mut slab = PinnedSlab::<u32, 3>::new(DropPolicy::MayDropItems);
 
         let inserter = slab.begin_insert();
         assert_eq!(inserter.index(), 0);
@@ -507,7 +547,7 @@ mod tests {
 
     #[test]
     fn remove_makes_room() {
-        let mut slab = PinnedSlab::<u32, 3>::new();
+        let mut slab = PinnedSlab::<u32, 3>::new(DropPolicy::MayDropItems);
 
         let a = slab.insert(42);
         let b = slab.insert(43);
@@ -525,7 +565,7 @@ mod tests {
     #[test]
     #[should_panic]
     fn remove_vacant_panics() {
-        let mut slab = PinnedSlab::<u32, 3>::new();
+        let mut slab = PinnedSlab::<u32, 3>::new(DropPolicy::MayDropItems);
 
         slab.remove(1);
     }
@@ -533,7 +573,7 @@ mod tests {
     #[test]
     #[should_panic]
     fn get_vacant_panics() {
-        let slab = PinnedSlab::<u32, 3>::new();
+        let slab = PinnedSlab::<u32, 3>::new(DropPolicy::MayDropItems);
 
         slab.get(1);
     }
@@ -541,14 +581,14 @@ mod tests {
     #[test]
     #[should_panic]
     fn get_mut_vacant_panics() {
-        let mut slab = PinnedSlab::<u32, 3>::new();
+        let mut slab = PinnedSlab::<u32, 3>::new(DropPolicy::MayDropItems);
 
         slab.get_mut(1);
     }
 
     #[test]
     fn in_refcell_works_fine() {
-        let slab = RefCell::new(PinnedSlab::<u32, 3>::new());
+        let slab = RefCell::new(PinnedSlab::<u32, 3>::new(DropPolicy::MayDropItems));
 
         {
             let mut slab = slab.borrow_mut();
@@ -589,7 +629,7 @@ mod tests {
         }
 
         let dropped = Rc::new(Cell::new(false));
-        let mut slab = PinnedSlab::<Droppable, 3>::new();
+        let mut slab = PinnedSlab::<Droppable, 3>::new(DropPolicy::MayDropItems);
 
         let a = slab.insert(Droppable {
             dropped: dropped.clone(),
@@ -601,7 +641,9 @@ mod tests {
 
     #[test]
     fn multithreaded_via_mutex() {
-        let slab = Arc::new(Mutex::new(PinnedSlab::<u32, 3>::new()));
+        let slab = Arc::new(Mutex::new(PinnedSlab::<u32, 3>::new(
+            DropPolicy::MayDropItems,
+        )));
 
         let a;
         let b;
@@ -634,4 +676,17 @@ mod tests {
         let slab = slab.lock().unwrap();
         assert!(slab.is_full());
     }
+
+    #[test]
+    #[should_panic]
+    fn drop_item_with_forbidden_to_drop_policy_panics() {
+        let mut slab = PinnedSlab::<u32, 3>::new(DropPolicy::MustNotDropItems);
+        slab.insert(123);
+    }
+
+    #[test]
+    fn drop_itemless_with_forbidden_to_drop_policy_ok() {
+        _ = PinnedSlab::<u32, 3>::new(DropPolicy::MustNotDropItems);
+    }
+
 }

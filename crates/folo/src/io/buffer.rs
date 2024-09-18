@@ -1,5 +1,5 @@
 use crate::{
-    mem::PinnedSlabChain,
+    mem::{DropPolicy, PinnedSlabChain},
     metrics::{Event, EventBuilder},
 };
 use core::slice;
@@ -308,7 +308,11 @@ impl !Sync for PinnedBuffer {}
 const POOL_BUFFER_CAPACITY_BYTES: usize = 64 * 1024;
 
 thread_local! {
-    static POOL: RefCell<PinnedSlabChain<UnsafeCell<[u8; POOL_BUFFER_CAPACITY_BYTES]>>> = RefCell::new(PinnedSlabChain::new());
+    // We use MustNotDropItems policy because buffers are often referenced via raw pointers, so if
+    // some items still exist in the collection, we have a high probability of dangling pointers,
+    // which can be a big safety problem.
+    static POOL: RefCell<PinnedSlabChain<UnsafeCell<[u8; POOL_BUFFER_CAPACITY_BYTES]>>> =
+        RefCell::new(PinnedSlabChain::new(DropPolicy::MustNotDropItems));
 
     static CALLER_BUFFERS_REFERENCED: Event = EventBuilder::new()
         .name("caller_buffers_referenced")

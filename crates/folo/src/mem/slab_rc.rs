@@ -5,20 +5,24 @@ use std::{
     rc::Rc,
 };
 
-/// Shorthand for defining a PinnedSlabChain with the right type to contain SlabRcCell wrapped T.
+use super::DropPolicy;
+
+/// Type alias for a PinnedSlabChain with the right type to contain a SlabRcBox holding a T, with
+/// an outer RefCell that performs runtime borrow checking for safety. This is the backing storage
+/// for reference-counting SlabRc smart pointers.
 ///
-/// This is compatible with all types of SlabRc smart pointers, though you may need to wrap it in
-/// some extra layers to call the right `insert_into_*` on it.
+/// This storage is compatible with all types of SlabRc smart pointers, though you may need to wrap
+/// it in some extra layers they you can call the desired `insert_into_*()` method on it:
 ///
-/// * `Rc<SlabRcCellStorage<T>>` if you want to use `RcSlabRc`.
-/// * `Pin<Box<SlabRcCellStorage<T>>>>` if you want to use `UnsafeSlabRc`.
+/// * `Rc<SlabRcStorage<T>>` if you want to use `RcSlabRc`.
+/// * `Pin<Box<SlabRcStorage<T>>>>` if you want to use `UnsafeSlabRc`.
 ///
 /// There is also a shorthand function for creating a new slab chain with this type, specialized
 /// for the different kinds of smart pointers:
-/// * `SlabRcCell<T>::new_storage_ref()`
-/// * `SlabRcCell<T>::new_storage_rc()`
-/// * `SlabRcCell<T>::new_storage_unsafe()`
-pub type SlabRcCellStorage<T> = RefCell<PinnedSlabChain<SlabRcCell<T>>>;
+/// * `SlabRcBox<T>::new_storage_ref()`
+/// * `SlabRcBox<T>::new_storage_rc()`
+/// * `SlabRcBox<T>::new_storage_unsafe()`
+pub type SlabRcStorage<T> = RefCell<PinnedSlabChain<SlabRcBox<T>>>;
 
 /// Can be used as the item type in a pinned slab chain to transform it into a reference-counting
 /// slab chain, where an item is removed from the chain when the last reference to it is dropped.
@@ -30,70 +34,70 @@ pub type SlabRcCellStorage<T> = RefCell<PinnedSlabChain<SlabRcCell<T>>>;
 /// way in which they reference the slab itself:
 ///
 /// * `RefSlabRc` maintains a reference to the slab chain, which means the slab chain is borrowed
-///   for as long as any smart pointer into it is alive. Very simple for lifetime management but you
+///   for as long as any smart pointer into it is alive. Simple for lifetime management but you
 ///   will need to add lifetime annotations EVERYWHERE you use the smart pointers.
 /// * `RcSlabRc` maintains a reference to the slab chain via another `Rc`, which removes the need to
 ///   track lifetimes but incurs extra reference counting cost for each operation (which may be
 ///   negligible).
 /// * `UnsafeSlabRc` maintains a reference to a the slab chain using a raw pointer. Obviously rather
-///   unsafe to use and requires the slab chain to be pinned but if you can guarantee that no smart
-///   pointer will ever be alive after the slab chain is dropped, this is essentially free of any
-///   runtime overhead.
+///   unsafe to use and requires the slab chain itself to be pinned but if you can guarantee that no
+///   smart pointer will ever be alive after the slab chain is dropped, this is essentially free of
+///   any runtime overhead.
 ///
 /// # Example
 ///
-/// Using `RefSlabRc` where each smart pointer maintains a direct reference to the storage:
+/// Using `RefSlabRc` whereby each smart pointer maintains a direct reference to the storage:
 ///
 /// ```
-/// use folo::util::{SlabRcCell, RefSlabRc};
+/// use folo::mem::{SlabRcBox, RefSlabRc};
 ///
-/// let storage = SlabRcCell::<usize>::new_storage_ref();
+/// let storage = SlabRcBox::<usize>::new_storage_ref();
 ///
-/// let item = SlabRcCell::new(42).insert_into_ref(&storage);
+/// let item = SlabRcBox::new(42).insert_into_ref(&storage);
 /// assert_eq!(*item.deref_pin(), 42);
 ///
 /// let item_clone = RefSlabRc::clone(&item);
 /// assert_eq!(*item_clone.deref_pin(), 42);
 /// ```
 ///
-/// Using `RcSlabRc` where each smart pointer maintains a reference to the storage via an `Rc`:
+/// Using `RcSlabRc` whereby each smart pointer maintains a reference to the storage via an `Rc`:
 ///
 /// ```
 /// use std::rc::Rc;
-/// use folo::util::{SlabRcCell, RcSlabRc};
+/// use folo::mem::{SlabRcBox, RcSlabRc};
 ///
-/// let storage = SlabRcCell::<usize>::new_storage_rc();
+/// let storage = SlabRcBox::<usize>::new_storage_rc();
 ///
-/// let item = SlabRcCell::new(42).insert_into_rc(Rc::clone(&storage));
+/// let item = SlabRcBox::new(42).insert_into_rc(Rc::clone(&storage));
 /// assert_eq!(*item.deref_pin(), 42);
 ///
 /// let item_clone = RcSlabRc::clone(&item);
 /// assert_eq!(*item_clone.deref_pin(), 42);
 /// ```
 ///
-/// Using `UnsafeSlabRc` where each smart pointer maintains a raw reference to the storage:
+/// Using `UnsafeSlabRc` whereby each smart pointer maintains a raw pointer to the storage:
 ///
 /// ```
-/// use folo::util::{SlabRcCell, UnsafeSlabRc};
+/// use folo::mem::{SlabRcBox, UnsafeSlabRc};
 ///
-/// let storage = SlabRcCell::<usize>::new_storage_unsafe();
+/// let storage = SlabRcBox::<usize>::new_storage_unsafe();
 ///
 /// // SAFETY: We are responsible for ensuring the slab chain outlives all the smart pointers.
 /// // In this case, they both are dropped in the same function, so life is easy. At other
 /// // times, it may not be so easy!
-/// let item = unsafe { SlabRcCell::new(42).insert_into_unsafe(storage.as_ref()) };
+/// let item = unsafe { SlabRcBox::new(42).insert_into_unsafe(storage.as_ref()) };
 /// assert_eq!(*item.deref_pin(), 42);
 ///
 /// let item_clone = UnsafeSlabRc::clone(&item);
 /// assert_eq!(*item_clone.deref_pin(), 42);
 /// ```
 #[derive(Debug)]
-pub struct SlabRcCell<T> {
+pub struct SlabRcBox<T> {
     value: T,
     ref_count: Cell<usize>,
 }
 
-impl<T> SlabRcCell<T> {
+impl<T> SlabRcBox<T> {
     pub fn new(value: T) -> Self {
         Self {
             value,
@@ -101,9 +105,12 @@ impl<T> SlabRcCell<T> {
         }
     }
 
+    /// Inserts the boxed value into a slab chain that will be referenced via direct reference.
+    /// 
+    /// You can easily allocate such a slab chain via `new_storage_ref()`.
     pub fn insert_into_ref(
         self,
-        slab_chain: &RefCell<PinnedSlabChain<SlabRcCell<T>>>,
+        slab_chain: &RefCell<PinnedSlabChain<SlabRcBox<T>>>,
     ) -> RefSlabRc<'_, T> {
         let mut slab_chain_mut = slab_chain.borrow_mut();
         let inserter = slab_chain_mut.begin_insert();
@@ -128,9 +135,12 @@ impl<T> SlabRcCell<T> {
         }
     }
 
+    /// Inserts the boxed value into a slab chain that will be referenced via `Rc`.
+    /// 
+    /// You can easily allocate such a slab chain via `new_storage_rc()`.
     pub fn insert_into_rc(
         self,
-        slab_chain: Rc<RefCell<PinnedSlabChain<SlabRcCell<T>>>>,
+        slab_chain: Rc<RefCell<PinnedSlabChain<SlabRcBox<T>>>>,
     ) -> RcSlabRc<T> {
         let (index, value) = {
             let mut slab_chain_mut = slab_chain.borrow_mut();
@@ -148,7 +158,7 @@ impl<T> SlabRcCell<T> {
             let value = inserter.insert(self);
 
             // SAFETY: The risk is that we un-pin something !Unpin. We do not do that - all pinned
-            // slab items are forever pinned and we always expose them as pinned pointers.
+            // slab items are forever pinned and we always expose them via `Pin`.
             let value = unsafe { Pin::into_inner_unchecked(value) } as *const _;
 
             (index, value)
@@ -161,13 +171,16 @@ impl<T> SlabRcCell<T> {
         }
     }
 
+    /// Inserts the boxed value into a slab chain that will be referenced via a raw pointer.
+    /// 
+    /// You can easily allocate such a slab chain via `new_storage_unsafe()`.
+    /// 
     /// # Safety
     ///
-    /// The caller must guarantee that the slab chain outlives every smart pointer created to its
-    /// contents.
+    /// The caller must guarantee that the slab chain outlives every box inserted into it.
     pub unsafe fn insert_into_unsafe(
         self,
-        slab_chain: Pin<&RefCell<PinnedSlabChain<SlabRcCell<T>>>>,
+        slab_chain: Pin<&RefCell<PinnedSlabChain<SlabRcBox<T>>>>,
     ) -> UnsafeSlabRc<T> {
         let (index, value) = {
             let mut slab_chain_mut = slab_chain.borrow_mut();
@@ -198,20 +211,30 @@ impl<T> SlabRcCell<T> {
         }
     }
 
-    pub fn new_storage_ref() -> RefCell<PinnedSlabChain<SlabRcCell<T>>> {
-        RefCell::new(PinnedSlabChain::new())
+    pub fn new_storage_ref() -> RefCell<PinnedSlabChain<SlabRcBox<T>>> {
+        // We configure "must not drop items" policy because if all the SlabRcs are holding
+        // references to the slab then they should be cleaning up items when the SlabRcs are
+        // dropped. Therefore, if something still exists in the slab chain afterwards, something
+        // went very wrong and we need to raise the alarm.
+        RefCell::new(PinnedSlabChain::new(DropPolicy::MustNotDropItems))
     }
 
-    pub fn new_storage_rc() -> Rc<RefCell<PinnedSlabChain<SlabRcCell<T>>>> {
-        Rc::new(RefCell::new(PinnedSlabChain::new()))
+    pub fn new_storage_rc() -> Rc<RefCell<PinnedSlabChain<SlabRcBox<T>>>> {
+        // We configure "must not drop items" policy because if all the SlabRcs are holding
+        // references to the slab via Rc then it should be impossible for the slab chain to drop
+        // first because the references from its own items should be holding it alive.
+        Rc::new(RefCell::new(PinnedSlabChain::new(DropPolicy::MustNotDropItems)))
     }
 
-    pub fn new_storage_unsafe() -> Pin<Box<RefCell<PinnedSlabChain<SlabRcCell<T>>>>> {
-        Box::pin(RefCell::new(PinnedSlabChain::new()))
+    pub fn new_storage_unsafe() -> Pin<Box<RefCell<PinnedSlabChain<SlabRcBox<T>>>>> {
+        // It is the responsibility of the caller to ensure that the slab chain outlives all the
+        // smart pointers that point into it. Dropping the slab chain while there are still items
+        // in it here indicates that the caller failed to perform their duty.
+        Box::pin(RefCell::new(PinnedSlabChain::new(DropPolicy::MustNotDropItems)))
     }
 }
 
-impl<T> From<T> for SlabRcCell<T> {
+impl<T> From<T> for SlabRcBox<T> {
     fn from(value: T) -> Self {
         Self::new(value)
     }
@@ -230,14 +253,14 @@ impl<T> From<T> for SlabRcCell<T> {
 #[derive(Debug)]
 pub struct RefSlabRc<'slab, T> {
     // We may need to mutate the chain at any time, so we require it to be in a RefCell.
-    slab_chain: &'slab RefCell<PinnedSlabChain<SlabRcCell<T>>>,
+    slab_chain: &'slab RefCell<PinnedSlabChain<SlabRcBox<T>>>,
 
     index: usize,
 
     // We ourselves are keeping this value alive, so we do not take a reference to it but rather
     // store it directly as a pointer that we can turn into an appropriately-lifetimed reference
     // on demand.
-    value: *const SlabRcCell<T>,
+    value: *const SlabRcBox<T>,
 }
 
 impl<T> RefSlabRc<'_, T> {
@@ -293,14 +316,14 @@ impl<T> Drop for RefSlabRc<'_, T> {
 #[derive(Debug)]
 pub struct RcSlabRc<T> {
     // We may need to mutate the chain at any time, so we require it to be in a RefCell.
-    slab_chain: Rc<RefCell<PinnedSlabChain<SlabRcCell<T>>>>,
+    slab_chain: Rc<RefCell<PinnedSlabChain<SlabRcBox<T>>>>,
 
     index: usize,
 
     // We ourselves are keeping this value alive, so we do not take a reference to it but rather
     // store it directly as a pointer that we can turn into an appropriately-lifetimed reference
     // on demand.
-    value: *const SlabRcCell<T>,
+    value: *const SlabRcBox<T>,
 }
 
 impl<T> RcSlabRc<T> {
@@ -363,14 +386,14 @@ impl<T> Drop for RcSlabRc<T> {
 pub struct UnsafeSlabRc<T> {
     // We may need to mutate the chain at any time, so we require it to be in a RefCell.
     // The caller is responsible for ensuring this outlives us.
-    slab_chain: *const RefCell<PinnedSlabChain<SlabRcCell<T>>>,
+    slab_chain: *const RefCell<PinnedSlabChain<SlabRcBox<T>>>,
 
     index: usize,
 
     // We ourselves are keeping this value alive, so we do not take a reference to it but rather
     // store it directly as a pointer that we can turn into an appropriately-lifetimed reference
     // on demand.
-    value: *const SlabRcCell<T>,
+    value: *const SlabRcBox<T>,
 }
 
 impl<T> UnsafeSlabRc<T> {
@@ -422,9 +445,9 @@ mod tests {
 
     #[test]
     fn ref_smoke_test() {
-        let storage = SlabRcCell::<usize>::new_storage_ref();
+        let storage = SlabRcBox::<usize>::new_storage_ref();
 
-        let item = SlabRcCell::new(42).insert_into_ref(&storage);
+        let item = SlabRcBox::new(42).insert_into_ref(&storage);
         assert_eq!(*item.deref_pin(), 42);
 
         let item_clone = RefSlabRc::clone(&item);
@@ -442,9 +465,9 @@ mod tests {
         let canary = Arc::new(55);
         let canary_weak = Arc::downgrade(&canary);
 
-        let storage = SlabRcCell::<Arc<usize>>::new_storage_ref();
+        let storage = SlabRcBox::<Arc<usize>>::new_storage_ref();
 
-        let item = SlabRcCell::new(canary).insert_into_ref(&storage);
+        let item = SlabRcBox::new(canary).insert_into_ref(&storage);
         assert_eq!(**item.deref_pin(), 55);
 
         let item_clone = RefSlabRc::clone(&item);
@@ -458,9 +481,9 @@ mod tests {
 
     #[test]
     fn rc_smoke_test() {
-        let storage = SlabRcCell::<usize>::new_storage_rc();
+        let storage = SlabRcBox::<usize>::new_storage_rc();
 
-        let item = SlabRcCell::new(42).insert_into_rc(Rc::clone(&storage));
+        let item = SlabRcBox::new(42).insert_into_rc(Rc::clone(&storage));
         assert_eq!(*item.deref_pin(), 42);
 
         let item_clone = RcSlabRc::clone(&item);
@@ -478,9 +501,9 @@ mod tests {
         let canary = Arc::new(55);
         let canary_weak = Arc::downgrade(&canary);
 
-        let storage = SlabRcCell::<Arc<usize>>::new_storage_rc();
+        let storage = SlabRcBox::<Arc<usize>>::new_storage_rc();
 
-        let item = SlabRcCell::new(canary).insert_into_rc(Rc::clone(&storage));
+        let item = SlabRcBox::new(canary).insert_into_rc(Rc::clone(&storage));
         assert_eq!(**item.deref_pin(), 55);
 
         let item_clone = RcSlabRc::clone(&item);
@@ -494,12 +517,12 @@ mod tests {
 
     #[test]
     fn unsafe_smoke_test() {
-        let storage = SlabRcCell::<usize>::new_storage_unsafe();
+        let storage = SlabRcBox::<usize>::new_storage_unsafe();
 
         // SAFETY: We are responsible for ensuring the slab chain outlives all the smart pointers.
         // In this case, they both are dropped in the same function, so life is easy. At other
         // times, it may not be so easy!
-        let item = unsafe { SlabRcCell::new(42).insert_into_unsafe(storage.as_ref()) };
+        let item = unsafe { SlabRcBox::new(42).insert_into_unsafe(storage.as_ref()) };
         assert_eq!(*item.deref_pin(), 42);
 
         let item_clone = UnsafeSlabRc::clone(&item);
@@ -517,12 +540,12 @@ mod tests {
         let canary = Arc::new(55);
         let canary_weak = Arc::downgrade(&canary);
 
-        let storage = SlabRcCell::<Arc<usize>>::new_storage_unsafe();
+        let storage = SlabRcBox::<Arc<usize>>::new_storage_unsafe();
 
         // SAFETY: We are responsible for ensuring the slab chain outlives all the smart pointers.
         // In this case, they both are dropped in the same function, so life is easy. At other
         // times, it may not be so easy!
-        let item = unsafe { SlabRcCell::new(canary).insert_into_unsafe(storage.as_ref()) };
+        let item = unsafe { SlabRcBox::new(canary).insert_into_unsafe(storage.as_ref()) };
         assert_eq!(**item.deref_pin(), 55);
 
         let item_clone = UnsafeSlabRc::clone(&item);

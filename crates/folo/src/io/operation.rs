@@ -1,7 +1,7 @@
 use crate::{
     constants::{GENERAL_BYTES_BUCKETS, GENERAL_MILLISECONDS_BUCKETS},
     io::{self, OperationResult, PinnedBuffer},
-    mem::PinnedSlabChain,
+    mem::{DropPolicy, PinnedSlabChain},
     metrics::{Event, EventBuilder, Magnitude},
     time::LowPrecisionInstant,
 };
@@ -50,7 +50,11 @@ pub(super) struct OperationStore {
 impl OperationStore {
     pub fn new() -> Self {
         Self {
-            items: RefCell::new(PinnedSlabChain::new()),
+            // We use a MustNotDropItems policy because the operations are shared with the operating
+            // system so it is in general not safe to drop the memory unless the OS is done with it,
+            // in which case our completion methods below will remove the operation from the items
+            // collection.
+            items: RefCell::new(PinnedSlabChain::new(DropPolicy::MustNotDropItems)),
         }
     }
 

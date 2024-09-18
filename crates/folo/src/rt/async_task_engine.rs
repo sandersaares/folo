@@ -2,7 +2,7 @@ use crate::{
     collections::BuildPointerHasher,
     constants::{GENERAL_MILLISECONDS_BUCKETS, POISONED_LOCK},
     io::IO_DEQUEUE_BATCH_SIZE,
-    mem::PinnedSlabChain,
+    mem::{DropPolicy, PinnedSlabChain},
     metrics::{Event, EventBuilder},
     rt::{erased_async_task::ErasedResultAsyncTask, waker::WakeSignal},
     time::LowPrecisionInstant,
@@ -125,7 +125,11 @@ impl AsyncTaskEngine {
     /// You must receive the `CycleResult::Shutdown` result before it is safe to drop the engine.
     pub unsafe fn new() -> Self {
         Self {
-            tasks: PinnedSlabChain::new(),
+            // We use MustNotDropItems because the tasks contain elements referenced via raw
+            // pointers (e.g. the wake signal) which means their lifetime must be carefully managed.
+            // If items are still in the tasks list when the engine is dropped, this indicates that
+            // proper cleanup did not happen and other threads may still hold dangling pointers.
+            tasks: PinnedSlabChain::new(DropPolicy::MustNotDropItems),
             active: VecDeque::new(),
             inactive: HashSet::with_hasher(BuildPointerHasher::default()),
             #[allow(clippy::arc_with_non_send_sync)] // Clippy false positive? That's a big fat mutex!

@@ -1,4 +1,4 @@
-use super::{PinnedSlab, PinnedSlabInserter};
+use crate::mem::{DropPolicy, PinnedSlab, PinnedSlabInserter};
 use std::{mem::MaybeUninit, pin::Pin};
 
 /// Links up an arbitrary number of PinnedSlabs into a dynamically sized chain that contains any
@@ -18,7 +18,7 @@ use std::{mem::MaybeUninit, pin::Pin};
 ///   uninitialized version of the item. This is useful for in-place initialization, to avoid
 ///   copying the item from the stack into the collection.
 ///  
-/// All the items are dropped when the collection is dropped.
+/// What happens to dropped items depends on the `DropPolicy` configured on the type.
 ///
 /// To share the collection between threads, wrapping in `Mutex` is the recommended approach.
 ///
@@ -30,11 +30,16 @@ pub struct PinnedSlabChain<T, const SLAB_CAPACITY: usize = 128> {
     /// The slabs in the chain. We use a Vec here to allow for dynamic sizing.
     /// For now, we only grow the Vec but in theory, one could implement shrinking as well.
     slabs: Vec<PinnedSlab<T, SLAB_CAPACITY>>,
+
+    drop_policy: DropPolicy,
 }
 
 impl<T, const SLAB_CAPACITY: usize> PinnedSlabChain<T, SLAB_CAPACITY> {
-    pub fn new() -> Self {
-        Self { slabs: Vec::new() }
+    pub fn new(drop_policy: DropPolicy) -> Self {
+        Self {
+            slabs: Vec::new(),
+            drop_policy,
+        }
     }
 
     pub fn len(&self) -> usize {
@@ -116,7 +121,7 @@ impl<T, const SLAB_CAPACITY: usize> PinnedSlabChain<T, SLAB_CAPACITY> {
         {
             index
         } else {
-            self.slabs.push(PinnedSlab::new());
+            self.slabs.push(PinnedSlab::new(self.drop_policy));
             self.slabs.len() - 1
         }
     }
@@ -126,12 +131,6 @@ impl<T, const SLAB_CAPACITY: usize> PinnedSlabChain<T, SLAB_CAPACITY> {
         for slab in &self.slabs {
             slab.integrity_check();
         }
-    }
-}
-
-impl<T, const SLAB_CAPACITY: usize> Default for PinnedSlabChain<T, SLAB_CAPACITY> {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -193,11 +192,15 @@ impl<const SLAB_CAPACITY: usize> ChainIndex<SLAB_CAPACITY> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{cell::RefCell, sync::{Arc, Mutex}, thread};
+    use std::{
+        cell::RefCell,
+        sync::{Arc, Mutex},
+        thread,
+    };
 
     #[test]
     fn smoke_test() {
-        let mut chain = PinnedSlabChain::<u32, 3>::new();
+        let mut chain = PinnedSlabChain::<u32, 3>::new(DropPolicy::MayDropItems);
 
         let a = chain.insert(42);
         let b = chain.insert(43);
@@ -222,7 +225,7 @@ mod tests {
     #[test]
     #[should_panic]
     fn panic_when_empty_oob_get() {
-        let chain = PinnedSlabChain::<u32, 3>::new();
+        let chain = PinnedSlabChain::<u32, 3>::new(DropPolicy::MayDropItems);
 
         chain.get(0);
     }
@@ -230,7 +233,7 @@ mod tests {
     #[test]
     #[should_panic]
     fn panic_when_oob_get() {
-        let mut chain = PinnedSlabChain::<u32, 3>::new();
+        let mut chain = PinnedSlabChain::<u32, 3>::new(DropPolicy::MayDropItems);
 
         chain.insert(42);
         chain.get(1234);
@@ -238,7 +241,7 @@ mod tests {
 
     #[test]
     fn begin_insert_returns_correct_key() {
-        let mut chain = PinnedSlabChain::<u32, 3>::new();
+        let mut chain = PinnedSlabChain::<u32, 3>::new(DropPolicy::MayDropItems);
 
         let inserter = chain.begin_insert();
         assert_eq!(inserter.index(), 0);
@@ -258,7 +261,7 @@ mod tests {
 
     #[test]
     fn abandoned_inserter_is_noop() {
-        let mut chain = PinnedSlabChain::<u32, 3>::new();
+        let mut chain = PinnedSlabChain::<u32, 3>::new(DropPolicy::MayDropItems);
 
         let inserter = chain.begin_insert();
         assert_eq!(inserter.index(), 0);
@@ -275,7 +278,7 @@ mod tests {
 
     #[test]
     fn remove_makes_room() {
-        let mut chain = PinnedSlabChain::<u32, 3>::new();
+        let mut chain = PinnedSlabChain::<u32, 3>::new(DropPolicy::MayDropItems);
 
         let a = chain.insert(42);
         let b = chain.insert(43);
@@ -293,7 +296,7 @@ mod tests {
     #[test]
     #[should_panic]
     fn remove_empty_panics() {
-        let mut chain = PinnedSlabChain::<u32, 3>::new();
+        let mut chain = PinnedSlabChain::<u32, 3>::new(DropPolicy::MayDropItems);
 
         chain.remove(11234);
     }
@@ -301,7 +304,7 @@ mod tests {
     #[test]
     #[should_panic]
     fn remove_vacant_panics() {
-        let mut chain = PinnedSlabChain::<u32, 3>::new();
+        let mut chain = PinnedSlabChain::<u32, 3>::new(DropPolicy::MayDropItems);
 
         chain.insert(1234); // Ensure there is at least one slab, for
 
@@ -311,7 +314,7 @@ mod tests {
     #[test]
     #[should_panic]
     fn remove_oob_panics() {
-        let mut chain = PinnedSlabChain::<u32, 3>::new();
+        let mut chain = PinnedSlabChain::<u32, 3>::new(DropPolicy::MayDropItems);
 
         chain.insert(1234); // Ensure there is at least one slab, for
 
@@ -321,7 +324,7 @@ mod tests {
     #[test]
     #[should_panic]
     fn get_vacant_panics() {
-        let mut chain = PinnedSlabChain::<u32, 3>::new();
+        let mut chain = PinnedSlabChain::<u32, 3>::new(DropPolicy::MayDropItems);
 
         chain.insert(1234); // Ensure there is at least one slab, for
 
@@ -331,7 +334,7 @@ mod tests {
     #[test]
     #[should_panic]
     fn get_mut_vacant_panics() {
-        let mut chain = PinnedSlabChain::<u32, 3>::new();
+        let mut chain = PinnedSlabChain::<u32, 3>::new(DropPolicy::MayDropItems);
 
         chain.insert(1234); // Ensure there is at least one slab, for
 
@@ -340,7 +343,7 @@ mod tests {
 
     #[test]
     fn in_refcell_works_fine() {
-        let chain = RefCell::new(PinnedSlabChain::<u32, 3>::new());
+        let chain = RefCell::new(PinnedSlabChain::<u32, 3>::new(DropPolicy::MayDropItems));
 
         {
             let mut chain = chain.borrow_mut();
@@ -369,7 +372,7 @@ mod tests {
 
     #[test]
     fn multithreaded_via_mutex() {
-        let chain = Arc::new(Mutex::new(PinnedSlabChain::<u32, 3>::new()));
+        let chain = Arc::new(Mutex::new(PinnedSlabChain::<u32, 3>::new(DropPolicy::MayDropItems)));
 
         let a;
         let b;
@@ -401,5 +404,17 @@ mod tests {
 
         let chain = chain.lock().unwrap();
         assert!(!chain.is_empty());
+    }
+
+    #[test]
+    #[should_panic]
+    fn drop_item_with_forbidden_to_drop_policy_panics() {
+        let mut chain = PinnedSlabChain::<u32, 3>::new(DropPolicy::MustNotDropItems);
+        chain.insert(123);
+    }
+
+    #[test]
+    fn drop_itemless_with_forbidden_to_drop_policy_ok() {
+        _ = PinnedSlabChain::<u32, 3>::new(DropPolicy::MustNotDropItems);
     }
 }
