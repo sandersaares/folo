@@ -87,8 +87,8 @@ impl CoreClient {
         // Wake up the agent if it might be sleeping and waiting for I/O.
         self.async_io_waker.wake();
     }
-    
-    fn terminate(&self) {        
+
+    fn terminate(&self) {
         // We ignore the return value because if the worker has already stopped, the channel
         // may be closed in which case the send may simply fail.
         let _ = self.async_command_tx.send(AsyncAgentCommand::Terminate);
@@ -99,7 +99,7 @@ impl CoreClient {
             _ = tx.send(crate::rt::sync_agent::SyncAgentCommand::Terminate);
         }
     }
-  
+
     fn submit_pending_sync_tasks(&self) {
         let mut had_any_tasks = false;
 
@@ -155,27 +155,13 @@ impl fmt::Debug for CoreClient {
             .field("processor_id", &self.processor_id)
             .field("async_command_tx", &self.async_command_tx)
             .field("async_io_waker", &self.async_io_waker)
-            .field(
-                "sync_command_txs",
-                &self.sync_command_txs,
-            )
-            .field(
-                "sync_task_queue",
-                &self.sync_task_queue,
-            )
-            .field(
-                "sync_priority_task_queue",
-                &self.sync_priority_task_queue,
-            )
-            .field(
-                "pending_sync_tasks",
-                &self
-                    .pending_sync_tasks.len(),
-            )
+            .field("sync_command_txs", &self.sync_command_txs)
+            .field("sync_task_queue", &self.sync_task_queue)
+            .field("sync_priority_task_queue", &self.sync_priority_task_queue)
+            .field("pending_sync_tasks", &self.pending_sync_tasks.len())
             .field(
                 "pending_sync_priority_tasks",
-                &self
-                    .pending_sync_priority_tasks.len(),
+                &self.pending_sync_priority_tasks.len(),
             )
             .finish()
     }
@@ -321,7 +307,7 @@ impl RuntimeClient {
         R: Send + 'static,
     {
         let started = LowPrecisionInstant::now();
-        
+
         let mut join_handles = Vec::with_capacity(self.core_clients.len());
 
         for (_, proc) in &self.core_clients {
@@ -397,7 +383,9 @@ impl RuntimeClient {
         // We just add it to the pending task queue for now, to be submitted at the end of the cycle.
         match task_type {
             SynchronousTaskType::Syscall => {
-                self.core_clients[&processor_id].pending_sync_tasks.push(Box::new(task));
+                self.core_clients[&processor_id]
+                    .pending_sync_tasks
+                    .push(Box::new(task));
                 event!(
                     Level::TRACE,
                     message = "queued task",
@@ -406,7 +394,9 @@ impl RuntimeClient {
                 );
             }
             SynchronousTaskType::HighPrioritySyscall => {
-                self.core_clients[&processor_id].pending_sync_priority_tasks.push(Box::new(task));
+                self.core_clients[&processor_id]
+                    .pending_sync_priority_tasks
+                    .push(Box::new(task));
                 event!(
                     Level::TRACE,
                     message = "queued priority task",
@@ -464,7 +454,9 @@ impl RuntimeClient {
         // We just add it to the pending task queue for now, to be submitted at the end of the cycle.
         let boxed_task = Box::new(task);
         let task_addr = format!("{:p}", &*boxed_task);
-        self.core_clients[&processor_id].pending_sync_tasks.push(boxed_task);
+        self.core_clients[&processor_id]
+            .pending_sync_tasks
+            .push(boxed_task);
         event!(
             Level::TRACE,
             message = "queued task",

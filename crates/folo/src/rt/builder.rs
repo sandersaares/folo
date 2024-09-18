@@ -270,7 +270,7 @@ impl RuntimeBuilder {
         // # Async workers & Sync workers
 
         let mut async_start_txs = Vec::with_capacity(async_worker_count);
-        let mut sync_start_txs = Vec::with_capacity(sync_worker_count);        
+        let mut sync_start_txs = Vec::with_capacity(sync_worker_count);
 
         for worker_index in 0..async_worker_count {
             let processor_id = processor_ids[worker_index];
@@ -288,11 +288,11 @@ impl RuntimeBuilder {
             // workers assigned to that processor, to try balance out the load given that these may
             // often block for unequal amounts of time and end up imbalanced.
             let sync_task_queue = Arc::new(SegQueue::new());
-            
+
             // Same, but for higher-priority tasks (e.g. releasing resources).
             let sync_priority_task_queue = Arc::new(SegQueue::new());
-            
-            let mut sync_command_txs =  Vec::with_capacity(sync_worker_count);
+
+            let mut sync_command_txs = Vec::with_capacity(sync_worker_count);
             let mut sync_ready_rxs = Vec::with_capacity(sync_worker_count);
 
             for worker_index in 0..SYNC_WORKERS_PER_PROCESSOR {
@@ -315,10 +315,15 @@ impl RuntimeBuilder {
                 join_handles.push(join_handle);
             }
 
-            let async_io_waker = async_ready_rx.recv().expect("async worker thread failed before even starting").io_waker;
+            let async_io_waker = async_ready_rx
+                .recv()
+                .expect("async worker thread failed before even starting")
+                .io_waker;
 
             sync_ready_rxs.into_iter().for_each(|ready_rx| {
-                ready_rx.recv().expect("sync worker thread failed before even starting");
+                ready_rx
+                    .recv()
+                    .expect("sync worker thread failed before even starting");
                 // For now we just want to make sure we see the ACK. No actual state fanster needed.
             });
 
@@ -328,7 +333,7 @@ impl RuntimeBuilder {
                 async_io_waker,
                 sync_command_txs.into_boxed_slice(),
                 sync_task_queue,
-                sync_priority_task_queue
+                sync_priority_task_queue,
             );
 
             core_processors.insert(processor_id, proc);
@@ -362,14 +367,14 @@ impl RuntimeBuilder {
         let is_stopping = Arc::new(AtomicBool::new(false));
 
         let client = RuntimeClient::new(
-            core_processors,            
+            core_processors,
             tcp_dispatcher_command_tx,
             tcp_dispatcher_ready.io_waker,
             processor_ids.clone(),
             join_handles.into_boxed_slice(),
             Arc::clone(&is_stopping),
         );
-        
+
         // In most cases, the entrypoint thread is merely parked. However, for interoperability
         // purposes, the caller may wish to register the Folo runtime as the owner of the
         // entrypoint thread, as well. This allows custom entrypoint logic to execute code
