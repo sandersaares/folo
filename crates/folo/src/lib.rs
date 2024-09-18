@@ -2,6 +2,7 @@
 
 #[doc(hidden)]
 pub mod __private;
+pub mod collections;
 mod constants;
 #[cfg(feature = "criterion")]
 pub mod criterion;

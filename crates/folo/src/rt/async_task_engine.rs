@@ -1,10 +1,11 @@
 use crate::{
+    collections::BuildPointerHasher,
     constants::{GENERAL_MILLISECONDS_BUCKETS, POISONED_LOCK},
     io::IO_DEQUEUE_BATCH_SIZE,
     mem::PinnedSlabChain,
     metrics::{Event, EventBuilder},
     rt::{erased_async_task::ErasedResultAsyncTask, waker::WakeSignal},
-    util::{BuildPointerHasher, LowPrecisionInstant},
+    util::LowPrecisionInstant,
 };
 use negative_impl::negative_impl;
 use pin_project::pin_project;
