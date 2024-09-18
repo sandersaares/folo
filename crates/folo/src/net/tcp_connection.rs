@@ -126,6 +126,7 @@ impl From<std::net::TcpStream> for TcpConnection {
     fn from(stream: std::net::TcpStream) -> Self {
         use std::os::windows::io::{RawSocket, IntoRawSocket};
 
+        stream.set_nonblocking(true).expect("Failed to move TCP socket into nonblocking mode");
         let raw_socket: RawSocket = stream.into_raw_socket();
         let socket = SOCKET(raw_socket as usize);
         let owned_handle = unsafe { OwnedHandle::new(socket) };
