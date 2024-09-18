@@ -89,6 +89,7 @@ impl RuntimeBuilder {
     fn start_async_agent(
         &self,
         processor_id: core_affinity::CoreId,
+        io_shared: Arc<io::DriverShared>,
         worker_index: usize,
     ) -> std::io::Result<ThreadStartResult<AsyncAgentReady, channel::Sender<AsyncAgentCommand>>>
     {
@@ -103,7 +104,7 @@ impl RuntimeBuilder {
             .spawn(move || {
                 worker_init();
 
-                let agent = Rc::new(AsyncAgent::new(command_rx, metrics_tx, processor_id));
+                let agent = Rc::new(AsyncAgent::new(command_rx, metrics_tx, io_shared, processor_id));
 
                 // Signal that we are ready to start.
                 ready_tx
@@ -187,7 +188,8 @@ impl RuntimeBuilder {
 
     fn start_tcp_thread(
         &self,
-        tcp_dispatcher_processor_id: core_affinity::CoreId,
+        io_shared: Arc<io::DriverShared>,
+        processor_id: core_affinity::CoreId,
     ) -> std::io::Result<ThreadStartResult<AsyncAgentReady, channel::Sender<AsyncAgentCommand>>>
     {
         let (start_tx, start_rx) = oneshot::channel::<AgentStartArguments>();
@@ -205,7 +207,8 @@ impl RuntimeBuilder {
                 let agent = Rc::new(AsyncAgent::new(
                     command_rx,
                     metrics_tx,
-                    tcp_dispatcher_processor_id,
+                    io_shared,
+                    processor_id,
                 ));
 
                 // Signal that we are ready to start.
@@ -266,6 +269,11 @@ impl RuntimeBuilder {
 
         let mut join_handles = Vec::with_capacity(sync_worker_count + async_worker_count);
 
+        // SAFETY: The shared I/O driver must be shut down only after all operations have been
+        // shut down. The async worker agents guarantee this by ensuring they do not shut down
+        // and release the Arc until the driver signals that it has become inert.
+        let io_shared = Arc::new(unsafe { io::DriverShared::new() });
+
         // # Async workers
 
         let mut async_command_txs = Vec::with_capacity(async_worker_count);
@@ -279,7 +287,7 @@ impl RuntimeBuilder {
                 start_tx,
                 ready_rx,
                 result: command_tx,
-            } = self.start_async_agent(processor_id, worker_index)?;
+            } = self.start_async_agent(processor_id, Arc::clone(&io_shared), worker_index)?;
 
             async_start_txs.push(start_tx);
             async_ready_rxs.push(ready_rx);
@@ -355,7 +363,7 @@ impl RuntimeBuilder {
             start_tx: tcp_dispatcher_start_tx,
             ready_rx: tcp_dispatcher_ready_rx,
             result: tcp_dispatcher_command_tx,
-        } = self.start_tcp_thread(tcp_dispatcher_processor_id)?;
+        } = self.start_tcp_thread(io_shared, tcp_dispatcher_processor_id)?;
 
         join_handles.push(tcp_dispatcher_join_handle);
 

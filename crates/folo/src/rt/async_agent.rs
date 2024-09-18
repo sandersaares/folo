@@ -18,10 +18,10 @@ use std::{
     fmt::{self, Debug, Formatter},
     future::Future,
     pin::Pin,
+    sync::Arc,
     time::Instant,
 };
 use tracing::{event, Level};
-use windows::Win32::System::Threading::INFINITE;
 
 /// Coordinates the operations of the Folo runtime on a single thread. There may be different
 /// types of agents assigned to different threads (e.g. async worker versus sync worker). This is
@@ -57,6 +57,9 @@ pub struct AsyncAgent {
     // Becomes None when `run()` has finished and we are safe top drop the AsyncAgent.
     io: RefCell<Option<io::Driver>>,
 
+    // Becomes None when `run()` has finished and we are safe top drop the AsyncAgent.
+    io_shared: RefCell<Option<Arc<io::DriverShared>>>,
+
     // Tasks that have been enqueued but have not yet been handed over to the async task engine.
     // Includes both locally queued tasks and tasks enqueued from another thread, which are both
     // unified to the `ErasedResultAsyncTask` type.
@@ -71,6 +74,7 @@ impl AsyncAgent {
     pub fn new(
         command_rx: channel::Receiver<AsyncAgentCommand>,
         metrics_tx: Option<channel::Sender<ReportPage>>,
+        io_shared: Arc<io::DriverShared>,
         processor_id: CoreId,
     ) -> Self {
         Self {
@@ -83,6 +87,7 @@ impl AsyncAgent {
             // SAFETY: The I/O driver must not be dropped while there are pending I/O operations.
             // We ensure this by waiting for I/O to complete before returning from `run()`.
             io: RefCell::new(Some(unsafe { io::Driver::new() })),
+            io_shared: RefCell::new(Some(io_shared)),
             new_tasks: RefCell::new(VecDeque::new()),
             shutting_down: Cell::new(false),
         }
@@ -94,23 +99,23 @@ impl AsyncAgent {
 
     pub fn with_io<F, R>(&self, f: F) -> R
     where
-        F: FnOnce(&io::Driver) -> R,
-    {
-        let io = self.io.borrow();
-        let io_ref = io
-            .as_ref()
-            .expect("value is only cleared when agent shuts down, so must be set now");
-
-        f(io_ref)
-    }
-
-    pub fn with_io_mut<F, R>(&self, f: F) -> R
-    where
         F: FnOnce(&mut io::Driver) -> R,
     {
         let mut io = self.io.borrow_mut();
         let io_ref = io
             .as_mut()
+            .expect("value is only cleared when agent shuts down, so must be set now");
+
+        f(io_ref)
+    }
+
+    pub fn with_io_shared<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(&io::DriverShared) -> R,
+    {
+        let io = self.io_shared.borrow();
+        let io_ref = io
+            .as_ref()
             .expect("value is only cleared when agent shuts down, so must be set now");
 
         f(io_ref)
@@ -268,6 +273,18 @@ impl AsyncAgent {
                 .expect("the I/O driver is only removed on shutdown so it must still be there")
                 .process_completions(io_wait_time_ms);
 
+            // We always only poll this, never wait on it - any waiting occurs above. One
+            // implication of this is that if a completion arrives here, we may still end up waiting
+            // on the above for some milliseconds. That's OK - this is shared so there are many
+            // threads polling it all the time, the delay is negligible in the big picture.
+            self.io_shared
+                .borrow()
+                .as_ref()
+                .expect(
+                    "the shared I/O driver is only removed on shutdown so it must still be there",
+                )
+                .process_completions();
+
             // TODO: Timers require that we provide an instant value. Some additional work we can explore:
             //
             // - What are the perf implications of this call?
@@ -311,36 +328,40 @@ impl AsyncAgent {
             };
         }
 
+        // Release resources before we finish shutdown, as now is a good time to clean up.
+        // We can start by cleaning up the task engine because we know all tasks have been dropped
+        // and no more can be scheduled. There is nothing for the task engine to do anymore.
+        *engine_guard = None;
+
         {
             let mut io_guard = self.io.borrow_mut();
             let io = io_guard.as_mut().expect(
                 "the I/O driver must still be there because it is only removed on shutdown",
             );
 
-            if io.is_inert() {
-                event!(
-                    Level::TRACE,
-                    "there are no pending I/O operations - safe to shut down I/O driver"
-                );
-            } else {
-                event!(
-                    Level::TRACE,
-                    "waiting for I/O driver to complete pending operations"
-                );
+            let mut io_shared_guard = self.io_shared.borrow_mut();
+            let io_shared = io_shared_guard.as_ref().expect(
+                "the shared I/O driver must still be there because it is only removed on shutdown",
+            );
 
-                while !io.is_inert() {
-                    // We have no need to wake up for non-I/O work anymore, so we can sleep forever.
-                    io.process_completions(INFINITE);
-                }
+            event!(
+                Level::TRACE,
+                "waiting for isolated and shared I/O drivers to complete pending operations"
+            );
+
+            // This is a replica of the main loop, except we only wait for I/O, nothing else.
+            // Really, there is nothing else to do because task execution logic has been shut down
+            // already.
+            while !io.is_inert() || !io_shared.is_inert() {
+                io.process_completions(CROSS_THREAD_WORK_POLL_INTERVAL_MS);
+                io_shared.process_completions();
             }
 
             // We are shutting down, so we need to drop the I/O driver now and release any resources
             // it holds (such as the completion port).
             *io_guard = None;
+            *io_shared_guard = None;
         }
-
-        // Release resources before we finish shutdown, as now is a good time to clean up.
-        *engine_guard = None;
 
         event!(Level::TRACE, "shutdown completed");
 

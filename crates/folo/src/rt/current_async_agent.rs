@@ -33,7 +33,7 @@ where
         agent
             .as_ref()
             .expect("this thread is not an async worker thread owned by the Folo runtime")
-            .with_io_mut(f)
+            .with_io(f)
     })
 }
 
@@ -44,7 +44,7 @@ pub fn try_with_io<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&mut io::Driver) -> R,
 {
-    CURRENT_AGENT.with_borrow(|agent| agent.as_ref().map(|agent| agent.with_io_mut(f)))
+    CURRENT_AGENT.with_borrow(|agent| agent.as_ref().map(|agent| agent.with_io(f)))
 }
 
 pub fn is_some() -> bool {

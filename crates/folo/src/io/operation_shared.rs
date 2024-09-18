@@ -304,6 +304,10 @@ impl OperationCore {
     }
 }
 
+// SAFETY: It's OK, I promise (and hope).
+unsafe impl Send for OperationCore {}
+unsafe impl Sync for OperationCore {}
+
 impl fmt::Debug for OperationCore {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("OperationCore")

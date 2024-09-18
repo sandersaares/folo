@@ -14,9 +14,9 @@ use windows_result::HRESULT;
 
 /// Processes multithreaded I/O completion operations as part of the async worker loop.
 ///
-/// Wrap an `Arc<Mutex<>>` around this to share it between all async workers that need to
-/// collaborate in the execution of multithreaded I/O operations.
-/// TODO: Yes that is probably horrible and slow but let's start with this and see how it goes.
+/// Wrap an `Arc<>` around this to share it between all async workers that need to
+/// collaborate in the execution of multithreaded I/O operations. Synchronization is taken care of
+/// internally - no need to wrap in Mutex or similar, the public API is usable via shared reference.
 ///
 /// # Safety
 ///
@@ -78,13 +78,13 @@ impl DriverShared {
     /// 3. Await the result of `begin()`. You will receive back an `io::Result` with the buffer on
     ///    success. In case of error, the buffer will be provided via `io::Error::OperationFailed`
     ///    so you can reuse it if you wish. An empty buffer on reads signals end of stream.
-    pub(crate) fn new_operation(&mut self, buffer: PinnedBufferShared) -> OperationShared {
+    pub(crate) fn new_operation(&self, buffer: PinnedBufferShared) -> OperationShared {
         self.operation_store.new_operation(buffer)
     }
 
     /// Process any I/O completion notifications and return their results to the callers. If there
     /// is no queued I/O, we simply return.
-    pub(crate) fn process_completions(&mut self) {
+    pub(crate) fn process_completions(&self) {
         let mut completed: [MaybeUninit<OVERLAPPED_ENTRY>; IO_DEQUEUE_BATCH_SIZE] =
             [MaybeUninit::uninit(); IO_DEQUEUE_BATCH_SIZE];
         let mut completed_items: u32 = 0;
