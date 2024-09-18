@@ -14,7 +14,7 @@ use super::{current_sync_agent, ErasedSyncTask};
 use crate::io::{self, IoWaker};
 use crate::metrics::ReportPage;
 use crate::rt::async_agent::{AsyncAgent, AsyncAgentCommand};
-use crate::rt::{current_async_agent, current_runtime, runtime_client, RuntimeClient};
+use crate::rt::{current_async_agent, current_runtime, CoreClient, RuntimeClient};
 
 /// The thing with synchronous worker threads is that they often get blocked and spend time doing
 /// essentially nothing due to offloading blocking I/O onto these threads. Therefore, we spawn many
@@ -327,7 +327,7 @@ impl RuntimeBuilder {
                 // For now we just want to make sure we see the ACK. No actual state fanster needed.
             });
 
-            let proc = runtime_client::CoreClient::new(
+            let proc = CoreClient::new(
                 processor_id,
                 async_command_tx,
                 async_io_waker,
