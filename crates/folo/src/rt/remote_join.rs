@@ -15,15 +15,13 @@ use std::{pin::Pin, task};
 /// Awaiting this is optional - the task will continue even if you drop the join handle.
 #[derive(Debug)]
 pub struct RemoteJoinHandle<R>
-where
-    R: Send + 'static,
 {
     model: ImplementationModel<R>,
 }
 
 impl<R> RemoteJoinHandle<R>
 where
-    R: Send + 'static,
+    R: 'static,
 {
     pub(crate) fn new(result: Arc<RemoteResultBox<R>>, io_waker: Option<IoWaker>) -> Self {
         Self {
@@ -56,7 +54,7 @@ where
 
 impl<R> Future for RemoteJoinHandle<R>
 where
-    R: Send + 'static,
+    R: 'static,
 {
     type Output = R;
 
@@ -110,7 +108,7 @@ enum ImplementationModel<R> {
 
 impl<R> From<LocalJoinHandle<R>> for RemoteJoinHandle<R>
 where
-    R: Send + 'static,
+    R: 'static,
 {
     fn from(value: LocalJoinHandle<R>) -> Self {
         Self::from_local(value)
