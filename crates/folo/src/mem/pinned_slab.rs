@@ -290,12 +290,7 @@ impl<T, const CAPACITY: usize> PinnedSlab<T, CAPACITY> {
 
 impl<T, const CAPACITY: usize> Drop for PinnedSlab<T, CAPACITY> {
     fn drop(&mut self) {
-        if self.drop_policy == DropPolicy::MustNotDropItems {
-            assert!(
-                self.is_empty(),
-                "dropped a non-empty slab of {} with a policy that says it must be empty when dropped", type_name::<T>()
-            );
-        }
+        let was_empty = self.is_empty();
 
         // SAFETY: All slots were already initialized by the ctor so nothing can be invalid here.
         // We are using the correct size and the same layout as was used in the ctor, everything OK.
@@ -309,6 +304,15 @@ impl<T, const CAPACITY: usize> Drop for PinnedSlab<T, CAPACITY> {
             }
 
             dealloc(self.ptr as *mut u8, Self::layout());
+        }
+
+        // We do this at the end so we clean up the memory first. Mostly to make Miri happy - since
+        // we are going to panic anyway, there is little good to expect for the app itself.
+        if self.drop_policy == DropPolicy::MustNotDropItems {
+            assert!(
+                was_empty,
+                "dropped a non-empty slab of {} with a policy that says it must be empty when dropped", type_name::<T>()
+            );
         }
     }
 }
@@ -688,5 +692,4 @@ mod tests {
     fn drop_itemless_with_forbidden_to_drop_policy_ok() {
         _ = PinnedSlab::<u32, 3>::new(DropPolicy::MustNotDropItems);
     }
-
 }

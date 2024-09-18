@@ -49,7 +49,8 @@ machete:
     cargo machete --skip-target-dir
 
 miri:
-    cargo +nightly miri nextest run -p folo util::
+    cargo +nightly miri nextest run -p folo mem::
+    cargo +nightly miri nextest run -p folo sync::
 
 test:
     cargo nextest run --workspace --all-targets --all-features
