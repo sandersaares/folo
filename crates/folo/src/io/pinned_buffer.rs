@@ -20,16 +20,10 @@ use std::{
 /// You can adjust the start/len fields as appropriate to adjust the active region (e.g. to fill
 /// or consume the buffer in multiple pieces).
 ///
-/// We deliberately do not support receiving arbitrary references from user code, only allocating
-/// either from the pool or taking ownership of user-provided storage. This is because we must
-/// guarantee that the backing storage is kept alive as long as the buffer is alive; the buffer is
-/// kept alive for part of its lifecycle by I/O operations pending with the operating system,
-/// whereas arbitrary caller-provided references may be dropped at any given time (e.g. if someone
-/// were to give us a reference to a buffer defined in an async function, and then the future is
-/// dropped, we would have a problem if the operating system already co-owns the buffer).
+/// This is a single threaded type - buffers cannot move between threads, all I/O performed on this
+/// buffer stays within the same thread from start to finish.
 ///
-/// This is a single threaded type - buffers cannot move between threads, all I/O stays within the
-/// same thread from start to finish.
+/// For a thread-safe variant, see `PinnedBufferShared`.
 #[derive(Debug)]
 pub struct PinnedBuffer {
     mode: Mode,
@@ -305,9 +299,15 @@ impl !Send for PinnedBuffer {}
 #[negative_impl]
 impl !Sync for PinnedBuffer {}
 
+// 64 KB is the default "stream to stream" copy size in .NET, so we use that as a default buffer
+// size, as well. Note that this is not necessarily the best for high throughput single-stream I/O
+// and larger buffers will often provide better throughput for a single high throughput stream.
 const POOL_BUFFER_CAPACITY_BYTES: usize = 64 * 1024;
 
 thread_local! {
+    // This is the simplest possible buffer pool implementation - a collection of fixed-size buffers
+    // on every thread. Could we be better and more efficient? Sure, but this is fine for now.
+    //
     // We use MustNotDropItems policy because buffers are often referenced via raw pointers, so if
     // some items still exist in the collection, we have a high probability of dangling pointers,
     // which can be a big safety problem.
@@ -315,22 +315,22 @@ thread_local! {
         RefCell::new(PinnedSlabChain::new(DropPolicy::MustNotDropItems));
 
     static CALLER_BUFFERS_REFERENCED: Event = EventBuilder::new()
-        .name("caller_buffers_referenced")
+        .name("isolated_caller_buffers_referenced")
         .build()
         .unwrap();
 
     static CALLER_POINTERS_REFERENCED: Event = EventBuilder::new()
-        .name("caller_pointers_referenced")
+        .name("isolated_caller_pointers_referenced")
         .build()
         .unwrap();
 
     static POOL_ALLOCATED: Event = EventBuilder::new()
-        .name("pool_buffers_allocated")
+        .name("isolated_pool_buffers_allocated")
         .build()
         .unwrap();
 
     static POOL_DROPPED: Event = EventBuilder::new()
-        .name("pool_buffers_dropped")
+        .name("isolated_pool_buffers_dropped")
         .build()
         .unwrap();
 }
