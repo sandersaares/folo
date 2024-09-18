@@ -1,9 +1,8 @@
 use crate::constants::GENERAL_MILLISECONDS_BUCKETS;
 use crate::io::{
     self,
-    operation::{Operation, OperationStore},
-    CompletionPort, IoPrimitive, IoWaker, PinnedBuffer, IO_DEQUEUE_BATCH_SIZE,
-    WAKE_UP_COMPLETION_KEY,
+    operation_shared::{OperationShared, OperationStoreShared},
+    CompletionPortShared, IoPrimitive, PinnedBufferShared, IO_DEQUEUE_BATCH_SIZE,
 };
 use crate::metrics::{Event, EventBuilder, Magnitude};
 use std::mem::{self, MaybeUninit};
@@ -13,7 +12,11 @@ use windows::Win32::{
 };
 use windows_result::HRESULT;
 
-/// Processes I/O completion operations for a given thread as part of the async worker loop.
+/// Processes multithreaded I/O completion operations as part of the async worker loop.
+///
+/// Wrap an `Arc<Mutex<>>` around this to share it between all async workers that need to
+/// collaborate in the execution of multithreaded I/O operations.
+/// TODO: Yes that is probably horrible and slow but let's start with this and see how it goes.
 ///
 /// # Safety
 ///
@@ -21,8 +24,8 @@ use windows_result::HRESULT;
 /// I/O driver must be polled until it signals that all I/O operations have completed (`is_inert()`
 /// returns true).
 #[derive(Debug)]
-pub(crate) struct Driver {
-    completion_port: CompletionPort,
+pub(crate) struct DriverShared {
+    completion_port: CompletionPortShared,
 
     // These are the I/O operations that are currently in flight with the OS but for which the
     // result has not been processed yet. Items are added when operations are started and they are
@@ -30,17 +33,17 @@ pub(crate) struct Driver {
     // operation notified to pick up their results.
     //
     // This does not store the read/write buffers, only the operation metadata.
-    operation_store: OperationStore,
+    operation_store: OperationStoreShared,
 }
 
-impl Driver {
+impl DriverShared {
     /// # Safety
     ///
     /// See safety requirements on the type.
     pub(crate) unsafe fn new() -> Self {
         Self {
-            completion_port: CompletionPort::new(),
-            operation_store: OperationStore::new(),
+            completion_port: CompletionPortShared::new(),
+            operation_store: OperationStoreShared::new(),
         }
     }
 
@@ -75,20 +78,13 @@ impl Driver {
     /// 3. Await the result of `begin()`. You will receive back an `io::Result` with the buffer on
     ///    success. In case of error, the buffer will be provided via `io::Error::OperationFailed`
     ///    so you can reuse it if you wish. An empty buffer on reads signals end of stream.
-    pub(crate) fn new_operation(&mut self, buffer: PinnedBuffer) -> Operation {
+    pub(crate) fn new_operation(&mut self, buffer: PinnedBufferShared) -> OperationShared {
         self.operation_store.new_operation(buffer)
     }
 
-    /// Obtains a waker that can be used to wake up the I/O driver from another thread when it
-    /// is waiting for I/O.
-    pub(crate) fn waker(&self) -> IoWaker {
-        self.completion_port.waker()
-    }
-
     /// Process any I/O completion notifications and return their results to the callers. If there
-    /// is no queued I/O, we wait up to `max_wait_time_ms` milliseconds for new I/O activity, after
-    /// which we simply return.
-    pub(crate) fn process_completions(&mut self, max_wait_time_ms: u32) {
+    /// is no queued I/O, we simply return.
+    pub(crate) fn process_completions(&mut self) {
         let mut completed: [MaybeUninit<OVERLAPPED_ENTRY>; IO_DEQUEUE_BATCH_SIZE] =
             [MaybeUninit::uninit(); IO_DEQUEUE_BATCH_SIZE];
         let mut completed_items: u32 = 0;
@@ -111,7 +107,8 @@ impl Driver {
                             &mut [OVERLAPPED_ENTRY],
                         >(completed.as_mut_slice()),
                         &mut completed_items as *mut _,
-                        max_wait_time_ms,
+                        // No waiting, poll and get out.
+                        0,
                         false,
                     )
                 })
@@ -121,12 +118,7 @@ impl Driver {
                 Ok(()) => {}
                 // Timeout just means there was nothing to do - no I/O operations completed.
                 Err(e) if e.code() == HRESULT::from_win32(WAIT_TIMEOUT.0) => {
-                    if max_wait_time_ms == 0 {
-                        POLL_TIMEOUTS.with(Event::observe_unit);
-                    } else {
-                        WAIT_TIMEOUTS.with(Event::observe_unit);
-                    }
-
+                    POLL_TIMEOUTS.with(Event::observe_unit);
                     return;
                 }
                 Err(e) => panic!("unexpected error from GetQueuedCompletionStatusEx: {:?}", e),
@@ -136,28 +128,19 @@ impl Driver {
 
             for index in 0..completed_items {
                 let overlapped_entry = completed[index as usize].assume_init();
-
-                // If the completion key matches our magic value, this is a wakeup packet and needs
-                // special processing.
-                if overlapped_entry.lpCompletionKey == WAKE_UP_COMPLETION_KEY {
-                    // This is not a normal I/O block. All it did was wake us up, we do no further
-                    // processing here. The OVERLAPPED pointer will be null here!
-                    continue;
-                }
-
                 self.operation_store.complete_operation(overlapped_entry);
             }
         }
     }
 }
 
-impl Drop for Driver {
+impl Drop for DriverShared {
     fn drop(&mut self) {
         // We must ensure that all I/O operations are completed before we drop the driver. This is
         // a safety requirement of the driver - if it is not inert, we are violating memory safety.
         assert!(
             self.is_inert(),
-            "I/O driver dropped while I/O operations are still in progress"
+            "shared I/O driver dropped while I/O operations are still in progress"
         );
     }
 }
@@ -166,25 +149,18 @@ const ASYNC_COMPLETIONS_DEQUEUED_BUCKETS: &[Magnitude] = &[0, 1, 16, 64, 256, 51
 
 thread_local! {
     static ASYNC_COMPLETIONS_DEQUEUED: Event = EventBuilder::new()
-        .name("io_async_completions_dequeued")
+        .name("io_shared_async_completions_dequeued")
         .buckets(ASYNC_COMPLETIONS_DEQUEUED_BUCKETS)
         .build()
         .unwrap();
 
-    // With sleep time == 0.
     static POLL_TIMEOUTS: Event = EventBuilder::new()
-        .name("io_async_completions_poll_timeouts")
-        .build()
-        .unwrap();
-
-    // With sleep time != 0.
-    static WAIT_TIMEOUTS: Event = EventBuilder::new()
-        .name("io_async_completions_wait_timeouts")
+        .name("io_shared_async_completions_poll_timeouts")
         .build()
         .unwrap();
 
     static GET_COMPLETED_DURATION: Event = EventBuilder::new()
-        .name("io_async_completions_get_duration_millis")
+        .name("io_shared_async_completions_get_duration_millis")
         .buckets(GENERAL_MILLISECONDS_BUCKETS)
         .build()
         .unwrap();
