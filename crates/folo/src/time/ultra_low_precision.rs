@@ -21,6 +21,11 @@ impl UltraLowPrecisionInstant {
     }
 
     pub fn duration_since(&self, earlier: UltraLowPrecisionInstant) -> std::time::Duration {
+        if self.value < earlier.value {
+            // This is possible because different threads update clock at different moments
+            return std::time::Duration::ZERO;
+        }
+
         std::time::Duration::from_millis(self.value - earlier.value)
     }
 
