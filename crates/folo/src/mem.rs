@@ -3,6 +3,7 @@ mod pinned_slab;
 mod pinned_slab_chain;
 mod shared_array_pool;
 mod slab_rc;
+pub mod storage;
 
 pub use drop_policy::*;
 pub use pinned_slab::*;
