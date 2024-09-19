@@ -30,6 +30,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 ///
 /// timestamp.checked_add(Duration::MAX).unwrap_err();
 /// ```
+
 #[derive(Debug, thiserror::Error)]
 #[error(transparent)]
 pub struct Error(#[from] ErrorKind);

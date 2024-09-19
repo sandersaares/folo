@@ -65,7 +65,7 @@ impl Clock {
     }
 
     /// Retrieves the current [`Instant`] time.
-    pub(super) fn instant_now(&self) -> Instant {
+    pub(crate) fn instant_now(&self) -> Instant {
         // This method is mutated, but cannot be tested due to tests
         // running with the "fakes" feature.
         #[cfg(not(feature = "fakes"))]

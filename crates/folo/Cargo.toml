@@ -69,9 +69,15 @@ http-body-util = "0.1.0"
 hyper = { version = "1.4.1", features = ["full"] }
 hyper-util = { version = "0.1.8", features = ["full"] }
 mockall = "0"
+prost = "0.13"
 tokio = { version = "1", features = ["fs", "net", "macros", "rt-multi-thread"] }
+tonic =  { version = "0.12.2", default-features = false, features = ["codegen", "prost"] }
+tower = "0.5.1"
 tracing-appender = "0"
 tracing-subscriber = "0"
+
+[build-dependencies]
+tonic-build = "0.12"
 
 [[bench]]
 name = "comm_primitives"
