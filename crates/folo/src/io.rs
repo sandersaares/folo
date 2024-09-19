@@ -18,7 +18,6 @@ pub(crate) use driver::*;
 pub(crate) use driver_shared::*;
 pub use error::*;
 pub(crate) use operation::*;
-pub(crate) use operation_shared::*;
 pub use operation_result::*;
 pub use operation_result_shared::*;
 pub use pinned_buffer::*;
