@@ -1,7 +1,7 @@
 using System.Buffers;
 
 var builder = WebApplication.CreateBuilder(args);
-builder.WebHost.UseUrls("http://localhost:1234");
+builder.WebHost.UseUrls("http://0.0.0.0:1234");
 
 var app = builder.Build();
 
