@@ -1,5 +1,10 @@
-use crate::windows::OwnedHandle;
-use std::sync::Weak;
+use crate::{collections::BuildPointerHasher, windows::OwnedHandle};
+use std::{
+    cell::RefCell,
+    collections::HashSet,
+    hash::{Hash, Hasher},
+    sync::Weak,
+};
 use windows::Win32::{Foundation::HANDLE, System::IO::PostQueuedCompletionStatus};
 
 // Value is meaningless, just has to be unique.
@@ -26,11 +31,61 @@ impl IoWaker {
     /// Wakes up the target thread via the I/O driver by sending a completion packet to its
     /// completion port. This is a non-blocking operation.
     pub(crate) fn wake(&self) {
+        if self.try_add_to_batch() {
+            return;
+        }
+
         let completion_port = match self.completion_port.upgrade() {
             Some(port) => port,
             None => return,
         };
 
+        Self::wake_core(&completion_port);
+    }
+
+    /// Enables I/O wakers to be processed in batches from the current thread. After this, a call
+    /// to wake() will merely queue the operation and it will not be submitted until we call the
+    /// submit_batch() method. This allows for de-duplication of wake-up calls.
+    pub fn enable_batching() {
+        BATCH.with_borrow_mut(|batch| {
+            assert!(batch.is_none());
+            *batch = Some(HashSet::with_hasher(BuildPointerHasher::default()));
+        });
+    }
+
+    pub fn submit_batch() {
+        BATCH.with_borrow_mut(|batch| {
+            let batch = batch.as_mut().expect(
+                "if the caller is calling to submit a batch, they must enable batching first",
+            );
+
+            for request in batch.drain() {
+                let completion_port = match request.completion_port.upgrade() {
+                    Some(port) => port,
+                    None => continue,
+                };
+
+                Self::wake_core(&completion_port);
+            }
+        });
+    }
+
+    // Returns true if the wake was added to the batch and no explicit wake is needed.
+    fn try_add_to_batch(&self) -> bool {
+        BATCH.with_borrow_mut(|batch| {
+            let Some(batch) = batch.as_mut() else {
+                return false;
+            };
+
+            batch.insert(WakeRequest {
+                completion_port: self.completion_port.clone(),
+            });
+
+            true
+        })
+    }
+
+    fn wake_core(completion_port: &OwnedHandle<HANDLE>) {
         // SAFETY: We just need to be concerned with the completion port being valid. This is
         // ensured by OwnedHandle.
         unsafe {
@@ -43,4 +98,27 @@ impl IoWaker {
             _ = PostQueuedCompletionStatus(**completion_port, 0, WAKE_UP_COMPLETION_KEY, None);
         }
     }
+}
+
+struct WakeRequest {
+    completion_port: Weak<OwnedHandle<HANDLE>>,
+}
+
+impl Hash for WakeRequest {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        state.write_usize(self.completion_port.as_ptr() as usize);
+    }
+}
+
+impl Eq for WakeRequest {}
+
+impl PartialEq for WakeRequest {
+    fn eq(&self, other: &Self) -> bool {
+        self.completion_port.as_ptr() == other.completion_port.as_ptr()
+    }
+}
+
+thread_local! {
+    static BATCH: RefCell<Option<HashSet<WakeRequest, BuildPointerHasher>>> =
+        const { RefCell::new(None) };
 }

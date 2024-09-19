@@ -169,6 +169,11 @@ impl AsyncAgent {
     pub fn run(&self) {
         event!(Level::TRACE, "Started");
 
+        // Any I/O wakeups from async task threads are batched and submitted at the end of each
+        // loop cycle, to avoid double-dispatch when a loop processes many I/O wakeups for the same
+        // target.
+        io::IoWaker::enable_batching();
+
         // We want to do useful work in this loop as much as possible, yet without burning CPU on
         // just pinning and waiting for work.
         //
@@ -311,6 +316,9 @@ impl AsyncAgent {
             // Deliver them to runtime agents now so we ensure commands are sent every cycle.
             current_runtime::with(|runtime| runtime.submit_pending_tasks());
 
+            // Now is a good time to submit any I/O wakeups for other threads.
+            io::IoWaker::submit_batch();
+
             match execute_cycle_result {
                 CycleResult::Continue => {
                     // The async task engine believes there may be more work to do, so no sleep.
@@ -359,6 +367,9 @@ impl AsyncAgent {
             while !io.is_inert() || !io_shared.is_inert() {
                 io.process_completions(CROSS_THREAD_WORK_POLL_INTERVAL_MS);
                 io_shared.process_completions();
+
+                // I/O completions could trigger wakeups of other threads.
+                io::IoWaker::submit_batch();
             }
 
             // We are shutting down, so we need to drop the I/O driver now and release any resources
