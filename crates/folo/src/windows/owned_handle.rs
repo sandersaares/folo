@@ -100,7 +100,7 @@ where
         // resources that the app can put to use for other things. Furthermore, the high priority
         // queue is processed even when shutting down the runtime, as these resources can block
         // the shutdown process itself.
-        _ = crate::rt::spawn_sync(SynchronousTaskType::HighPrioritySyscall, move || {
+        _ = crate::rt::spawn_sync_on_any(SynchronousTaskType::HighPrioritySyscall, move || {
             let mut thread_safe = thread_safe;
 
             unsafe {

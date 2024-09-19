@@ -374,7 +374,7 @@ impl AcceptOne {
         // Creating the socket is an expensive synchronous operation, so do it on a synchronous
         // worker thread.
         let connection_socket = current_runtime::with(move |runtime| {
-            runtime.spawn_sync(
+            runtime.spawn_sync_on_any(
                 SynchronousTaskType::Syscall,
                 move || -> io::Result<OwnedHandle<SOCKET>> {
                     event!(
@@ -493,7 +493,7 @@ impl AcceptOne {
         );
 
         let (connection_socket, _affinity_info) = current_runtime::with(move |runtime| {
-            runtime.spawn_sync(
+            runtime.spawn_sync_on_any(
                 SynchronousTaskType::Syscall,
                 move || -> io::Result<(OwnedHandle<SOCKET>, SOCKET_PROCESSOR_AFFINITY)> {
                     event!(Level::TRACE, "configuring socket for incoming connection (part 2)");
