@@ -1,11 +1,13 @@
 use crate::constants;
+use crate::mem::storage::{
+    StorageHandle, ThreadLocalStorage, ThreadLocalStorageHandle, WriteStorage,
+};
 use crate::mem::DropPolicy;
 use crate::{linked, mem::PinnedSlabChain};
 use crossbeam::utils::CachePadded;
-use std::cell::{RefCell, UnsafeCell};
+use std::cell::UnsafeCell;
 use std::collections::VecDeque;
 use std::pin::Pin;
-use std::rc::Rc;
 use std::slice;
 use std::sync::{Arc, Mutex};
 
@@ -34,7 +36,7 @@ pub struct SharedArrayPool<const LEN: usize> {
 
     // Any arrays dropped on this thread get stashed in here for fast reuse. We only return to the
     // shared pool in the core when the thread-local linked instance of the pool is dropped.
-    local: Rc<RefCell<VecDeque<PooledArray<LEN>>>>,
+    local: ThreadLocalStorage<VecDeque<PooledArray<LEN>>>,
 }
 
 impl<const LEN: usize> SharedArrayPool<LEN> {
@@ -47,19 +49,18 @@ impl<const LEN: usize> SharedArrayPool<LEN> {
             DropPolicy::MustNotDropItems,
         )));
 
+        let local_storage_handle = ThreadLocalStorage::new(VecDeque::new).handle();
+
         linked::new!(Self {
             shared: Arc::clone(&core),
-            local: Rc::new(RefCell::new(VecDeque::new())),
+            local: local_storage_handle.clone().into_storage(),
         })
     }
 
     pub fn get(&self) -> PooledArrayLease<LEN> {
         // Try to recycle an array from the local cache if there is one available.
-        if let Some(local) = self.local.borrow_mut().pop_front() {
-            return PooledArrayLease {
-                inner: Some(local),
-                return_to: Rc::clone(&self.local),
-            };
+        if let Some(local) = self.local.write().pop_front() {
+            return PooledArrayLease::new(local, self.local.handle());
         }
 
         // TODO: Steal from another instance of the pool (perhaps on another thread).
@@ -92,10 +93,7 @@ impl<const LEN: usize> SharedArrayPool<LEN> {
             index_in_storage: index,
         };
 
-        PooledArrayLease {
-            inner: Some(array),
-            return_to: Rc::clone(&self.local),
-        }
+        PooledArrayLease::new(array, self.local.handle())
     }
 }
 
@@ -103,7 +101,7 @@ impl<const LEN: usize> Drop for SharedArrayPool<LEN> {
     fn drop(&mut self) {
         // "Return" all local arrays to the shared pool (actually drop them).
         let mut shared = self.shared.lock().expect(constants::POISONED_LOCK);
-        let mut local = self.local.borrow_mut();
+        let mut local = self.local.write();
 
         for array in local.drain(..) {
             shared.remove(array.index_in_storage);
@@ -129,11 +127,24 @@ pub struct PooledArray<const LEN: usize> {
 /// A temporary lease entitling the holder to own a pooled array until the lease is dropped.
 #[derive(Debug)]
 pub struct PooledArrayLease<const LEN: usize> {
+    // Set to None when the lease is dropped and the array is returned.
     inner: Option<PooledArray<LEN>>,
-    return_to: Rc<RefCell<VecDeque<PooledArray<LEN>>>>,
+
+    // Set to None when the lease is dropped and the array is returned.
+    return_to: Option<ThreadLocalStorageHandle<VecDeque<PooledArray<LEN>>>>,
 }
 
 impl<const LEN: usize> PooledArrayLease<LEN> {
+    fn new(
+        inner: PooledArray<LEN>,
+        return_to: ThreadLocalStorageHandle<VecDeque<PooledArray<LEN>>>,
+    ) -> Self {
+        Self {
+            inner: Some(inner),
+            return_to: Some(return_to),
+        }
+    }
+
     pub fn to_slice(&self) -> Pin<&[u8]> {
         // SAFETY: The slab chain storage guarantees all arrays are pinned. LEN is the correct size.
         unsafe {
@@ -163,11 +174,16 @@ impl<const LEN: usize> PooledArrayLease<LEN> {
 
 impl<const LEN: usize> Drop for PooledArrayLease<LEN> {
     fn drop(&mut self) {
-        self.return_to.borrow_mut().push_back(
-            self.inner
-                .take()
-                .expect("the lease has already been dropped"),
-        );
+        self.return_to
+            .take()
+            .expect("we only take this on drop, and this is drop, so it must be there")
+            .into_storage()
+            .write()
+            .push_back(
+                self.inner
+                    .take()
+                    .expect("we only take this on drop, and this is drop, so it must be there"),
+            );
     }
 }
 
