@@ -221,10 +221,6 @@ impl AsyncTaskEngine {
 
         CYCLE_DURATION.with(|x| x.observe_millis(cycle_end.duration_since(cycle_start)));
 
-        if self.completed.len() > 10000 {
-            println!("Completed: {}, Active: {}, Inactive: {}", self.completed.len(), self.active.len(), self.inactive.len());
-        }
-
         if self.shutting_down && self.completed.is_empty() {
             // Shutdown is finished if all completed tasks (== all tasks) have been removed from the
             // completed list after their wakers became inert.
