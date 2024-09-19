@@ -372,8 +372,8 @@ impl RuntimeClient {
         F: FnOnce() -> R + Send + 'static,
         R: Send + 'static,
     {
-        if task_type != SynchronousTaskType::Syscall {
-            panic!("spawn_sync_on_any only supports SynchronousTaskType::Syscall");
+        if task_type == SynchronousTaskType::Compute {
+            panic!("SynchronousTaskType::Compute is not yet supported");
         }
 
         // This is mostly just an implementation limitation because we depend on a pending+flush
@@ -390,7 +390,16 @@ impl RuntimeClient {
         let started = UltraLowPrecisionInstant::now();
 
         let task = move || {
-            SYNC_SPAWN_DELAY_LOW_PRIORITY.with(|x| x.observe_millis(started.elapsed()));
+            match task_type {
+                SynchronousTaskType::Syscall => {
+                    SYNC_SPAWN_DELAY_LOW_PRIORITY.with(|x| x.observe_millis(started.elapsed()))
+                }
+                SynchronousTaskType::HighPrioritySyscall => {
+                    SYNC_SPAWN_DELAY_HIGH_PRIORITY.with(|x| x.observe_millis(started.elapsed()))
+                }
+                _ => unreachable!(),
+            };
+
             result_box_tx.set(f())
         };
 
@@ -402,16 +411,34 @@ impl RuntimeClient {
         // We just add it to the pending task queue for now, to be submitted at the end of the cycle.
         let boxed_task = Box::new(task);
         let task_addr = format!("{:p}", &*boxed_task);
-        self.core_clients[&processor_id]
-            .pending_sync_tasks
-            .push(boxed_task);
-        event!(
-            Level::TRACE,
-            message = "queued task",
-            ?processor_id,
-            type_name = type_name::<F>(),
-            task_addr
-        );
+        
+        match task_type {
+            SynchronousTaskType::Syscall => {
+                self.core_clients[&processor_id]
+                    .pending_sync_tasks
+                    .push(boxed_task);
+                event!(
+                    Level::TRACE,
+                    message = "queued task",
+                    ?processor_id,
+                    type_name = type_name::<F>(),
+                    task_addr
+                );
+            }
+            SynchronousTaskType::HighPrioritySyscall => {
+                self.core_clients[&processor_id]
+                    .pending_sync_priority_tasks
+                    .push(boxed_task);
+                event!(
+                    Level::TRACE,
+                    message = "queued priority task",
+                    ?processor_id,
+                    type_name = type_name::<F>(),
+                    task_addr
+                );
+            }
+            _ => unreachable!(),
+        }
 
         RemoteJoinHandle::new(result_box_rx, self.current_thread_io_waker())
     }
