@@ -501,23 +501,15 @@ enum ProcessCommandsResult {
 }
 
 thread_local! {
-    static LOCAL_TASKS: Event = EventBuilder::new()
-        .name("rt_async_tasks_local")
-        .build()
-        .unwrap();
+    static LOCAL_TASKS: Event = EventBuilder::new("rt_async_tasks_local")
+        .build();
 
-    static REMOTE_TASKS: Event = EventBuilder::new()
-        .name("rt_async_tasks_remote")
-        .build()
-        .unwrap();
+    static REMOTE_TASKS: Event = EventBuilder::new("rt_async_tasks_remote")
+        .build();
 
-    static CYCLES_WITH_SLEEP: Event = EventBuilder::new()
-        .name("rt_async_cycles_with_sleep")
-        .build()
-        .unwrap();
+    static CYCLES_WITH_SLEEP: Event = EventBuilder::new("rt_async_cycles_with_sleep")
+        .build();
 
-    static CYCLES_WITHOUT_SLEEP: Event = EventBuilder::new()
-        .name("rt_async_cycles_without_sleep")
-        .build()
-        .unwrap();
+    static CYCLES_WITHOUT_SLEEP: Event = EventBuilder::new("rt_async_cycles_without_sleep")
+        .build();
 }

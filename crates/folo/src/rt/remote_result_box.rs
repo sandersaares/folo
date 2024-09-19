@@ -116,20 +116,14 @@ impl<R> RemoteResultBox<R> {
 }
 
 thread_local! {
-    static FILL_DURATION: Event = EventBuilder::new()
-        .name("result_box_remote_time_to_fill_millis")
+    static FILL_DURATION: Event = EventBuilder::new("result_box_remote_time_to_fill_millis")
         .buckets(GENERAL_MILLISECONDS_BUCKETS)
-        .build()
-        .unwrap();
+        .build();
 
-    static CONSUME_DURATION: Event = EventBuilder::new()
-        .name("result_box_remote_time_to_consume_millis")
+    static CONSUME_DURATION: Event = EventBuilder::new("result_box_remote_time_to_consume_millis")
         .buckets(GENERAL_MILLISECONDS_BUCKETS)
-        .build()
-        .unwrap();
+        .build();
 
-    static POLL_COUNT: Event = EventBuilder::new()
-        .name("result_box_remote_poll_count")
-        .build()
-        .unwrap();
+    static POLL_COUNT: Event = EventBuilder::new("result_box_remote_poll_count")
+        .build();
 }

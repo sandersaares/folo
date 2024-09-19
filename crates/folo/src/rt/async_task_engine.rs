@@ -455,50 +455,32 @@ impl Debug for Task {
 }
 
 thread_local! {
-    static TASKS_CANCELED_ON_SHUTDOWN: Event = EventBuilder::new()
-        .name("rt_async_tasks_canceled_on_shutdown")
-        .build()
-        .unwrap();
+    static TASKS_CANCELED_ON_SHUTDOWN: Event = EventBuilder::new("rt_async_tasks_canceled_on_shutdown")
+        .build();
 
-    static TASK_ACTIVATED_VIA_SET: Event = EventBuilder::new()
-        .name("rt_async_task_activated_via_set")
-        .build()
-        .unwrap();
+    static TASK_ACTIVATED_VIA_SET: Event = EventBuilder::new("rt_async_task_activated_via_set")
+        .build();
 
-    static TASK_ACTIVATED_VIA_SIGNAL: Event = EventBuilder::new()
-        .name("rt_async_task_activated_via_signal")
-        .build()
-        .unwrap();
+    static TASK_ACTIVATED_VIA_SIGNAL: Event = EventBuilder::new("rt_async_task_activated_via_signal")
+        .build();
 
-    static TASK_ACTIVATED_SPURIOUS: Event = EventBuilder::new()
-        .name("rt_async_task_activated_spurious")
-        .build()
-        .unwrap();
+    static TASK_ACTIVATED_SPURIOUS: Event = EventBuilder::new("rt_async_task_activated_spurious")
+        .build();
 
-    static TASK_INACTIVATED: Event = EventBuilder::new()
-        .name("rt_async_task_inactivated")
-        .build()
-        .unwrap();
+    static TASK_INACTIVATED: Event = EventBuilder::new("rt_async_task_inactivated")
+        .build();
 
-    static TASKS_COMPLETED: Event = EventBuilder::new()
-        .name("rt_async_tasks_completed")
-        .build()
-        .unwrap();
+    static TASKS_COMPLETED: Event = EventBuilder::new("rt_async_tasks_completed")
+        .build();
 
-    static TASKS_DROPPED: Event = EventBuilder::new()
-        .name("rt_async_tasks_dropped")
-        .build()
-        .unwrap();
+    static TASKS_DROPPED: Event = EventBuilder::new("rt_async_tasks_dropped")
+        .build();
 
-    static CYCLE_INTERVAL: Event = EventBuilder::new()
-        .name("rt_async_cycle_interval_millis")
+    static CYCLE_INTERVAL: Event = EventBuilder::new("rt_async_cycle_interval_millis")
         .buckets(GENERAL_MILLISECONDS_BUCKETS)
-        .build()
-        .unwrap();
+        .build();
 
-    static CYCLE_DURATION: Event = EventBuilder::new()
-        .name("rt_async_cycle_duration_millis")
+    static CYCLE_DURATION: Event = EventBuilder::new("rt_async_cycle_duration_millis")
         .buckets(GENERAL_MILLISECONDS_BUCKETS)
-        .build()
-        .unwrap();
+        .build();
 }

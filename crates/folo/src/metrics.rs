@@ -5,7 +5,6 @@ use std::{
     cell::{Cell, RefCell, UnsafeCell},
     cmp,
     collections::HashMap,
-    error::Error,
     fmt::{Display, Write},
     future::Future,
     rc::Rc,
@@ -89,23 +88,18 @@ impl !Send for Event {}
 impl !Sync for Event {}
 
 pub struct EventBuilder {
-    name: Option<Cow<'static, str>>,
+    name: Cow<'static, str>,
 
     /// Upper bounds of histogram buckets to use. May be empty if histogram not meaningful.
     buckets: &'static [Magnitude],
 }
 
 impl EventBuilder {
-    pub fn new() -> Self {
+    pub fn new(name: impl Into<Cow<'static, str>>) -> Self {
         Self {
-            name: None,
+            name: name.into(),
             buckets: &[],
         }
-    }
-
-    pub fn name(mut self, name: impl Into<Cow<'static, str>>) -> Self {
-        self.name = Some(name.into());
-        self
     }
 
     pub fn buckets(mut self, buckets: &'static [Magnitude]) -> Self {
@@ -113,23 +107,15 @@ impl EventBuilder {
         self
     }
 
-    pub fn build(self) -> Result<Event, Box<dyn Error>> {
-        let name = self.name.ok_or("name is required")?;
-
+    pub fn build(self) -> Event {
         let bag = BAGS.with_borrow_mut(|bags| {
             Rc::clone(
-                bags.entry(name.to_string())
+                bags.entry(self.name.to_string())
                     .or_insert_with(|| Rc::new(ObservationBag::new(self.buckets))),
             )
         });
 
-        Ok(Event::new(bag))
-    }
-}
-
-impl Default for EventBuilder {
-    fn default() -> Self {
-        Self::new()
+        Event::new(bag)
     }
 }
 
@@ -415,11 +401,9 @@ mod tests {
     fn event_smoke_test() {
         clear();
 
-        let event = EventBuilder::new()
-            .name("test")
+        let event = EventBuilder::new("test")
             .buckets(&[0, 1, 2, 3])
-            .build()
-            .unwrap();
+            .build();
 
         event.observe(1);
         event.observe(2);
@@ -453,11 +437,9 @@ mod tests {
     fn counter() {
         clear();
 
-        let event = EventBuilder::new()
-            .name("test_counter")
+        let event = EventBuilder::new("test_counter")
             .buckets(&[])
-            .build()
-            .unwrap();
+            .build();
 
         event.observe_unit();
         event.observe_unit();
@@ -484,21 +466,17 @@ mod tests {
     fn multi_page_report() {
         clear();
 
-        let event = EventBuilder::new()
-            .name("test")
+        let event = EventBuilder::new("test")
             .buckets(&[1, 2, 3])
-            .build()
-            .unwrap();
+            .build();
 
         event.observe(0);
         event.observe(100);
 
         let other_page = thread::spawn(move || {
-            let event = EventBuilder::new()
-                .name("test")
+            let event = EventBuilder::new("test")
                 .buckets(&[1, 2, 3])
-                .build()
-                .unwrap();
+                .build();
 
             event.observe(-10);
             event.observe(1);
@@ -531,21 +509,19 @@ mod tests {
     fn multi_metric_report() {
         clear();
 
-        let event = EventBuilder::new()
-            .name("test")
+        let event = EventBuilder::new("test")
             .buckets(&[1, 2, 3])
-            .build()
-            .unwrap();
+            .build();
 
         event.observe(0);
         event.observe(100);
 
-        let event = EventBuilder::new().name("another_test").build().unwrap();
+        let event = EventBuilder::new("another_test").build();
 
         event.observe(1234);
         event.observe(45678);
 
-        let event = EventBuilder::new().name("more").build().unwrap();
+        let event = EventBuilder::new("more").build();
 
         event.observe(1234);
         event.observe(45678);
