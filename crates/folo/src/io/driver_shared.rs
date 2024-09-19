@@ -2,7 +2,7 @@ use crate::constants::GENERAL_MILLISECONDS_BUCKETS;
 use crate::io::{
     self,
     operation_shared::{OperationShared, OperationStoreShared},
-    CompletionPortShared, IoPrimitive, PinnedBufferShared, IO_SHARED_DEQUEUE_BATCH_SIZE,
+    CompletionPortShared, IoPrimitive, PinnedBufferShared, IO_DEQUEUE_BATCH_SIZE,
 };
 use crate::metrics::{Event, EventBuilder, Magnitude};
 use std::mem::{self, MaybeUninit};
@@ -85,8 +85,8 @@ impl DriverShared {
     /// Process any I/O completion notifications and return their results to the callers. If there
     /// is no queued I/O, we simply return.
     pub(crate) fn process_completions(&self) {
-        let mut completed: [MaybeUninit<OVERLAPPED_ENTRY>; IO_SHARED_DEQUEUE_BATCH_SIZE] =
-            [MaybeUninit::uninit(); IO_SHARED_DEQUEUE_BATCH_SIZE];
+        let mut completed: [MaybeUninit<OVERLAPPED_ENTRY>; IO_DEQUEUE_BATCH_SIZE] =
+            [MaybeUninit::uninit(); IO_DEQUEUE_BATCH_SIZE];
         let mut completed_items: u32 = 0;
 
         // We intentionally do not loop here because we want to give the caller the opportunity to
