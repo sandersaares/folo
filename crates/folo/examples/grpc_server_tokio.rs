@@ -1,11 +1,6 @@
 //! This example runs a server that responds to any request with "Hello, world!"
 
 use bytes::Bytes;
-use folo::{
-    hyper::{FoloExecutor, FoloIo},
-    net::TcpServerBuilder,
-    time::{Clock, Delay},
-};
 use hello_world::{
     greeter_server::{Greeter, GreeterServer},
     HelloReply, HelloRequest,
@@ -13,8 +8,12 @@ use hello_world::{
 use http::{Request, Response};
 use http_body_util::combinators::UnsyncBoxBody;
 use hyper::{body::Incoming, service::service_fn};
-use hyper_util::server::conn::auto::Builder;
-use std::{convert::Infallible, error::Error, time::Duration};
+use hyper_util::{
+    rt::{TokioExecutor, TokioIo},
+    server::conn::auto::Builder,
+};
+use std::{convert::Infallible, error::Error};
+use tokio::{net::TcpListener, task::JoinSet};
 use tonic::{client::GrpcService, Status};
 
 pub mod hello_world {
@@ -32,33 +31,35 @@ async fn handle_request(
     }
 }
 
-#[folo::main]
+#[tokio::main]
 async fn main() -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
-    let clock = Clock::new();
+    let listen_addr = "0.0.0.0:1234";
+    let tcp_listener = TcpListener::bind(listen_addr).await?;
+    println!("Listening on http://{listen_addr}");
 
-    let mut server = TcpServerBuilder::new()
-        .port(1234.try_into().unwrap())
-        .on_accept(|conn| async {
-            Builder::new(FoloExecutor::new())
-                .http2_only()
-                .serve_connection(FoloIo::new(conn), service_fn(handle_request))
-                .await?;
+    let mut join_set = JoinSet::new();
+    loop {
+        let (stream, _) = match tcp_listener.accept().await {
+            Ok(x) => x,
+            Err(_) => {
+                continue;
+            }
+        };
 
-            folo::io::Result::Ok(())
-        })
-        .build()
-        .await?;
+        let serve_connection = async move {
+            Builder::new(TokioExecutor::new())
+                .serve_connection(TokioIo::new(stream), service_fn(handle_request))
+                .await
+        };
 
-    println!("Server listening on http://localhost:1234");
+        join_set.spawn(serve_connection);
+    }
 
-    // Stop the server after N minutes
-    Delay::with_clock(&clock, Duration::from_secs(300)).await;
-
-    // Calling this is optional - just validating that it works if called early.
-    // If we do not call this, it will happen automatically when the runtime shuts down workers.
-    server.stop();
-
-    Ok(())
+    // If you add a method for breaking the above loop (i.e. graceful shutdown),
+    // then you may also want to wait for all existing connections to finish
+    // being served before terminating the program, which can be done like this:
+    //
+    // while let Some(_) = join_set.join_next().await {}
 }
 
 #[derive(Default)]
