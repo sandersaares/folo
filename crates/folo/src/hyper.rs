@@ -6,12 +6,14 @@ use std::{
     task::{Context, Poll},
 };
 
-use hyper::rt::{Executor, Read, ReadBufCursor, Timer, Write};
+use hyper::rt::{Executor, Read, ReadBufCursor, Sleep, Timer, Write};
+use pin_project::pin_project;
 
 use crate::{
     io::{OperationResultFuture, PinnedBuffer},
     net::TcpConnection,
     rt,
+    time::{Clock, Delay},
 };
 
 // Executor
@@ -114,9 +116,7 @@ impl Write for FoloIo {
                         this.active_write.set(None);
 
                         return Poll::Ready(match result {
-                            Ok(r) => {
-                                Ok(r.len())
-                            }
+                            Ok(r) => Ok(r.len()),
                             Err(e) => Err(e.into_inner().into()),
                         });
                     }
@@ -146,29 +146,61 @@ impl Write for FoloIo {
 }
 
 // Timer
-pub struct FoloTimer {}
-
-impl FoloTimer {
-    pub fn new() -> Self {
-        Self {}
-    }
+pub struct FoloTimer {
+    clock: Clock,
 }
 
-impl Default for FoloTimer {
-    fn default() -> Self {
-        Self::new()
+impl FoloTimer {
+    pub fn new(clock: &Clock) -> Self {
+        Self {
+            clock: clock.clone(),
+        }
     }
 }
 
 impl Timer for FoloTimer {
     fn sleep(&self, duration: std::time::Duration) -> std::pin::Pin<Box<dyn hyper::rt::Sleep>> {
-        todo!()
+        let wrapper = DelayWrapper {
+            delay: Delay::with_clock(&self.clock, duration),
+            thread_id: std::thread::current().id(),
+        };
+
+        Box::pin(wrapper)
     }
 
     fn sleep_until(
         &self,
         deadline: std::time::Instant,
     ) -> std::pin::Pin<Box<dyn hyper::rt::Sleep>> {
-        todo!()
+        self.sleep(deadline.duration_since(self.clock.instant_now()))
     }
 }
+
+
+/// The wrapper around the [`Delay`] future to implement [`Sleep`].
+/// 
+/// This wrappers also forces the Send and Sync traits, albeit these are not supported
+/// by the `Delay` future.
+/// 
+/// This is ok, because the sleep will always be used on the same thread through using the 
+/// single-threaded [`FoloExecutor`] executor.
+#[pin_project]
+struct DelayWrapper {
+    #[pin]
+    delay: Delay,
+    thread_id: std::thread::ThreadId,
+}
+
+impl Sleep for DelayWrapper {}
+
+impl Future for DelayWrapper {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        assert_eq!(std::thread::current().id(), self.thread_id);
+        self.project().delay.poll(cx)
+    }
+}
+
+unsafe impl Send for DelayWrapper {}
+unsafe impl Sync for DelayWrapper {}
