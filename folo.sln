@@ -1,0 +1,43 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.5.002.0
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "crates", "crates", "{29155F3E-A48D-48A9-ADFF-26E6730A3CFF}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "folo", "folo", "{E0140E7A-DB50-4C69-BC4B-98BE49A35548}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "examples", "examples", "{7186969A-6A11-4393-966A-E9BEF2058368}"
+EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "grpc-server", "crates\folo\examples\grpc_server_net\grpc-server.csproj", "{2B982441-1056-4911-A6FF-5C1455149247}"
+EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "http_server_net", "crates\folo\examples\http_server_net\http_server_net.csproj", "{AD4D33CF-45DB-4335-88AC-3B0F5B46142E}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{2B982441-1056-4911-A6FF-5C1455149247}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{2B982441-1056-4911-A6FF-5C1455149247}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{2B982441-1056-4911-A6FF-5C1455149247}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{2B982441-1056-4911-A6FF-5C1455149247}.Release|Any CPU.Build.0 = Release|Any CPU
+		{AD4D33CF-45DB-4335-88AC-3B0F5B46142E}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{AD4D33CF-45DB-4335-88AC-3B0F5B46142E}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{AD4D33CF-45DB-4335-88AC-3B0F5B46142E}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{AD4D33CF-45DB-4335-88AC-3B0F5B46142E}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{E0140E7A-DB50-4C69-BC4B-98BE49A35548} = {29155F3E-A48D-48A9-ADFF-26E6730A3CFF}
+		{7186969A-6A11-4393-966A-E9BEF2058368} = {E0140E7A-DB50-4C69-BC4B-98BE49A35548}
+		{2B982441-1056-4911-A6FF-5C1455149247} = {7186969A-6A11-4393-966A-E9BEF2058368}
+		{AD4D33CF-45DB-4335-88AC-3B0F5B46142E} = {7186969A-6A11-4393-966A-E9BEF2058368}
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {7BB6AA8F-193A-43E5-B447-A7A1B434995E}
+	EndGlobalSection
+EndGlobal

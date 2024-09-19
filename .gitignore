@@ -1,3 +1,8 @@
 /target
 testdata.bin
 testdata_small.bin
+
+[Bb]in/
+[Oo]bj/
+
+.vs/
