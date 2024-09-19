@@ -492,30 +492,20 @@ impl Drop for OperationShared {
 }
 
 thread_local! {
-    static OPERATIONS_ALLOCATED: Event = EventBuilder::new()
-        .name("io_shared_ops_allocated")
-        .build()
-        .unwrap();
+    static OPERATIONS_ALLOCATED: Event = EventBuilder::new("io_shared_ops_allocated")
+        .build();
 
-    static OPERATIONS_COMPLETED_ASYNC: Event = EventBuilder::new()
-        .name("io_shared_ops_completed_async")
-        .build()
-        .unwrap();
+    static OPERATIONS_COMPLETED_ASYNC: Event = EventBuilder::new("io_shared_ops_completed_async")
+        .build();
 
-    static OPERATIONS_COMPLETED_SYNC: Event = EventBuilder::new()
-        .name("io_shared_ops_completed_sync")
-        .build()
-        .unwrap();
+    static OPERATIONS_COMPLETED_SYNC: Event = EventBuilder::new("io_shared_ops_completed_sync")
+        .build();
 
-    static OPERATION_COMPLETED_BYTES: Event = EventBuilder::new()
-        .name("io_shared_completed_bytes")
+    static OPERATION_COMPLETED_BYTES: Event = EventBuilder::new("io_shared_completed_bytes")
         .buckets(GENERAL_BYTES_BUCKETS)
-        .build()
-        .unwrap();
+        .build();
 
-    static OPERATION_COMPLETED_ASYNC_OK_DURATION: Event = EventBuilder::new()
-        .name("io_shared_completed_async_ok_duration_millis")
+    static OPERATION_COMPLETED_ASYNC_OK_DURATION: Event = EventBuilder::new("io_shared_completed_async_ok_duration_millis")
         .buckets(GENERAL_MILLISECONDS_BUCKETS)
-        .build()
-        .unwrap();
+        .build();
 }

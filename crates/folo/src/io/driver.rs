@@ -165,27 +165,19 @@ impl Drop for Driver {
 const ASYNC_COMPLETIONS_DEQUEUED_BUCKETS: &[Magnitude] = &[0, 1, 16, 64, 256, 512];
 
 thread_local! {
-    static ASYNC_COMPLETIONS_DEQUEUED: Event = EventBuilder::new()
-        .name("io_async_completions_dequeued")
+    static ASYNC_COMPLETIONS_DEQUEUED: Event = EventBuilder::new("io_async_completions_dequeued")
         .buckets(ASYNC_COMPLETIONS_DEQUEUED_BUCKETS)
-        .build()
-        .unwrap();
+        .build();
 
     // With sleep time == 0.
-    static POLL_TIMEOUTS: Event = EventBuilder::new()
-        .name("io_async_completions_poll_timeouts")
-        .build()
-        .unwrap();
+    static POLL_TIMEOUTS: Event = EventBuilder::new("io_async_completions_poll_timeouts")
+        .build();
 
     // With sleep time != 0.
-    static WAIT_TIMEOUTS: Event = EventBuilder::new()
-        .name("io_async_completions_wait_timeouts")
-        .build()
-        .unwrap();
+    static WAIT_TIMEOUTS: Event = EventBuilder::new("io_async_completions_wait_timeouts")
+        .build();
 
-    static GET_COMPLETED_DURATION: Event = EventBuilder::new()
-        .name("io_async_completions_get_duration_millis")
+    static GET_COMPLETED_DURATION: Event = EventBuilder::new("io_async_completions_get_duration_millis")
         .buckets(GENERAL_MILLISECONDS_BUCKETS)
-        .build()
-        .unwrap();
+        .build();
 }

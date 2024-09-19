@@ -257,18 +257,12 @@ const POOL_BUFFER_CAPACITY_BYTES: usize = 64 * 1024;
 link_ref!(static POOL: SharedArrayPool<POOL_BUFFER_CAPACITY_BYTES> = SharedArrayPool::new());
 
 thread_local! {
-    static CALLER_BUFFERS_REFERENCED: Event = EventBuilder::new()
-        .name("shared_caller_buffers_referenced")
-        .build()
-        .unwrap();
+    static CALLER_BUFFERS_REFERENCED: Event = EventBuilder::new("shared_caller_buffers_referenced")
+        .build();
 
-    static CALLER_POINTERS_REFERENCED: Event = EventBuilder::new()
-        .name("shared_caller_pointers_referenced")
-        .build()
-        .unwrap();
+    static CALLER_POINTERS_REFERENCED: Event = EventBuilder::new("shared_caller_pointers_referenced")
+        .build();
 
-    static POOL_RENTED: Event = EventBuilder::new()
-        .name("shared_pool_buffers_rented")
-        .build()
-        .unwrap();
+    static POOL_RENTED: Event = EventBuilder::new("shared_pool_buffers_rented")
+        .build();
 }

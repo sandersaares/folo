@@ -127,8 +127,7 @@ fn runtime_stops_with_external_observer() {
     // We manually create the runtime here because we need to also operate outside of it.
     let folo = RuntimeBuilder::new()
         .worker_init(folo_testing::init_test_worker)
-        .build()
-        .unwrap();
+        .build();
     let folo_clone = folo.clone();
 
     let (tx, rx) = oneshot::channel();
@@ -175,8 +174,7 @@ fn runtime_stops_with_external_dependency() {
     // We manually create the runtime here because we need to also operate outside of it.
     let folo = RuntimeBuilder::new()
         .worker_init(folo_testing::init_test_worker)
-        .build()
-        .unwrap();
+        .build();
 
     let nexus = Arc::new(ManualFuture::new());
     let nexus_folo = Arc::clone(&nexus);

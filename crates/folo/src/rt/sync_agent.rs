@@ -119,33 +119,23 @@ pub enum SyncAgentCommand {
 const QUEUE_SIZE_BUCKETS: &[Magnitude] = &[0, 1, 10, 100, 1000];
 
 thread_local! {
-    static TASKS: Event = EventBuilder::new()
-        .name("rt_sync_tasks")
-        .build()
-        .unwrap();
+    static TASKS: Event = EventBuilder::new("rt_sync_tasks")
+        .build();
 
-    static TASK_DURATION: Event = EventBuilder::new()
-        .name("rt_sync_task_duration_millis")
+    static TASK_DURATION: Event = EventBuilder::new("rt_sync_task_duration_millis")
         .buckets(GENERAL_MILLISECONDS_BUCKETS)
-        .build()
-        .unwrap();
+        .build();
 
-    static TASK_INTERVAL: Event = EventBuilder::new()
-        .name("rt_sync_task_interval_millis")
+    static TASK_INTERVAL: Event = EventBuilder::new("rt_sync_task_interval_millis")
         .buckets(GENERAL_MILLISECONDS_BUCKETS)
-        .build()
-        .unwrap();
+        .build();
 
-    static LOW_PRIORITY_QUEUE_SIZE: Event = EventBuilder::new()
-        .name("rt_sync_low_priority_queue_size")
+    static LOW_PRIORITY_QUEUE_SIZE: Event = EventBuilder::new("rt_sync_low_priority_queue_size")
         .buckets(QUEUE_SIZE_BUCKETS)
-        .build()
-        .unwrap();
+        .build();
 
-    static HIGH_PRIORITY_QUEUE_SIZE: Event = EventBuilder::new()
-        .name("rt_sync_high_priority_queue_size")
+    static HIGH_PRIORITY_QUEUE_SIZE: Event = EventBuilder::new("rt_sync_high_priority_queue_size")
         .buckets(QUEUE_SIZE_BUCKETS)
-        .build()
-        .unwrap();
+        .build();
 
 }

@@ -570,21 +570,15 @@ fn next_sync_processor(max: usize) -> usize {
 }
 
 thread_local! {
-    static REMOTE_SPAWN_DELAY: Event = EventBuilder::new()
-        .name("rt_remote_spawn_delay_millis")
+    static REMOTE_SPAWN_DELAY: Event = EventBuilder::new("rt_remote_spawn_delay_millis")
         .buckets(GENERAL_MILLISECONDS_BUCKETS)
-        .build()
-        .unwrap();
+        .build();
 
-    static SYNC_SPAWN_DELAY_HIGH_PRIORITY: Event = EventBuilder::new()
-        .name("rt_sync_spawn_delay_high_priority_millis")
+    static SYNC_SPAWN_DELAY_HIGH_PRIORITY: Event = EventBuilder::new("rt_sync_spawn_delay_high_priority_millis")
         .buckets(GENERAL_MILLISECONDS_BUCKETS)
-        .build()
-        .unwrap();
+        .build();
 
-    static SYNC_SPAWN_DELAY_LOW_PRIORITY: Event = EventBuilder::new()
-        .name("rt_sync_spawn_delay_low_priority_millis")
+    static SYNC_SPAWN_DELAY_LOW_PRIORITY: Event = EventBuilder::new("rt_sync_spawn_delay_low_priority_millis")
         .buckets(GENERAL_MILLISECONDS_BUCKETS)
-        .build()
-        .unwrap();
+        .build();
 }

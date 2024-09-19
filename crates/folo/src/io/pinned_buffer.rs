@@ -315,23 +315,15 @@ thread_local! {
     static POOL: RefCell<PinnedSlabChain<UnsafeCell<[u8; POOL_BUFFER_CAPACITY_BYTES]>>> =
         RefCell::new(PinnedSlabChain::new(DropPolicy::MustNotDropItems));
 
-    static CALLER_BUFFERS_REFERENCED: Event = EventBuilder::new()
-        .name("isolated_caller_buffers_referenced")
-        .build()
-        .unwrap();
+    static CALLER_BUFFERS_REFERENCED: Event = EventBuilder::new("isolated_caller_buffers_referenced")
+        .build();
 
-    static CALLER_POINTERS_REFERENCED: Event = EventBuilder::new()
-        .name("isolated_caller_pointers_referenced")
-        .build()
-        .unwrap();
+    static CALLER_POINTERS_REFERENCED: Event = EventBuilder::new("isolated_caller_pointers_referenced")
+        .build();
 
-    static POOL_ALLOCATED: Event = EventBuilder::new()
-        .name("isolated_pool_buffers_allocated")
-        .build()
-        .unwrap();
+    static POOL_ALLOCATED: Event = EventBuilder::new("isolated_pool_buffers_allocated")
+        .build();
 
-    static POOL_DROPPED: Event = EventBuilder::new()
-        .name("isolated_pool_buffers_dropped")
-        .build()
-        .unwrap();
+    static POOL_DROPPED: Event = EventBuilder::new("isolated_pool_buffers_dropped")
+        .build();
 }

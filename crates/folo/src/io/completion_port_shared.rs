@@ -91,8 +91,6 @@ impl CompletionPortShared {
 }
 
 thread_local! {
-    static PRIMITIVES_BOUND: Event = EventBuilder::new()
-        .name("shared_io_primitives_bound")
-        .build()
-        .unwrap();
+    static PRIMITIVES_BOUND: Event = EventBuilder::new("shared_io_primitives_bound")
+        .build();
 }

@@ -108,8 +108,6 @@ impl !Send for CompletionPort {}
 impl !Sync for CompletionPort {}
 
 thread_local! {
-    static PRIMITIVES_BOUND: Event = EventBuilder::new()
-        .name("isolated_io_primitives_bound")
-        .build()
-        .unwrap();
+    static PRIMITIVES_BOUND: Event = EventBuilder::new("isolated_io_primitives_bound")
+        .build();
 }
