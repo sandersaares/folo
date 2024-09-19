@@ -218,7 +218,9 @@ impl !Send for TcpServerHandle {}
 #[negative_impl]
 impl !Sync for TcpServerHandle {}
 
-const CONCURRENT_ACCEPT_OPERATIONS_PER_DISPATCHER: usize = 100;
+// A small value here seems to yield better overall throughput as connections end up more
+// distributed over different threads.
+const CONCURRENT_ACCEPT_OPERATIONS_PER_DISPATCHER: usize = 8;
 
 // The default assigned by the OS seems to be around 128, which is not enough under high load.
 const PENDING_CONNECTION_LIMIT: i32 = 4096;
