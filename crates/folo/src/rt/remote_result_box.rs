@@ -42,26 +42,37 @@ impl<R> RemoteResultBox<R> {
             x.observe_millis(self.created.elapsed());
         });
 
-        let mut self_result = self.result.lock().expect(constants::POISONED_LOCK);
+        let mut waker: Option<Waker> = None;
 
-        match &*self_result {
-            TaskResult::Pending => {
-                *self_result = TaskResult::Ready(result);
-            }
-            TaskResult::Awaiting(_) => {
-                let existing_result = mem::replace(&mut *self_result, TaskResult::Ready(result));
+        {
+            let mut self_result = self.result.lock().expect(constants::POISONED_LOCK);
 
-                match existing_result {
-                    TaskResult::Awaiting(waker) => waker.wake(),
-                    _ => unreachable!("we are re-matching an already matched pattern"),
+            match &*self_result {
+                TaskResult::Pending => {
+                    *self_result = TaskResult::Ready(result);
+                }
+                TaskResult::Awaiting(_) => {
+                    let existing_result =
+                        mem::replace(&mut *self_result, TaskResult::Ready(result));
+
+                    match existing_result {
+                        TaskResult::Awaiting(w) => waker = Some(w),
+                        _ => unreachable!("we are re-matching an already matched pattern"),
+                    }
+                }
+                TaskResult::Ready(_) => {
+                    panic!("result already set");
+                }
+                TaskResult::Consumed => {
+                    panic!("result already consumed");
                 }
             }
-            TaskResult::Ready(_) => {
-                panic!("result already set");
-            }
-            TaskResult::Consumed => {
-                panic!("result already consumed");
-            }
+        }
+
+        // We perform the wakeup outside the lock to avoid unnecessary contention if the receiver
+        // of the result wakes up instantly and we have not released our lock yet.
+        if let Some(waker) = waker {
+            waker.wake()
         }
     }
 
