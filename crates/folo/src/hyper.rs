@@ -2,6 +2,7 @@
 
 use std::{
     future::Future,
+    mem::{self, MaybeUninit},
     pin::{pin, Pin},
     task::{Context, Poll},
 };
@@ -76,9 +77,23 @@ impl Read for FoloIo {
                         this.active_read.set(None);
 
                         return Poll::Ready(match result {
-                            Ok(r) => {
+                            Ok(buffer) => {
+                                // SAFETY: We are responsible for not uninitializing bytes.
+                                // We are also responsible for ensuring the right count is advanced.
                                 unsafe {
-                                    buf.advance(r.len());
+                                    // They are just bytes, we are initializing them now, it's fine.
+                                    let buf_slice = &mut buf.as_mut()[..buffer.len()];
+                                    // MaybeUninit is layout-compatible, so it's cool.
+                                    let buf_slice_as_bytes =
+                                        mem::transmute::<&mut [MaybeUninit<u8>], &mut [u8]>(
+                                            buf_slice,
+                                        );
+
+                                    // Obviously, this copy is horribly inefficient to have in our I/O stack.
+                                    // We should work with Hyper authors to eliminate the need for this by
+                                    // enabling Hyper to use runtime-owned buffers.
+                                    buf_slice_as_bytes.copy_from_slice(buffer.as_slice());
+                                    buf.advance(buffer.len());
                                 }
                                 Ok(())
                             }
@@ -90,11 +105,20 @@ impl Read for FoloIo {
                 }
             }
 
-            // If there's no active read, start a new one
-            let buffer = unsafe {
-                PinnedBuffer::from_ptr(buf.as_mut().as_ptr() as *mut u8, buf.as_mut().len())
-            };
+            // There's no active read, so start a new one.
 
+            // Hyper buffers are not memory-safe to use directly because they may be dropped while
+            // we are still using them (if something drops the parent future polling us). Therefore,
+            // we first read into Folo buffers (which are always safe) and only if the future is
+            // still alive after the I/O operation do we copy the data into Hyper buffers.
+            let mut buffer = PinnedBuffer::from_pool();
+
+            // Make sure we do not try to read more than Hyper can accommodate.
+            // SAFETY: We are reponsible for not uninitializing bytes. Yeah okay.
+            buffer.set_len(buffer.len().min(unsafe { buf.as_mut().len() }));
+
+            // The I/O driver takes ownership of the buffer and will keep it alive until it is safe
+            // to release it. Even if this future is dropped, memory is not released too early.
             this.active_read.set(Some(this.connection.receive(buffer)));
         }
     }
@@ -125,8 +149,21 @@ impl Write for FoloIo {
                 }
             }
 
-            // If there's no active write, start a new one.
-            let buffer = unsafe { PinnedBuffer::from_ptr(buf.as_ptr() as *mut u8, buf.len()) };
+            // There's no active write, so start a new one.
+
+            // Hyper buffers are not memory-safe to use directly because they may be dropped while
+            // we are still using them (if something drops the parent future polling us). Therefore,
+            // we copy the data into Folo buffers here (which are always safe)
+            let mut buffer = PinnedBuffer::from_pool();
+
+            let len_to_copy = buffer.len().min(buf.len());
+            // Obviously, this copy is horribly inefficient to have in our I/O stack.
+            // We should work with Hyper authors to eliminate the need for this by
+            // enabling Hyper to use runtime-owned buffers.
+            buffer.as_mut_slice_with_len(len_to_copy).copy_from_slice(buf);
+
+            // The I/O driver takes ownership of the buffer and will keep it alive until it is safe
+            // to release it. Even if this future is dropped, memory is not released too early.
             this.active_write.set(Some(this.connection.send(buffer)));
         }
     }
@@ -176,13 +213,12 @@ impl Timer for FoloTimer {
     }
 }
 
-
 /// The wrapper around the [`Delay`] future to implement [`Sleep`].
-/// 
+///
 /// This wrappers also forces the Send and Sync traits, albeit these are not supported
 /// by the `Delay` future.
-/// 
-/// This is ok, because the sleep will always be used on the same thread through using the 
+///
+/// This is ok, because the sleep will always be used on the same thread through using the
 /// single-threaded [`FoloExecutor`] executor.
 #[pin_project]
 struct DelayWrapper {
