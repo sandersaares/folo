@@ -33,3 +33,7 @@ pub(crate) use waker::*;
 /// * GetQueuedCompletionStatusEx duration seems linearly affected under non-concurrent synthetic
 ///   message load (e.g. 40 us for 1024 items).
 pub const IO_DEQUEUE_BATCH_SIZE: usize = 1024;
+
+/// From the shared queue we only take tiny bites to encourage it to spread out more among
+/// processors.
+pub const IO_SHARED_DEQUEUE_BATCH_SIZE: usize = 32;
