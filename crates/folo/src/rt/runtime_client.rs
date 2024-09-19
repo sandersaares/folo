@@ -5,7 +5,7 @@ use crate::rt::{
     async_agent::AsyncAgentCommand, current_async_agent, remote_result_box::RemoteResultBox,
     remote_task::RemoteTask, sync_agent::SyncAgentCommand, ErasedSyncTask, RemoteJoinHandle,
 };
-use crate::time::LowPrecisionInstant;
+use crate::time::UltraLowPrecisionInstant;
 use core_affinity::CoreId;
 use crossbeam::channel;
 use crossbeam::queue::SegQueue;
@@ -104,7 +104,7 @@ impl RuntimeClient {
         F: Future<Output = R> + 'static,
         R: Send + 'static,
     {
-        let started = LowPrecisionInstant::now();
+        let started = UltraLowPrecisionInstant::now();
 
         // Just because we are spawning a future on another thread does not mean it has to be a
         // thread-safe future (although the return value has to be). Therefore, we kajigger it
@@ -155,7 +155,7 @@ impl RuntimeClient {
         F: Future<Output = R> + 'static,
         R: Send + 'static,
     {
-        let started = LowPrecisionInstant::now();
+        let started = UltraLowPrecisionInstant::now();
         let worker_count = self.async_command_txs.len();
 
         let mut join_handles = Vec::with_capacity(worker_count);
@@ -218,7 +218,7 @@ impl RuntimeClient {
         let result_box_rx = Arc::new(RemoteResultBox::new());
         let result_box_tx = Arc::clone(&result_box_rx);
 
-        let started = LowPrecisionInstant::now();
+        let started = UltraLowPrecisionInstant::now();
 
         let task = move || {
             match task_type {
@@ -294,7 +294,7 @@ impl RuntimeClient {
         let result_box_rx = Arc::new(RemoteResultBox::new());
         let result_box_tx = Arc::clone(&result_box_rx);
 
-        let started = LowPrecisionInstant::now();
+        let started = UltraLowPrecisionInstant::now();
 
         let task = move || {
             SYNC_SPAWN_DELAY_LOW_PRIORITY.with(|x| x.observe_millis(started.elapsed()));

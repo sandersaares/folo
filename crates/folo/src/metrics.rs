@@ -49,6 +49,9 @@ impl Event {
     where
         F: FnOnce() -> R,
     {
+        // We do not use ultra-low precision here because this is a synchronous call in a
+        // situation where the async task engine could not possible update the ultra low precision
+        // instant, so it would always record an elapsed time of zero.
         let start = LowPrecisionInstant::now();
 
         let result = f();
@@ -63,6 +66,9 @@ impl Event {
         F: FnOnce() -> FF,
         FF: Future<Output = R>,
     {
+        // We do not use ultra-low precision here because this is a synchronous call in a
+        // situation where the async task engine could not possible update the ultra low precision
+        // instant, so it would always record an elapsed time of zero.
         let start = LowPrecisionInstant::now();
 
         let result = f().await;

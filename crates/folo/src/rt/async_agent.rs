@@ -8,7 +8,7 @@ use crate::{
         local_task::LocalTask,
         LocalJoinHandle,
     },
-    time::advance_local_timers,
+    time::{advance_local_timers, UltraLowPrecisionInstant},
 };
 use core_affinity::CoreId;
 use crossbeam::channel;
@@ -209,6 +209,10 @@ impl AsyncAgent {
             .expect("the engine is only removed on shutdown so it must still be there");
 
         loop {
+            // At the start of each iteration, we update the ultra-low precision clock. All
+            // observations of its value during this cycle will use the value we set here.
+            UltraLowPrecisionInstant::update();
+
             match self.process_commands() {
                 ProcessCommandsResult::ContinueAfterCommand => {
                     // Commands were received. We probably have non-I/O work to do.

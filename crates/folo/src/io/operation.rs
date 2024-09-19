@@ -3,7 +3,7 @@ use crate::{
     io::{self, OperationResult, PinnedBuffer},
     mem::{DropPolicy, PinnedSlabChain},
     metrics::{Event, EventBuilder, Magnitude},
-    time::LowPrecisionInstant,
+    time::UltraLowPrecisionInstant,
 };
 use negative_impl::negative_impl;
 use pin_project::pin_project;
@@ -121,7 +121,7 @@ impl OperationStore {
 
         buffer.set_len(bytes_transferred);
 
-        let duration = LowPrecisionInstant::now().duration_since(
+        let duration = UltraLowPrecisionInstant::now().duration_since(
             core.started
                 .take()
                 .expect("must have an operation start time because the operation is completed"),
@@ -278,7 +278,7 @@ struct OperationCore {
     result_rx: Option<oneshot::Receiver<io::OperationResult>>,
 
     /// Timestamp of when the operation is started. Used to report I/O operation durations.
-    started: Option<LowPrecisionInstant>,
+    started: Option<UltraLowPrecisionInstant>,
 
     // Once pinned, this type cannot be unpinned.
     _phantom_pin: std::marker::PhantomPinned,
@@ -445,7 +445,7 @@ impl Operation {
         // SAFETY: This is just a manual move between compatible fields - no worries.
         let operation = unsafe { ptr::read(&this.core) };
 
-        operation.started = Some(LowPrecisionInstant::now());
+        operation.started = Some(UltraLowPrecisionInstant::now());
 
         (
             // SAFETY: Sets the lifetime to 'static because I cannot figure out a straightforward way to declare lifetimes here.

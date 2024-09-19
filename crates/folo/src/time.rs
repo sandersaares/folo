@@ -9,6 +9,7 @@ mod low_precision;
 mod periodic_timer;
 mod stopwatch;
 mod timers;
+mod ultra_low_precision;
 
 pub use clock::*;
 #[cfg(feature = "fakes")]
@@ -19,3 +20,4 @@ pub use low_precision::*;
 pub use periodic_timer::*;
 pub use stopwatch::*;
 pub(crate) use timers::*;
+pub use ultra_low_precision::*;

@@ -200,8 +200,7 @@ impl AsyncTaskEngine {
             // we never do until they progress through the lifecycle into the `completed` list.
             let task = unsafe { Pin::new_unchecked(&*task_ptr) };
 
-            let poll_result =
-                TASK_POLL_DURATION.with(|x| x.observe_duration_millis(|| task.poll()));
+            let poll_result = task.poll();
 
             match poll_result {
                 task::Poll::Ready(()) => {
@@ -493,12 +492,6 @@ thread_local! {
 
     static CYCLE_DURATION: Event = EventBuilder::new()
         .name("rt_async_cycle_duration_millis")
-        .buckets(GENERAL_MILLISECONDS_BUCKETS)
-        .build()
-        .unwrap();
-
-    static TASK_POLL_DURATION: Event = EventBuilder::new()
-        .name("rt_async_task_poll_duration_millis")
         .buckets(GENERAL_MILLISECONDS_BUCKETS)
         .build()
         .unwrap();

@@ -1,7 +1,7 @@
 use crate::{
     constants::{self, GENERAL_MILLISECONDS_BUCKETS},
     metrics::{Event, EventBuilder},
-    time::LowPrecisionInstant,
+    time::UltraLowPrecisionInstant,
 };
 use std::{mem, sync::Mutex, task::Waker};
 
@@ -26,14 +26,14 @@ enum TaskResult<R> {
 #[derive(Debug)]
 pub(crate) struct RemoteResultBox<R> {
     result: Mutex<TaskResult<R>>,
-    created: LowPrecisionInstant,
+    created: UltraLowPrecisionInstant,
 }
 
 impl<R> RemoteResultBox<R> {
     pub fn new() -> Self {
         Self {
             result: Mutex::new(TaskResult::Pending),
-            created: LowPrecisionInstant::now(),
+            created: UltraLowPrecisionInstant::now(),
         }
     }
 
