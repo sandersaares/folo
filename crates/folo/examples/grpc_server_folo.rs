@@ -29,6 +29,7 @@ async fn handle_request(
     let mut server = GreeterServer::new(MyGreeter::new());
     match server.call(request).await {
         Ok(res) => Ok(res),
+        Err(_) => unreachable!()
     }
 }
 
