@@ -18,18 +18,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 ///
 /// Other than implementing the [`std::error::Error`] and [`core::fmt::Debug`] trait, this error type
 /// currently provides no introspection capabilities.
-///
-/// # Examples
-///
-/// ```
-/// use std::time::Duration;
-/// use oxidizer::time::{Clock, Error, Timestamp};
-///
-/// let clock = Clock::new();
-/// let timestamp = clock.now();
-///
-/// timestamp.checked_add(Duration::MAX).unwrap_err();
-/// ```
+
 #[derive(Debug, thiserror::Error)]
 #[error(transparent)]
 pub struct Error(#[from] ErrorKind);

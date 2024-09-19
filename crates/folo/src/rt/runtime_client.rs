@@ -1,21 +1,25 @@
-use crate::constants::{self, GENERAL_MILLISECONDS_BUCKETS};
-use crate::io::IoWaker;
-use crate::metrics::{Event, EventBuilder};
-use crate::rt::{
-    async_agent::AsyncAgentCommand, current_async_agent, remote_result_box::RemoteResultBox,
-    remote_task::RemoteTask, sync_agent::SyncAgentCommand, ErasedSyncTask, RemoteJoinHandle,
-};
-use crate::time::LowPrecisionInstant;
+use std::any::type_name;
+use std::cell::Cell;
+use std::collections::HashMap;
+use std::future::Future;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::{fmt, thread};
+
 use core_affinity::CoreId;
 use crossbeam::channel;
 use crossbeam::queue::SegQueue;
-use std::any::type_name;
-use std::collections::HashMap;
-use std::fmt;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use std::{cell::Cell, future::Future, sync::Mutex, thread};
 use tracing::{event, Level};
+
+use crate::constants::{self, GENERAL_MILLISECONDS_BUCKETS};
+use crate::io::IoWaker;
+use crate::metrics::{Event, EventBuilder};
+use crate::rt::async_agent::AsyncAgentCommand;
+use crate::rt::remote_result_box::RemoteResultBox;
+use crate::rt::remote_task::RemoteTask;
+use crate::rt::sync_agent::SyncAgentCommand;
+use crate::rt::{current_async_agent, ErasedSyncTask, RemoteJoinHandle};
+use crate::time::LowPrecisionInstant;
 
 // TODO: In a real implementation we should split this up into multiple layers:
 // 1) Validation and input processing (what is the command, is it valid in context, etc).
@@ -28,14 +32,150 @@ use tracing::{event, Level};
 // interior mutable? Do we really need it to be thread-safe? There are some situations today where
 // the answer is "yes" but they are something like 1% of the use cases - can we do better?
 
+#[derive(Clone)]
+pub(super) struct CoreClient {
+    processor_id: CoreId,
+
+    async_command_tx: channel::Sender<AsyncAgentCommand>,
+    async_io_waker: IoWaker,
+
+    // We often prefer to give work to the same processor, so we split
+    // the sync command architecture up by the processor ID.
+    sync_command_txs: Box<[channel::Sender<SyncAgentCommand>]>,
+    sync_task_queue: Arc<SegQueue<ErasedSyncTask>>,
+    sync_priority_task_queue: Arc<SegQueue<ErasedSyncTask>>,
+
+    // We do not submit tasks directly to the sync agents. Instead, we submit tasks to the queues
+    // and flush the queues once per agent loop. This avoids excessive cross-thread chatter when
+    // submitting multiple tasks into the same queue.
+    // We use Arc here simply to avoid the value having to implement `Clone` as required by HashMap.
+    // Note that runtime clients are passed to worker threads from another thread, so thread-safe.
+    pub pending_sync_tasks: Arc<SegQueue<ErasedSyncTask>>,
+    pub pending_sync_priority_tasks: Arc<SegQueue<ErasedSyncTask>>,
+}
+
+impl CoreClient {
+    pub(super) fn new(
+        processor_id: CoreId,
+        async_command_tx: channel::Sender<AsyncAgentCommand>,
+        async_io_waker: IoWaker,
+        sync_command_txs: Box<[channel::Sender<SyncAgentCommand>]>,
+        sync_task_queue: Arc<SegQueue<ErasedSyncTask>>,
+        sync_priority_task_queue: Arc<SegQueue<ErasedSyncTask>>,
+    ) -> Self {
+        Self {
+            processor_id,
+            async_command_tx,
+            async_io_waker,
+            sync_command_txs,
+            sync_task_queue,
+            sync_priority_task_queue,
+            pending_sync_tasks: Arc::new(SegQueue::new()),
+            pending_sync_priority_tasks: Arc::new(SegQueue::new()),
+        }
+    }
+
+    fn enqueue_async_task<F, R>(&self, task: RemoteTask<F, R>)
+    where
+        F: Future<Output = R> + Send + 'static,
+        R: Send + 'static,
+    {
+        // We ignore the return value because it is theoretically possible that something is trying
+        // to schedule new work when we are in the middle of a shutdown process.
+        _ = self.async_command_tx.send(AsyncAgentCommand::EnqueueTask {
+            erased_task: Box::pin(task),
+        });
+
+        // Wake up the agent if it might be sleeping and waiting for I/O.
+        self.async_io_waker.wake();
+    }
+
+    fn terminate(&self) {
+        // We ignore the return value because if the worker has already stopped, the channel
+        // may be closed in which case the send may simply fail.
+        let _ = self.async_command_tx.send(AsyncAgentCommand::Terminate);
+
+        for tx in &self.sync_command_txs {
+            // We ignore the return value because if the worker has already stopped, the channel
+            // may be closed in which case the send may simply fail.
+            _ = tx.send(crate::rt::sync_agent::SyncAgentCommand::Terminate);
+        }
+    }
+
+    fn submit_pending_sync_tasks(&self) {
+        let mut had_any_tasks = false;
+
+        while let Some(task) = self.pending_sync_tasks.pop() {
+            let task_addr = format!("{:p}", &*task);
+            event!(
+                Level::TRACE,
+                message = "submitting task",
+                ?self.processor_id,
+                task_addr
+            );
+            had_any_tasks = true;
+            self.sync_task_queue.push(task);
+        }
+
+        if had_any_tasks {
+            for tx in &self.sync_command_txs {
+                // We ignore the return value because it is theoretically possible that something is trying
+                // to schedule new work when we are in the middle of a shutdown process.
+                _ = tx.send(SyncAgentCommand::CheckForTasks);
+            }
+        }
+    }
+
+    fn submit_pending_sync_priority_tasks(&self) {
+        let mut had_any_tasks = false;
+
+        while let Some(task) = self.pending_sync_priority_tasks.pop() {
+            let task_addr = format!("{:p}", &*task);
+            event!(
+                Level::TRACE,
+                message = "submitting priority task",
+                ?self.processor_id,
+                task_addr
+            );
+            had_any_tasks = true;
+            self.sync_task_queue.push(task);
+        }
+
+        if had_any_tasks {
+            for tx in &self.sync_command_txs {
+                // We ignore the return value because it is theoretically possible that something is trying
+                // to schedule new work when we are in the middle of a shutdown process.
+                _ = tx.send(SyncAgentCommand::CheckForTasks);
+            }
+        }
+    }
+}
+
+impl fmt::Debug for CoreClient {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CoreClient")
+            .field("processor_id", &self.processor_id)
+            .field("async_command_tx", &self.async_command_tx)
+            .field("async_io_waker", &self.async_io_waker)
+            .field("sync_command_txs", &self.sync_command_txs)
+            .field("sync_task_queue", &self.sync_task_queue)
+            .field("sync_priority_task_queue", &self.sync_priority_task_queue)
+            .field("pending_sync_tasks", &self.pending_sync_tasks.len())
+            .field(
+                "pending_sync_priority_tasks",
+                &self.pending_sync_priority_tasks.len(),
+            )
+            .finish()
+    }
+}
+
 /// The multithreaded entry point for the Folo runtime, used for operations that affect more than
 /// the current thread.
 ///
 /// This type is thread-safe.
 #[derive(Clone)]
 pub struct RuntimeClient {
-    async_command_txs: Box<[channel::Sender<AsyncAgentCommand>]>,
-    async_io_wakers: Box<[IoWaker]>,
+    core_clients: HashMap<CoreId, CoreClient>,
 
     // The TCP dispatcher is a special-purpose async worker that only handles TCP listener tasks
     // because Windows only supports one TCP listen socket per port and only the completion handling
@@ -45,20 +185,6 @@ pub struct RuntimeClient {
     // the rest of our architecture.
     tcp_dispatcher_command_tx: channel::Sender<AsyncAgentCommand>,
     tcp_dispatcher_io_waker: IoWaker,
-
-    // We often prefer to give work to the same processor, so we split
-    // the sync command architecture up by the processor ID.
-    sync_command_txs_by_processor: HashMap<CoreId, Box<[channel::Sender<SyncAgentCommand>]>>,
-    sync_task_queues_by_processor: HashMap<CoreId, Arc<SegQueue<ErasedSyncTask>>>,
-    sync_priority_task_queues_by_processor: HashMap<CoreId, Arc<SegQueue<ErasedSyncTask>>>,
-
-    // We do not submit tasks directly to the sync agents. Instead, we submit tasks to the queues
-    // and flush the queues once per agent loop. This avoids excessive cross-thread chatter when
-    // submitting multiple tasks into the same queue.
-    // We use Arc here simply to avoid the value having to implement `Clone` as required by HashMap.
-    // Note that runtime clients are passed to worker threads from another thread, so thread-safe.
-    pending_sync_tasks_by_processor: HashMap<CoreId, Arc<SegQueue<ErasedSyncTask>>>,
-    pending_sync_priority_tasks_by_processor: HashMap<CoreId, Arc<SegQueue<ErasedSyncTask>>>,
 
     processor_ids: Box<[CoreId]>,
 
@@ -74,36 +200,17 @@ pub struct RuntimeClient {
 impl RuntimeClient {
     #[allow(clippy::too_many_arguments)] // Ssssshhhhh, sleep little Clippy!
     pub(super) fn new(
-        async_command_txs: Box<[channel::Sender<AsyncAgentCommand>]>,
-        async_io_wakers: Box<[IoWaker]>,
+        core_clients: HashMap<CoreId, CoreClient>,
         tcp_dispatcher_command_tx: channel::Sender<AsyncAgentCommand>,
         tcp_dispatcher_io_waker: IoWaker,
-        sync_command_txs_by_processor: HashMap<CoreId, Box<[channel::Sender<SyncAgentCommand>]>>,
-        sync_task_queues_by_processor: HashMap<CoreId, Arc<SegQueue<ErasedSyncTask>>>,
-        sync_priority_task_queues_by_processor: HashMap<CoreId, Arc<SegQueue<ErasedSyncTask>>>,
         processor_ids: Box<[CoreId]>,
         join_handles: Box<[thread::JoinHandle<()>]>,
         is_stopping: Arc<AtomicBool>,
     ) -> Self {
-        let pending_sync_tasks_by_processor = processor_ids
-            .iter()
-            .map(|key| (*key, Arc::new(SegQueue::new())))
-            .collect();
-        let pending_sync_priority_tasks_by_processor = processor_ids
-            .iter()
-            .map(|key| (*key, Arc::new(SegQueue::new())))
-            .collect();
-
         Self {
-            async_command_txs,
-            async_io_wakers,
+            core_clients,
             tcp_dispatcher_command_tx,
             tcp_dispatcher_io_waker,
-            sync_command_txs_by_processor,
-            sync_task_queues_by_processor,
-            sync_priority_task_queues_by_processor,
-            pending_sync_tasks_by_processor,
-            pending_sync_priority_tasks_by_processor,
             processor_ids,
             join_handles: Arc::new(Mutex::new(Some(join_handles))),
             is_stopping,
@@ -136,16 +243,8 @@ impl RuntimeClient {
         let task = RemoteTask::new(thread_safe_wrapper_future);
         let join_handle = task.join_handle(self.current_thread_io_waker());
 
-        let worker_index = next_async_worker(self.async_command_txs.len());
-
-        // We ignore the return value because it is theoretically possible that something is trying
-        // to schedule new work when we are in the middle of a shutdown process.
-        _ = self.async_command_txs[worker_index].send(AsyncAgentCommand::EnqueueTask {
-            erased_task: Box::pin(task),
-        });
-
-        // Wake up the agent if it might be sleeping and waiting for I/O.
-        self.async_io_wakers[worker_index].wake();
+        let processor_id = self.processor_ids[next_async_worker(self.processor_ids.len())];
+        self.core_clients[&processor_id].enqueue_async_task(task);
 
         join_handle
     }
@@ -210,11 +309,10 @@ impl RuntimeClient {
         R: Send + 'static,
     {
         let started = LowPrecisionInstant::now();
-        let worker_count = self.async_command_txs.len();
 
-        let mut join_handles = Vec::with_capacity(worker_count);
+        let mut join_handles = Vec::with_capacity(self.core_clients.len());
 
-        for worker_index in 0..worker_count {
+        for (_, proc) in &self.core_clients {
             let future_fn = clone_future_fn();
 
             // Just because we are spawning a future on another thread does not mean it has to be a
@@ -233,16 +331,7 @@ impl RuntimeClient {
 
             let task = RemoteTask::new(thread_safe_wrapper_future);
             let join_handle = task.join_handle(self.current_thread_io_waker());
-
-            // We ignore the return value because it is theoretically possible that something is trying
-            // to schedule new work when we are in the middle of a shutdown process.
-            _ = self.async_command_txs[worker_index].send(AsyncAgentCommand::EnqueueTask {
-                erased_task: Box::pin(task),
-            });
-
-            // Wake up the agent if it might be sleeping and waiting for I/O.
-            self.async_io_wakers[worker_index].wake();
-
+            proc.enqueue_async_task(task);
             join_handles.push(join_handle);
         }
 
@@ -296,7 +385,9 @@ impl RuntimeClient {
         // We just add it to the pending task queue for now, to be submitted at the end of the cycle.
         match task_type {
             SynchronousTaskType::Syscall => {
-                self.pending_sync_tasks_by_processor[&processor_id].push(Box::new(task));
+                self.core_clients[&processor_id]
+                    .pending_sync_tasks
+                    .push(Box::new(task));
                 event!(
                     Level::TRACE,
                     message = "queued task",
@@ -305,7 +396,9 @@ impl RuntimeClient {
                 );
             }
             SynchronousTaskType::HighPrioritySyscall => {
-                self.pending_sync_priority_tasks_by_processor[&processor_id].push(Box::new(task));
+                self.core_clients[&processor_id]
+                    .pending_sync_priority_tasks
+                    .push(Box::new(task));
                 event!(
                     Level::TRACE,
                     message = "queued priority task",
@@ -363,7 +456,9 @@ impl RuntimeClient {
         // We just add it to the pending task queue for now, to be submitted at the end of the cycle.
         let boxed_task = Box::new(task);
         let task_addr = format!("{:p}", &*boxed_task);
-        self.pending_sync_tasks_by_processor[&processor_id].push(boxed_task);
+        self.core_clients[&processor_id]
+            .pending_sync_tasks
+            .push(boxed_task);
         event!(
             Level::TRACE,
             message = "queued task",
@@ -379,56 +474,11 @@ impl RuntimeClient {
     /// the current thread's agent at the end of every execution loop that could potentially have
     /// added some tasks.
     pub fn submit_pending_tasks(&self) {
-        for (processor_id, pending_tasks) in &self.pending_sync_tasks_by_processor {
-            let sync_task_queue = &self.sync_task_queues_by_processor[processor_id];
-
-            let mut had_any_tasks = false;
-
-            while let Some(task) = pending_tasks.pop() {
-                let task_addr = format!("{:p}", &*task);
-                event!(
-                    Level::TRACE,
-                    message = "submitting task",
-                    ?processor_id,
-                    task_addr
-                );
-                had_any_tasks = true;
-                sync_task_queue.push(task);
-            }
-
-            if had_any_tasks {
-                for tx in &self.sync_command_txs_by_processor[processor_id] {
-                    // We ignore the return value because it is theoretically possible that something is trying
-                    // to schedule new work when we are in the middle of a shutdown process.
-                    _ = tx.send(SyncAgentCommand::CheckForTasks);
-                }
-            }
+        for (_, proc) in &self.core_clients {
+            proc.submit_pending_sync_tasks();
         }
-
-        for (processor_id, pending_tasks) in &self.pending_sync_priority_tasks_by_processor {
-            let sync_task_queue = &self.sync_priority_task_queues_by_processor[processor_id];
-
-            let mut had_any_tasks = false;
-
-            while let Some(task) = pending_tasks.pop() {
-                let task_addr = format!("{:p}", &*task);
-                event!(
-                    Level::TRACE,
-                    message = "submitting priority task",
-                    ?processor_id,
-                    task_addr
-                );
-                had_any_tasks = true;
-                sync_task_queue.push(task);
-            }
-
-            if had_any_tasks {
-                for tx in &self.sync_command_txs_by_processor[processor_id] {
-                    // We ignore the return value because it is theoretically possible that something is trying
-                    // to schedule new work when we are in the middle of a shutdown process.
-                    _ = tx.send(SyncAgentCommand::CheckForTasks);
-                }
-            }
+        for (_, proc) in &self.core_clients {
+            proc.submit_pending_sync_priority_tasks();
         }
     }
 
@@ -436,10 +486,8 @@ impl RuntimeClient {
     ///
     /// This returns immediately. To wait for the runtime to stop, use `wait()`.
     pub fn stop(&self) {
-        for tx in &self.async_command_txs {
-            // We ignore the return value because if the worker has already stopped, the channel
-            // may be closed in which case the send may simply fail.
-            _ = tx.send(AsyncAgentCommand::Terminate);
+        for (_, proc) in &self.core_clients {
+            proc.terminate();
         }
 
         // We ignore the return value because if the worker has already stopped, the channel
@@ -447,14 +495,6 @@ impl RuntimeClient {
         _ = self
             .tcp_dispatcher_command_tx
             .send(AsyncAgentCommand::Terminate);
-
-        for txs in self.sync_command_txs_by_processor.values() {
-            for tx in txs {
-                // We ignore the return value because if the worker has already stopped, the channel
-                // may be closed in which case the send may simply fail.
-                _ = tx.send(crate::rt::sync_agent::SyncAgentCommand::Terminate);
-            }
-        }
     }
 
     /// Returns `true` if the runtime has been asked to stop.
@@ -513,38 +553,9 @@ impl RuntimeClient {
 impl fmt::Debug for RuntimeClient {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("RuntimeClient")
-            .field("async_command_txs", &self.async_command_txs)
-            .field("async_io_wakers", &self.async_io_wakers)
+            .field("core_clients", &self.core_clients)
             .field("tcp_dispatcher_command_tx", &self.tcp_dispatcher_command_tx)
             .field("tcp_dispatcher_io_waker", &self.tcp_dispatcher_io_waker)
-            .field(
-                "sync_command_txs_by_processor",
-                &self.sync_command_txs_by_processor,
-            )
-            .field(
-                "sync_task_queues_by_processor",
-                &self.sync_task_queues_by_processor,
-            )
-            .field(
-                "sync_priority_task_queues_by_processor",
-                &self.sync_priority_task_queues_by_processor,
-            )
-            .field(
-                "pending_sync_tasks_by_processor",
-                &self
-                    .pending_sync_tasks_by_processor
-                    .iter()
-                    .map(|x| x.1.len())
-                    .sum::<usize>(),
-            )
-            .field(
-                "pending_sync_priority_tasks_by_processor",
-                &self
-                    .pending_sync_priority_tasks_by_processor
-                    .iter()
-                    .map(|x| x.1.len())
-                    .sum::<usize>(),
-            )
             .field("processor_ids", &self.processor_ids)
             .field("join_handles", &self.join_handles)
             .field("is_stopping", &self.is_stopping)

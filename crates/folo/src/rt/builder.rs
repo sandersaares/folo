@@ -14,7 +14,7 @@ use super::{current_sync_agent, ErasedSyncTask};
 use crate::io::{self, IoWaker};
 use crate::metrics::ReportPage;
 use crate::rt::async_agent::{AsyncAgent, AsyncAgentCommand};
-use crate::rt::{current_async_agent, current_runtime, RuntimeClient};
+use crate::rt::{current_async_agent, current_runtime, CoreClient, RuntimeClient};
 
 /// The thing with synchronous worker threads is that they often get blocked and spend time doing
 /// essentially nothing due to offloading blocking I/O onto these threads. Therefore, we spawn many
@@ -265,55 +265,35 @@ impl RuntimeBuilder {
         event!(Level::INFO, processor_count);
 
         let mut join_handles = Vec::with_capacity(sync_worker_count + async_worker_count);
+        let mut core_processors = HashMap::new();
 
-        // # Async workers
+        // # Async workers & Sync workers
 
-        let mut async_command_txs = Vec::with_capacity(async_worker_count);
         let mut async_start_txs = Vec::with_capacity(async_worker_count);
-        let mut async_ready_rxs = Vec::with_capacity(async_worker_count);
+        let mut sync_start_txs = Vec::with_capacity(sync_worker_count);
 
         for worker_index in 0..async_worker_count {
             let processor_id = processor_ids[worker_index];
             let ThreadStartResult {
-                join_handle,
-                start_tx,
-                ready_rx,
-                result: command_tx,
+                join_handle: async_join_handle,
+                start_tx: async_start_tx,
+                ready_rx: async_ready_rx,
+                result: async_command_tx,
             } = self.start_async_agent(processor_id, worker_index)?;
 
-            async_start_txs.push(start_tx);
-            async_ready_rxs.push(ready_rx);
-            async_command_txs.push(command_tx);
-            join_handles.push(join_handle);
-        }
+            async_start_txs.push(async_start_tx);
+            join_handles.push(async_join_handle);
 
-        let async_io_wakers: Vec<_> = async_ready_rxs
-            .into_iter()
-            .map(|ready_rx| {
-                ready_rx.recv().expect("async worker thread failed before even starting").io_waker
-            })
-            .collect();
-
-        // # Sync workers
-
-        let mut sync_command_txs_by_processor = HashMap::new();
-        let mut sync_start_txs = Vec::with_capacity(sync_worker_count);
-        let mut sync_ready_rxs = Vec::with_capacity(sync_worker_count);
-
-        let mut sync_task_queues_by_processor = HashMap::new();
-        let mut sync_priority_task_queues_by_processor = HashMap::new();
-
-        for processor_id in &processor_ids {
             // There is a single queue of synchronous tasks per processor, shared by all the sync
             // workers assigned to that processor, to try balance out the load given that these may
             // often block for unequal amounts of time and end up imbalanced.
             let sync_task_queue = Arc::new(SegQueue::new());
-            sync_task_queues_by_processor.insert(*processor_id, Arc::clone(&sync_task_queue));
 
             // Same, but for higher-priority tasks (e.g. releasing resources).
             let sync_priority_task_queue = Arc::new(SegQueue::new());
-            sync_priority_task_queues_by_processor
-                .insert(*processor_id, Arc::clone(&sync_priority_task_queue));
+
+            let mut sync_command_txs = Vec::with_capacity(sync_worker_count);
+            let mut sync_ready_rxs = Vec::with_capacity(sync_worker_count);
 
             for worker_index in 0..SYNC_WORKERS_PER_PROCESSOR {
                 let ThreadStartResult {
@@ -322,7 +302,7 @@ impl RuntimeBuilder {
                     ready_rx,
                     result: command_tx,
                 } = self.start_sync_agent(
-                    *processor_id,
+                    processor_id,
                     worker_index,
                     Arc::clone(&sync_task_queue),
                     Arc::clone(&sync_priority_task_queue),
@@ -331,18 +311,33 @@ impl RuntimeBuilder {
                 sync_start_txs.push(start_tx);
                 sync_ready_rxs.push(ready_rx);
 
-                let sync_command_txs = sync_command_txs_by_processor
-                    .entry(processor_id)
-                    .or_insert_with(|| Vec::with_capacity(sync_worker_count));
                 sync_command_txs.push(command_tx);
                 join_handles.push(join_handle);
             }
-        }
 
-        sync_ready_rxs.into_iter().for_each(|ready_rx| {
-            ready_rx.recv().expect("sync worker thread failed before even starting");
-            // For now we just want to make sure we see the ACK. No actual state fanster needed.
-        });
+            let async_io_waker = async_ready_rx
+                .recv()
+                .expect("async worker thread failed before even starting")
+                .io_waker;
+
+            sync_ready_rxs.into_iter().for_each(|ready_rx| {
+                ready_rx
+                    .recv()
+                    .expect("sync worker thread failed before even starting");
+                // For now we just want to make sure we see the ACK. No actual state fanster needed.
+            });
+
+            let proc = CoreClient::new(
+                processor_id,
+                async_command_tx,
+                async_io_waker,
+                sync_command_txs.into_boxed_slice(),
+                sync_task_queue,
+                sync_priority_task_queue,
+            );
+
+            core_processors.insert(processor_id, proc);
+        }
 
         // # TCP dispatcher worker
 
@@ -372,16 +367,9 @@ impl RuntimeBuilder {
         let is_stopping = Arc::new(AtomicBool::new(false));
 
         let client = RuntimeClient::new(
-            async_command_txs.into_boxed_slice(),
-            async_io_wakers.into_boxed_slice(),
+            core_processors,
             tcp_dispatcher_command_tx,
             tcp_dispatcher_ready.io_waker,
-            sync_command_txs_by_processor
-                .into_iter()
-                .map(|(k, v)| (*k, v.into_boxed_slice()))
-                .collect(),
-            sync_task_queues_by_processor,
-            sync_priority_task_queues_by_processor,
             processor_ids.clone(),
             join_handles.into_boxed_slice(),
             Arc::clone(&is_stopping),

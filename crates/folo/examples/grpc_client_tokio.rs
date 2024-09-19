@@ -28,7 +28,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         let message = format!("Hello {}!", index);
         let response = client
             .say_hello(HelloRequest {
-                name: message.into(),
+                name: message,
             })
             .await?;
 
