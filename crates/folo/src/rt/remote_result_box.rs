@@ -68,6 +68,8 @@ impl<R> RemoteResultBox<R> {
     // We expose a poll-like API for getting the result, as the ResultBox is only intended to be
     // read from a future's poll() function (via a join handle).
     pub fn poll(&self, waker: &Waker) -> Option<R> {
+        POLL_COUNT.with(|x| x.observe_unit());
+
         let mut self_result = self.result.lock().expect(constants::POISONED_LOCK);
 
         match &*self_result {
@@ -112,6 +114,11 @@ thread_local! {
     static CONSUME_DURATION: Event = EventBuilder::new()
         .name("result_box_remote_time_to_consume_millis")
         .buckets(GENERAL_MILLISECONDS_BUCKETS)
+        .build()
+        .unwrap();
+
+    static POLL_COUNT: Event = EventBuilder::new()
+        .name("result_box_remote_poll_count")
         .build()
         .unwrap();
 }
