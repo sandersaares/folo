@@ -205,6 +205,12 @@ impl AsyncTaskEngine {
             match poll_result {
                 task::Poll::Ready(()) => {
                     TASKS_COMPLETED.with(Event::observe_unit);
+
+                    // This ensures that any state held by the task is dropped. Most importantly, it
+                    // may be holding a clone of a waker, which could create a circular reference
+                    // that prevents the task from ever being cleaned up. This should help.
+                    task.project_ref().inner.borrow().clear();
+
                     self.completed.push_back(task_ptr);
                 }
                 task::Poll::Pending => {
