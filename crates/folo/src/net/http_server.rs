@@ -313,7 +313,7 @@ impl Drop for HttpServerSession {
     }
 }
 
-const CONCURRENT_RECEIVE_OPERATIONS_PER_DISPATCHER: usize = 1;
+const CONCURRENT_RECEIVE_OPERATIONS_PER_DISPATCHER: usize = 8;
 
 /// The HTTP dispatcher processes the request queue used to receive new requests. When a new
 /// requests is received, it is dispatched to be handled by the user-defined callback on the
