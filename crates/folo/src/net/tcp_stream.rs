@@ -1,8 +1,11 @@
 use std::{
-    cell::{Cell, RefCell}, collections::HashMap, future, net::SocketAddr, rc::Rc, task::{Poll, Waker}, time::Duration
+    cell::{Cell, RefCell}, collections::HashMap, future, io::{Read, Write}, net::SocketAddr, rc::Rc, task::{Poll, Waker}, time::{Duration, Instant}
 };
 
-use mio::{event::Event, Events, Poll as MioPoll, Token};
+use mio::{
+    event::{Event, Source},
+    Events, Interest, Poll as MioPoll, Token,
+};
 
 type StreamId = u32;
 
@@ -37,24 +40,23 @@ impl TcpStream {
         let mut io = mio::net::TcpStream::connect(addr.into())?;
 
         // Register the stream with the poll so we can react to an connection event
-        LOCAL_POLL.with_borrow_mut(|poll| {
-            poll.registry().register(
-                &mut io,
-                token,
-                mio::Interest::READABLE | mio::Interest::WRITABLE,
-            )
-        })?;
+        register_poll(
+            &mut io,
+            token,
+            mio::Interest::READABLE | mio::Interest::WRITABLE,
+        );
 
         let stream = Rc::new(TcpStreamInner {
             id,
             io,
             connected: RefCell::new(None),
+            write: Cell::new(None),
         });
 
         let clone: Rc<TcpStreamInner> = Rc::clone(&stream);
 
         future::poll_fn(|context| {
-            try_register_event(
+            register_event(
                 token,
                 IoEvent::Connect(Rc::clone(&clone), context.waker().clone()),
             );
@@ -88,9 +90,18 @@ struct TcpStreamInner {
     id: StreamId,
     io: mio::net::TcpStream,
     connected: RefCell<Option<Result<SocketAddr, std::io::Error>>>,
+    write: Cell<Option<Token>>,
 }
 
-fn try_register_event(token: Token, ev: IoEvent) {
+fn register_poll(
+    io: &mut (impl Source + ?Sized),
+    token: Token,
+    interest: Interest,
+) -> Result<(), std::io::Error> {
+    LOCAL_POLL.with_borrow_mut(|poll| poll.registry().register(io, token, interest))
+}
+
+fn register_event(token: Token, ev: IoEvent) {
     PENDING_EVENTS.with_borrow_mut(|events| {
         events.entry(token).or_insert(ev);
     });
@@ -99,23 +110,26 @@ fn try_register_event(token: Token, ev: IoEvent) {
 fn poll_local_events_inner(poll: &mut MioPoll) -> std::io::Result<()> {
     EVENTS.with_borrow_mut(|events| {
         poll.poll(events, Some(Duration::ZERO))?;
-        events.iter().for_each(|ev| handle_event(ev));
+
+        PENDING_EVENTS.with_borrow_mut(|pending| {
+            events.iter().for_each(|ev| {
+                if let Some(io) = pending.remove(&ev.token()) {
+                    handle_event(io)
+                }
+            });
+        });
 
         Ok(())
     })
 }
 
-fn handle_event(e: &Event) {
-    PENDING_EVENTS.with_borrow_mut(|events| {
-        if let Some(io) = events.remove(&e.token()) {
-            match io {
-                IoEvent::Connect(stream, waker) => {
-                    *stream.connected.borrow_mut() = Some(stream.io.peer_addr());
-                    waker.wake();
-                }
-            }
+fn handle_event(ev: IoEvent) {
+    match ev {
+        IoEvent::Connect(stream, waker) => {
+            *stream.connected.borrow_mut() = Some(stream.io.peer_addr());
+            waker.wake();
         }
-    })
+    }
 }
 
 fn next_token() -> Token {
