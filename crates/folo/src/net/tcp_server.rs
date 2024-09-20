@@ -20,6 +20,7 @@ use windows::Win32::Networking::WinSock::{
     WSAEOPNOTSUPP, WSA_FLAG_OVERLAPPED,
 };
 
+#[derive(Debug)]
 pub struct TcpServerBuilder<A, AF>
 where
     A: Fn(TcpConnection) -> AF + Clone + Send + 'static,
@@ -59,8 +60,7 @@ where
     ///
     /// The startup process is gradual and connections may be received even before the result of
     /// this function is returned. Connections may even be received if this function ultimately
-    /// returns an error (though an error response does imply that no further connections will be
-    /// accepted and the server has shut down after a failed start).
+    /// returns an error.
     pub async fn build(self) -> io::Result<TcpServerHandle> {
         let port = self
             .port
@@ -182,7 +182,7 @@ where
 
 /// Control surface to operate the TCP server. The lifetime of this is not directly connected to the
 /// TCP server. Dropping this will not stop the server - you must explicitly call `stop()` to stop
-/// the server, and may call `wait()` to wait for the server to complete its shutdown process.
+/// the server.
 pub struct TcpServerHandle {
     dispatcher_join_handles: Box<[RemoteJoinHandle<()>]>,
     dispatcher_shutdown_txs: Vec<oneshot::Sender<()>>,
