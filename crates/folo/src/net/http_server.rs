@@ -9,6 +9,7 @@ use futures::StreamExt;
 use negative_impl::negative_impl;
 use scopeguard::{guard, ScopeGuard};
 use std::ffi::OsStr;
+use std::mem;
 use std::os::windows::ffi::OsStrExt;
 use std::sync::Arc;
 use std::{future::Future, num::NonZeroU16};
@@ -18,8 +19,9 @@ use windows::Win32::Foundation::HANDLE;
 use windows::Win32::Networking::HttpServer::{
     HttpAddUrlToUrlGroup, HttpCloseRequestQueue, HttpCloseServerSession, HttpCloseUrlGroup,
     HttpCreateRequestQueue, HttpCreateServerSession, HttpCreateUrlGroup, HttpReceiveHttpRequest,
-    HttpServerBindingProperty, HttpSetUrlGroupProperty, HttpTerminate, HTTP_BINDING_INFO,
-    HTTP_PROPERTY_FLAGS, HTTP_RECEIVE_HTTP_REQUEST_FLAGS, HTTP_REQUEST_V2,
+    HttpServerBindingProperty, HttpServerQueueLengthProperty, HttpSetRequestQueueProperty,
+    HttpSetUrlGroupProperty, HttpTerminate, HTTP_BINDING_INFO, HTTP_PROPERTY_FLAGS,
+    HTTP_RECEIVE_HTTP_REQUEST_FLAGS, HTTP_REQUEST_V2,
 };
 use windows::Win32::Networking::HttpServer::{
     HttpInitialize, HTTPAPI_VERSION, HTTP_INITIALIZE_SERVER,
@@ -252,6 +254,19 @@ impl HttpServerSession {
             _ = unsafe { HttpCloseRequestQueue(request_queue_handle) };
         });
 
+        let queue_length = REQUEST_QUEUE_LENGTH as u32;
+        // SAFETY: Just FFI, nothing unsafe here as long as our pointer points to valid memory.
+        http_sys::to_io_result(unsafe {
+            HttpSetRequestQueueProperty(
+                request_queue_handle,
+                HttpServerQueueLengthProperty,
+                &queue_length as *const _ as *const _,
+                mem::size_of::<u32>() as u32,
+                0,
+                None,
+            )
+        })?;
+
         // The request queue is bound to the multithreaded I/O driver to ensure that requests are
         // distributed across all our threads. This is not strictly optimal because it also means
         // individual reads/writes of ONE request are spread across threads. Unfortunately, the
@@ -314,6 +329,9 @@ impl Drop for HttpServerSession {
 }
 
 const CONCURRENT_RECEIVE_OPERATIONS_PER_DISPATCHER: usize = 8;
+
+// Same value as for TCP server - unsure how exactly it matters or what is a good value.
+const REQUEST_QUEUE_LENGTH: usize = 4096;
 
 /// The HTTP dispatcher processes the request queue used to receive new requests. When a new
 /// requests is received, it is dispatched to be handled by the user-defined callback on the
@@ -378,7 +396,8 @@ where
                 receive_futures_len = receive_futures.len(),
             );
 
-            let receive_result = match select(receive_futures.next(), shutdown_received_future).await
+            let receive_result = match select(receive_futures.next(), shutdown_received_future)
+                .await
             {
                 Either::Left((Some(receive_result), new_shutdown_received_future)) => {
                     shutdown_received_future = new_shutdown_received_future;
