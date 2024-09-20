@@ -175,10 +175,7 @@ impl Future for ShutdownFuture {
                             *this.state = ShutdownState::Completed;
                             return Poll::Ready(Err(e));
                         }
-                        Poll::Pending => {
-                            *this.state = ShutdownState::Completed;
-                            return Poll::Pending;
-                        }
+                        Poll::Pending => return Poll::Pending
                     };
 
                     let receive_future = socket_receive(this.socket, PinnedBuffer::from_pool());
