@@ -1,5 +1,5 @@
 use crate::{
-    io::{self, OperationResultExt, OperationResultFuture, PinnedBuffer},
+    io::{self, OperationResultFuture, PinnedBuffer},
     net::winsock,
     rt::{current_async_agent, current_runtime, RemoteJoinHandle, SynchronousTaskType},
     windows::OwnedHandle,
@@ -46,23 +46,8 @@ impl TcpConnection {
     /// transit - this guarantee does not exist without calling the shutdown method.
     ///
     /// An error result indicates that a graceful shutdown was not possible.
-    pub async fn shutdown(&mut self) -> io::Result<()> {
-        let socket_clone = Arc::clone(&self.socket);
-        current_runtime::with(|runtime| {
-            runtime.spawn_sync(SynchronousTaskType::Syscall, move || {
-                // SAFETY: Socket liveness is ensured by our shared ownership of the socket handle.
-                winsock::to_io_result(unsafe { WSASendDisconnect(**socket_clone, None) })
-            })
-        })
-        .await?;
-
-        let received_data = self.receive(PinnedBuffer::from_pool()).await.into_inner()?;
-
-        if !received_data.is_empty() {
-            return Err(io::Error::LogicError("socket received data when shutting down - this may be an error depending on the communication protocol in use".to_string()));
-        }
-
-        Ok(())
+    pub fn shutdown(&mut self) -> ShutdownFuture {
+        ShutdownFuture::new(Arc::clone(&self.socket))
     }
 }
 
