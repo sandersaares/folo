@@ -328,7 +328,7 @@ impl Drop for HttpServerSession {
     }
 }
 
-const CONCURRENT_RECEIVE_OPERATIONS_PER_DISPATCHER: usize = 8;
+const CONCURRENT_RECEIVE_OPERATIONS_PER_DISPATCHER: usize = 128;
 
 // Same value as for TCP server - unsure how exactly it matters or what is a good value.
 const REQUEST_QUEUE_LENGTH: usize = 4096;
