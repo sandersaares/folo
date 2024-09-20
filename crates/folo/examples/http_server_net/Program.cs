@@ -5,6 +5,8 @@ builder.WebHost.UseUrls("http://0.0.0.0:1234");
 
 var app = builder.Build();
 
+app.MapGet("/", () => Results.Text("Hello, World!"));
+
 // 20 KB
 var response_20_kb = new byte[20 * 1024];
 app.MapGet("/20kb", () => Results.Bytes(response_20_kb));
