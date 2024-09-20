@@ -40,6 +40,7 @@ hyper = { version = "1.4.1", features = [
     "client",
     "server",
 ], optional = true }
+mio = { version = "1.0.2", features = ["os-poll", "net"] }
 negative-impl = "0"
 oneshot = { version = "0", features = ["async"] }
 paste = "1"
