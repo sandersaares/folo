@@ -12,7 +12,7 @@ use pin_project::pin_project;
 
 use crate::{
     io::{OperationResultFuture, PinnedBuffer},
-    net::TcpConnection,
+    net::{ShutdownFuture, TcpConnection},
     rt,
     time::{Clock, Delay},
 };
@@ -49,6 +49,9 @@ pub struct FoloIo {
 
     #[pin]
     active_write: Option<OperationResultFuture>,
+
+    #[pin]
+    active_shutdown: Option<ShutdownFuture>,
 }
 
 impl FoloIo {
@@ -57,6 +60,7 @@ impl FoloIo {
             connection,
             active_read: None,
             active_write: None,
+            active_shutdown: None,
         }
     }
 }
@@ -160,7 +164,9 @@ impl Write for FoloIo {
             // Obviously, this copy is horribly inefficient to have in our I/O stack.
             // We should work with Hyper authors to eliminate the need for this by
             // enabling Hyper to use runtime-owned buffers.
-            buffer.as_mut_slice_with_len(len_to_copy).copy_from_slice(buf);
+            buffer
+                .as_mut_slice_with_len(len_to_copy)
+                .copy_from_slice(buf);
 
             // The I/O driver takes ownership of the buffer and will keep it alive until it is safe
             // to release it. Even if this future is dropped, memory is not released too early.
@@ -174,11 +180,30 @@ impl Write for FoloIo {
     }
 
     fn poll_shutdown(
-        self: Pin<&mut Self>,
+        mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Result<(), std::io::Error>> {
-        // TODO: Do a proper shutdown.
-        Poll::Ready(Ok(()))
+        loop {
+            let mut this = self.as_mut().project();
+
+            if let Some(active_shutdown) = this.active_shutdown.as_mut().as_pin_mut() {
+                match active_shutdown.poll(cx) {
+                    Poll::Ready(result) => {
+                        // This future is finished, set it to none.
+                        this.active_shutdown.set(None);
+
+                        match result {
+                            Ok(()) => return Poll::Ready(Ok(())),
+                            Err(e) => return Poll::Ready(Err(e.into())),
+                        }
+                    }
+                    Poll::Pending => return Poll::Pending,
+                }
+            }
+
+            // There's no active shutdown, so start a new one.
+            this.active_shutdown.set(Some(this.connection.shutdown()));
+        }
     }
 }
 
