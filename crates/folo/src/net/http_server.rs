@@ -452,21 +452,25 @@ impl ReceiveOne {
             current_async_agent::with_io_shared(|io| {
                 io.new_operation(PinnedBufferShared::from_pool())
             })
-            .begin(|buffer, overlapped, immediate_bytes_transferred| {
-                // We specify 0 as flags, which means "do not give the request body, only the headers".
-                // This is suboptimal for performance but gives us the simplest code to start with.
-                // We can opitmize later and complicate the code as needed.
-                let flags = HTTP_RECEIVE_HTTP_REQUEST_FLAGS(0);
+            .begin({
+                let session = Arc::clone(&self.session);
 
-                http_sys::to_io_result(HttpReceiveHttpRequest(
-                    *self.session.request_queue_native_handle(),
-                    0,
-                    flags,
-                    buffer.as_mut_ptr() as *mut _,
-                    buffer.len() as u32,
-                    Some(immediate_bytes_transferred as *mut _),
-                    Some(overlapped),
-                ))
+                move |buffer, overlapped, immediate_bytes_transferred| {
+                    // We specify 0 as flags, which means "do not give the request body, only the headers".
+                    // This is suboptimal for performance but gives us the simplest code to start with.
+                    // We can opitmize later and complicate the code as needed.
+                    let flags = HTTP_RECEIVE_HTTP_REQUEST_FLAGS(0);
+
+                    http_sys::to_io_result(HttpReceiveHttpRequest(
+                        *session.request_queue_native_handle(),
+                        0,
+                        flags,
+                        buffer.as_mut_ptr() as *mut _,
+                        buffer.len() as u32,
+                        Some(immediate_bytes_transferred as *mut _),
+                        Some(overlapped),
+                    ))
+                }
             })
         }
         .await

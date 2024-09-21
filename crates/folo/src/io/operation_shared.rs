@@ -3,7 +3,7 @@ use crate::{
     io::{self, OperationResultShared, PinnedBufferShared},
     mem::{DropPolicy, PinnedSlabChain},
     metrics::{Event, EventBuilder, Magnitude},
-    time::{UltraLowPrecisionInstant},
+    time::UltraLowPrecisionInstant,
 };
 use pin_project::pin_project;
 use std::{
@@ -344,6 +344,13 @@ impl OperationShared {
     /// Executes an I/O operation, using the specified callback to pass the operation buffer and
     /// OVERLAPPED metadata structure to native OS functions.
     ///
+    /// The callback must not reference any data owned by the caller because in many circumstances
+    /// the I/O operation may outlive the caller. In other words, any state captured by the closure
+    /// must have a 'static lifetime.
+    /// 
+    /// This is the thread-safe operation, so any captured state must also be thread-safe,
+    /// implementing at least the `Send` trait.
+    ///
     /// # Callback arguments
     ///
     /// 1. The buffer to be used for the operation. For reads, just pass it along to a native API.
@@ -368,7 +375,7 @@ impl OperationShared {
     /// have some temporary lifetime only valid for the duration of the callback.
     pub unsafe fn begin<F>(self, f: F) -> OperationResultSharedFuture
     where
-        F: FnOnce(&'static mut [u8], *mut OVERLAPPED, &mut u32) -> io::Result<()>,
+        F: FnOnce(&'static mut [u8], *mut OVERLAPPED, &mut u32) -> io::Result<()> + Send + 'static,
     {
         let result_rx = self
             .core

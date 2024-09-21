@@ -352,6 +352,10 @@ impl Operation {
 
     /// Executes an I/O operation, using the specified callback to pass the operation buffer and
     /// OVERLAPPED metadata structure to native OS functions.
+    /// 
+    /// The callback must not reference any data owned by the caller because in many circumstances
+    /// the I/O operation may outlive the caller. In other words, any state captured by the closure
+    /// must have a 'static lifetime.
     ///
     /// # Callback arguments
     ///
@@ -377,7 +381,7 @@ impl Operation {
     /// have some temporary lifetime only valid for the duration of the callback.
     pub unsafe fn begin<F>(self, f: F) -> OperationResultFuture
     where
-        F: FnOnce(&'static mut [u8], *mut OVERLAPPED, &mut u32) -> io::Result<()>,
+        F: FnOnce(&'static mut [u8], *mut OVERLAPPED, &mut u32) -> io::Result<()> + 'static,
     {
         let result_rx = self
             .core

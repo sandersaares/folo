@@ -71,6 +71,8 @@ impl fmt::Debug for Mode {
     }
 }
 
+unsafe impl Send for PinnedBufferShared {}
+
 impl PinnedBufferShared {
     /// Obtains a new buffer from a global array pool.
     pub fn from_pool() -> Self {

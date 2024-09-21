@@ -1,20 +1,16 @@
 use super::HttpServerSession;
 use crate::{
-    io::{
-        self,  OperationResultShared,
-        OperationResultSharedExt, PinnedBufferShared,
-    },
+    io::{self, OperationResultShared, OperationResultSharedExt, PinnedBufferShared},
     net::http_sys,
     rt::current_async_agent,
 };
 use std::{mem, ptr, sync::Arc};
 use windows::{
-    core::{PCSTR},
+    core::PCSTR,
     Win32::Networking::HttpServer::{
         HttpDataChunkFromMemory, HttpHeaderContentLength, HttpHeaderContentType,
-        HttpSendHttpResponse, HttpSendResponseEntityBody, HTTP_DATA_CHUNK,
-        HTTP_KNOWN_HEADER, HTTP_RESPONSE_HEADERS, HTTP_RESPONSE_V2,
-        HTTP_SEND_RESPONSE_FLAG_MORE_DATA, HTTP_VERSION,
+        HttpSendHttpResponse, HttpSendResponseEntityBody, HTTP_DATA_CHUNK, HTTP_KNOWN_HEADER,
+        HTTP_RESPONSE_HEADERS, HTTP_RESPONSE_V2, HTTP_SEND_RESPONSE_FLAG_MORE_DATA, HTTP_VERSION,
     },
 };
 
@@ -78,14 +74,17 @@ impl HttpContext {
         }
 
         unsafe {
-            current_async_agent::with_io_shared(|io| io.new_operation(buffer)).begin(
-                |buffer, overlapped, immediate_bytes_transferred| {
+            current_async_agent::with_io_shared(|io| io.new_operation(buffer)).begin({
+                let session = Arc::clone(&self.session);
+                let id = self.id;
+
+                move |buffer, overlapped, immediate_bytes_transferred| {
                     // We assume there will always be a response body.
                     let flags = HTTP_SEND_RESPONSE_FLAG_MORE_DATA;
 
                     http_sys::to_io_result(HttpSendHttpResponse(
-                        *self.session.request_queue_native_handle(),
-                        self.id,
+                        *session.request_queue_native_handle(),
+                        id,
                         flags,
                         buffer.as_ptr() as *const _,
                         None,
@@ -95,8 +94,8 @@ impl HttpContext {
                         Some(overlapped),
                         None,
                     ))
-                },
-            )
+                }
+            })
         }
         .await
         .into_inner()
@@ -112,28 +111,30 @@ impl HttpContext {
     /// the call to `send_response_headers()`. The final send must set the  `is_final` flag.
     pub async fn send_response_body(
         &mut self,
-        mut buffer: PinnedBufferShared,
+        buffer: PinnedBufferShared,
         is_final: bool,
     ) -> OperationResultShared {
-        let flags = if is_final {
-            0
-        } else {
-            HTTP_SEND_RESPONSE_FLAG_MORE_DATA
-        };
-
-        // For now we just send 1 chunk. For optimization, we can support sending a list of chunks.
-        // TODO: We must keep this memory alive even if the future is dropped.
-        let mut chunks = [HTTP_DATA_CHUNK::default(); 1];
-        chunks[0].DataChunkType = HttpDataChunkFromMemory;
-        chunks[0].Anonymous.FromMemory.pBuffer = buffer.as_mut_slice().as_mut_ptr() as *mut _;
-        chunks[0].Anonymous.FromMemory.BufferLength = buffer.len() as u32;
-
         unsafe {
-            current_async_agent::with_io_shared(|io| io.new_operation(buffer)).begin(
-                |_buffer, overlapped, immediate_bytes_transferred| {
+            current_async_agent::with_io_shared(|io| io.new_operation(buffer)).begin({
+                let session = Arc::clone(&self.session);
+                let id = self.id;
+
+                move |buffer, overlapped, immediate_bytes_transferred| {
+                    let flags = if is_final {
+                        0
+                    } else {
+                        HTTP_SEND_RESPONSE_FLAG_MORE_DATA
+                    };
+
+                    // For now we just send 1 chunk. For optimization, we can support sending a list of chunks.
+                    let mut chunks = [HTTP_DATA_CHUNK::default(); 1];
+                    chunks[0].DataChunkType = HttpDataChunkFromMemory;
+                    chunks[0].Anonymous.FromMemory.pBuffer = buffer.as_mut_ptr() as *mut _;
+                    chunks[0].Anonymous.FromMemory.BufferLength = buffer.len() as u32;
+
                     http_sys::to_io_result(HttpSendResponseEntityBody(
-                        *self.session.request_queue_native_handle(),
-                        self.id,
+                        *session.request_queue_native_handle(),
+                        id,
                         flags,
                         Some(&chunks),
                         Some(immediate_bytes_transferred as *mut _),
@@ -142,8 +143,8 @@ impl HttpContext {
                         Some(overlapped),
                         None,
                     ))
-                },
-            )
+                }
+            })
         }
         .await
     }

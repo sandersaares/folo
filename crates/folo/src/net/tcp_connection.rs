@@ -28,7 +28,7 @@ impl TcpConnection {
     /// You should not call this multiple times concurrently because there is no guarantee that the
     /// continuations will be called in a particular order.
     pub fn receive(&mut self, buffer: PinnedBuffer) -> OperationResultFuture {
-        socket_receive(&self.socket, buffer)
+        socket_receive(Arc::clone(&self.socket), buffer)
     }
 
     /// Sends a buffer of data to the peer.
@@ -38,7 +38,7 @@ impl TcpConnection {
     /// You may call this multiple times concurrently. The buffers will be sent in the order they
     /// are submitted.
     pub fn send(&mut self, buffer: PinnedBuffer) -> OperationResultFuture {
-        socket_send(&self.socket, buffer)
+        socket_send(Arc::clone(&self.socket), buffer)
     }
 
     /// Performs a graceful shutdown of the connection, allowing time for all pending data transfers
@@ -56,11 +56,11 @@ impl !Send for TcpConnection {}
 #[negative_impl]
 impl !Sync for TcpConnection {}
 
-fn socket_receive(socket: &SOCKET, buffer: PinnedBuffer) -> OperationResultFuture {
+fn socket_receive(socket: Arc<OwnedHandle<SOCKET>>, buffer: PinnedBuffer) -> OperationResultFuture {
     // SAFETY: We are required to pass the OVERLAPPED pointer to the completion routine. We do.
     unsafe {
         current_async_agent::with_io(|io| io.new_operation(buffer)).begin(
-            |buffer, overlapped, immediate_bytes_transferred| {
+            move |buffer, overlapped, immediate_bytes_transferred| {
                 let wsabuf = WSABUF {
                     len: buffer.len() as u32,
                     buf: PSTR::from_raw(buffer.as_mut_ptr()),
@@ -70,7 +70,7 @@ fn socket_receive(socket: &SOCKET, buffer: PinnedBuffer) -> OperationResultFutur
                 let mut flags: u32 = 0;
 
                 winsock::to_io_result(WSARecv(
-                    *socket,
+                    **socket,
                     &wsabufs,
                     Some(immediate_bytes_transferred as *mut u32),
                     &mut flags as *mut u32,
@@ -82,11 +82,11 @@ fn socket_receive(socket: &SOCKET, buffer: PinnedBuffer) -> OperationResultFutur
     }
 }
 
-fn socket_send(socket: &SOCKET, buffer: PinnedBuffer) -> OperationResultFuture {
+fn socket_send(socket: Arc<OwnedHandle<SOCKET>>, buffer: PinnedBuffer) -> OperationResultFuture {
     // SAFETY: We are required to pass the OVERLAPPED pointer to the completion routine. We do.
     unsafe {
         current_async_agent::with_io(|io| io.new_operation(buffer)).begin(
-            |buffer, overlapped, immediate_bytes_transferred| {
+            move |buffer, overlapped, immediate_bytes_transferred| {
                 let wsabuf = WSABUF {
                     len: buffer.len() as u32,
                     buf: PSTR::from_raw(buffer.as_mut_ptr()),
@@ -95,7 +95,7 @@ fn socket_send(socket: &SOCKET, buffer: PinnedBuffer) -> OperationResultFuture {
                 let wsabufs = [wsabuf];
 
                 winsock::to_io_result(WSASend(
-                    *socket,
+                    **socket,
                     &wsabufs,
                     Some(immediate_bytes_transferred as *mut u32),
                     0,
@@ -175,10 +175,11 @@ impl Future for ShutdownFuture {
                             *this.state = ShutdownState::Completed;
                             return Poll::Ready(Err(e));
                         }
-                        Poll::Pending => return Poll::Pending
+                        Poll::Pending => return Poll::Pending,
                     };
 
-                    let receive_future = socket_receive(this.socket, PinnedBuffer::from_pool());
+                    let receive_future =
+                        socket_receive(Arc::clone(&this.socket), PinnedBuffer::from_pool());
 
                     *this.state = ShutdownState::WaitingForEndOfStream(receive_future);
                     // We fall through to the next state here.

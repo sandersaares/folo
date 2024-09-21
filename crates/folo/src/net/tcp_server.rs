@@ -347,11 +347,11 @@ where
             // We spawn it on the same async worker that caught the connection.
             _ = spawn(async move {
                 current_async_agent::with_io(|io| {
-                    io.bind_io_primitive(&*connection_socket).unwrap()
+                    io.bind_io_primitive(&**connection_socket).unwrap()
                 });
 
                 let tcp_connection = TcpConnection {
-                    socket: Arc::new(connection_socket),
+                    socket: connection_socket,
                 };
 
                 _ = (on_accept_clone)(tcp_connection).await;
@@ -370,7 +370,7 @@ struct AcceptOne {
 }
 
 impl AcceptOne {
-    async fn execute(self) -> io::Result<OwnedHandle<SOCKET>> {
+    async fn execute(self) -> io::Result<Arc<OwnedHandle<SOCKET>>> {
         event!(Level::TRACE, "listening for an incoming connection");
 
         // Creating the socket is an expensive synchronous operation, so do it on a synchronous
@@ -399,6 +399,11 @@ impl AcceptOne {
             )
         })
         .await?;
+
+        // The connection will be accepted on an arbitrary worker thread and delivered back to the
+        // dispatcher thread that asked for one to be accepted. Hence, management of the handle
+        // must be thread-safely performed via Arc.
+        let connection_socket = Arc::new(connection_socket);
 
         event!(Level::TRACE, "socket created for next incoming connection");
 
@@ -434,25 +439,30 @@ impl AcceptOne {
         // SAFETY: We are required to pass the OVERLAPPED struct to the native I/O function to avoid
         // a resource leak. We do.
         let accept_result = unsafe {
-            accept_operation.begin(|buffer, overlapped, immediate_bytes_transferred| {
-                if AcceptEx(
-                    **self.listen_socket,
-                    *connection_socket,
-                    buffer.as_mut_ptr() as *mut _,
-                    0,
-                    ADDRESS_LENGTH as u32,
-                    ADDRESS_LENGTH as u32,
-                    immediate_bytes_transferred,
-                    overlapped,
-                )
-                .as_bool()
-                {
-                    Ok(())
-                } else {
-                    // The docs say it sets ERROR_IO_PENDING in WSAGetLastError. We do not strictly
-                    // speaking read that but it also seems to set ERROR_IO_PENDING in the regular
-                    // GetLastError, apparently, so all is well.
-                    Err(windows::core::Error::from_win32().into())
+            accept_operation.begin({
+                let listen_socket = Arc::clone(&self.listen_socket);
+                let connection_socket = Arc::clone(&connection_socket);
+
+                move |buffer, overlapped, immediate_bytes_transferred| {
+                    if AcceptEx(
+                        **listen_socket,
+                        **connection_socket,
+                        buffer.as_mut_ptr() as *mut _,
+                        0,
+                        ADDRESS_LENGTH as u32,
+                        ADDRESS_LENGTH as u32,
+                        immediate_bytes_transferred,
+                        overlapped,
+                    )
+                    .as_bool()
+                    {
+                        Ok(())
+                    } else {
+                        // The docs say it sets ERROR_IO_PENDING in WSAGetLastError. We do not strictly
+                        // speaking read that but it also seems to set ERROR_IO_PENDING in the regular
+                        // GetLastError, apparently, so all is well.
+                        Err(windows::core::Error::from_win32().into())
+                    }
                 }
             })
         }
@@ -494,10 +504,13 @@ impl AcceptOne {
             "configuring socket for incoming connection (part 1)"
         );
 
-        let (connection_socket, _affinity_info) = current_runtime::with(move |runtime| {
+        let _affinity_info = current_runtime::with({
+            let connection_socket = Arc::clone(&connection_socket);
+
+            move |runtime| {
             runtime.spawn_sync_on_any(
                 SynchronousTaskType::Syscall,
-                move || -> io::Result<(OwnedHandle<SOCKET>, SOCKET_PROCESSOR_AFFINITY)> {
+                move || -> io::Result<SOCKET_PROCESSOR_AFFINITY> {
                     event!(Level::TRACE, "configuring socket for incoming connection (part 2)");
 
                     // We need to refer to this via pointer, so let's copy it out to a place first.
@@ -517,7 +530,7 @@ impl AcceptOne {
                     // what this accomplishes but we might as well do it to be right and proper in all ways.
                     winsock::to_io_result(unsafe {
                         setsockopt(
-                            *connection_socket,
+                            **connection_socket,
                             SOL_SOCKET,
                             SO_UPDATE_ACCEPT_CONTEXT,
                             Some(listen_socket_as_slice),
@@ -547,7 +560,7 @@ impl AcceptOne {
                     // NB! This data may change during life of a connection - it is not fixed!
                     let affinity_result = unsafe {
                         winsock::to_io_result(WSAIoctl(
-                            *connection_socket,
+                            **connection_socket,
                             SIO_QUERY_RSS_PROCESSOR_INFO,
                             None,
                             0,
@@ -583,10 +596,10 @@ impl AcceptOne {
 
                     event!(Level::TRACE, "socket configured for incoming connection");
 
-                    Ok((connection_socket, affinity_info))
+                    Ok(affinity_info)
                 },
             )
-        }).await?;
+        }}).await?;
 
         // The new socket is connected and ready! Finally!
         // TODO: Attach RSS info so it can actually be used for smart dispatch decisions.
