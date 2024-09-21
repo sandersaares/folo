@@ -31,31 +31,40 @@ impl HttpContext {
         content_type: &str,
         content_length: usize,
     ) -> io::Result<()> {
-        // TODO: We must keep this alive until the send completes, even if the future is dropped.
-        let content_length_str_bytes = content_length.to_string().into_bytes().into_boxed_slice();
-        let content_length = PCSTR::from_raw(content_length_str_bytes.as_ptr());
+        let content_length_str = content_length.to_string();
+        let content_type_str = content_type.to_string();
 
-        // TODO: We must keep this alive until the send completes, even if the future is dropped.
-        let content_type_str_bytes = content_type.to_string().into_bytes().into_boxed_slice();
-        let content_type = PCSTR::from_raw(content_type_str_bytes.as_ptr());
+        // We construct our HTTP_RESPONSE in this buffer.
+        // Contents of the buffer are:
+        // * HTTP_RESPONSE_V2
+        // * Content-Type value as string
+        // * Content-Length value as string
+        let mut buffer = PinnedBufferShared::from_pool();
+
+        let [http_response_slice, content_length_slice, content_type_slice] =
+            buffer.as_mut_slices(&[
+                mem::size_of::<HTTP_RESPONSE_V2>(),
+                content_length_str.len(),
+                content_type_str.len(),
+            ]);
+
+        content_length_slice.copy_from_slice(content_length_str.as_bytes());
+        content_type_slice.copy_from_slice(content_type_str.as_bytes());
+
+        let content_length = PCSTR::from_raw(content_length_slice.as_ptr());
+        let content_type = PCSTR::from_raw(content_type_slice.as_ptr());
 
         let mut headers = HTTP_RESPONSE_HEADERS::default();
         headers.KnownHeaders[HttpHeaderContentLength.0 as usize] = HTTP_KNOWN_HEADER {
-            RawValueLength: content_length_str_bytes.len() as u16,
+            RawValueLength: content_length_slice.len() as u16,
             pRawValue: content_length,
         };
         headers.KnownHeaders[HttpHeaderContentType.0 as usize] = HTTP_KNOWN_HEADER {
-            RawValueLength: content_type_str_bytes.len() as u16,
+            RawValueLength: content_type_slice.len() as u16,
             pRawValue: content_type,
         };
 
-        // We construct our HTTP_RESPONSE in this buffer.
-        let mut buffer = PinnedBufferShared::from_pool();
-        let http_response_len = mem::size_of::<HTTP_RESPONSE_V2>();
-        assert!(buffer.len() >= http_response_len);
-
-        let response =
-            buffer.as_mut_slice_with_len(http_response_len).as_mut_ptr() as *mut HTTP_RESPONSE_V2;
+        let response = http_response_slice.as_mut_ptr() as *mut HTTP_RESPONSE_V2;
 
         unsafe {
             *response = HTTP_RESPONSE_V2 {

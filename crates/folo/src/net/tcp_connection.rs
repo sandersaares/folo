@@ -179,7 +179,7 @@ impl Future for ShutdownFuture {
                     };
 
                     let receive_future =
-                        socket_receive(Arc::clone(&this.socket), PinnedBuffer::from_pool());
+                        socket_receive(Arc::clone(this.socket), PinnedBuffer::from_pool());
 
                     *this.state = ShutdownState::WaitingForEndOfStream(receive_future);
                     // We fall through to the next state here.

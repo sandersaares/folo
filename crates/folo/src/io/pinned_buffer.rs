@@ -7,7 +7,7 @@ use negative_impl::negative_impl;
 use std::{
     cell::{RefCell, UnsafeCell},
     fmt,
-    mem::{self},
+    mem::{self, MaybeUninit},
     ops::Range,
     pin::Pin,
     ptr,
@@ -242,6 +242,37 @@ impl PinnedBuffer {
         self.as_mut_slice()
     }
 
+    /// Obtains multiple mutable fixed-length views over the contents of the buffer's active region
+    /// and constrains the length of the active region to match the total of the requested slices.
+    pub fn as_mut_slices<const COUNT: usize>(&mut self, lengths: &[usize]) -> [&mut [u8]; COUNT] {
+        assert_eq!(lengths.len(), COUNT);
+
+        // Convert it to a ptr to disconnect from "self". While we leave the returned lifetimes
+        // connected to the lifetime of "self", we do not keep "self" itself borrowed in this scope.
+        let mut remainder = self.as_mut_slice().as_mut_ptr();
+
+        let remainder_len = lengths.iter().sum::<usize>();
+        assert!(remainder_len <= self.len);
+        self.len = remainder_len;
+
+        let mut slices = [const { MaybeUninit::<&mut [u8]>::uninit() }; COUNT];
+
+        for (i, &len) in lengths.iter().enumerate() {
+            // SAFETY: We are splitting into non-overlapping slices and hooking them up with the
+            // lifetime of "self". All is well.
+            let slice = unsafe { slice::from_raw_parts_mut(remainder, len) };
+            slices[i].write(slice);
+
+            // SAFETY: We validated above that all slices fit into our total buffer active region.
+            remainder = unsafe { remainder.add(len) };
+        }
+
+        // SAFETY: Everything is initialized and MaybeUninit is layout-compatible, so this is safe.
+        unsafe {
+            mem::transmute_copy::<[MaybeUninit<&mut [u8]>; COUNT], [&mut [u8]; COUNT]>(&slices)
+        }
+    }
+
     /// Obtains an immutable view over the contents of the buffer.
     pub fn as_slice(&self) -> &[u8] {
         match &self.mode {
@@ -326,4 +357,27 @@ thread_local! {
 
     static POOL_DROPPED: Event = EventBuilder::new("isolated_pool_buffers_dropped")
         .build();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn all_sliced_up() {
+        let mut buffer = PinnedBuffer::from_boxed_slice([0_u8; 10].into());
+
+        let [slice1, slice2, slice3] = buffer.as_mut_slices(&[2, 3, 5]);
+        assert_eq!(slice1.len(), 2);
+        assert_eq!(slice2.len(), 3);
+        assert_eq!(slice3.len(), 5);
+
+        slice1.fill(2);
+        slice2.fill(3);
+        slice3.fill(5);
+
+        let original = buffer.into_inner_boxed_slice();
+
+        assert_eq!(original, [2, 2, 3, 3, 3, 5, 5, 5, 5, 5].into());
+    }
 }
