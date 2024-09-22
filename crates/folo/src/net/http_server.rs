@@ -1,4 +1,4 @@
-use crate::io::{OperationResultSharedExt, PinnedBufferShared};
+use crate::io::{Buffer, OperationResultSharedExt, Shared};
 use crate::net::HttpContext;
 use crate::rt::{current_async_agent, current_runtime, spawn, RemoteJoinHandle};
 use crate::util::ThreadSafe;
@@ -450,7 +450,7 @@ impl ReceiveOne {
     async fn execute(self) -> io::Result<HttpContext> {
         let http_request_buffer = unsafe {
             current_async_agent::with_io_shared(|io| {
-                io.new_operation(PinnedBufferShared::from_pool())
+                io.new_operation(Buffer::<Shared>::from_pool())
             })
             .begin({
                 let session = Arc::clone(&self.session);

@@ -1,6 +1,6 @@
 use super::HttpServerSession;
 use crate::{
-    io::{self, OperationResultShared, OperationResultSharedExt, PinnedBufferShared},
+    io::{self, Buffer, OperationResultShared, OperationResultSharedExt, Shared},
     net::http_sys,
     rt::current_async_agent,
 };
@@ -39,10 +39,10 @@ impl HttpContext {
         // * HTTP_RESPONSE_V2
         // * Content-Type value as string
         // * Content-Length value as string
-        let mut buffer = PinnedBufferShared::from_pool();
+        let mut buffer = Buffer::<Shared>::from_pool();
 
-        let [http_response_slice, content_length_slice, content_type_slice] =
-            buffer.as_mut_slices(&[
+        let [mut http_response_slice, mut content_length_slice, mut content_type_slice] = buffer
+            .as_mut_slices(&[
                 mem::size_of::<HTTP_RESPONSE_V2>(),
                 content_length_str.len(),
                 content_type_str.len(),
@@ -120,7 +120,7 @@ impl HttpContext {
     /// the call to `send_response_headers()`. The final send must set the  `is_final` flag.
     pub async fn send_response_body(
         &mut self,
-        buffer: PinnedBufferShared,
+        buffer: Buffer<Shared>,
         is_final: bool,
     ) -> OperationResultShared {
         unsafe {

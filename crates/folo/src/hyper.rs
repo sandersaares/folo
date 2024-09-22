@@ -1,5 +1,3 @@
-#![allow(unused_variables)] // Spammy WIP code
-
 use std::{
     future::Future,
     mem::{self, MaybeUninit},
@@ -11,7 +9,7 @@ use hyper::rt::{Executor, Read, ReadBufCursor, Sleep, Timer, Write};
 use pin_project::pin_project;
 
 use crate::{
-    io::{OperationResultFuture, PinnedBuffer},
+    io::{Buffer, Isolated, OperationResultFuture},
     net::{ShutdownFuture, TcpConnection},
     rt,
     time::{Clock, Delay},
@@ -96,7 +94,7 @@ impl Read for FoloIo {
                                     // Obviously, this copy is horribly inefficient to have in our I/O stack.
                                     // We should work with Hyper authors to eliminate the need for this by
                                     // enabling Hyper to use runtime-owned buffers.
-                                    buf_slice_as_bytes.copy_from_slice(buffer.as_slice());
+                                    buf_slice_as_bytes.copy_from_slice(&buffer.as_slice());
                                     buf.advance(buffer.len());
                                 }
                                 Ok(())
@@ -115,7 +113,7 @@ impl Read for FoloIo {
             // we are still using them (if something drops the parent future polling us). Therefore,
             // we first read into Folo buffers (which are always safe) and only if the future is
             // still alive after the I/O operation do we copy the data into Hyper buffers.
-            let mut buffer = PinnedBuffer::from_pool();
+            let mut buffer = Buffer::<Isolated>::from_pool();
 
             // Make sure we do not try to read more than Hyper can accommodate.
             // SAFETY: We are reponsible for not uninitializing bytes. Yeah okay.
@@ -158,15 +156,15 @@ impl Write for FoloIo {
             // Hyper buffers are not memory-safe to use directly because they may be dropped while
             // we are still using them (if something drops the parent future polling us). Therefore,
             // we copy the data into Folo buffers here (which are always safe)
-            let mut buffer = PinnedBuffer::from_pool();
+            let mut buffer = Buffer::<Isolated>::from_pool();
 
             let len_to_copy = buffer.len().min(buf.len());
+            buffer.set_len(len_to_copy);
+
             // Obviously, this copy is horribly inefficient to have in our I/O stack.
             // We should work with Hyper authors to eliminate the need for this by
             // enabling Hyper to use runtime-owned buffers.
-            buffer
-                .as_mut_slice_with_len(len_to_copy)
-                .copy_from_slice(buf);
+            buffer.as_mut_slice().copy_from_slice(buf);
 
             // The I/O driver takes ownership of the buffer and will keep it alive until it is safe
             // to release it. Even if this future is dropped, memory is not released too early.
@@ -174,7 +172,7 @@ impl Write for FoloIo {
         }
     }
 
-    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), std::io::Error>> {
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), std::io::Error>> {
         // Flushing is not relevant yet.
         Poll::Ready(Ok(()))
     }

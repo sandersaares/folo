@@ -1,6 +1,6 @@
 use crate::{
     constants::{self, GENERAL_BYTES_BUCKETS, GENERAL_MILLISECONDS_BUCKETS},
-    io::{self, OperationResultShared, PinnedBufferShared},
+    io::{self, Buffer, OperationResultShared, Shared},
     mem::{DropPolicy, PinnedSlabChain},
     metrics::{Event, EventBuilder, Magnitude},
     time::UltraLowPrecisionInstant,
@@ -11,6 +11,7 @@ use std::{
     fmt,
     future::Future,
     mem::{self, ManuallyDrop},
+    pin::Pin,
     ptr,
     sync::Mutex,
     task::Poll,
@@ -73,7 +74,7 @@ impl OperationStoreShared {
     /// make into a new one of these operations. The caller provides a buffer for any input/output
     /// data, which the operation takes ownership of. Once the operation has completed, the buffer
     /// is returned to the caller for reading, reuse or disposal.
-    pub fn new_operation(&self, buffer: PinnedBufferShared) -> OperationShared {
+    pub fn new_operation(&self, buffer: Buffer<Shared>) -> OperationShared {
         OPERATIONS_ALLOCATED.with(Event::observe_unit);
 
         let items_guard = self.items.lock().expect(constants::POISONED_LOCK);
@@ -260,7 +261,7 @@ struct OperationCore {
     /// The caller-provided buffer containing the data affected by the operation. The Buffer type
     /// guarantees that this is pinned and will not move. Once the operation is complete, we return
     /// the buffer to the caller and set this to None.
-    buffer: Option<PinnedBufferShared>,
+    buffer: Option<Buffer<Shared>>,
 
     /// Used to operate the control node, which requires us to know our own key.
     key: OperationKey,
@@ -283,7 +284,7 @@ struct OperationCore {
 }
 
 impl OperationCore {
-    pub fn new(key: OperationKey, mut buffer: PinnedBufferShared) -> Self {
+    pub fn new(key: OperationKey, mut buffer: Buffer<Shared>) -> Self {
         let (result_tx, result_rx) = oneshot::channel();
 
         // IOCP cannot deal with bigger slices of data than u32::MAX, so limit the active range.
@@ -347,7 +348,7 @@ impl OperationShared {
     /// The callback must not reference any data owned by the caller because in many circumstances
     /// the I/O operation may outlive the caller. In other words, any state captured by the closure
     /// must have a 'static lifetime.
-    /// 
+    ///
     /// This is the thread-safe operation, so any captured state must also be thread-safe,
     /// implementing at least the `Send` trait.
     ///
@@ -450,12 +451,12 @@ impl OperationShared {
             // As long as the value is only used during the callback, this is fine (caller is responsible for not using it afterwards).
             unsafe {
                 mem::transmute::<&mut [u8], &mut [u8]>(
-                    operation
+                    Pin::into_inner_unchecked(operation
                         .buffer
                         .as_mut()
                         .expect("the buffer is only removed when the operation completes, so it must exist")
                         .as_mut_slice(),
-                )
+                ))
             },
             &mut operation.overlapped as *mut _,
             // SAFETY: Sets the lifetime to 'static because I cannot figure out a straightforward way to declare lifetimes here.

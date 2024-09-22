@@ -1,5 +1,5 @@
 use folo::{
-    io::{self, OperationResultExt, PinnedBuffer},
+    io::{self, Buffer, Isolated, OperationResultExt},
     net::{TcpConnection, TcpServerBuilder},
     time::{Clock, Delay},
 };
@@ -61,7 +61,7 @@ const NOT_FOUND_RESPONSE_HEADERS: &[u8] = b"HTTP/1.1 404 Not Found\r\nConnection
 async fn accept_connection(mut connection: TcpConnection) -> io::Result<()> {
     event!(Level::DEBUG, "Connection received; reading HTTP request");
 
-    let request_buffer = PinnedBuffer::from_pool();
+    let request_buffer = Buffer::<Isolated>::from_pool();
 
     // The operating system is not required to give us any specific number of bytes here. This could
     // be only part of the HTTP request. It is highly likely to be the entire thing, however, so we
@@ -91,7 +91,7 @@ async fn accept_connection(mut connection: TcpConnection) -> io::Result<()> {
 
 async fn send_infinite_response(connection: &mut TcpConnection) -> io::Result<()> {
     connection
-        .send(PinnedBuffer::from_boxed_slice(
+        .send(Buffer::<Isolated>::from_boxed_slice(
             INFINITE_STREAM_RESPONSE_HEADERS.into(),
         ))
         .await
@@ -115,7 +115,7 @@ async fn send_infinite_response(connection: &mut TcpConnection) -> io::Result<()
     assert_eq!(buffer.len(), buffer_len);
 
     // This is the actual buffer that we will be reusing, now full of the final data.
-    let mut buffer = PinnedBuffer::from_boxed_slice(buffer.into_boxed_slice());
+    let mut buffer = Buffer::<Isolated>::from_boxed_slice(buffer.into_boxed_slice());
 
     loop {
         match connection.send(buffer).await {
@@ -137,14 +137,14 @@ async fn send_infinite_response(connection: &mut TcpConnection) -> io::Result<()
 
 async fn send_20kb_response(connection: &mut TcpConnection) -> io::Result<()> {
     connection
-        .send(PinnedBuffer::from_boxed_slice(
+        .send(Buffer::<Isolated>::from_boxed_slice(
             TWENTY_KB_RESPONSE_HEADERS.into(),
         ))
         .await
         .into_inner()?;
 
     connection
-        .send(PinnedBuffer::from_boxed_slice(
+        .send(Buffer::<Isolated>::from_boxed_slice(
             TWENTY_KB_RESPONSE_BODY.into(),
         ))
         .await
@@ -155,7 +155,7 @@ async fn send_20kb_response(connection: &mut TcpConnection) -> io::Result<()> {
 
 async fn send_64mb_response(connection: &mut TcpConnection) -> io::Result<()> {
     connection
-        .send(PinnedBuffer::from_boxed_slice(
+        .send(Buffer::<Isolated>::from_boxed_slice(
             BIG_FILE_RESPONSE_HEADERS.into(),
         ))
         .await
@@ -165,7 +165,9 @@ async fn send_64mb_response(connection: &mut TcpConnection) -> io::Result<()> {
     // so for a realistic benchmark we also emit it here in chunks (total 1024 x 64 KB == 64 MB).
     for _ in 0..1024 {
         connection
-            .send(PinnedBuffer::from_boxed_slice(BIG_FILE_BODY_CHUNK.into()))
+            .send(Buffer::<Isolated>::from_boxed_slice(
+                BIG_FILE_BODY_CHUNK.into(),
+            ))
             .await
             .into_inner()?;
     }
@@ -175,7 +177,7 @@ async fn send_64mb_response(connection: &mut TcpConnection) -> io::Result<()> {
 
 async fn send_not_found_response(connection: &mut TcpConnection) -> io::Result<()> {
     connection
-        .send(PinnedBuffer::from_boxed_slice(
+        .send(Buffer::<Isolated>::from_boxed_slice(
             NOT_FOUND_RESPONSE_HEADERS.into(),
         ))
         .await

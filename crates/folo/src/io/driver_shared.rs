@@ -2,7 +2,7 @@ use crate::constants::GENERAL_MILLISECONDS_BUCKETS;
 use crate::io::{
     self,
     operation_shared::{OperationShared, OperationStoreShared},
-    CompletionPortShared, IoPrimitive, PinnedBufferShared, IO_DEQUEUE_BATCH_SIZE,
+    Buffer, CompletionPortShared, IoPrimitive, Shared, IO_DEQUEUE_BATCH_SIZE,
 };
 use crate::metrics::{Event, EventBuilder, Magnitude};
 use std::mem::{self, MaybeUninit};
@@ -78,7 +78,7 @@ impl DriverShared {
     /// 3. Await the result of `begin()`. You will receive back an `io::Result` with the buffer on
     ///    success. In case of error, the buffer will be provided via `io::Error::OperationFailed`
     ///    so you can reuse it if you wish. An empty buffer on reads signals end of stream.
-    pub(crate) fn new_operation(&self, buffer: PinnedBufferShared) -> OperationShared {
+    pub(crate) fn new_operation(&self, buffer: Buffer<Shared>) -> OperationShared {
         self.operation_store.new_operation(buffer)
     }
 

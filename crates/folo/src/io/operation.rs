@@ -1,6 +1,6 @@
 use crate::{
     constants::{GENERAL_BYTES_BUCKETS, GENERAL_MILLISECONDS_BUCKETS},
-    io::{self, OperationResult, PinnedBuffer},
+    io::{self, Buffer, Isolated, OperationResult},
     mem::{DropPolicy, PinnedSlabChain},
     metrics::{Event, EventBuilder, Magnitude},
     time::UltraLowPrecisionInstant,
@@ -12,6 +12,7 @@ use std::{
     fmt,
     future::Future,
     mem::{self, ManuallyDrop},
+    pin::Pin,
     ptr,
     task::Poll,
 };
@@ -67,7 +68,7 @@ impl OperationStore {
     /// make into a new one of these operations. The caller provides a buffer for any input/output
     /// data, which the operation takes ownership of. Once the operation has completed, the buffer
     /// is returned to the caller for reading, reuse or disposal.
-    pub fn new_operation(&self, buffer: PinnedBuffer) -> Operation {
+    pub fn new_operation(&self, buffer: Buffer<Isolated>) -> Operation {
         OPERATIONS_ALLOCATED.with(Event::observe_unit);
 
         let mut items = self.items.borrow_mut();
@@ -100,7 +101,11 @@ impl OperationStore {
     /// You must also have received a completion notification from the OS, saying that the operation
     /// has completed.
     pub unsafe fn complete_operation(&self, overlapped_entry: OVERLAPPED_ENTRY) {
-        event!(Level::TRACE, message = "I/O operation completed asynchronously", overlapped_ptr = overlapped_entry.lpOverlapped as usize);
+        event!(
+            Level::TRACE,
+            message = "I/O operation completed asynchronously",
+            overlapped_ptr = overlapped_entry.lpOverlapped as usize
+        );
 
         let bytes_transferred = overlapped_entry.dwNumberOfBytesTransferred as usize;
         let status = NTSTATUS(overlapped_entry.Internal as i32);
@@ -262,7 +267,7 @@ struct OperationCore {
     /// The caller-provided buffer containing the data affected by the operation. The Buffer type
     /// guarantees that this is pinned and will not move. Once the operation is complete, we return
     /// the buffer to the caller and set this to None.
-    buffer: Option<PinnedBuffer>,
+    buffer: Option<Buffer<Isolated>>,
 
     /// Used to operate the control node, which requires us to know our own key.
     key: OperationKey,
@@ -285,7 +290,7 @@ struct OperationCore {
 }
 
 impl OperationCore {
-    pub fn new(key: OperationKey, mut buffer: PinnedBuffer) -> Self {
+    pub fn new(key: OperationKey, mut buffer: Buffer<Isolated>) -> Self {
         let (result_tx, result_rx) = oneshot::channel();
 
         // IOCP cannot deal with bigger slices of data than u32::MAX, so limit the active range.
@@ -352,7 +357,7 @@ impl Operation {
 
     /// Executes an I/O operation, using the specified callback to pass the operation buffer and
     /// OVERLAPPED metadata structure to native OS functions.
-    /// 
+    ///
     /// The callback must not reference any data owned by the caller because in many circumstances
     /// the I/O operation may outlive the caller. In other words, any state captured by the closure
     /// must have a 'static lifetime.
@@ -456,12 +461,12 @@ impl Operation {
             // As long as the value is only used during the callback, this is fine (caller is responsible for not using it afterwards).
             unsafe {
                 mem::transmute::<&mut [u8], &mut [u8]>(
-                    operation
+                    Pin::into_inner_unchecked(operation
                         .buffer
                         .as_mut()
                         .expect("the buffer is only removed when the operation completes, so it must exist")
                         .as_mut_slice(),
-                )
+                ))
             },
             &mut operation.overlapped as *mut _,
             // SAFETY: Sets the lifetime to 'static because I cannot figure out a straightforward way to declare lifetimes here.

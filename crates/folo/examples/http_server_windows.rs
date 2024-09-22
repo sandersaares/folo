@@ -1,5 +1,5 @@
 use folo::{
-    io::{self, OperationResultSharedExt, PinnedBufferShared},
+    io::{self, Buffer, OperationResultSharedExt, Shared},
     net::{HttpContext, HttpServerBuilder},
     time::{Clock, Delay},
 };
@@ -45,8 +45,11 @@ async fn handle_request(mut context: HttpContext) -> io::Result<()> {
         .send_response_headers("application/octet-stream", TWENTY_KB_RESPONSE_BODY.len())
         .await?;
 
-    let buffer = PinnedBufferShared::from_boxed_slice(TWENTY_KB_RESPONSE_BODY.into());
-    context.send_response_body(buffer, true).await.into_inner()?;
+    let buffer = Buffer::<Shared>::from_boxed_slice(TWENTY_KB_RESPONSE_BODY.into());
+    context
+        .send_response_body(buffer, true)
+        .await
+        .into_inner()?;
 
     Ok(())
 }

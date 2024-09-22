@@ -1,5 +1,5 @@
 use crate::{
-    io::{self, OperationResultFuture, PinnedBuffer},
+    io::{self, Buffer, Isolated, OperationResultFuture},
     net::winsock,
     rt::{current_async_agent, current_runtime, RemoteJoinHandle, SynchronousTaskType},
     windows::OwnedHandle,
@@ -27,7 +27,7 @@ impl TcpConnection {
     ///
     /// You should not call this multiple times concurrently because there is no guarantee that the
     /// continuations will be called in a particular order.
-    pub fn receive(&mut self, buffer: PinnedBuffer) -> OperationResultFuture {
+    pub fn receive(&mut self, buffer: Buffer<Isolated>) -> OperationResultFuture {
         socket_receive(Arc::clone(&self.socket), buffer)
     }
 
@@ -37,7 +37,7 @@ impl TcpConnection {
     ///
     /// You may call this multiple times concurrently. The buffers will be sent in the order they
     /// are submitted.
-    pub fn send(&mut self, buffer: PinnedBuffer) -> OperationResultFuture {
+    pub fn send(&mut self, buffer: Buffer<Isolated>) -> OperationResultFuture {
         socket_send(Arc::clone(&self.socket), buffer)
     }
 
@@ -56,7 +56,10 @@ impl !Send for TcpConnection {}
 #[negative_impl]
 impl !Sync for TcpConnection {}
 
-fn socket_receive(socket: Arc<OwnedHandle<SOCKET>>, buffer: PinnedBuffer) -> OperationResultFuture {
+fn socket_receive(
+    socket: Arc<OwnedHandle<SOCKET>>,
+    buffer: Buffer<Isolated>,
+) -> OperationResultFuture {
     // SAFETY: We are required to pass the OVERLAPPED pointer to the completion routine. We do.
     unsafe {
         current_async_agent::with_io(|io| io.new_operation(buffer)).begin(
@@ -82,7 +85,10 @@ fn socket_receive(socket: Arc<OwnedHandle<SOCKET>>, buffer: PinnedBuffer) -> Ope
     }
 }
 
-fn socket_send(socket: Arc<OwnedHandle<SOCKET>>, buffer: PinnedBuffer) -> OperationResultFuture {
+fn socket_send(
+    socket: Arc<OwnedHandle<SOCKET>>,
+    buffer: Buffer<Isolated>,
+) -> OperationResultFuture {
     // SAFETY: We are required to pass the OVERLAPPED pointer to the completion routine. We do.
     unsafe {
         current_async_agent::with_io(|io| io.new_operation(buffer)).begin(
@@ -179,7 +185,7 @@ impl Future for ShutdownFuture {
                     };
 
                     let receive_future =
-                        socket_receive(Arc::clone(this.socket), PinnedBuffer::from_pool());
+                        socket_receive(Arc::clone(this.socket), Buffer::<Isolated>::from_pool());
 
                     *this.state = ShutdownState::WaitingForEndOfStream(receive_future);
                     // We fall through to the next state here.

@@ -1,5 +1,5 @@
 use crate::{
-    io::{self, OperationResultSharedExt},
+    io::{self, OperationResultSharedExt, Shared},
     net::{winsock, TcpConnection},
     rt::{current_async_agent, current_runtime, spawn, RemoteJoinHandle, SynchronousTaskType},
     windows::OwnedHandle,
@@ -421,7 +421,7 @@ impl AcceptOne {
         //      outBufLen - ((sizeof (sockaddr_in) + 16) * 2),
         //      sizeof (sockaddr_in) + 16, sizeof (sockaddr_in) + 16,
         //      &dwBytes, &olOverlap);
-        let buffer = io::PinnedBufferShared::from_pool();
+        let buffer = io::Buffer::<Shared>::from_pool();
 
         // The data length in the buffer (if we were to want to use some) would be the buffer size
         // minus double of this (local + remote address).

@@ -1,5 +1,5 @@
 use crate::{
-    io::{self, PinnedBuffer},
+    io::{self, Buffer, Isolated},
     rt::{current_async_agent, spawn_sync, SynchronousTaskType},
     windows::OwnedHandle,
 };
@@ -70,7 +70,7 @@ pub async fn read_large_buffer(path: impl AsRef<Path>) -> io::Result<Vec<u8>> {
         let mut buffer = Vec::<u8>::with_capacity(file_size as usize);
         #[allow(clippy::uninit_vec)] // They are just bytes destined for overwriting, meaningless.
         buffer.set_len(buffer.capacity());
-        let mut buffer = PinnedBuffer::from_boxed_slice(buffer.into_boxed_slice());
+        let mut buffer = Buffer::<Isolated>::from_boxed_slice(buffer.into_boxed_slice());
 
         let mut bytes_read = 0;
 
@@ -92,8 +92,10 @@ pub async fn read_large_buffer(path: impl AsRef<Path>) -> io::Result<Vec<u8>> {
                 );
 
                 buffer = buffer.use_all_until_current();
-                let active_region = buffer.active_region();
-                let inner_slice = buffer.into_inner_boxed_slice();
+                let active_region = buffer.active_range();
+                let inner_slice = buffer
+                    .try_into_inner_boxed_slice()
+                    .expect("we provided a boxed-slice buffer, so the inverse must be possible");
                 let mut as_vec = inner_slice.into_vec();
                 as_vec.set_len(active_region.len());
                 return Ok(as_vec);
@@ -114,8 +116,8 @@ pub async fn read_large_buffer(path: impl AsRef<Path>) -> io::Result<Vec<u8>> {
 async fn read_buffer_from_file(
     file_handle: Rc<OwnedHandle<HANDLE>>,
     offset: usize,
-    mut buffer: PinnedBuffer,
-) -> io::Result<PinnedBuffer> {
+    mut buffer: Buffer<Isolated>,
+) -> io::Result<Buffer<Isolated>> {
     if buffer.len() > MAX_READ_SIZE_BYTES {
         buffer.set_len(MAX_READ_SIZE_BYTES);
     }

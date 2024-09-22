@@ -2,7 +2,7 @@ use crate::constants::GENERAL_MILLISECONDS_BUCKETS;
 use crate::io::{
     self,
     operation::{Operation, OperationStore},
-    CompletionPort, IoPrimitive, IoWaker, PinnedBuffer, IO_DEQUEUE_BATCH_SIZE,
+    Buffer, CompletionPort, IoPrimitive, IoWaker, Isolated, IO_DEQUEUE_BATCH_SIZE,
     WAKE_UP_COMPLETION_KEY,
 };
 use crate::metrics::{Event, EventBuilder, Magnitude};
@@ -75,7 +75,7 @@ impl Driver {
     /// 3. Await the result of `begin()`. You will receive back an `io::Result` with the buffer on
     ///    success. In case of error, the buffer will be provided via `io::Error::OperationFailed`
     ///    so you can reuse it if you wish. An empty buffer on reads signals end of stream.
-    pub(crate) fn new_operation(&mut self, buffer: PinnedBuffer) -> Operation {
+    pub(crate) fn new_operation(&mut self, buffer: Buffer<Isolated>) -> Operation {
         self.operation_store.new_operation(buffer)
     }
 

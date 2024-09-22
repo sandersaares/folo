@@ -1,4 +1,4 @@
-use crate::io::PinnedBufferShared;
+use crate::io::{Buffer, Shared};
 use thiserror::Error;
 
 /// An error for an I/O operation that was attempted on a data buffer. Contains not only the error
@@ -12,11 +12,11 @@ use thiserror::Error;
 #[error("shared I/O operation failed: {inner}")]
 pub struct OperationErrorShared {
     pub inner: crate::io::Error,
-    pub buffer: PinnedBufferShared,
+    pub buffer: Buffer<Shared>,
 }
 
 impl OperationErrorShared {
-    pub fn new(inner: crate::io::Error, buffer: PinnedBufferShared) -> Self {
+    pub fn new(inner: crate::io::Error, buffer: Buffer<Shared>) -> Self {
         Self { inner, buffer }
     }
 
@@ -24,19 +24,19 @@ impl OperationErrorShared {
         self.inner
     }
 
-    pub fn into_inner_and_buffer(self) -> (crate::io::Error, PinnedBufferShared) {
+    pub fn into_inner_and_buffer(self) -> (crate::io::Error, Buffer<Shared>) {
         (self.inner, self.buffer)
     }
 }
 
-pub type OperationResultShared = std::result::Result<PinnedBufferShared, OperationErrorShared>;
+pub type OperationResultShared = std::result::Result<Buffer<Shared>, OperationErrorShared>;
 
 pub trait OperationResultSharedExt {
-    fn into_inner(self) -> crate::io::Result<PinnedBufferShared>;
+    fn into_inner(self) -> crate::io::Result<Buffer<Shared>>;
 }
 
 impl OperationResultSharedExt for OperationResultShared {
-    fn into_inner(self) -> crate::io::Result<PinnedBufferShared> {
+    fn into_inner(self) -> crate::io::Result<Buffer<Shared>> {
         match self {
             Ok(buffer) => Ok(buffer),
             Err(OperationErrorShared { inner, .. }) => Err(inner),

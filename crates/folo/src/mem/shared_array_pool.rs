@@ -145,6 +145,26 @@ impl<const LEN: usize> PooledArrayLease<LEN> {
         }
     }
 
+    /// # Safety
+    /// 
+    /// The caller must guarantee that no aliasing requirements are violated.
+    pub unsafe fn as_ptr(&self) -> *const u8 {
+        self.inner
+            .as_ref()
+            .expect("value must exist until lease is dropped")
+            .ptr
+    }
+
+    /// # Safety
+    /// 
+    /// The caller must guarantee that no aliasing requirements are violated.
+    pub unsafe fn as_mut_ptr(&mut self) -> *mut u8 {
+        self.inner
+            .as_mut()
+            .expect("value must exist until lease is dropped")
+            .ptr
+    }
+
     pub fn to_slice(&self) -> Pin<&[u8]> {
         // SAFETY: The slab chain storage guarantees all arrays are pinned. LEN is the correct size.
         unsafe {
