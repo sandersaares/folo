@@ -459,6 +459,8 @@ impl RuntimeClient {
     ///
     /// This returns immediately. To wait for the runtime to stop, use `wait()`.
     pub fn stop(&self) {
+        self.is_stopping.store(true, Ordering::Relaxed);
+
         for proc in self.core_clients.values() {
             proc.terminate();
         }
@@ -500,8 +502,6 @@ impl RuntimeClient {
     ///
     /// If called more than once.
     pub fn wait(&self) {
-        self.is_stopping.store(true, Ordering::Relaxed);
-
         let mut join_handles = self.join_handles.lock().expect(constants::POISONED_LOCK);
 
         for join_handle in join_handles

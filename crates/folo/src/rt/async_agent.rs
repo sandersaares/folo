@@ -373,7 +373,8 @@ impl AsyncAgent {
             }
 
             // We are shutting down, so we need to drop the I/O driver now and release any resources
-            // it holds (such as the completion port).
+            // it holds (such as the completion port). We assume that `RuntimeClient::is_stopping()`
+            // will prevent any of these drops from trying to schedule background release tasks.
             *io_guard = None;
             *io_shared_guard = None;
         }
