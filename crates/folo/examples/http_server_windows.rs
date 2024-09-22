@@ -1,5 +1,6 @@
 use folo::{
-    io::{self, Buffer, OperationResultSharedExt, Shared},
+    io::{self, Buffer, OperationResultSharedExt},
+    mem::isolation::Shared,
     net::{HttpContext, HttpServerBuilder},
     time::{Clock, Delay},
 };

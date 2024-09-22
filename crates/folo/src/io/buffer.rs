@@ -1,5 +1,5 @@
-use crate::io::{markers, Isolated, Shared};
 use crate::linked::link_ref;
+use crate::mem::isolation::{markers, Isolated, Shared};
 use crate::mem::{DropPolicy, PinnedSlabChain, PooledArrayLease, SharedArrayPool};
 use std::cell::{RefCell, UnsafeCell};
 use std::mem::MaybeUninit;

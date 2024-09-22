@@ -1,4 +1,5 @@
 mod drop_policy;
+pub mod isolation;
 mod pinned_slab;
 mod pinned_slab_chain;
 mod shared_array_pool;

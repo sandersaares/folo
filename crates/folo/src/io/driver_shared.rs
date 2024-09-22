@@ -2,8 +2,9 @@ use crate::constants::GENERAL_MILLISECONDS_BUCKETS;
 use crate::io::{
     self,
     operation_shared::{OperationShared, OperationStoreShared},
-    Buffer, CompletionPortShared, IoPrimitive, Shared, IO_DEQUEUE_BATCH_SIZE,
+    Buffer, CompletionPortShared, IoPrimitive, IO_DEQUEUE_BATCH_SIZE,
 };
+use crate::mem::isolation::Shared;
 use crate::metrics::{Event, EventBuilder, Magnitude};
 use std::mem::{self, MaybeUninit};
 use windows::Win32::{

@@ -1,5 +1,6 @@
 use crate::{
-    io::{self, OperationResultSharedExt, Shared},
+    io::{self, OperationResultSharedExt},
+    mem::isolation::Shared,
     net::{winsock, TcpConnection},
     rt::{current_async_agent, current_runtime, spawn, RemoteJoinHandle, SynchronousTaskType},
     windows::OwnedHandle,

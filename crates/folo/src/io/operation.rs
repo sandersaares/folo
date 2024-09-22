@@ -1,7 +1,7 @@
 use crate::{
     constants::{GENERAL_BYTES_BUCKETS, GENERAL_MILLISECONDS_BUCKETS},
-    io::{self, Buffer, Isolated, OperationResult},
-    mem::{DropPolicy, PinnedSlabChain},
+    io::{self, Buffer, OperationResult},
+    mem::{isolation::Isolated, DropPolicy, PinnedSlabChain},
     metrics::{Event, EventBuilder, Magnitude},
     time::UltraLowPrecisionInstant,
 };

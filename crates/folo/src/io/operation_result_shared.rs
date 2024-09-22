@@ -1,4 +1,5 @@
-use crate::io::{Buffer, Shared};
+use crate::io::Buffer;
+use crate::mem::isolation::Shared;
 use thiserror::Error;
 
 /// An error for an I/O operation that was attempted on a data buffer. Contains not only the error

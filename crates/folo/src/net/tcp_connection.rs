@@ -1,5 +1,6 @@
 use crate::{
-    io::{self, Buffer, Isolated, OperationResultFuture},
+    io::{self, Buffer, OperationResultFuture},
+    mem::isolation::Isolated,
     net::winsock,
     rt::{current_async_agent, current_runtime, RemoteJoinHandle, SynchronousTaskType},
     windows::OwnedHandle,

@@ -1,6 +1,7 @@
 use super::HttpServerSession;
 use crate::{
-    io::{self, Buffer, OperationResultShared, OperationResultSharedExt, Shared},
+    io::{self, Buffer, OperationResultShared, OperationResultSharedExt},
+    mem::isolation::Shared,
     net::http_sys,
     rt::current_async_agent,
 };

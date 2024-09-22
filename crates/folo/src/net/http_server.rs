@@ -1,4 +1,5 @@
-use crate::io::{Buffer, OperationResultSharedExt, Shared};
+use crate::io::{Buffer, OperationResultSharedExt};
+use crate::mem::isolation::Shared;
 use crate::net::HttpContext;
 use crate::rt::{current_async_agent, current_runtime, spawn, RemoteJoinHandle};
 use crate::util::ThreadSafe;

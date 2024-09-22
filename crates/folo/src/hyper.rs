@@ -1,18 +1,17 @@
+use crate::{
+    io::{Buffer, OperationResultFuture},
+    mem::isolation::Isolated,
+    net::{ShutdownFuture, TcpConnection},
+    rt,
+    time::{Clock, Delay},
+};
+use hyper::rt::{Executor, Read, ReadBufCursor, Sleep, Timer, Write};
+use pin_project::pin_project;
 use std::{
     future::Future,
     mem::{self, MaybeUninit},
     pin::{pin, Pin},
     task::{Context, Poll},
-};
-
-use hyper::rt::{Executor, Read, ReadBufCursor, Sleep, Timer, Write};
-use pin_project::pin_project;
-
-use crate::{
-    io::{Buffer, Isolated, OperationResultFuture},
-    net::{ShutdownFuture, TcpConnection},
-    rt,
-    time::{Clock, Delay},
 };
 
 // Executor
