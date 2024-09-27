@@ -1,5 +1,5 @@
 use crate::rt::sync_agent::SyncAgent;
-use std::{cell::RefCell, rc::Rc};
+use std::{cell::OnceCell, rc::Rc};
 
 /// Executes a closure that receives the current thread's sync agent for the runtime that owns the
 /// current thread. The agent provides low-level access to Folo runtime internals for this thread.
@@ -11,23 +11,21 @@ pub fn with<F, R>(f: F) -> R
 where
     F: FnOnce(&SyncAgent) -> R,
 {
-    CURRENT_AGENT.with_borrow(|agent| {
+    CURRENT_AGENT.with(|agent| {
         f(agent
-            .as_ref()
+            .get()
             .expect("this thread is not an sync worker thread owned by the Folo runtime"))
     })
 }
 
 pub fn set(value: Rc<SyncAgent>) {
-    CURRENT_AGENT.with_borrow_mut(|agent| {
-        if agent.is_some() {
-            panic!("this thread is already registered to a Folo runtime");
-        }
-
-        *agent = Some(value);
+    CURRENT_AGENT.with(|agent| {
+        agent
+            .set(value)
+            .expect("this thread is already registered to a Folo runtime");
     });
 }
 
 thread_local!(
-    static CURRENT_AGENT: RefCell<Option<Rc<SyncAgent>>> = const { RefCell::new(None) }
+    static CURRENT_AGENT: OnceCell<Rc<SyncAgent>> = OnceCell::new();
 );
