@@ -1,5 +1,5 @@
 use crate::rt::runtime_client::RuntimeClient;
-use std::cell::RefCell;
+use std::cell::OnceCell;
 
 /// Executes a closure that receives the Folo runtime client for the runtime that owns the current
 /// thread.
@@ -11,9 +11,9 @@ pub fn with<F, R>(f: F) -> R
 where
     F: FnOnce(&RuntimeClient) -> R,
 {
-    CURRENT.with_borrow(|runtime| {
+    CURRENT.with(|runtime| {
         f(runtime
-            .as_ref()
+            .get()
             .expect("thread is not owned by the Folo runtime"))
     })
 }
@@ -21,24 +21,21 @@ where
 /// Attempts to get a new shared reference to the Folo runtime client for the runtime that owns the
 /// current thread.
 pub fn try_get() -> Option<RuntimeClient> {
-    CURRENT.with_borrow(|runtime| runtime.clone())
+    CURRENT.with(|runtime| runtime.get().cloned())
 }
 
 pub fn is_some() -> bool {
-    CURRENT.with_borrow(|runtime| runtime.is_some())
+    CURRENT.with(|runtime| runtime.get().is_some())
 }
 
 pub fn set(value: RuntimeClient) {
-    CURRENT.with_borrow_mut(|runtime| {
-        assert!(
-            runtime.is_none(),
-            "thread is already registered to a Folo runtime"
-        );
-
-        *runtime = Some(value);
+    CURRENT.with(|runtime| {
+        runtime
+            .set(value)
+            .expect("thread is already registered to a Folo runtime");
     });
 }
 
 thread_local!(
-    static CURRENT: RefCell<Option<RuntimeClient>> = const { RefCell::new(None) }
+    static CURRENT: OnceCell<RuntimeClient> = OnceCell::new();
 );
