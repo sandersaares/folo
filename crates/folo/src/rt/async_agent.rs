@@ -1,14 +1,11 @@
 use super::erased_async_task::ErasedResultAsyncTask;
 use crate::{
-    io,
-    metrics::{self, Event, EventBuilder, ReportPage},
-    rt::{
+    io, metrics::{self, Event, EventBuilder, ReportPage}, net::poll_local_events, rt::{
         async_task_engine::{AsyncTaskEngine, CycleResult},
         current_runtime,
         local_task::LocalTask,
         LocalJoinHandle,
-    },
-    time::{advance_local_timers, UltraLowPrecisionInstant},
+    }, time::{advance_local_timers, UltraLowPrecisionInstant}
 };
 use core_affinity::CoreId;
 use crossbeam::channel;
@@ -281,6 +278,8 @@ impl AsyncAgent {
                 .as_mut()
                 .expect("the I/O driver is only removed on shutdown so it must still be there")
                 .process_completions(io_wait_time_ms);
+
+            poll_local_events().expect("error while polling the TCP connections");
 
             // We always only poll this, never wait on it - any waiting occurs above. One
             // implication of this is that if a completion arrives here, we may still end up waiting
