@@ -67,8 +67,9 @@ its `cbh_*` implementation crates.
 Such crates must always be released at the same version. Enforce this in two
 places, and keep both in sync:
 
-* **`release-plz.toml`** — give every crate in the set the same `version_group`
-  so release-plz bumps them together.
+* **`[workspace.metadata.release-plan.groups]`** in the root `Cargo.toml` — give
+  every crate in the set the same group so `cargo-release-plan` expands an
+  increment across all of them.
 * **The workspace `Cargo.toml`** — every reference *between* members of the set
   is an **exact `=` pin** (`version = "=1.2.3"`). Members are one package as far
   as consumers are concerned, so an exact pin is what stops a consumer resolving

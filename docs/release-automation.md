@@ -3,29 +3,31 @@
 This chapter describes how releases work in this repository (tracking issue
 [#297](https://github.com/folo-rs/folo/issues/297)). Releasing to crates.io and
 shipping `cargo-binstall`-consumable prebuilt binaries is driven from CI on merge
-to `main`; version bumping is the only manual step.
+to `main`. Version increments land in the pull request that causes them; see
+[`release-versioning.md`](release-versioning.md).
 
 ## Meta
 
 * **Open this when**: implementing or debugging automated releases, the
   crates.io/OIDC publish flow, the prebuilt-binary matrix, the `cargo-binstall`
   asset-naming contract, or a publish that hit crates.io rate limits.
-* **Cross-links**: [`git-workflow.md`](git-workflow.md) (version bumps happen off
-  feature branches), [`build-and-tooling.md`](build-and-tooling.md) (`just`
-  recipes), [`.github/workflows/design.md`](../.github/workflows/design.md) (the
-  bench matrix this reuses), [`RELEASING.md`](../RELEASING.md) (the
-  maintainer-facing procedure).
+* **Cross-links**: [`release-versioning.md`](release-versioning.md) (how versions
+  are decided and enforced), [`git-workflow.md`](git-workflow.md) (contributor
+  pull-request conventions), [`build-and-tooling.md`](build-and-tooling.md)
+  (`just` recipes), [`.github/workflows/design.md`](../.github/workflows/design.md)
+  (the bench matrix this reuses), [`RELEASING.md`](../RELEASING.md) (first
+  publish, emergency manual publish, remaining GitHub settings).
 
 ## The flow
 
-The maintainer bumps versions on `main` (`just prepare-release`, which runs
-`release-plz update`, or by hand) and pushes. Everything after that is automatic.
+A pull request that changes released content increments the affected packages.
+Merge to `main` is the release. Everything after that is automatic.
 
 ```mermaid
 flowchart TD
-    A["Maintainer: just prepare-release<br/>(bump versions on main)"] --> B["Push / merge to main"]
+    A["Merge of a PR that incremented"] --> B["Push to main"]
     B --> C["release.yml runs on every push to main"]
-    C --> D{"release-plz detects a<br/>version bump?"}
+    C --> D{"release-plz detects an<br/>unpublished version?"}
     D -- no --> Z["No-op (most pushes)"]
     D -- yes --> E["Publish changed crates to crates.io<br/>(Trusted Publishing, OIDC — no token)"]
     E --> F["Create a git tag + GitHub release<br/>per published binary crate"]
@@ -37,25 +39,20 @@ flowchart TD
     H -. any job fails .-> K
 ```
 
-Version bumping stays manual so the human review gate on version numbers is
-preserved; CI automates the *publish* and *binary* halves only.
+CI automates the *publish* and *binary* halves. Version numbers are decided in
+the pull request, with `cargo-semver-checks` as a floor — see
+[`release-versioning.md`](release-versioning.md).
 
-### Preflights around `release-plz update`
+### `verify-semver-checks` canary
 
-`just prepare-release` wraps `release-plz update` in two guard rails, both of which
-fail *before* any version or changelog is touched:
-
-* **cargo-semver-checks canary** (`verify-semver-checks`, a pre-step). release-plz
-  runs cargo-semver-checks to decide whether a bump must be *major*, but when the
-  tool *fails to run* — classically an installed cargo-semver-checks too old for the
-  toolchain's rustdoc JSON format ("unsupported rustdoc format v…") — release-plz
-  silently treats that as "no breaking changes", turning a broken tool into an
-  undetected breaking release. The canary runs cargo-semver-checks on one small
-  package compared against its own `HEAD`, so the two sides are byte-identical and
-  the *only* way the check can fail is the tool failing to run. A non-zero exit
-  aborts the release with instructions to update the tool.
-* **never-published warning** (`check-never-published`, a post-step). See
-  [Manual publishing](#manual-publishing) below.
+`just verify-semver-checks` proves that `cargo-semver-checks` can actually run
+before the `increment-versions` skill or the CI `semver-checks` job trusts it.
+When the tool *fails to run* — classically an installed cargo-semver-checks too
+old for the toolchain's rustdoc JSON format ("unsupported rustdoc format v…") —
+a broken tool must never be read as "no breaking changes". The canary runs
+cargo-semver-checks on one small package compared against its own `HEAD`, so the
+two sides are byte-identical and the *only* way the check can fail is the tool
+failing to run.
 
 ## What ships a binary (derived, never hardcoded)
 
@@ -83,10 +80,10 @@ every binary regardless of whether it is published (tracked separately in
 ## The `release.yml` workflow
 
 A single workflow, triggered on `push: branches: [main]`, holds four jobs.
-`release-plz release` is idempotent — on a push with no version change it is a
-no-op — so the workflow runs on every push to `main` and only acts when a bump
-landed. It also accepts a bare `workflow_dispatch` (no inputs) that re-runs the
-same flow to auto-heal missing binaries, as described under
+`release-plz release` is idempotent — on a push with no unpublished version it is
+a no-op — so the workflow runs on every push to `main` and only acts when a
+version increment landed. It also accepts a bare `workflow_dispatch` (no inputs)
+that re-runs the same flow to auto-heal missing binaries, as described under
 [Robust publishing](#robust-publishing).
 
 Keeping publish and binaries in **one** workflow run is deliberate: a workflow
@@ -133,7 +130,7 @@ publish:
   permissions:
     contents: write   # release-plz creates tags + GitHub releases
     id-token: write   # crates.io Trusted Publishing (OIDC)
-  timeout-minutes: 180   # generous: covers up to 3 retry attempts (see below)
+  timeout-minutes: 350   # just below the GitHub 6-hour cap; covers 10 retry attempts (see below)
   steps:
     - uses: actions/checkout@v7
       with:
@@ -349,9 +346,11 @@ versions), and Trusted-Publishing OIDC tokens are short-lived (~30 minutes). The
 publish step is built to ride out both without bespoke complexity:
 
 * **Bounded retry.** The `release-plz release` invocation is wrapped in a retry —
-  up to **3 attempts, 15 minutes apart**. The `publish` job's `timeout-minutes`
-  is set generously (≈180) so the surrounding timeout never cuts a retry short,
-  and release-plz keeps its 45-minute `publish_timeout`.
+  up to **10 attempts, 15 minutes apart**. Each wait refills roughly fifteen
+  crates.io tokens, so a full-workspace publish fits inside the budget. The
+  `publish` job's `timeout-minutes` is set just below GitHub's six-hour cap
+  (350) so the job's own timeout fires first, and release-plz keeps its
+  45-minute `publish_timeout`.
 * **Idempotency does the heavy lifting.** Each `release-plz release` run
   re-checks crates.io and publishes only versions not already there. So a retry
   after a rate-limit rejection (or a manual re-run of the whole workflow) resumes
@@ -380,17 +379,17 @@ release-plz invocation.)
 
 ## release-plz configuration
 
-[`release-plz.toml`](../release-plz.toml) changes from today's config:
+[`release-plz.toml`](../release-plz.toml) is the publish-half config:
 
 * `git_release_enable` stays **`false`** at the workspace level (pure-library and
   invisible `_impl` / `_macros` crates must not spawn releases — there are many of
   them and the noise is not wanted), and is turned on **per binary crate**.
 * `git_tag_name = "{{ package }}-v{{ version }}"` is pinned explicitly. This is
-  already the workspace default, but pinning it freezes the tag format that the
+  the workspace default, but pinning it freezes the tag format that the
   binstall URLs depend on, so a future release-plz default change cannot silently
   break installs.
-* `changelog_update = false`, `publish_timeout = "45m"`, `allow_dirty = true`, and
-  every existing `version_group` pin are unchanged.
+* `changelog_update = false`, `publish_timeout = "45m"`, and `allow_dirty = true`.
+  Version groups live in `[workspace.metadata.release-plan]`, not here.
 
 **Per-binary-crate git releases, injected dynamically.** Rather than committing
 `git_release_enable = true` into each binary crate's `[[package]]` entry (which
@@ -468,7 +467,7 @@ a brand-new crate's **first** version must be published manually with `cargo
 publish` (a token login), after which its trusted publisher is configured on
 crates.io and subsequent releases go through CI.
 
-`just prepare-release` surfaces this proactively: after bumping versions it checks
+`just check-never-published` (the `increment-versions` skill's preflight) checks
 each publishable crate against the crates.io sparse index and, for any that does
 not yet exist, prints a warning like:
 

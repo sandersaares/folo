@@ -442,25 +442,6 @@ Describe 'cargo-semver-checks target directory' {
             }
         }
     }
-
-    It 'scopes the target directory around release-plz update' {
-        InModuleScope ReleasePlan {
-            $target = Join-Path $TestDrive 'short-target'
-            $script:observedArgument = $null
-            $script:observedTarget = $null
-
-            Invoke-ReleasePlzUpdate `
-                -TargetDirectory $target `
-                -ReleasePlz {
-                    param([string[]] $Argument)
-                    $script:observedArgument = @($Argument)
-                    $script:observedTarget = $env:CARGO_TARGET_DIR
-                }
-
-            $script:observedArgument | Should -Be @('update')
-            $script:observedTarget | Should -BeExactly $target
-        }
-    }
 }
 
 Describe 'Invoke-ReleaseReport' {

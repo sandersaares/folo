@@ -390,29 +390,6 @@ function Invoke-VerifySemverCheck {
     }
 }
 
-function Invoke-ReleasePlzUpdate {
-    # release-plz invokes cargo-semver-checks internally, so it must share the same Windows path
-    # mitigation as direct checks.
-    [CmdletBinding()]
-    param(
-        [scriptblock] $ReleasePlz = {
-            param([string[]] $Argument)
-            & release-plz @Argument
-        },
-        [AllowNull()][string] $TargetDirectory
-    )
-
-    $argument = @('update')
-    $action = { & $ReleasePlz $argument }
-    if ($PSBoundParameters.ContainsKey('TargetDirectory')) {
-        Invoke-WithSemverCheckTargetDirectory `
-            -Action $action `
-            -TargetDirectory $TargetDirectory
-    } else {
-        Invoke-WithSemverCheckTargetDirectory -Action $action
-    }
-}
-
 function Assert-SemverCheckExitCode {
     # Both completed cargo-semver-checks outcomes are retained as evidence because a finding exit
     # still means the comparison ran successfully and produced the log the skill needs.
@@ -1840,7 +1817,6 @@ function New-ReleasePlanFile {
 Export-ModuleMember -Function `
     Invoke-ValidateVersions, `
     Invoke-VerifySemverCheck, `
-    Invoke-ReleasePlzUpdate, `
     Invoke-ReleaseReport, `
     Invoke-SemverCheck, `
     Get-ReleasePlanAnalysisBatchJson, `

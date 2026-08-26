@@ -1,6 +1,6 @@
 # Fixture release-plz config for exercising New-ReleasePlzConfig / Add-GitReleaseEnableFlag.
 # It mirrors the real committed config's shape: releases off at the workspace level, one crate
-# with an existing [[package]] entry carrying an unrelated key (version_group) that injection
+# with an existing [[package]] entry carrying an unrelated key (changelog_update) that injection
 # must preserve, plus a name-prefix sibling (demo-tool-core) that exact-match injection must not
 # touch when enabling demo-tool. A crate with no entry here (e.g. pub-bin) gets a fresh block.
 [workspace]
@@ -9,8 +9,8 @@ allow_dirty = true
 
 [[package]]
 name = "demo-tool"
-version_group = "demo"
+changelog_update = false
 
 [[package]]
 name = "demo-tool-core"
-version_group = "demo"
+changelog_update = false

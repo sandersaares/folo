@@ -1,7 +1,6 @@
 # Git workflow
 
-This chapter covers conventions for working with git, GitHub pull requests, and
-the release process from the contributor side.
+This chapter covers conventions for working with git and GitHub pull requests.
 
 ## Creating GitHub pull requests
 
@@ -17,5 +16,11 @@ pushing the commit that addresses it.
 
 ## Version bumps
 
-Do not bump crate versions in feature branches. Version bumps are handled by the
-release process.
+A pull request that changes a package's released content must increment that
+package's version. The increment *is* the release: merge publishes. Do not bump
+casually, and do not leave released-content changes without an increment.
+
+Run the `increment-versions` skill to propose and apply levels. The author may
+raise a level above the `cargo-semver-checks` floor; they may not lower one.
+
+See [release-versioning.md](release-versioning.md).

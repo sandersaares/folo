@@ -166,7 +166,9 @@ members declare, so nothing is published for a change it did not make, but by a 
 the whole group where that alignment would rewrite a requirement inside a member that otherwise
 kept an already-published version. A package the release baseline has never published takes the
 first-publication path rather than an increment. The [`increment-versions`
-skill](../skills/increment-versions/SKILL.md) carries out this policy and owns the procedure.
+skill](../skills/increment-versions/SKILL.md) carries out this policy and owns the procedure,
+and [`docs/release-versioning.md`](../../docs/release-versioning.md) is the chapter that
+governs it.
 
 Two consequences of a package's manifest are checked directly rather than left to that review.
 Every requirement on another workspace package names the exact version its target declares, so a

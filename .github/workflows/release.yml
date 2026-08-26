@@ -1,9 +1,9 @@
 name: Release
 
 # Automated crates.io publishing + cargo-binstall prebuilt binaries, driven from
-# every push to `main`. Version bumping is the only manual step (`just prepare-release`
-# then push); everything here is automatic. See docs/release-automation.md for the
-# full design.
+# every push to `main`. Version increments land in the pull request that causes
+# them; merge publishes. See docs/release-versioning.md and
+# docs/release-automation.md.
 #
 # Publishing and the binary jobs live in ONE workflow run on purpose: a tag/release
 # created with the default GITHUB_TOKEN does not trigger downstream `on: release` /
@@ -36,10 +36,11 @@ jobs:
     # already main-only, so this stops a dispatch on a feature branch from publishing.
     if: github.repository == 'folo-rs/folo' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    # Generous ceiling: covers up to 3 publish attempts (release-plz publish_timeout is
-    # 45m) with 15-minute waits between retries (~165m), plus up to 90 min for a cold-cache
-    # setup-environment, comfortably under this cap.
-    timeout-minutes: 270
+    # Just below GitHub's 6-hour cap so this timeout fires first. Covers 10 publish
+    # attempts (release-plz publish_timeout is 45m) with 15-minute waits between retries,
+    # which is the rate-limit budget for a full-workspace publish. See
+    # docs/release-versioning.md.
+    timeout-minutes: 350
 
     permissions:
       # release-plz pushes the git tags and creates the GitHub releases.
