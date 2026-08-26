@@ -2,10 +2,11 @@
 name = "many_cpus_benchmarking"
 description = "Criterion benchmark harness to easily compare different processor configurations"
 publish = true
-version = "0.2.8"
+version = "0.2.9"
 
 authors.workspace = true
 edition.workspace = true
+include.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true

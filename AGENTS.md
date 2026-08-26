@@ -119,6 +119,16 @@ must be `path = "../foo"` references.
 `Cargo.toml`; taking a dev-dependency on another workspace crate; deciding
 whether to enable default features.
 
+### [docs/packaging.md](docs/packaging.md)
+
+What a published crate archive contains: the `include` allow-list every
+publishable package declares, the compile-time inputs that justify shipping a
+file outside `src/`, and the inputs Cargo adds regardless.
+
+**Open this when**: adding a publishable package; changing what a package ships;
+embedding a file into the crate at compile time; wondering whether a README,
+diagram, or design document belongs in the archive.
+
 ### [docs/feature-flags.md](docs/feature-flags.md)
 
 Conditional compilation: gating test-only code with `#[cfg(test)]`, gating

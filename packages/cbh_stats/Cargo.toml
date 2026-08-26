@@ -4,10 +4,11 @@
 name = "cbh_stats"
 description = "Implementation crate for cargo-bench-history - do not reference directly"
 publish = true
-version = "0.2.3"
+version = "0.2.4"
 
 authors.workspace = true
 edition.workspace = true
+include.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true

@@ -2,13 +2,17 @@
 name = "region_cached"
 description = "Adds a logical layer of caching between processor L3 cache and main memory"
 publish = true
-version = "1.0.32"
+version = "1.0.33"
 
 authors.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
+
+# The diagrams are embedded into the rendered documentation at compile time.
+# Ref: docs/packaging.md.
+include = ["src/**/*", "doc/**/*"]
 
 [package.metadata.docs.rs]
 all-features = true

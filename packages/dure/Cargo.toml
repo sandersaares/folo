@@ -2,18 +2,14 @@
 name = "dure"
 description = "Detachable Windows console sessions that outlive the terminal"
 publish = true
-version = "0.2.2"
+version = "0.2.3"
 
 authors.workspace = true
 edition.workspace = true
+include.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-
-# Only what builds the source, plus the landing page crates.io renders. The guides under `docs/`
-# are written for maintainers of this repository and link to repository-root documents that no
-# crate archive carries, so a packaged copy could not be followed to a complete picture anyway.
-include = ["Cargo.toml", "README.md", "src/**/*"]
 
 # `dure` is a command-line tool; its Rust API exists only so the in-package binary and the
 # integration tests can reach the crate, so the crate root carries
