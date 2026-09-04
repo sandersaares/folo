@@ -47,7 +47,9 @@ On Windows, the module scopes `CARGO_TARGET_DIR` for direct `cargo-semver-checks
 `release-plz update` invocations to a stable, workspace-specific directory beneath the user
 temporary directory. This keeps the SemVer tool's nested placeholder builds independent of
 checkout depth without changing target-directory behavior for unrelated Cargo commands or
-non-Windows validation.
+non-Windows validation. The override can be reassessed when
+[cargo-semver-checks issue #1725](https://github.com/obi1kenobi/cargo-semver-checks/issues/1725)
+shortens the generated paths upstream.
 
 ## Merge-blocking result
 
