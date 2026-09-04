@@ -328,6 +328,141 @@ Describe 'Assert-SemverCheckExitCode' {
     }
 }
 
+Describe 'cargo-semver-checks target directory' {
+    It 'creates a stable workspace-specific path under the temporary root' {
+        InModuleScope ReleasePlan {
+            $tempRoot = Join-Path $TestDrive 'temp'
+            $firstWorkspace = Join-Path $TestDrive 'first-workspace'
+            $secondWorkspace = Join-Path $TestDrive 'second-workspace'
+
+            $first = Get-SemverCheckTargetDirectory `
+                -WorkspaceRoot $firstWorkspace `
+                -TempRoot $tempRoot
+            $firstAgain = Get-SemverCheckTargetDirectory `
+                -WorkspaceRoot $firstWorkspace `
+                -TempRoot $tempRoot
+            $second = Get-SemverCheckTargetDirectory `
+                -WorkspaceRoot $secondWorkspace `
+                -TempRoot $tempRoot
+
+            Split-Path -Parent $first | Should -BeExactly ([IO.Path]::GetFullPath($tempRoot))
+            $first | Should -BeExactly $firstAgain
+            $first | Should -Not -BeExactly $second
+        }
+    }
+
+    It 'preserves a configured target directory when it is shorter' {
+        InModuleScope ReleasePlan {
+            $previous = [Environment]::GetEnvironmentVariable(
+                'CARGO_TARGET_DIR',
+                'Process'
+            )
+            $configured = Join-Path $TestDrive 't'
+            try {
+                [Environment]::SetEnvironmentVariable(
+                    'CARGO_TARGET_DIR',
+                    $configured,
+                    'Process'
+                )
+                $actual = Get-SemverCheckTargetDirectory `
+                    -WorkspaceRoot (Join-Path $TestDrive 'workspace') `
+                    -TempRoot (Join-Path $TestDrive 'deliberately-long-temporary-root')
+
+                $actual | Should -BeExactly ([IO.Path]::GetFullPath($configured))
+            } finally {
+                [Environment]::SetEnvironmentVariable(
+                    'CARGO_TARGET_DIR',
+                    $previous,
+                    'Process'
+                )
+            }
+        }
+    }
+
+    It 'scopes the target directory to the SemVer command and restores the environment' {
+        InModuleScope ReleasePlan {
+            $previous = [Environment]::GetEnvironmentVariable(
+                'CARGO_TARGET_DIR',
+                'Process'
+            )
+            $target = Join-Path $TestDrive 'short-target'
+            $script:observedTarget = $null
+            try {
+                [Environment]::SetEnvironmentVariable(
+                    'CARGO_TARGET_DIR',
+                    'original-target',
+                    'Process'
+                )
+                Invoke-WithSemverCheckTargetDirectory `
+                    -Action {
+                        $script:observedTarget = $env:CARGO_TARGET_DIR
+                    } `
+                    -TargetDirectory $target
+
+                $script:observedTarget | Should -BeExactly $target
+                $env:CARGO_TARGET_DIR | Should -BeExactly 'original-target'
+            } finally {
+                [Environment]::SetEnvironmentVariable(
+                    'CARGO_TARGET_DIR',
+                    $previous,
+                    'Process'
+                )
+            }
+        }
+    }
+
+    It 'restores an absent target directory when the SemVer command fails' {
+        InModuleScope ReleasePlan {
+            $previous = [Environment]::GetEnvironmentVariable(
+                'CARGO_TARGET_DIR',
+                'Process'
+            )
+            try {
+                [Environment]::SetEnvironmentVariable(
+                    'CARGO_TARGET_DIR',
+                    $null,
+                    'Process'
+                )
+                {
+                    Invoke-WithSemverCheckTargetDirectory `
+                        -Action { throw 'expected failure' } `
+                        -TargetDirectory (Join-Path $TestDrive 'short-target')
+                } | Should -Throw '*expected failure*'
+
+                [Environment]::GetEnvironmentVariable(
+                    'CARGO_TARGET_DIR',
+                    'Process'
+                ) | Should -BeNullOrEmpty
+            } finally {
+                [Environment]::SetEnvironmentVariable(
+                    'CARGO_TARGET_DIR',
+                    $previous,
+                    'Process'
+                )
+            }
+        }
+    }
+
+    It 'scopes the target directory around release-plz update' {
+        InModuleScope ReleasePlan {
+            $target = Join-Path $TestDrive 'short-target'
+            $script:observedArgument = $null
+            $script:observedTarget = $null
+
+            Invoke-ReleasePlzUpdate `
+                -TargetDirectory $target `
+                -ReleasePlz {
+                    param([string[]] $Argument)
+                    $script:observedArgument = @($Argument)
+                    $script:observedTarget = $env:CARGO_TARGET_DIR
+                }
+
+            $script:observedArgument | Should -Be @('update')
+            $script:observedTarget | Should -BeExactly $target
+        }
+    }
+}
+
 Describe 'Invoke-ReleaseReport' {
     It 'runs SemVer checks only for the explicit report targets' {
         $outDir = Join-Path $TestDrive 'collect'
