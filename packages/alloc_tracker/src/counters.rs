@@ -1,8 +1,12 @@
 //! Per-thread allocation counters and the process-wide registry over them.
 //!
-//! Every allocator event updates only the counters belonging to the thread that
+//! A tracked allocator event updates only the counters belonging to the thread that
 //! caused it, so the hot path never contends. A registry retains every thread's
 //! counters for the process lifetime, which lets a process-scoped span sum them.
+//!
+//! Two windows are deliberately left untracked, both to keep the allocator from
+//! re-entering itself: allocations made while a thread's own counters are being
+//! created, and deallocations on a thread that has no counters yet.
 
 use std::cell::{Cell, OnceCell};
 use std::marker::PhantomData;
@@ -501,6 +505,10 @@ mod tests {
         const ALLOCS_PER_WRITER: u64 = 10;
         const BYTES_PER_ALLOC: u64 = 50;
 
+        /// How many snapshots the reader takes while the writers are running. Enough to
+        /// overlap the writes without making the test slow.
+        const READS: usize = 20;
+
         // Writers drive the production single-writer path while a reader sums the registry.
         // The barrier makes the phases overlap: every writer has registered its counters
         // before the reader starts, and the reader is running while the writes land.
@@ -533,8 +541,20 @@ mod tests {
             .collect();
 
             ready.wait();
-            for _ in 0..20 {
-                let _totals = allocation_totals();
+
+            // The reader runs concurrently with the writers, so what it observes is
+            // asserted rather than discarded: totals only ever grow, so every snapshot
+            // must sit at or above the previous one and at or above the baseline. A
+            // registry read that tore across a concurrent write, skipped a block, or
+            // double-counted one would break that ordering.
+            let mut previous = baseline;
+            for _ in 0..READS {
+                let totals = allocation_totals();
+                assert!(
+                    totals.bytes >= previous.bytes && totals.count >= previous.count,
+                    "totals went backwards: {previous:?} then {totals:?}"
+                );
+                previous = totals;
             }
 
             for handle in writers {
@@ -544,6 +564,10 @@ mod tests {
             let final_totals = allocation_totals();
             let bytes_delta = final_totals.bytes.wrapping_sub(baseline.bytes);
             assert!(bytes_delta >= WRITER_THREADS * ALLOCS_PER_WRITER * BYTES_PER_ALLOC);
+            assert!(
+                final_totals.bytes >= previous.bytes,
+                "the final total must include everything the concurrent reads saw"
+            );
         });
     }
 }

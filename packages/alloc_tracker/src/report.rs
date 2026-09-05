@@ -450,7 +450,8 @@ pub(crate) fn format_count(value: f64) -> String {
     rendered
 }
 
-// No API contract to test - output format is not guaranteed.
+// The exact layout carries no API contract and the formatter's error paths are unreachable
+// here. Which figures appear, and the no-measurements case, are contractual and are tested.
 #[cfg_attr(coverage_nightly, coverage(off))]
 impl fmt::Display for ReportOperation {
     /// Renders the per-iteration byte and allocation figures.
@@ -890,14 +891,18 @@ mod tests {
     #[test]
     fn report_operation_display_shows_robust_per_iteration_estimate() {
         // 250 bytes/iter over 4 iterations → a single-span slope of 250 with the
-        // interval collapsed onto it.
+        // interval collapsed onto it. Each figure is asserted against its own label so
+        // that rendering one metric in the other's place would fail.
         let operation = report_operation(250, 3, 4);
         let display_output = operation.to_string();
         assert!(
-            display_output.contains("bytes/iter"),
+            display_output.contains("250 bytes/iter"),
             "got {display_output}"
         );
-        assert!(display_output.contains("250"), "got {display_output}");
+        assert!(
+            display_output.contains("3 allocations/iter"),
+            "got {display_output}"
+        );
     }
 
     #[test]

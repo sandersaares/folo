@@ -13,8 +13,11 @@ allocator events → per-thread counters → span measurement → operation metr
                                               outputs ← report ← session
 ```
 
-The allocator wrapper turns every allocation and deallocation into an update of the calling
-thread's counters, which live for the lifetime of the process and belong to no session.
+The allocator wrapper turns each successful allocation and each deallocation into an update
+of the calling thread's counters, which live for the lifetime of the process and belong to
+no session. Two windows are deliberately not counted: allocations made while a thread's own
+counters are being created, and deallocations on a thread that has never allocated, because
+creating counters from a free would re-enter the allocator.
 
 A span reads those counters at its boundaries and turns the difference into one measurement
 record. Thread and process spans differ only in which counters they read and in whether they
@@ -27,8 +30,11 @@ name twice hands out the same statistics.
 
 A report is a detached snapshot of that state: it copies the accumulators themselves rather
 than the figures derived from them, which is what lets two reports merge into a statistically
-correct third one. Both the table and the JSON files are rendered from a report, so every
-output of a session necessarily agrees with every other.
+correct third one. Both the table and the JSON files are rendered from that one snapshot, so
+the figures they show for an operation always agree. They differ only in which operations
+they list: the table has a row for every registered operation, marking one that recorded no
+spans as unavailable, while the JSON output writes a file only for operations that have
+statistics to report.
 
 ## Counters
 

@@ -51,9 +51,8 @@ choice for one caller-owned measurement enclosing work whose threads cannot be
 instrumented, and it accepts several costs in exchange:
 
 * It attributes to the operation any concurrent allocation by unrelated threads.
-* It is more expensive to capture, because it must consult every thread in the process.
-* Its totals are approximate. They are assembled from per-thread counters read one after
-  another rather than from one instantaneous view of the process.
+* It is more expensive to capture than thread scope.
+* Its totals are approximate. They do not represent one instantaneous view of the process.
 * It cannot report peak outstanding bytes, and one such span withholds the peak from the
   whole operation.
 
@@ -118,10 +117,12 @@ memory live in the process.
 ## Reporting
 
 A session emits its results when dropped: by default a human-readable table on stdout with
-one row per operation, and one machine-readable JSON file per operation written into the
-Cargo target directory. Either output may be switched off when creating the session. An
-operation with no peak figure renders as unavailable in the table and omits the field from
-JSON.
+one row per operation, and one machine-readable JSON file per operation that has statistics
+to report. An operation that was registered but never measured therefore appears in the
+table, marked unavailable, and leaves no file behind. Either output may be switched off when
+creating the session. An operation with no peak figure renders as unavailable in the table
+and omits the peak fields from JSON entirely, which is distinct from a figure that is present
+but carries no confidence interval.
 
 A session that recorded nothing emits nothing, so an unused session leaves no trace. A
 session dropped while the thread is unwinding from a panic likewise emits nothing: the run

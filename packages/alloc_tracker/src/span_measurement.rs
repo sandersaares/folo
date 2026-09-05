@@ -22,8 +22,14 @@ pub(crate) struct SpanMeasurement {
     /// Number of allocations over the span's lifetime.
     pub(crate) count: u64,
 
-    /// The most bytes the span held allocated at any one moment, or `None` when the span
-    /// is of a kind that cannot observe it.
+    /// The high-water mark of the span's own outstanding bytes, measured from the level
+    /// outstanding when it began, or `None` when the span is of a kind that cannot
+    /// observe it.
+    ///
+    /// Baseline-relative rather than absolute: memory the span released but did not
+    /// allocate creates headroom that offsets its own later allocations, so this is not
+    /// the same as the memory live on the thread. `docs/design.md`, "Limits of the peak
+    /// figure", covers what that costs.
     ///
     /// Unlike the other figures this is a level, not a total: it does not grow with the
     /// number of iterations the span covered.

@@ -60,6 +60,14 @@ pub struct SpanAccumulator {
     /// Number of spans folded in.
     span_count: u64,
 
+    /// Number of spans that covered a non-zero iteration count.
+    ///
+    /// A zero-iteration span contributes nothing to any moment below, so it carries no
+    /// information about dispersion. Counting those separately keeps
+    /// [`interval`](Self::interval) from treating them as evidence while
+    /// [`span_count`](Self::span_count) still reports every span that was recorded.
+    informative_span_count: u64,
+
     /// `Σ nᵢ²` — the slope denominator (and the regression's information).
     s_nn: f64,
 
@@ -116,6 +124,13 @@ impl SpanAccumulator {
             .checked_add(1)
             .expect("span count overflows u64 - this indicates an unrealistic scenario");
 
+        if n != 0.0 {
+            self.informative_span_count = self
+                .informative_span_count
+                .checked_add(1)
+                .expect("span count overflows u64 - this indicates an unrealistic scenario");
+        }
+
         let n2 = n * n;
 
         self.s_nn += n2;
@@ -134,6 +149,10 @@ impl SpanAccumulator {
         self.span_count = self
             .span_count
             .checked_add(other.span_count)
+            .expect("span count overflows u64 - this indicates an unrealistic scenario");
+        self.informative_span_count = self
+            .informative_span_count
+            .checked_add(other.informative_span_count)
             .expect("span count overflows u64 - this indicates an unrealistic scenario");
         self.s_nn += other.s_nn;
         self.s_nt += other.s_nt;
@@ -175,7 +194,9 @@ impl SpanAccumulator {
     ///
     /// Defusing of pathological inputs (per the design's "report no CI rather than
     /// a wrong one" policy):
-    /// * fewer than two spans → `None` (no dispersion information);
+    /// * fewer than two spans that covered a non-zero iteration count → `None`. A
+    ///   zero-iteration span moves no moment, so counting it as evidence would let a
+    ///   single real observation present itself as a zero-width interval;
     /// * a residual sum of squares that floating-point cancellation drives
     ///   slightly negative (only possible for near-deterministic data whose true
     ///   interval is ≈0) → treated as zero, collapsing the interval onto the
@@ -183,7 +204,7 @@ impl SpanAccumulator {
     /// * a non-finite slope or standard error → `None`.
     #[must_use]
     pub fn interval(&self) -> Option<(f64, f64)> {
-        if self.span_count < 2 || self.s_nn == 0.0 {
+        if self.informative_span_count < 2 || self.s_nn == 0.0 {
             return None;
         }
 
@@ -270,6 +291,40 @@ mod tests {
             (slope - LEVEL as f64).abs() < LEVEL as f64 * TOLERANCE,
             "expected about {LEVEL}, got {slope}"
         );
+    }
+
+    #[test]
+    fn zero_iteration_spans_do_not_count_as_dispersion_evidence() {
+        // A zero-iteration span moves no moment, so it carries no information about
+        // spread. Counting it would let the one real observation below present itself
+        // as a zero-width interval, claiming certainty from a single sample.
+        let totals = accumulate(&[(0, 100), (1, 64)]);
+        assert_eq!(totals.span_count(), 2);
+        assert_eq!(totals.slope(), Some(64.0));
+        assert_eq!(totals.interval(), None);
+
+        // The level path reaches the same accumulator through `add_level`, so it must
+        // defuse identically.
+        let levels = accumulate_levels(&[(0, 100), (1, 64)]);
+        assert_eq!(levels.span_count(), 2);
+        assert_eq!(levels.slope(), Some(64.0));
+        assert_eq!(levels.interval(), None);
+
+        // Two informative spans alongside a zero-iteration one still yield an interval.
+        let enough = accumulate_levels(&[(0, 100), (1, 64), (1, 64)]);
+        assert_eq!(enough.interval(), Some((64.0, 64.0)));
+    }
+
+    #[test]
+    fn merging_preserves_dispersion_evidence_counts() {
+        // The informative count must survive a merge, or two accumulators each holding
+        // one real span would fail to produce an interval after being combined.
+        let mut left = accumulate_levels(&[(0, 100), (2, 64)]);
+        let right = accumulate_levels(&[(0, 100), (2, 64)]);
+        left.merge(&right);
+
+        assert_eq!(left.span_count(), 4);
+        assert_eq!(left.interval(), Some((64.0, 64.0)));
     }
 
     #[test]

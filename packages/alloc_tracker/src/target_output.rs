@@ -297,7 +297,14 @@ mod tests {
                 .and_then(Value::as_f64),
             Some(800.0)
         );
+        // One span supplies no dispersion, so both bounds are withheld while the point
+        // estimate remains. This is the omission rule that differs from an absent peak.
         assert!(value.get("interval_low_peak_bytes_per_iteration").is_none());
+        assert!(
+            value
+                .get("interval_high_peak_bytes_per_iteration")
+                .is_none()
+        );
     }
 
     #[test]
@@ -316,7 +323,14 @@ mod tests {
         session.to_report().write_to_directory(directory.path());
 
         let value = read_json(&directory.path().join("allocate_vec.json"));
+        // No peak at all means all three keys go, not just the point estimate.
         assert!(value.get("slope_peak_bytes_per_iteration").is_none());
+        assert!(value.get("interval_low_peak_bytes_per_iteration").is_none());
+        assert!(
+            value
+                .get("interval_high_peak_bytes_per_iteration")
+                .is_none()
+        );
     }
 
     #[test]
@@ -347,6 +361,26 @@ mod tests {
                 .get("interval_high_bytes_per_iteration")
                 .and_then(Value::as_f64),
             Some(200.0)
+        );
+        // The peak rides the same estimator, so once there is dispersion evidence its
+        // point estimate and both bounds are all emitted.
+        assert_eq!(
+            value
+                .get("slope_peak_bytes_per_iteration")
+                .and_then(Value::as_f64),
+            Some(800.0)
+        );
+        assert_eq!(
+            value
+                .get("interval_low_peak_bytes_per_iteration")
+                .and_then(Value::as_f64),
+            Some(800.0)
+        );
+        assert_eq!(
+            value
+                .get("interval_high_peak_bytes_per_iteration")
+                .and_then(Value::as_f64),
+            Some(800.0)
         );
     }
 

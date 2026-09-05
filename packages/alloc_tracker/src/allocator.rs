@@ -251,13 +251,17 @@ mod tests {
     // which by contract leaves the original block allocated and unchanged.
     unsafe impl GlobalAlloc for FailingReallocator {
         unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-            // SAFETY: Forwarding the caller's obligations unchanged.
+            // SAFETY: `System::alloc` requires `layout` to have non-zero size. This method is
+            // itself `GlobalAlloc::alloc`, so its caller owes that for this exact `layout`,
+            // which is forwarded unchanged.
             unsafe { std::alloc::System.alloc(layout) }
         }
 
         unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-            // SAFETY: Forwarding the caller's obligations unchanged. Every block this allocator
-            // hands out comes from the system allocator.
+            // SAFETY: `System::dealloc` requires a block that the system allocator produced
+            // under `layout`. This method is itself `GlobalAlloc::dealloc`, so its caller owes
+            // that the block came from this allocator, and the only method here that hands one
+            // out is `alloc` above, which returns the system allocator's block unchanged.
             unsafe { std::alloc::System.dealloc(ptr, layout) }
         }
 
