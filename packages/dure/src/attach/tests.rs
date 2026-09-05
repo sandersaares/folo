@@ -553,6 +553,7 @@ fn unexpected_relay_message_is_relay_failure() {
             &Message::StartupOk {
                 session_id: SessionId::MIN,
                 launcher_tie: LauncherTie::NoneDetected,
+                pipe_name: String::new(),
             },
         );
     })

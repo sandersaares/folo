@@ -19,8 +19,8 @@ use crate::path_display::display_path;
 use crate::protocol::Message;
 use crate::trace::{Trace, trace};
 use crate::{
-    AppCommand, AttachFailedError, BreakawayDeniedError, CanonicalizeError, CurrentDirectoryError,
-    NoConsoleError, Outcome, PalFailedError, SessionId, StartupFailedError, StoreError,
+    AppCommand, BreakawayDeniedError, CanonicalizeError, CurrentDirectoryError, NoConsoleError,
+    Outcome, PalFailedError, StartupFailedError, StartupStepFailedError,
 };
 
 /// Said when the supervisor confirmed a job that ends the session with its
@@ -139,12 +139,16 @@ where
         .map_err(StartupFailedError::caused_by)?;
 
     let response = transport.recv_timeout(conn, STARTUP_TIMEOUT);
-    let Ok(Message::StartupOk {
-        session_id,
-        launcher_tie,
-    }) = response
-    else {
-        return Err(StartupFailedError::new().into());
+    let (session_id, launcher_tie, pipe_name) = match response {
+        Ok(Message::StartupOk {
+            session_id,
+            launcher_tie,
+            pipe_name,
+        }) => (session_id, launcher_tie, pipe_name),
+        // The supervisor runs without a console, so this is the only place the
+        // failing subsystem can be named. Ref: docs/supervisor.md, "Startup".
+        Ok(Message::StartupErr { step }) => return Err(StartupStepFailedError::at(step).into()),
+        _ => return Err(StartupFailedError::new().into()),
     };
     if transport.send(conn, &Message::StartupCommit).is_err() {
         return Err(StartupFailedError::new().into());
@@ -161,11 +165,12 @@ where
     // Said before the console is taken over, because a failure from here on
     // still leaves this session reachable by `list`, `resume`, and `kill`.
     note_line(format_args!("session {session_id}"));
+    trace!(trace, "attaching to session {session_id} on {pipe_name}");
     // The supervisor reads this connection as the signal that an attach is
     // still on its way, and holds a session whose app exits immediately open
     // until it arrives. So it stays up for as long as this run intends to
     // attach. Ref: docs/implementation.md, "Process split".
-    attach_to(store, transport, console, session_id, trace)
+    attach(transport, console, &pipe_name, session_id)
 }
 
 /// The one-shot channel `run` gives the supervisor to report in on.
@@ -240,40 +245,20 @@ fn launcher_warning(launcher_tie: LauncherTie) -> &'static str {
     }
 }
 
-/// Read the published record and hand the console over to the session.
-fn attach_to<S, T, C>(
-    store: &S,
-    transport: &T,
-    console: &C,
-    session_id: SessionId,
-    trace: Trace,
-) -> Result<Outcome, AppError>
-where
-    S: SessionStore,
-    T: Transport + Clone + Send + Sync + 'static,
-    C: LocalConsole + Clone + Send + Sync + 'static,
-{
-    let record = store
-        .read(session_id)
-        .map_err(StoreError::caused_by)?
-        .ok_or_else(|| AttachFailedError::for_id(session_id))?;
-    trace!(
-        trace,
-        "attaching to session {session_id} on {}", record.pipe_name
-    );
-    attach(transport, console, &record.pipe_name, session_id)
-}
-
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use crate::pal::error::PalError;
+    use crate::pal::ids::RelayLeaseId;
     use crate::pal::local_console::{LocalConsoleFacade, MockLocalConsole};
     use crate::pal::processes::MockProcesses;
+    use crate::pal::pseudoconsole::WindowSize;
     use crate::pal::session_store::{FsSessionStore, MockSessionStore};
     use crate::pal::transport::MemoryTransport;
+    use crate::protocol::StartupStep;
     use crate::session_record::ProcessIdentity;
+    use crate::{AttachFailedError, SessionId};
 
     #[test]
     // Talks to the real operating system: the session store is a real directory.
@@ -478,7 +463,14 @@ mod tests {
             move |_| {
                 let pipe = transport.pipe_name("startup-nonce");
                 let conn = transport.connect(&pipe, CONNECT_TIMEOUT).unwrap();
-                transport.send(conn, &Message::StartupErr).unwrap();
+                transport
+                    .send(
+                        conn,
+                        &Message::StartupErr {
+                            step: StartupStep::App,
+                        },
+                    )
+                    .unwrap();
                 Ok(ProcessIdentity {
                     pid: 10,
                     creation_time: 100,
@@ -499,7 +491,10 @@ mod tests {
             Trace::default(),
         )
         .unwrap_err();
-        assert!(error.find_source::<StartupFailedError>().is_some());
+        // The user is told which subsystem stopped startup, not only that
+        // something did.
+        assert!(error.to_string().contains(StartupStep::App.describe()));
+        assert!(error.find_source::<StartupStepFailedError>().is_some());
     }
 
     #[test]
@@ -527,6 +522,7 @@ mod tests {
                         &Message::StartupOk {
                             session_id: SessionId::MIN,
                             launcher_tie: LauncherTie::NoneDetected,
+                            pipe_name: "session-pipe".to_string(),
                         },
                     )
                     .unwrap();
@@ -556,8 +552,8 @@ mod tests {
     }
 
     /// Drives `execute` through a successful startup handshake against a
-    /// supervisor stand-in that reports `launcher_tie`, and fails the store read
-    /// that follows so the run ends without a live session to attach to.
+    /// supervisor stand-in that reports `launcher_tie`, then leaves nobody
+    /// listening on the session pipe so the run ends at the attach.
     fn execute_past_startup(launcher_tie: LauncherTie) -> AppError {
         let transport = MemoryTransport::new();
         let mut store = MockSessionStore::new();
@@ -567,9 +563,6 @@ mod tests {
         store
             .expect_canonicalize()
             .returning(|path| Ok(path.to_path_buf()));
-        store
-            .expect_read()
-            .returning(|_| Err(PalError::new(PalErrorKind::Other)));
         let mut processes = MockProcesses::new();
         processes
             .expect_random_nonce()
@@ -588,6 +581,7 @@ mod tests {
                         &Message::StartupOk {
                             session_id: SessionId::MIN,
                             launcher_tie,
+                            pipe_name: "session-pipe".to_string(),
                         },
                     )
                     .unwrap();
@@ -599,6 +593,15 @@ mod tests {
         });
         let mut console = MockLocalConsole::new();
         console.expect_has_console().return_const(true);
+        // Attach takes the console over before it reaches the pipe, and hands
+        // it back on the way out of the failure.
+        console
+            .expect_begin_raw_relay()
+            .returning(|| Ok(RelayLeaseId::for_test(1)));
+        console.expect_end_raw_relay().returning(|_| Ok(()));
+        console
+            .expect_window_size()
+            .returning(|| Ok(WindowSize::new(80, 24).expect("a fixture size is not empty")));
         let console = LocalConsoleFacade::from_mock(console);
 
         let error = execute(
@@ -616,21 +619,21 @@ mod tests {
     }
 
     #[test]
-    fn a_started_session_is_looked_up_in_the_store() {
+    fn a_started_session_is_attached_on_the_pipe_the_supervisor_named() {
         let error = execute_past_startup(LauncherTie::NoneDetected);
-        assert!(error.find_source::<StoreError>().is_some());
+        assert!(error.find_source::<AttachFailedError>().is_some());
     }
 
     #[test]
     fn a_session_tied_to_the_launcher_still_starts() {
         let error = execute_past_startup(LauncherTie::Confirmed);
-        assert!(error.find_source::<StoreError>().is_some());
+        assert!(error.find_source::<AttachFailedError>().is_some());
     }
 
     #[test]
     fn a_session_whose_job_could_not_be_inspected_still_starts() {
         let error = execute_past_startup(LauncherTie::Unknown);
-        assert!(error.find_source::<StoreError>().is_some());
+        assert!(error.find_source::<AttachFailedError>().is_some());
     }
 
     #[test]

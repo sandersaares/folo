@@ -24,16 +24,15 @@ fn output_produced_before_the_first_attach_reaches_that_client() {
             }
         });
 
-        let (startup_conn, _session_id, _durability) =
-            commit_startup(&transport, startup, &phase_reporter);
+        let started = commit_startup(&transport, startup, &phase_reporter);
 
         // The app speaks before anyone has attached, which is the window
         // `dure run` spends spawning the supervisor and connecting to it.
         pty.push_output(pty.only_pty(), b"hello");
-        transport.disconnect(startup_conn);
+        transport.disconnect(started.startup_conn);
 
         let client = transport
-            .connect(&transport.pipe_name("nonce"), CONNECT_TIMEOUT)
+            .connect(&started.pipe_name, CONNECT_TIMEOUT)
             .unwrap();
         transport.send(client, &ORDINARY_ATTACH).unwrap();
         phase_reporter.report("waiting for the attach acknowledgement");

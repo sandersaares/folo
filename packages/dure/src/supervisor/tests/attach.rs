@@ -59,7 +59,14 @@ fn a_stalled_attach_acknowledgement_does_not_hold_up_the_attach() {
             Message::Attached { .. }
         ));
 
-        transport.send(client, &Message::StartupErr).unwrap();
+        transport
+            .send(
+                client,
+                &Message::StartupErr {
+                    step: StartupStep::App,
+                },
+            )
+            .unwrap();
         phase_reporter.report("waiting for the client relay to stop");
         relay.join().unwrap();
         assert!(!attached_rx.recv().unwrap());
@@ -213,7 +220,14 @@ fn the_relay_forwards_input_and_resize_until_the_client_stops() {
         .send(client, &Message::Input(b"hi".to_vec()))
         .unwrap();
     // Anything the supervisor does not relay ends the client loop.
-    transport.send(client, &Message::StartupErr).unwrap();
+    transport
+        .send(
+            client,
+            &Message::StartupErr {
+                step: StartupStep::App,
+            },
+        )
+        .unwrap();
 
     let (flags, recorder) = attach_recorder();
     client_loop(&shared, supervisor, &recorder);

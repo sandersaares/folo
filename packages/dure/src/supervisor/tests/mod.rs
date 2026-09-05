@@ -22,7 +22,7 @@ use crate::pal::processes::MockProcesses;
 use crate::pal::pseudoconsole::{MemoryPseudoconsole, Pseudoconsole, WindowSize};
 use crate::pal::session_store::MemorySessionStore;
 use crate::pal::transport::MemoryTransport;
-use crate::protocol::{Message, PROTOCOL_VERSION, encode, payload_len_ok};
+use crate::protocol::{Message, PROTOCOL_VERSION, StartupStep, encode, payload_len_ok};
 use crate::session_record::{ProcessIdentity, SessionRecord};
 use crate::supervisor::relay::{client_loop, pty_output_loop, store_attached_flag};
 use crate::supervisor::shared::{Client, FirstAttach, Shared, preamble_messages};
@@ -52,24 +52,42 @@ const ORDINARY_ATTACH: Message = Message::Attach {
     size: WindowSize::new(80, 24).expect("a fixture size is not empty"),
 };
 
+/// What the supervisor reported when it came up.
+///
+/// Tests take the session pipe from here rather than rebuilding it from the
+/// nonce the mock happens to return, so a change to that fixture cannot break
+/// a test about something else.
+struct StartedSession {
+    startup_conn: ConnId,
+    session_id: SessionId,
+    launcher_tie: LauncherTie,
+    pipe_name: String,
+}
+
 /// Completes the client side of the startup commit handshake.
 fn commit_startup(
     transport: &MemoryTransport,
     listener: ListenerId,
     phase_reporter: &WatchdogPhaseReporter,
-) -> (ConnId, SessionId, LauncherTie) {
+) -> StartedSession {
     phase_reporter.report("waiting for the supervisor startup connection");
     let conn = transport.accept(listener).unwrap();
     phase_reporter.report("waiting for the supervisor startup response");
     let Message::StartupOk {
         session_id,
         launcher_tie,
+        pipe_name,
     } = transport.recv(conn).unwrap()
     else {
         panic!("expected startup ok");
     };
     transport.send(conn, &Message::StartupCommit).unwrap();
-    (conn, session_id, launcher_tie)
+    StartedSession {
+        startup_conn: conn,
+        session_id,
+        launcher_tie,
+        pipe_name,
+    }
 }
 
 fn mock_processes(exit: Arc<(Mutex<bool>, Condvar)>) -> MockProcesses {

@@ -67,7 +67,9 @@ fn a_session_without_startup_commit_is_rolled_back() {
 
 #[test]
 fn a_session_with_an_invalid_startup_commit_is_rolled_back() {
-    assert_rejected_startup_rolls_back(RejectedStartup::Message(Message::StartupErr));
+    assert_rejected_startup_rolls_back(RejectedStartup::Message(Message::StartupErr {
+        step: StartupStep::App,
+    }));
 }
 
 #[test]
@@ -140,7 +142,12 @@ fn init_failure_sends_startup_err_and_closes_job() {
         phase_reporter.report("waiting for the supervisor startup connection");
         let startup_conn = transport.accept(startup).unwrap();
         phase_reporter.report("waiting for the startup error");
-        assert_eq!(transport.recv(startup_conn).unwrap(), Message::StartupErr);
+        assert_eq!(
+            transport.recv(startup_conn).unwrap(),
+            Message::StartupErr {
+                step: StartupStep::App
+            }
+        );
         phase_reporter.report("waiting for startup rollback");
         supervisor.join().unwrap().unwrap_err();
         assert!(store.list().unwrap().is_empty());
@@ -173,10 +180,9 @@ fn a_supervisor_that_cannot_outlive_its_launcher_says_so_on_the_startup_pipe() {
         });
 
         // Only the client has a console to report this on.
-        let (startup_conn, _session_id, launcher_tie) =
-            commit_startup(&transport, startup, &phase_reporter);
-        assert_eq!(launcher_tie, LauncherTie::Confirmed);
-        transport.disconnect(startup_conn);
+        let started = commit_startup(&transport, startup, &phase_reporter);
+        assert_eq!(started.launcher_tie, LauncherTie::Confirmed);
+        transport.disconnect(started.startup_conn);
         {
             let (lock, cvar) = &*exit;
             *lock.lock().expect("exit lock") = true;
@@ -213,10 +219,9 @@ fn a_wait_that_fails_still_takes_the_session_off_the_host() {
             }
         });
 
-        let (startup_conn, _session_id, _durability) =
-            commit_startup(&transport, startup, &phase_reporter);
+        let started = commit_startup(&transport, startup, &phase_reporter);
         assert_eq!(store.list().unwrap().len(), 1, "the session was published");
-        transport.disconnect(startup_conn);
+        transport.disconnect(started.startup_conn);
         {
             let (lock, cvar) = &*exit;
             *lock.lock().expect("exit lock") = true;
@@ -263,7 +268,7 @@ fn a_failure_after_id_allocation_releases_the_id() {
             session: None,
             committed: false,
         };
-        let error = initialize(
+        let failure = initialize(
             &mut guard,
             &processes,
             &store,
@@ -273,7 +278,10 @@ fn a_failure_after_id_allocation_releases_the_id() {
         )
         .err()
         .expect("record publication fails");
-        assert!(error.find_source::<StoreError>().is_some());
+        // The step is what a client with a console can tell the user; the
+        // condition is what the supervisor's own exit reports.
+        assert_eq!(failure.step, StartupStep::PublishRecord);
+        assert!(failure.error.find_source::<StoreError>().is_some());
     }
 
     assert!(store.list_reservations().unwrap().is_empty());

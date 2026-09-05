@@ -38,14 +38,15 @@ where
     T: Transport + Clone + Send + Sync + 'static,
     C: Pseudoconsole + Clone + Send + Sync + 'static,
 {
-    let Initialized {
+    let &Initialized {
         session_id,
         identity,
         listener,
         pty,
         job,
         app,
-    } = *initialized;
+        ..
+    } = initialized;
 
     let record_live = Arc::new(Mutex::new(true));
     let attached_generation = Arc::new(AtomicU64::default());

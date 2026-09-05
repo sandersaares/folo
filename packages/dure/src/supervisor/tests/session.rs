@@ -24,17 +24,16 @@ fn steal_displaces_first_client() {
             }
         });
 
-        let (startup_conn, session_id, _durability) =
-            commit_startup(&transport, startup, &phase_reporter);
-        transport.disconnect(startup_conn);
+        let started = commit_startup(&transport, startup, &phase_reporter);
+        transport.disconnect(started.startup_conn);
 
-        let pipe = transport.pipe_name("nonce");
+        let pipe = started.pipe_name;
         let first = transport.connect(&pipe, CONNECT_TIMEOUT).unwrap();
         transport.send(first, &ORDINARY_ATTACH).unwrap();
         phase_reporter.report("waiting for the first attach acknowledgement");
         assert!(matches!(
             transport.recv(first).unwrap(),
-            Message::Attached { session_id: id } if id == session_id
+            Message::Attached { session_id: id } if id == started.session_id
         ));
 
         let second = transport.connect(&pipe, CONNECT_TIMEOUT).unwrap();
@@ -83,12 +82,11 @@ fn final_output_arrives_before_the_exit_status() {
             }
         });
 
-        let (startup_conn, _session_id, _durability) =
-            commit_startup(&transport, startup, &phase_reporter);
-        transport.disconnect(startup_conn);
+        let started = commit_startup(&transport, startup, &phase_reporter);
+        transport.disconnect(started.startup_conn);
 
         let client = transport
-            .connect(&transport.pipe_name("nonce"), CONNECT_TIMEOUT)
+            .connect(&started.pipe_name, CONNECT_TIMEOUT)
             .unwrap();
         transport.send(client, &ORDINARY_ATTACH).unwrap();
         phase_reporter.report("waiting for the attach acknowledgement");
@@ -152,13 +150,12 @@ fn an_app_that_exits_before_anyone_attaches_still_reports_its_status() {
             }
         });
 
-        let (startup_conn, _session_id, _durability) =
-            commit_startup(&transport, startup, &phase_reporter);
+        let started = commit_startup(&transport, startup, &phase_reporter);
 
         // The startup connection stays open, which is what holds the
         // session up for the attach that `dure run` is about to make.
         let client = transport
-            .connect(&transport.pipe_name("nonce"), CONNECT_TIMEOUT)
+            .connect(&started.pipe_name, CONNECT_TIMEOUT)
             .unwrap();
         transport.send(client, &ORDINARY_ATTACH).unwrap();
         phase_reporter.report("waiting for the attach acknowledgement");
@@ -175,7 +172,7 @@ fn an_app_that_exits_before_anyone_attaches_still_reports_its_status() {
         );
         phase_reporter.report("waiting for supervisor shutdown");
         assert_eq!(supervisor.join().unwrap().unwrap(), SAMPLE_APP_EXIT);
-        transport.disconnect(startup_conn);
+        transport.disconnect(started.startup_conn);
     });
 }
 
@@ -213,12 +210,11 @@ fn a_stalled_attached_flag_does_not_delay_the_exit_status() {
             }
         });
 
-        let (startup_conn, _session_id, _durability) =
-            commit_startup(&transport, startup, &phase_reporter);
+        let started = commit_startup(&transport, startup, &phase_reporter);
         store.stall_publishes();
 
         let client = transport
-            .connect(&transport.pipe_name("nonce"), CONNECT_TIMEOUT)
+            .connect(&started.pipe_name, CONNECT_TIMEOUT)
             .unwrap();
         transport.send(client, &ORDINARY_ATTACH).unwrap();
         phase_reporter.report("waiting for the attach acknowledgement");
@@ -244,7 +240,7 @@ fn a_stalled_attached_flag_does_not_delay_the_exit_status() {
         transport.disconnect(client);
         phase_reporter.report("waiting for supervisor shutdown");
         assert_eq!(supervisor.join().unwrap().unwrap(), SAMPLE_APP_EXIT);
-        transport.disconnect(startup_conn);
+        transport.disconnect(started.startup_conn);
         assert!(store.list().unwrap().is_empty());
     });
 }
@@ -274,10 +270,9 @@ fn a_session_nobody_comes_for_ends_when_its_initiator_gives_up() {
             }
         });
 
-        let (startup_conn, _session_id, _durability) =
-            commit_startup(&transport, startup, &phase_reporter);
+        let started = commit_startup(&transport, startup, &phase_reporter);
         // Nobody will ever attach, so the gate must open on this instead.
-        transport.disconnect(startup_conn);
+        transport.disconnect(started.startup_conn);
         phase_reporter.report("waiting for supervisor shutdown");
         assert_eq!(supervisor.join().unwrap().unwrap(), SAMPLE_APP_EXIT);
         assert!(store.list().unwrap().is_empty());

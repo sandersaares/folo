@@ -1,8 +1,29 @@
 # Supervising a session
 
-What a supervisor does once its session exists: accept clients, hand the console
-between them, and tear the session down in an order that loses nothing. Part of
-the `dure` [implementation guide](implementation.md).
+What a supervisor does: bring a session into existence, accept clients, hand the
+console between them, and tear the session down in an order that loses nothing.
+Part of the `dure` [implementation guide](implementation.md).
+
+## Startup
+
+Startup builds the session in an order that lets each step be undone: the
+lifetime job, the pseudoconsole, the app, the pipe clients attach on, the
+supervisor's own identity, a reserved session id, and finally the published
+record. Anything created before a failure is released on the way out, and
+teardown ends the job before it closes the pseudoconsole because descendants
+stay attached to the console until the job that owns them is gone.
+
+The supervisor has no console, so a failure reaches the user only through the
+startup channel. What it reports there is which of those steps it stopped at:
+the failing subsystem is the part the user can act on, and the message the
+initiating `dure run` prints names it. The condition the supervisor's own exit
+carries is separate and stays as detailed as the platform made it.
+
+On success the supervisor reports the session id, whether it is tied to its
+launcher, and the pipe to attach on. Naming the pipe there is what keeps first
+attach from reading back the record just written: a store failure at that point
+would come after the session already exists, so the run would be reporting a
+lookup problem for a session that is up and running.
 
 ## What is shared
 

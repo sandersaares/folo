@@ -18,7 +18,7 @@ use std::time::Duration;
 use crate::pal::error::{PalError, PalErrorKind};
 use crate::pal::ids::{ConnId, ListenerId};
 use crate::pal::transport::Transport;
-use crate::protocol::Message;
+use crate::protocol::{Message, StartupStep};
 
 struct ConnState {
     incoming: VecDeque<Message>,
@@ -501,7 +501,12 @@ mod tests {
             let client = transport.connect("session", Duration::ZERO).unwrap();
             let server = transport.accept(listener).unwrap();
 
-            for message in [Message::StartupErr, Message::StartupCommit] {
+            for message in [
+                Message::StartupErr {
+                    step: StartupStep::App,
+                },
+                Message::StartupCommit,
+            ] {
                 transport.stall(client);
                 let sender = thread::spawn({
                     let transport = transport.clone();

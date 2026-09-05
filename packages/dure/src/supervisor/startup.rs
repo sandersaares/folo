@@ -11,7 +11,7 @@ use crate::pal::processes::{AppSpawn, Processes};
 use crate::pal::pseudoconsole::{Pseudoconsole, WindowSize};
 use crate::pal::session_store::SessionStore;
 use crate::pal::transport::Transport;
-use crate::protocol::PROTOCOL_VERSION;
+use crate::protocol::{PROTOCOL_VERSION, StartupStep};
 use crate::session_record::{ProcessIdentity, SessionRecord};
 use crate::supervisor::SessionSpec;
 use crate::{BreakawayDeniedError, SessionId, StartupFailedError, StoreError};
@@ -63,7 +63,6 @@ impl<P: Processes, S: SessionStore, T: Transport, C: Pseudoconsole> Drop
     }
 }
 
-#[derive(Clone, Copy)]
 pub(super) struct Initialized {
     pub(super) session_id: SessionId,
     pub(super) identity: ProcessIdentity,
@@ -71,6 +70,19 @@ pub(super) struct Initialized {
     pub(super) pty: PtyId,
     pub(super) job: JobId,
     pub(super) app: AppId,
+    /// The pipe clients attach on, so the initiating client can be told it
+    /// rather than reading back the record just written.
+    pub(super) pipe_name: String,
+}
+
+/// What `initialize` failed at.
+///
+/// The supervisor has no console of its own, so the step is the only thing
+/// that tells the user which subsystem to look at.
+/// Ref: docs/supervisor.md, "Startup".
+pub(super) struct FailedStartup {
+    pub(super) step: StartupStep,
+    pub(super) error: AppError,
 }
 
 pub(super) fn initialize<P, S, T, C>(
@@ -80,21 +92,34 @@ pub(super) fn initialize<P, S, T, C>(
     transport: &T,
     pty_host: &C,
     spec: SessionSpec,
-) -> Result<Initialized, AppError>
+) -> Result<Initialized, FailedStartup>
 where
     P: Processes,
     S: SessionStore,
     T: Transport,
     C: Pseudoconsole,
 {
+    let at = |step: StartupStep| {
+        move |error: PalError| FailedStartup {
+            step,
+            error: map_startup(&error),
+        }
+    };
+    let storing = |step: StartupStep| {
+        move |error: PalError| FailedStartup {
+            step,
+            error: StoreError::caused_by(error).into(),
+        }
+    };
+
     let job = processes
         .create_lifetime_job()
-        .map_err(|error| map_startup(&error))?;
+        .map_err(at(StartupStep::LifetimeJob))?;
     guard.job = Some(job);
 
     let pty = pty_host
         .create(DEFAULT_PTY_SIZE)
-        .map_err(|error| map_startup(&error))?;
+        .map_err(at(StartupStep::Pseudoconsole))?;
     guard.pty = Some(pty);
 
     let app = processes
@@ -104,34 +129,36 @@ where
             pty,
             job,
         })
-        .map_err(|error| map_startup(&error))?;
+        .map_err(at(StartupStep::App))?;
 
     let nonce = processes.random_nonce();
     let pipe_name = transport.pipe_name(&nonce);
     let listener = transport
         .listen(&pipe_name)
-        .map_err(|error| map_startup(&error))?;
+        .map_err(at(StartupStep::Listener))?;
     guard.listener = Some(listener);
 
     let identity = processes
         .current_identity()
-        .map_err(|error| map_startup(&error))?;
+        .map_err(at(StartupStep::Identity))?;
     let session_id = store
         .allocate_id(&identity)
-        .map_err(StoreError::caused_by)?;
+        .map_err(storing(StartupStep::SessionId))?;
     guard.session = Some((session_id, identity));
 
     let record = SessionRecord {
         id: session_id,
         supervisor: identity,
-        pipe_name,
+        pipe_name: pipe_name.clone(),
         launch_directory: spec.launch_directory,
         command: spec.command,
         started_at_unix_ms: spec.started_at_unix_ms,
         attached: false,
         protocol_version: PROTOCOL_VERSION,
     };
-    store.publish(&record).map_err(StoreError::caused_by)?;
+    store
+        .publish(&record)
+        .map_err(storing(StartupStep::PublishRecord))?;
 
     Ok(Initialized {
         session_id,
@@ -140,6 +167,7 @@ where
         pty,
         job,
         app,
+        pipe_name,
     })
 }
 

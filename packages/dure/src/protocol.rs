@@ -70,12 +70,65 @@ pub(crate) enum Message {
         session_id: SessionId,
         /// Whether the session can outlive the client that started it.
         launcher_tie: LauncherTie,
+        /// Pipe the initiating client attaches on, so first attach does not
+        /// have to read back the record the supervisor just wrote.
+        pipe_name: String,
     },
     /// Supervisor initialization failed.
-    StartupErr,
+    StartupErr {
+        /// Where startup stopped, so the client can name the subsystem.
+        step: StartupStep,
+    },
     /// Client received startup confirmation and accepts ownership of the session.
     StartupCommit,
 }
+
+/// The step of supervisor startup that a failure stopped at.
+///
+/// The supervisor runs without a console, so this is what lets the client
+/// name the subsystem that failed rather than reporting that something did.
+/// Ref: docs/supervisor.md, "Startup".
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum StartupStep {
+    /// Creating the job object that ties the app's lifetime to the supervisor.
+    LifetimeJob,
+    /// Creating the pseudoconsole the app runs on.
+    Pseudoconsole,
+    /// Starting the app itself.
+    App,
+    /// Opening the pipe clients attach on.
+    Listener,
+    /// Learning the supervisor's own process identity.
+    Identity,
+    /// Reserving a session id.
+    SessionId,
+    /// Publishing the session record.
+    PublishRecord,
+}
+
+impl StartupStep {
+    /// What the supervisor was doing, for a sentence that says it failed.
+    pub(crate) fn describe(self) -> &'static str {
+        match self {
+            Self::LifetimeJob => "creating the session's lifetime job",
+            Self::Pseudoconsole => "creating the session's console",
+            Self::App => "starting the app",
+            Self::Listener => "opening the session pipe",
+            Self::Identity => "reading the supervisor's process identity",
+            Self::SessionId => "reserving a session id",
+            Self::PublishRecord => "publishing the session record",
+        }
+    }
+}
+
+// Startup-step bytes are stable assigned integers, like the kind bytes below.
+const STEP_LIFETIME_JOB: u8 = 1;
+const STEP_PSEUDOCONSOLE: u8 = 2;
+const STEP_APP: u8 = 3;
+const STEP_LISTENER: u8 = 4;
+const STEP_IDENTITY: u8 = 5;
+const STEP_SESSION_ID: u8 = 6;
+const STEP_PUBLISH_RECORD: u8 = 7;
 
 // Launcher-tie bytes are stable assigned integers, like the kind bytes below.
 const LAUNCHER_TIE_NONE_DETECTED: u8 = 1;
@@ -130,6 +183,7 @@ pub(crate) fn encode(message: &Message) -> Vec<u8> {
         Message::StartupOk {
             session_id,
             launcher_tie,
+            pipe_name,
         } => {
             payload.push(KIND_STARTUP_OK);
             payload.extend_from_slice(&session_id.get().to_le_bytes());
@@ -138,8 +192,20 @@ pub(crate) fn encode(message: &Message) -> Vec<u8> {
                 LauncherTie::Confirmed => LAUNCHER_TIE_CONFIRMED,
                 LauncherTie::Unknown => LAUNCHER_TIE_UNKNOWN,
             });
+            payload.extend_from_slice(pipe_name.as_bytes());
         }
-        Message::StartupErr => payload.push(KIND_STARTUP_ERR),
+        Message::StartupErr { step } => {
+            payload.push(KIND_STARTUP_ERR);
+            payload.push(match *step {
+                StartupStep::LifetimeJob => STEP_LIFETIME_JOB,
+                StartupStep::Pseudoconsole => STEP_PSEUDOCONSOLE,
+                StartupStep::App => STEP_APP,
+                StartupStep::Listener => STEP_LISTENER,
+                StartupStep::Identity => STEP_IDENTITY,
+                StartupStep::SessionId => STEP_SESSION_ID,
+                StartupStep::PublishRecord => STEP_PUBLISH_RECORD,
+            });
+        }
         Message::StartupCommit => payload.push(KIND_STARTUP_COMMIT),
     }
 
@@ -175,7 +241,10 @@ pub(crate) fn decode_payload(payload: &[u8]) -> Result<Message, DecodeError> {
         KIND_DISPLACED if rest.is_empty() => Ok(Message::Displaced),
         KIND_APP_EXITED => decode_i32(rest).map(|status| Message::AppExited { status }),
         KIND_STARTUP_OK => {
-            let Some((launcher_tie, id_bytes)) = rest.split_last() else {
+            let Some((id_bytes, rest)) = rest.split_first_chunk::<{ size_of::<u32>() }>() else {
+                return Err(DecodeError::Invalid);
+            };
+            let Some((launcher_tie, pipe_name)) = rest.split_first() else {
                 return Err(DecodeError::Invalid);
             };
             let launcher_tie = match *launcher_tie {
@@ -184,12 +253,31 @@ pub(crate) fn decode_payload(payload: &[u8]) -> Result<Message, DecodeError> {
                 LAUNCHER_TIE_UNKNOWN => LauncherTie::Unknown,
                 _ => return Err(DecodeError::Invalid),
             };
+            let Ok(pipe_name) = str::from_utf8(pipe_name) else {
+                return Err(DecodeError::Invalid);
+            };
             decode_session_id(id_bytes).map(|session_id| Message::StartupOk {
                 session_id,
                 launcher_tie,
+                pipe_name: pipe_name.to_string(),
             })
         }
-        KIND_STARTUP_ERR if rest.is_empty() => Ok(Message::StartupErr),
+        KIND_STARTUP_ERR => {
+            let [step] = rest else {
+                return Err(DecodeError::Invalid);
+            };
+            let step = match *step {
+                STEP_LIFETIME_JOB => StartupStep::LifetimeJob,
+                STEP_PSEUDOCONSOLE => StartupStep::Pseudoconsole,
+                STEP_APP => StartupStep::App,
+                STEP_LISTENER => StartupStep::Listener,
+                STEP_IDENTITY => StartupStep::Identity,
+                STEP_SESSION_ID => StartupStep::SessionId,
+                STEP_PUBLISH_RECORD => StartupStep::PublishRecord,
+                _ => return Err(DecodeError::Invalid),
+            };
+            Ok(Message::StartupErr { step })
+        }
         KIND_STARTUP_COMMIT if rest.is_empty() => Ok(Message::StartupCommit),
         _ => Err(DecodeError::Invalid),
     }
@@ -266,16 +354,21 @@ mod tests {
             Message::StartupOk {
                 session_id: id,
                 launcher_tie: LauncherTie::NoneDetected,
+                pipe_name: "\\\\.\\pipe\\dure-abc".to_string(),
             },
             Message::StartupOk {
                 session_id: id,
                 launcher_tie: LauncherTie::Confirmed,
+                pipe_name: "\\\\.\\pipe\\dure-abc".to_string(),
             },
             Message::StartupOk {
                 session_id: id,
                 launcher_tie: LauncherTie::Unknown,
+                pipe_name: "\\\\.\\pipe\\dure-abc".to_string(),
             },
-            Message::StartupErr,
+            Message::StartupErr {
+                step: StartupStep::App,
+            },
             Message::StartupCommit,
         ];
         for message in messages {
@@ -318,11 +411,24 @@ mod tests {
             DecodeError::Invalid
         );
         assert_eq!(
-            decode_payload(&[KIND_STARTUP_ERR, 1]).unwrap_err(),
+            decode_payload(&[KIND_STARTUP_COMMIT, 1]).unwrap_err(),
+            DecodeError::Invalid
+        );
+    }
+
+    #[test]
+    fn a_startup_failure_names_a_step_this_build_assigned() {
+        assert_eq!(
+            decode_payload(&[KIND_STARTUP_ERR]).unwrap_err(),
             DecodeError::Invalid
         );
         assert_eq!(
-            decode_payload(&[KIND_STARTUP_COMMIT, 1]).unwrap_err(),
+            decode_payload(&[KIND_STARTUP_ERR, STEP_APP, 0]).unwrap_err(),
+            DecodeError::Invalid
+        );
+        // A byte no step is assigned to; a later build may assign it.
+        assert_eq!(
+            decode_payload(&[KIND_STARTUP_ERR, 0]).unwrap_err(),
             DecodeError::Invalid
         );
     }

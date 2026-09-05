@@ -20,7 +20,7 @@ use crate::pal::session_store::SessionStore;
 use crate::pal::transport::Transport;
 use crate::protocol::Message;
 use crate::supervisor::relay::serve;
-use crate::supervisor::startup::{InitGuard, initialize};
+use crate::supervisor::startup::{FailedStartup, InitGuard, initialize};
 use crate::{AppCommand, StartupFailedError};
 
 /// What the supervisor is being asked to run.
@@ -77,8 +77,10 @@ where
 
     let initialized = match result {
         Ok(initialized) => initialized,
-        Err(error) => {
-            _ = transport.send(startup, &Message::StartupErr);
+        Err(FailedStartup { step, error }) => {
+            // The supervisor has no console; naming the step is all the client
+            // can be told about why. Ref: docs/supervisor.md, "Startup".
+            _ = transport.send(startup, &Message::StartupErr { step });
             transport.disconnect(startup);
             return Err(error);
         }
@@ -90,6 +92,7 @@ where
         // the one with a console to report it on.
         // Ref: docs/job-breakaway.md.
         launcher_tie: processes.launcher_tie(),
+        pipe_name: initialized.pipe_name.clone(),
     };
     if transport.send(startup, &startup_ok).is_err() {
         transport.disconnect(startup);

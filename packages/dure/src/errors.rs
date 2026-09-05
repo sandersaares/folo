@@ -6,6 +6,7 @@ use std::panic::{RefUnwindSafe, UnwindSafe};
 use std::path::PathBuf;
 
 use crate::SessionId;
+use crate::protocol::StartupStep;
 
 // `ohno::error` leaves hold no shared mutable state. Empty impls match the
 // workspace unwind-safety contract (docs/unwind-safety.md).
@@ -98,6 +99,19 @@ pub(crate) struct BreakawayDeniedError;
 #[ohno::error]
 #[display("Failed to start the session")]
 pub(crate) struct StartupFailedError;
+
+/// Supervisor initialization failed, and said which step it stopped at.
+#[ohno::error]
+#[display("Failed to start the session while {step}")]
+pub(crate) struct StartupStepFailedError {
+    step: &'static str,
+}
+
+impl StartupStepFailedError {
+    pub(crate) fn at(step: StartupStep) -> Self {
+        Self::new(step.describe())
+    }
+}
 
 /// The process working directory could not be determined.
 #[ohno::error]
@@ -205,6 +219,7 @@ unwind_safe!(
     ConsoleRestoreError,
     OutputFailedError,
     ProtocolMismatchError,
+    StartupStepFailedError,
     InvalidSessionIdError,
 );
 
