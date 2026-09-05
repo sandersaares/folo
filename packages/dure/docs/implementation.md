@@ -152,6 +152,21 @@ crate relies on. A session always runs something, so the command is an
 executable plus arguments (`AppCommand`) established there, not an argv every
 later layer re-checks.
 
+## Paths
+
+A Windows path is a sequence of UTF-16 code units that need not be valid
+Unicode, so narrowing one to Rust text can name a different file rather than
+the same one spelled differently. Paths that only have to reach Win32 — the
+executable to start, the directory to start it in — are encoded to UTF-16
+straight from their `OsStr`, including the command line built for
+`CreateProcessW`.
+
+Two paths do have to travel as text: the launch directory, because the
+supervisor is told it through argv and it is published in a JSON record that
+`list` renders, and a `--store-root` override, because it likewise travels as
+argv. Those are converted with a check, and a path that fails it stops the
+command with an error naming it. Nothing is ever substituted.
+
 ## Output rendering
 
 Everything the user reads before attach is assembled by pure functions that take

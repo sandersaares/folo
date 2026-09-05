@@ -1,6 +1,6 @@
 //! `dure run`.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use ohno::AppError;
@@ -20,7 +20,7 @@ use crate::protocol::Message;
 use crate::trace::{Trace, trace};
 use crate::{
     AppCommand, BreakawayDeniedError, CanonicalizeError, CurrentDirectoryError, NoConsoleError,
-    Outcome, PalFailedError, StartupFailedError, StartupStepFailedError,
+    Outcome, PalFailedError, StartupFailedError, StartupStepFailedError, UnsupportedPathError,
 };
 
 /// Said when the supervisor confirmed a job that ends the session with its
@@ -70,6 +70,11 @@ where
     let launch_directory = store
         .canonicalize(&cwd)
         .map_err(|_error| CanonicalizeError::new(cwd))?;
+    // The supervisor is told where to run through its argv, and the session
+    // record that `list` renders is JSON. Both are text, so a directory
+    // Windows can name but neither can carry is refused here rather than
+    // substituted for a different directory further down.
+    let launch_directory_arg = as_text(&launch_directory)?;
     // Auto-detect matches on this canonicalized form, so it is what a later
     // `dure resume` in this directory will compare against.
     trace!(
@@ -107,17 +112,17 @@ where
         "--startup-pipe".to_string(),
         startup_pipe,
         "--launch-directory".to_string(),
-        launch_directory.to_string_lossy().into_owned(),
+        launch_directory_arg,
     ];
     if let Some(root) = store_root {
         args.push("--store-root".to_string());
-        args.push(root.to_string_lossy().into_owned());
+        args.push(as_text(&root)?);
     }
     args.push("--".to_string());
     args.extend(command.argv());
 
     if trace.is_enabled() {
-        let mut spawn_line = vec![exe.to_string_lossy().into_owned()];
+        let mut spawn_line = vec![display_path(&exe)];
         spawn_line.extend(args.iter().cloned());
         trace!(
             trace,
@@ -245,9 +250,24 @@ fn launcher_warning(launcher_tie: LauncherTie) -> &'static str {
     }
 }
 
+/// The path as text, or a refusal to guess at one.
+///
+/// A Windows path is UTF-16 code units that need not be valid Unicode. Where
+/// the path has to travel as text — an argv the supervisor parses, a record
+/// `list` renders — a lossy conversion names a different path, so the
+/// conversion is checked and the command stops instead.
+fn as_text(path: &Path) -> Result<String, AppError> {
+    path.to_str()
+        .map(str::to_string)
+        .ok_or_else(|| UnsupportedPathError::for_path(path).into())
+}
+
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
+    use std::ffi::OsString;
+    use std::os::windows::ffi::OsStringExt;
+
     use super::*;
     use crate::pal::error::PalError;
     use crate::pal::ids::RelayLeaseId;
@@ -281,6 +301,44 @@ mod tests {
             Trace::default(),
         )
         .unwrap_err();
+    }
+
+    #[test]
+    fn a_launch_directory_that_is_not_text_is_refused_before_anything_is_started() {
+        let mut store = MockSessionStore::new();
+        store
+            .expect_current_dir()
+            .returning(|| Ok(PathBuf::from("cwd")));
+        // An unpaired surrogate: a directory Windows can name that no argv or
+        // JSON record can carry.
+        store.expect_canonicalize().returning(|_| {
+            Ok(PathBuf::from(OsString::from_wide(&[
+                u16::from(b'C'),
+                u16::from(b':'),
+                u16::from(b'\\'),
+                0xD800,
+            ])))
+        });
+        // A process PAL with no expectations at all: reaching it would be the
+        // failure this test is about.
+        let processes = MockProcesses::new();
+        let transport = MemoryTransport::new();
+        let mut console = MockLocalConsole::new();
+        console.expect_has_console().return_const(true);
+        let console = LocalConsoleFacade::from_mock(console);
+
+        let error = execute(
+            &store,
+            &processes,
+            &transport,
+            &console,
+            &AppCommand::for_test(&["app.exe"]),
+            None,
+            Trace::default(),
+        )
+        .unwrap_err();
+
+        assert!(error.find_source::<UnsupportedPathError>().is_some());
     }
 
     #[test]

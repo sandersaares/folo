@@ -3,7 +3,7 @@
 //! Each condition reaches the application boundary through `ohno::AppError`.
 
 use std::panic::{RefUnwindSafe, UnwindSafe};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::SessionId;
 use crate::protocol::StartupStep;
@@ -125,6 +125,19 @@ pub(crate) struct CanonicalizeError {
     path: PathBuf,
 }
 
+/// A path Windows can name but `dure` cannot carry as text.
+#[ohno::error]
+#[display("'{}' is not a path dure can use; it is not valid Unicode", path.display())]
+pub(crate) struct UnsupportedPathError {
+    path: PathBuf,
+}
+
+impl UnsupportedPathError {
+    pub(crate) fn for_path(path: &Path) -> Self {
+        Self::new(path.to_path_buf())
+    }
+}
+
 /// Session store I/O failed.
 #[ohno::error]
 #[display("Session store error")]
@@ -220,6 +233,7 @@ unwind_safe!(
     OutputFailedError,
     ProtocolMismatchError,
     StartupStepFailedError,
+    UnsupportedPathError,
     InvalidSessionIdError,
 );
 

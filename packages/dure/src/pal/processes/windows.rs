@@ -1,14 +1,14 @@
 //! Windows process, job, and spawn implementation.
 
 use std::collections::HashMap;
-use std::ffi::OsString;
+use std::ffi::OsStr;
 use std::fmt::Write;
 use std::mem::size_of;
 use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
-use std::{env, iter, ptr};
+use std::{env, ptr};
 
 use rand::RngExt;
 use windows::Win32::Foundation::{
@@ -166,10 +166,19 @@ fn close(handle: HANDLE) {
 }
 
 pub(super) fn wide(s: &str) -> Vec<u16> {
-    OsString::from(s)
-        .encode_wide()
-        .chain(iter::once(0))
-        .collect()
+    nul_terminated(OsStr::new(s).encode_wide().collect())
+}
+
+/// Encodes a path for Win32 without narrowing it to Rust text.
+///
+/// Ref: `command_line`, on why paths are never narrowed.
+fn wide_path(path: &Path) -> Vec<u16> {
+    nul_terminated(path.as_os_str().encode_wide().collect())
+}
+
+fn nul_terminated(mut units: Vec<u16>) -> Vec<u16> {
+    units.push(0);
+    units
 }
 
 /// Waits for a process to exit and reports the status it exited with.
@@ -347,11 +356,9 @@ impl Processes for BuildTargetProcesses {
     }
 
     fn spawn_supervisor(&self, request: &SupervisorSpawn) -> Result<ProcessIdentity, PalError> {
-        let mut cmd_wide = wide(&windows_command_line(
-            &request.exe.to_string_lossy(),
-            &request.args,
-        ));
-        let mut exe_wide = wide(&request.exe.to_string_lossy());
+        let mut cmd_wide =
+            nul_terminated(windows_command_line(request.exe.as_os_str(), &request.args));
+        let mut exe_wide = wide_path(&request.exe);
         let si = STARTUPINFOW {
             cb: u32::try_from(size_of::<STARTUPINFOW>()).expect("STARTUPINFOW fits in u32"),
             ..Default::default()
@@ -503,12 +510,12 @@ impl Processes for BuildTargetProcesses {
         let exe = self
             .resolve_executable(request.command.exe(), &request.launch_directory)
             .path;
-        let mut cmd_wide = wide(&windows_command_line(
-            &exe.to_string_lossy(),
+        let mut cmd_wide = nul_terminated(windows_command_line(
+            exe.as_os_str(),
             request.command.args(),
         ));
-        let mut exe_wide = wide(&exe.to_string_lossy());
-        let mut dir_wide = wide(&request.launch_directory.to_string_lossy());
+        let mut exe_wide = wide_path(&exe);
+        let mut dir_wide = wide_path(&request.launch_directory);
 
         // Outermost first: a process is assigned to the jobs in the order the
         // attribute lists them, which is what nests them.
