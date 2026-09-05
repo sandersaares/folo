@@ -14,7 +14,7 @@ use crate::OutputFailedError;
 ///
 /// `now_unix_ms` arrives from the caller rather than being read here, so the
 /// whole rendered table is a function of its inputs
-/// (implementation.md, "Session age").
+/// (docs/implementation.md, "Session age").
 pub(crate) fn execute(
     store: &impl SessionStore,
     processes: &impl Processes,

@@ -29,7 +29,7 @@ use crate::{
 /// Said when the supervisor confirmed a job that ends the session with its
 /// launcher.
 ///
-/// Ref: docs/implementation.md, "Job breakaway".
+/// Ref: docs/job-breakaway.md.
 const TIED_TO_LAUNCHER_WARNING: &str = concat!(
     "Warning: this session belongs to a Windows job object that will end it when the launcher ",
     "exits, so it will not survive a disconnect. Launch dure.exe directly instead of through a ",
@@ -40,7 +40,7 @@ const TIED_TO_LAUNCHER_WARNING: &str = concat!(
 ///
 /// Nothing was established either way, so this reports the uncertainty rather
 /// than naming a cause that was never confirmed.
-/// Ref: docs/implementation.md, "Job breakaway".
+/// Ref: docs/job-breakaway.md.
 const UNKNOWN_TIE_WARNING: &str = concat!(
     "Warning: this session's Windows job object could not be inspected, so whether it survives ",
     "the launcher is unknown. Launch dure.exe directly if the session must outlive this terminal."
@@ -161,7 +161,7 @@ where
     );
     if launcher_tie.warrants_warning() {
         // The supervisor discovers this about itself but has no console
-        // to say it on. Ref: docs/implementation.md, "Job breakaway".
+        // to say it on. Ref: docs/job-breakaway.md.
         note_line(format_args!("{}", launcher_warning(launcher_tie)));
     }
     // Said before the console is taken over, because a failure from here on

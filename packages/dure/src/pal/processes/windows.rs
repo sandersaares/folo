@@ -55,7 +55,7 @@ pub(crate) struct BuildTargetProcesses;
 /// policy is therefore named here, alongside the job helpers that consume it,
 /// rather than in the slice-wide abstraction.
 ///
-/// Ref: docs/implementation.md, "Job breakaway".
+/// Ref: docs/job-breakaway.md.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Breakaway {
     /// A member may escape the job by asking for breakaway at creation time.
@@ -214,7 +214,7 @@ enum JobLimits {
 ///
 /// Windows reports only the immediate job, and only to the process itself, so
 /// this says nothing about any ancestor job.
-/// Ref: docs/implementation.md, "Job breakaway".
+/// Ref: docs/job-breakaway.md.
 #[cfg_attr(coverage_nightly, coverage(off))]
 fn immediate_job_limits() -> JobLimits {
     // SAFETY: the pseudo-handle this returns needs no state and is always valid.
@@ -264,7 +264,7 @@ fn breakaway_forbidden() -> bool {
 impl BuildTargetProcesses {
     /// Create an unnamed kill-on-close job with the requested breakaway policy.
     ///
-    /// Ref: docs/implementation.md, "Job breakaway".
+    /// Ref: docs/job-breakaway.md.
     pub(crate) fn create_job(breakaway: Breakaway) -> Result<JobId, PalError> {
         Self::create_job_chain(&[breakaway])
     }
@@ -275,7 +275,7 @@ impl BuildTargetProcesses {
     /// policy is the one its breakaway is evaluated against and the earlier ones
     /// stay behind as ancestors.
     ///
-    /// Ref: docs/implementation.md, "Job breakaway".
+    /// Ref: docs/job-breakaway.md.
     pub(crate) fn create_job_chain(policies: &[Breakaway]) -> Result<JobId, PalError> {
         let mut handles = Vec::with_capacity(policies.len());
         for breakaway in policies {
@@ -473,7 +473,7 @@ impl Processes for BuildTargetProcesses {
     fn create_lifetime_job(&self) -> Result<JobId, PalError> {
         // The session job permits breakaway so a nested `dure run` inside the
         // app can still create an independent inner supervisor.
-        // Ref: docs/implementation.md, "Job breakaway".
+        // Ref: docs/job-breakaway.md.
         Self::create_job(Breakaway::Permitted)
     }
 

@@ -1,6 +1,6 @@
 //! Framed client-supervisor protocol.
 //!
-//! The named pipe carries these messages (implementation.md, "Transport").
+//! The named pipe carries these messages (docs/transport.md).
 
 // Framing is used by the Windows named-pipe transport. Unit tests cover it on
 // every target; the non-Windows lib build has no transport that serializes.

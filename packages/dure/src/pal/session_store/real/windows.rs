@@ -46,7 +46,7 @@ pub(super) fn move_file_replace(tmp: &Path, dest: &Path) -> io::Result<()> {
 /// The point of holding it is that a name can be reused while a caller is deciding what to do
 /// with what it read. Reading and deleting through one handle addresses the file the decision
 /// was made about, so a record that replaced it under the same name is never the one removed.
-/// Ref: docs/implementation.md, "Session store".
+/// Ref: docs/session-store.md.
 pub(super) struct RecordFile {
     handle: HANDLE,
 }

@@ -9,8 +9,7 @@ use std::time::Duration;
 /// Local named-pipe connect is immediate when the supervisor is listening.
 /// The duration is an arbitrary watchdog, chosen to sit well above local IPC
 /// and well below a human "this is stuck" wait.
-/// Ref: docs/design.md, "Attach, detach, steal"; docs/implementation.md,
-/// "Accept loop and steal".
+/// Ref: docs/design.md, "Attach, detach, steal"; docs/supervisor.md.
 pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Bound on supervisor initialization after it has connected to the client.
@@ -46,7 +45,7 @@ pub(crate) const MAX_FRAME_LEN: u32 = 1024 * 1024;
 /// chunk size of zero would divide the payload into infinitely many pieces, so
 /// a frame cap too small to carry any payload is a contradiction rather than a
 /// value to carry forward.
-/// Ref: docs/implementation.md, "Opening output".
+/// Ref: docs/supervisor.md, "Opening output".
 pub(crate) const MAX_OUTPUT_CHUNK_BYTES: NonZero<usize> =
     match NonZero::new((MAX_FRAME_LEN as usize).saturating_sub(1)) {
         Some(size) => size,
@@ -60,13 +59,13 @@ pub(crate) const MAX_OUTPUT_CHUNK_BYTES: NonZero<usize> =
 /// served by dropping the connection than by growing without bound. The size is
 /// arbitrary, chosen to sit well above any burst a responsive client causes and
 /// well below a memory footprint worth worrying about.
-/// Ref: docs/implementation.md, "Transport".
+/// Ref: docs/transport.md.
 pub(crate) const MAX_CLIENT_BACKLOG_BYTES: usize = 4 * 1024 * 1024;
 
 /// Subdirectory under the per-user `LocalAppData` known folder that holds
 /// session records.
 ///
-/// Ref: docs/implementation.md, "Session store".
+/// Ref: docs/session-store.md.
 #[cfg_attr(
     not(windows),
     expect(

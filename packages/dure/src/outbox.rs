@@ -19,7 +19,7 @@ use crate::protocol::Message;
 ///
 /// Messages are written in the order they were queued, which is what keeps
 /// `Attached` ahead of output and `AppExited` behind it.
-/// Ref: docs/implementation.md, "Transport".
+/// Ref: docs/transport.md.
 pub(crate) struct Outbox<T: Transport> {
     transport: T,
     conn: ConnId,

@@ -303,7 +303,7 @@ impl Transport for MemoryTransport {
         let listeners = self.inner.listeners.lock().expect("listener map lock");
         // No listener means nothing to connect to, which is not the same as a
         // wait that was spent: `Timeout` is reserved for a deadline that
-        // actually elapsed. Ref: docs/implementation.md, "Transport".
+        // actually elapsed. Ref: docs/transport.md.
         let Some(&listener) = listeners.get(name) else {
             return Err(PalError::new(PalErrorKind::NotFound));
         };

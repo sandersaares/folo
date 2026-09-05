@@ -24,7 +24,7 @@ pub(crate) enum ConsoleInput {
 
 /// Detect a console, take it over for a relay, and exchange bytes.
 ///
-/// Ref: docs/implementation.md, PAL slicing.
+/// Ref: docs/implementation.md, "PAL slicing"; docs/console.md.
 #[cfg_attr(test, mockall::automock)]
 pub(crate) trait LocalConsole: Send + Sync + fmt::Debug + 'static {
     /// Whether this process has a console the relay can run on.
@@ -44,7 +44,7 @@ pub(crate) trait LocalConsole: Send + Sync + fmt::Debug + 'static {
     /// lease owns whatever this call changed and is the only thing that can
     /// change it back. A second lease is refused while one is outstanding.
     ///
-    /// Ref: docs/implementation.md, "Console modes".
+    /// Ref: docs/console.md, "Modes".
     fn begin_raw_relay(&self) -> Result<RelayLeaseId, PalError>;
 
     /// Hand the console back, undoing exactly what `lease` took over.

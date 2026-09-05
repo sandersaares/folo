@@ -10,7 +10,7 @@ use crate::SessionId;
 /// Identity of a supervisor process: pid plus creation time.
 ///
 /// Liveness opens this pid once and verifies the creation time on that handle
-/// (design.md, "Session identity"; implementation.md, "Session store").
+/// (design.md, "Session identity"; docs/session-store.md).
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct ProcessIdentity {
     /// Operating-system process id of the supervisor.
@@ -22,7 +22,7 @@ pub(crate) struct ProcessIdentity {
 /// Persisted description of one live session.
 ///
 /// Written under the PAL store root after the session pipe is accepting
-/// (implementation.md, "Session store" and "Process split").
+/// (docs/session-store.md and "Process split").
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct SessionRecord {
     /// Session id unique among live sessions for this user.
@@ -49,7 +49,7 @@ pub(crate) struct SessionRecord {
 /// An id is claimed before the supervisor has everything a record needs, so the
 /// claim names the process that made it. That is what lets a reservation left
 /// behind by a supervisor that died mid-initialization be reaped instead of
-/// occupying the id forever (implementation.md, "Session store").
+/// occupying the id forever (docs/session-store.md).
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum StoredSession {

@@ -7,7 +7,7 @@ use std::fmt;
 /// Only the supervisor can ask this: Windows reports a process's job membership
 /// to that process alone, and it exposes only the job the process is directly
 /// in. An outer job that would also end the session therefore cannot be ruled
-/// out by any of these answers (implementation.md, "Job breakaway"), which is
+/// out by any of these answers (docs/job-breakaway.md), which is
 /// why this names what was observed rather than promising an outcome.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum LauncherTie {

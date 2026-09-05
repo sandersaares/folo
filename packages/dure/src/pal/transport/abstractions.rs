@@ -10,7 +10,7 @@ use crate::protocol::Message;
 /// Byte-stream between one supervisor and its attaching clients.
 ///
 /// Steal is "accept a new connection while an old one still exists."
-/// Ref: docs/implementation.md, PAL slicing and "Transport".
+/// Ref: docs/implementation.md, "PAL slicing"; docs/transport.md.
 #[cfg_attr(test, mockall::automock)]
 pub(crate) trait Transport: Send + Sync + fmt::Debug + 'static {
     /// Create a first-instance listener for `name`.

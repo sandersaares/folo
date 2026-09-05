@@ -132,7 +132,7 @@ where
         session_id: initialized.session_id,
         // Only this process can see the job it landed in, and the client is
         // the one with a console to report it on.
-        // Ref: docs/implementation.md, "Job breakaway".
+        // Ref: docs/job-breakaway.md.
         launcher_tie: processes.launcher_tie(),
     };
     if transport.send(startup, &startup_ok).is_err() {
@@ -261,7 +261,7 @@ fn map_startup(error: &PalError) -> AppError {
 ///   the first attach, and `stopping` for the point after which nothing more
 ///   will be relayed.
 ///
-/// Ref: docs/implementation.md, "Accept loop and steal".
+/// Ref: docs/supervisor.md.
 struct Shared<T: Transport, C> {
     transport: T,
     pty_host: C,
@@ -439,7 +439,7 @@ impl<T: Transport, C> Shared<T, C> {
 /// and a receiver rejects any frame past the cap rather than reassembling it. A
 /// single `Output` message would therefore fail the very attach it exists to
 /// open, and would fail it precisely when the app had written the most.
-/// Ref: docs/implementation.md, "Opening output".
+/// Ref: docs/supervisor.md, "Opening output".
 fn preamble_messages(held: &[u8]) -> impl Iterator<Item = Message> + use<'_> {
     held.chunks(MAX_OUTPUT_CHUNK_BYTES.get())
         .map(|chunk| Message::Output(chunk.to_vec()))
@@ -717,7 +717,7 @@ where
                 // closes the pipe. That is accepted: the notice is what tells a
                 // user why their screen went quiet, and it is worth more than
                 // reclaiming the thread promptly.
-                // Ref: docs/implementation.md, "Displacement".
+                // Ref: docs/supervisor.md, "Displacement".
                 old.outbox.send(Message::Displaced);
                 old.outbox.finish();
             }
@@ -726,7 +726,7 @@ where
             // the client that asked for the size. Resize failure means the pty
             // is already gone; wait_app and read_output observe that and stop
             // the relay.
-            // Ref: docs/implementation.md, "Window size".
+            // Ref: docs/console.md, "Window size".
             _ = shared
                 .pty_host
                 .resize(shared.pty, WindowSize { cols, rows });
@@ -752,7 +752,7 @@ where
         // after the new client became the live console. Holding the lock across
         // the write is bounded because the console host drains its input pipe
         // whether or not the app reads it.
-        // Ref: docs/implementation.md, "Displacement".
+        // Ref: docs/supervisor.md, "Displacement".
         let slot = shared.client();
         if slot.as_ref().map(|client| client.conn) != Some(conn) {
             break;

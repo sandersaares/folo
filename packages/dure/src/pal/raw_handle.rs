@@ -33,7 +33,7 @@ impl RawHandle {
 /// waiting reader — and refuses any operation started after that, since a later
 /// operation would have nothing left to release it. The handle is closed once
 /// the last holder lets go.
-/// Ref: docs/implementation.md, "Transport" and "Pseudoconsole".
+/// Ref: docs/transport.md and "Pseudoconsole".
 pub(crate) struct PipeHandle {
     handle: RawHandle,
     /// Whether teardown has cancelled this handle.

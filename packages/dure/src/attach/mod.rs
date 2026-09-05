@@ -1,6 +1,6 @@
 //! Client attach and console relay.
 //!
-//! Ref: docs/implementation.md, "Console modes".
+//! Ref: docs/console.md, "Modes".
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
@@ -46,7 +46,7 @@ where
     // Read after taking the console over so the size is the one the app will be
     // rendered at, and sent with `Attach` so the supervisor can apply it as
     // part of taking the client slot.
-    // Ref: docs/implementation.md, "Window size".
+    // Ref: docs/console.md, "Window size".
     let outcome = handshake_and_relay(transport, console, pipe_name, session_id);
     // The console is handed back explicitly on every ordinary return, so a
     // restoration failure is a fact the caller learns about rather than one the

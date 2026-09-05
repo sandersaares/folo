@@ -139,7 +139,7 @@ const PIPE_BUFFER: u32 = 65_536;
 
 /// Process-lifetime DACL used for every session pipe.
 ///
-/// Permits only the creating user (implementation.md, "Transport").
+/// Permits only the creating user (docs/transport.md).
 struct UserPipeSecurity {
     descriptor: PSECURITY_DESCRIPTOR,
     attrs: SECURITY_ATTRIBUTES,

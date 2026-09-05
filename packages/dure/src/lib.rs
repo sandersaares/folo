@@ -20,7 +20,7 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 // `dure` supervises Windows consoles and has no meaning on other platforms, so
 // the whole crate is gated here rather than each module carrying its own
-// platform stub (implementation.md, "Platform gate").
+// platform stub (docs/implementation.md, "Platform gate").
 #![cfg(windows)]
 
 mod app_command;

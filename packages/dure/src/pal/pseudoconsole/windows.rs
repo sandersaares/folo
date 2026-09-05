@@ -27,7 +27,7 @@ const OUTPUT_READ_BUF: usize = 4096;
 /// Owns one console the app is attached to until shutdown releases it. The
 /// endpoints stay valid for any read or write already in flight, and the
 /// console itself is released exactly once however shutdown is reached.
-/// Ref: docs/implementation.md, "Pseudoconsole".
+/// Ref: docs/console.md.
 // The `HPCON` is taken by whichever of `finish` and `close` runs first, which is
 // what makes that "exactly once" true.
 struct Pty {

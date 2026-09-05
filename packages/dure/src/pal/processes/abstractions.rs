@@ -46,7 +46,7 @@ pub(crate) struct AppSpawn {
 
 /// Spawn a detached supervisor, identify processes, own the app-lifetime job.
 ///
-/// Ref: docs/implementation.md, PAL slicing and "Detached supervisor".
+/// Ref: docs/implementation.md, "PAL slicing" and "Detached supervisor".
 #[cfg_attr(test, mockall::automock)]
 pub(crate) trait Processes: Send + Sync + fmt::Debug + 'static {
     /// Path of the current executable, used to re-spawn as supervisor.
@@ -62,7 +62,7 @@ pub(crate) trait Processes: Send + Sync + fmt::Debug + 'static {
     /// process itself, so no other process can answer this, and it exposes no
     /// ancestor jobs, so an outer job is never ruled out.
     ///
-    /// Ref: docs/implementation.md, "Job breakaway".
+    /// Ref: docs/job-breakaway.md.
     fn launcher_tie(&self) -> LauncherTie;
 
     /// Open the pid, verify creation time, and report whether it is running.

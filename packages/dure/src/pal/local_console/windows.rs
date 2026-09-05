@@ -43,7 +43,7 @@ const INPUT_READ_BUF: usize = 4096;
 const PEEK_INPUT_RECORDS: usize = 16;
 
 /// Console state one relay takeover replaced, kept so the console can be handed
-/// back the way it was found. Ref: docs/implementation.md, "Console modes".
+/// back the way it was found. Ref: docs/console.md, "Modes".
 ///
 /// Each field records a change that succeeded, so restoring undoes exactly what
 /// was done rather than assuming the whole takeover completed.
@@ -128,7 +128,7 @@ fn restore_mode(kind: STD_HANDLE, mode: CONSOLE_MODE) -> Result<(), PalError> {
 /// console applies its code page to the bytes crossing `WriteFile` and
 /// `ReadFile`, and that code page defaults to the machine's OEM one, under
 /// which every multi-byte UTF-8 sequence decodes as several unrelated glyphs.
-/// Ref: docs/implementation.md, "Console encoding".
+/// Ref: docs/console.md, "Encoding".
 ///
 /// Both are attempted even when the first fails, because a console left with
 /// one side converted is worse than one left wholly unconverted.
@@ -202,7 +202,7 @@ fn consume_records(handle: HANDLE, count: usize) -> Result<(), PalError> {
 /// Consumes leading `WINDOW_BUFFER_SIZE_EVENT` records so a later `ReadFile`
 /// is not blocked behind them. Window changes are console input records, not
 /// VT bytes, which is why attach cannot learn resizes from `ReadFile` alone.
-/// Ref: docs/implementation.md, "Window size".
+/// Ref: docs/console.md, "Window size".
 fn take_leading_resize(handle: HANDLE) -> Result<Option<WindowSize>, PalError> {
     let (peek, count) = peek_input(handle)?;
     let leading_resizes = peek
@@ -220,7 +220,7 @@ fn take_leading_resize(handle: HANDLE) -> Result<Option<WindowSize>, PalError> {
 
 /// Drops focus/menu/mouse records so they cannot hide a later resize or key.
 /// This is what excludes mouse reporting from pass-through.
-/// Ref: docs/implementation.md, "Window size".
+/// Ref: docs/console.md, "Window size".
 fn discard_leading_noise(handle: HANDLE) -> Result<bool, PalError> {
     let (peek, count) = peek_input(handle)?;
     let leading_noise = peek
@@ -240,7 +240,7 @@ fn discard_leading_noise(handle: HANDLE) -> Result<bool, PalError> {
 
 /// Puts both console directions into the relay's modes, recording each success.
 ///
-/// Ref: docs/implementation.md, "Console modes".
+/// Ref: docs/console.md, "Modes".
 #[cfg_attr(coverage_nightly, coverage(off))]
 fn take_over_console(
     taken: &mut TakenConsole,

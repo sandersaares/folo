@@ -15,7 +15,7 @@ use crate::pal::pseudoconsole::{Pseudoconsole, PseudoconsoleFacade, WindowSize};
 /// A process started inside a test-owned pseudoconsole.
 ///
 /// Integration tests use this so they do not depend on the runner having an
-/// interactive console (implementation.md, "Integration tests").
+/// interactive console (docs/implementation.md, "Integration tests").
 ///
 /// This is an owning handle: dropping it closes the job and pseudoconsole that
 /// own the child's lifetime, which ends a child that is still running.
@@ -38,7 +38,7 @@ impl ConsoleProcess {
     /// Spawn `exe` with `args` in `cwd`, attached to a new pseudoconsole.
     ///
     /// The surrounding job permits breakaway, which models the shell an SSH
-    /// session provides (implementation.md, "Job breakaway").
+    /// session provides (docs/job-breakaway.md).
     #[must_use]
     pub fn spawn(exe: &Path, args: &[String], cwd: &Path) -> Self {
         Self::spawn_in_jobs(exe, args, cwd, &[Breakaway::Permitted])
@@ -48,7 +48,7 @@ impl ConsoleProcess {
     ///
     /// The surrounding job forbids breakaway, which models wrappers such as
     /// `cargo run` that `dure run` must refuse to detach from
-    /// (implementation.md, "Job breakaway").
+    /// (docs/job-breakaway.md).
     #[must_use]
     pub fn spawn_confined(exe: &Path, args: &[String], cwd: &Path) -> Self {
         Self::spawn_in_jobs(exe, args, cwd, &[Breakaway::Forbidden])
@@ -59,7 +59,7 @@ impl ConsoleProcess {
     /// Breakaway is evaluated against the immediate job only, so `CreateProcessW`
     /// succeeds here and leaves the supervisor a member of the outer job. This
     /// models the case `dure run` can only detect after the spawn
-    /// (implementation.md, "Job breakaway").
+    /// (docs/job-breakaway.md).
     #[must_use]
     pub fn spawn_confined_by_ancestor(exe: &Path, args: &[String], cwd: &Path) -> Self {
         Self::spawn_in_jobs(

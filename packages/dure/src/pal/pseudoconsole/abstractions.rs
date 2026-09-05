@@ -19,7 +19,7 @@ pub(crate) struct WindowSize {
 /// One pseudoconsole is one console the app is attached to: it has a size, it
 /// carries the app's input and output as bytes, and it ends in two steps so a
 /// reader can finish the app's output before the console is released.
-/// Ref: docs/implementation.md, PAL slicing and "Pseudoconsole".
+/// Ref: docs/implementation.md, "PAL slicing"; docs/console.md.
 #[cfg_attr(test, mockall::automock)]
 pub(crate) trait Pseudoconsole: Send + Sync + fmt::Debug + 'static {
     /// Create a pseudoconsole with the given initial size.
