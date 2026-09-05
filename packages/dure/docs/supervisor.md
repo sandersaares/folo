@@ -84,17 +84,22 @@ record this command reaps before reporting that the session is not live.
 
 ## The advisory attached flag
 
-Installing the client slot and signaling the first-attach gate let the
-supervisor finish delivering an already-exited app's output and status before
-the advisory attached flag is written to the session store. The store update
-happens after both ownership locks are released, so durable filesystem I/O
-cannot block that supervisor progress or another attach.
+The flag is bookkeeping, but publishing it means serializing a record, writing
+a file, and replacing it. One writer owns every change to a live session's
+record: an attach or detach hands over what it wants published and goes
+straight on to relaying. A newly attached client's first keystrokes therefore
+never wait for the filesystem, and a wedged store cannot hold up a steal.
 
-Each client-slot change assigns a generation to its advisory update. Store
-writes are serialized and skip updates that are already stale when they reach
-that serialization boundary. If a write becomes stale inside filesystem I/O, the
-newer update follows it through the same boundary and establishes the final
-attached state.
+Each client-slot change assigns a generation to its update, and the writer
+publishes an update only while its generation is still the current ownership
+state. An update that waited behind store I/O is therefore dropped rather than
+overwriting the attach that overtook it.
+
+Teardown stops the writer and waits for it, then deletes the record. Stopping
+is an instruction rather than the queue closing, because a relay thread can
+outlive teardown still holding the means to queue an update: everything handed
+over before the stop is published, everything after it is dropped. That is what
+makes the delete final, including over a session id that is later reused.
 
 ## Teardown
 

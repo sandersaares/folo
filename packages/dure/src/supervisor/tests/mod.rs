@@ -7,7 +7,7 @@ mod startup;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex, mpsc};
+use std::sync::{Arc, Barrier, Condvar, Mutex, mpsc};
 use std::thread;
 
 use testing::{WatchdogPhaseReporter, with_watchdog_phases};
@@ -24,7 +24,8 @@ use crate::pal::session_store::MemorySessionStore;
 use crate::pal::transport::MemoryTransport;
 use crate::protocol::{Message, PROTOCOL_VERSION, StartupStep, encode, payload_len_ok};
 use crate::session_record::{ProcessIdentity, SessionRecord};
-use crate::supervisor::relay::{client_loop, pty_output_loop, store_attached_flag};
+use crate::supervisor::record_writer::RecordWriter;
+use crate::supervisor::relay::{client_loop, pty_output_loop};
 use crate::supervisor::shared::{Client, FirstAttach, Shared, preamble_messages};
 use crate::supervisor::startup::{DEFAULT_PTY_SIZE, map_startup};
 use crate::{BreakawayDeniedError, SessionId, StoreError};
@@ -32,6 +33,15 @@ use crate::{BreakawayDeniedError, SessionId, StoreError};
 /// A publication time with no structure of its own; the age column has its
 /// own tests in `list_fmt`.
 const SOME_STARTED_AT_MS: u64 = 1;
+
+/// What a teardown ended, for tests about the order it ends things in.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Torn {
+    /// The job that owns the app's and its descendants' lifetime.
+    Job,
+    /// The pseudoconsole they are attached to.
+    Console,
+}
 
 /// An ordinary session to run, for tests about something other than what
 /// the session happens to be.

@@ -126,6 +126,63 @@ fn final_output_arrives_before_the_exit_status() {
 }
 
 #[test]
+fn teardown_ends_the_job_before_it_closes_the_console() {
+    with_watchdog_phases("setting up the supervisor", |phase_reporter| {
+        let transport = MemoryTransport::new();
+        let pty = MemoryPseudoconsole::new();
+        let store = MemorySessionStore::new();
+        let exit = Arc::new((Mutex::new(true), Condvar::new()));
+        let teardown = Arc::new(Mutex::new(Vec::new()));
+        pty.on_close({
+            let teardown = Arc::clone(&teardown);
+            move |_| teardown.lock().expect("teardown log").push(Torn::Console)
+        });
+        let processes = mock_processes_with_close_job(
+            Arc::clone(&exit),
+            LauncherTie::NoneDetected,
+            AppWait::Reports,
+            {
+                let teardown = Arc::clone(&teardown);
+                move |_| teardown.lock().expect("teardown log").push(Torn::Job)
+            },
+        );
+
+        let startup = transport.listen("startup").unwrap();
+        let supervisor = thread::spawn({
+            let transport = transport.clone();
+            move || {
+                run_supervisor(
+                    &processes,
+                    &store,
+                    &transport,
+                    &pty,
+                    "startup",
+                    sample_spec(),
+                )
+            }
+        });
+
+        let started = commit_startup(&transport, startup, &phase_reporter);
+        let client = transport
+            .connect(&started.pipe_name, CONNECT_TIMEOUT)
+            .unwrap();
+        transport.send(client, &ORDINARY_ATTACH).unwrap();
+        phase_reporter.report("waiting for the attach acknowledgement");
+        _ = transport.recv(client).unwrap();
+        transport.disconnect(started.startup_conn);
+
+        phase_reporter.report("waiting for supervisor shutdown");
+        assert_eq!(supervisor.join().unwrap().unwrap(), SAMPLE_APP_EXIT);
+
+        // The same order rollback uses, for the same reason: descendants stay
+        // attached to the console until their job is gone, and closing a
+        // console waits for whoever is attached.
+        // Ref: docs/supervisor.md, "Teardown".
+        assert_eq!(*teardown.lock().unwrap(), [Torn::Job, Torn::Console]);
+    });
+}
+
+#[test]
 fn an_app_that_exits_before_anyone_attaches_still_reports_its_status() {
     with_watchdog_phases("setting up the supervisor", |phase_reporter| {
         let transport = MemoryTransport::new();

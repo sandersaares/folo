@@ -95,17 +95,14 @@ fn a_stalled_detach_update_does_not_block_or_overwrite_a_steal() {
                 protocol_version: PROTOCOL_VERSION,
             })
             .unwrap();
-        let record_live = Arc::new(Mutex::new(true));
-        let set_attached = store_attached_flag(
-            &store,
-            id,
-            record_live,
-            Arc::clone(&shared.attached_generation),
-        );
+        let writer = RecordWriter::start(&store, id, Arc::clone(&shared.attached_generation));
         let (updated_tx, updated_rx) = mpsc::channel();
-        let observe_update = move |generation, attached| {
-            set_attached(generation, attached);
-            updated_tx.send(attached).unwrap();
+        let observe_update = {
+            let set_attached = writer.set_attached();
+            move |generation, attached| {
+                set_attached(generation, attached);
+                updated_tx.send(attached).unwrap();
+            }
         };
 
         let (first_supervisor, first_client) = connected_pair(&transport, "first");
@@ -134,8 +131,8 @@ fn a_stalled_detach_update_does_not_block_or_overwrite_a_steal() {
             move || client_loop(&shared, second_supervisor, &observe_update)
         });
         transport.send(second_client, &ORDINARY_ATTACH).unwrap();
-        // The first relay is blocked in store I/O. Receiving this proves it
-        // released the client slot before publishing the advisory flag.
+        // Store I/O is wedged. Receiving this proves nothing on the attach
+        // path waits for it.
         phase_reporter.report("waiting for the stealing attach acknowledgement");
         assert!(matches!(
             transport.recv(second_client).unwrap(),
@@ -148,12 +145,15 @@ fn a_stalled_detach_update_does_not_block_or_overwrite_a_steal() {
         assert!(completed.contains(&false));
         assert!(completed.contains(&true));
         first_relay.join().unwrap();
-        assert!(store.read(id).unwrap().unwrap().attached);
 
         transport.disconnect(second_client);
         phase_reporter.report("waiting for the final detach update");
         assert!(!updated_rx.recv().unwrap());
         second_relay.join().unwrap();
+        // The stale detach queued behind the steal cannot have overwritten it:
+        // updates are published in the order they were handed over, and only
+        // while they are still the current ownership state.
+        writer.finish();
         assert!(!store.read(id).unwrap().unwrap().attached);
     });
 }
@@ -198,6 +198,53 @@ fn a_client_that_does_not_attach_first_is_dropped() {
     assert!(flags.lock().unwrap().is_empty());
     assert!(pty_host.take_input(shared.pty).is_empty());
     transport.recv(client).unwrap_err();
+}
+
+#[test]
+fn two_attaches_racing_leave_one_of_them_installed_and_the_other_displaced() {
+    // Both attaches are released at once so they contend inside the attach
+    // transaction, which is the race the attach lock exists for and which the
+    // sequential steal test cannot reach.
+    let transport = MemoryTransport::new();
+    let pty_host = MemoryPseudoconsole::new();
+    let shared = Arc::new(shared_session(&transport, &pty_host));
+    let attaches = 2;
+    let gate = Arc::new(Barrier::new(attaches));
+
+    let contenders: Vec<_> = ["first", "second"]
+        .into_iter()
+        .map(|name| {
+            let (supervisor, client) = connected_pair(&transport, name);
+            transport.send(client, &ORDINARY_ATTACH).unwrap();
+            // The relay ends after the attach, so each thread finishes and the
+            // installed slot is whichever attach transaction ran last.
+            transport.disconnect(client);
+            thread::spawn({
+                let shared = Arc::clone(&shared);
+                let gate = Arc::clone(&gate);
+                move || {
+                    gate.wait();
+                    client_loop(&shared, supervisor, &|_generation, _attached| {});
+                }
+            })
+        })
+        .collect();
+
+    for contender in contenders {
+        contender.join().unwrap();
+    }
+
+    // Both clients left, so neither is left owning the console however the
+    // two transactions interleaved.
+    assert!(client_conn(&shared).is_none());
+    // Whichever attached last is the one the generation counter names, so an
+    // attach that acknowledged first can never overwrite it.
+    assert_eq!(
+        shared.attached_generation.load(Ordering::SeqCst),
+        u64::try_from(attaches.checked_mul(2).unwrap()).unwrap(),
+        "each attach installs and then releases the slot, in order"
+    );
+    assert!(shared.first_attach().claimed);
 }
 
 #[test]
@@ -335,44 +382,4 @@ fn output_for_a_client_that_is_gone_is_discarded() {
     // though nothing can be delivered.
     pty_output_loop(&shared);
     outbox.wait_for_writer();
-}
-
-#[test]
-fn attached_flag_publishes_only_the_current_generation_while_the_record_lives() {
-    let store = MemorySessionStore::new();
-    let id = store.allocate_id(&ProcessIdentity::for_test(1)).unwrap();
-    store
-        .publish(&SessionRecord {
-            id,
-            supervisor: ProcessIdentity {
-                pid: 10,
-                creation_time: 100,
-            },
-            pipe_name: "pipe".to_string(),
-            launch_directory: PathBuf::from("/work"),
-            command: AppCommand::for_test(&["app.exe"]),
-            started_at_unix_ms: 1,
-            attached: false,
-            protocol_version: PROTOCOL_VERSION,
-        })
-        .unwrap();
-
-    let record_live = Arc::new(Mutex::new(true));
-    let current_generation = Arc::new(AtomicU64::new(2));
-    let set_attached = store_attached_flag(
-        &store,
-        id,
-        Arc::clone(&record_live),
-        Arc::clone(&current_generation),
-    );
-    set_attached(1, true);
-    assert!(!store.read(id).unwrap().unwrap().attached);
-
-    set_attached(2, true);
-    assert!(store.read(id).unwrap().unwrap().attached);
-
-    *record_live.lock().expect("record_live lock") = false;
-    current_generation.store(3, Ordering::SeqCst);
-    set_attached(3, false);
-    assert!(store.read(id).unwrap().unwrap().attached);
 }

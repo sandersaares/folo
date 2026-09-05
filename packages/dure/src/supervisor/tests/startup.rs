@@ -104,6 +104,64 @@ fn failure_to_send_startup_ok_rolls_back() {
 }
 
 #[test]
+fn rollback_ends_the_job_before_it_closes_the_console() {
+    with_watchdog_phases("setting up the supervisor", |phase_reporter| {
+        let transport = MemoryTransport::new();
+        let pty = MemoryPseudoconsole::new();
+        let store = MemorySessionStore::new();
+        let teardown = Arc::new(Mutex::new(Vec::new()));
+        pty.on_close({
+            let teardown = Arc::clone(&teardown);
+            move |_| teardown.lock().expect("teardown log").push(Torn::Console)
+        });
+        let mut processes = MockProcesses::new();
+        processes
+            .expect_launcher_tie()
+            .returning(|| LauncherTie::NoneDetected);
+        processes
+            .expect_create_lifetime_job()
+            .returning(|| Ok(JobId::for_test(1)));
+        // Fails after both the job and the console exist, so rollback has
+        // both of them to undo.
+        processes
+            .expect_spawn_app()
+            .returning(|_| Err(PalError::new(PalErrorKind::Other)));
+        processes.expect_close_job().returning({
+            let teardown = Arc::clone(&teardown);
+            move |_| teardown.lock().expect("teardown log").push(Torn::Job)
+        });
+
+        let startup = transport.listen("startup").unwrap();
+        let supervisor = thread::spawn({
+            let transport = transport.clone();
+            move || {
+                run_supervisor(
+                    &processes,
+                    &store,
+                    &transport,
+                    &pty,
+                    "startup",
+                    sample_spec(),
+                )
+            }
+        });
+
+        phase_reporter.report("waiting for the supervisor startup connection");
+        let startup_conn = transport.accept(startup).unwrap();
+        phase_reporter.report("waiting for the startup error");
+        _ = transport.recv(startup_conn).unwrap();
+        phase_reporter.report("waiting for startup rollback");
+        supervisor.join().unwrap().unwrap_err();
+
+        // Descendants stay attached to the console until the job that owns
+        // their lifetime is gone, and closing a console waits for whoever is
+        // attached. The reverse order hangs on a real host, which no in-memory
+        // PAL reproduces. Ref: docs/supervisor.md, "Startup".
+        assert_eq!(*teardown.lock().unwrap(), [Torn::Job, Torn::Console]);
+    });
+}
+
+#[test]
 fn init_failure_sends_startup_err_and_closes_job() {
     with_watchdog_phases("setting up the supervisor", |phase_reporter| {
         let transport = MemoryTransport::new();

@@ -16,9 +16,10 @@ use crate::pal::pseudoconsole::Pseudoconsole;
 use crate::pal::session_store::SessionStore;
 use crate::pal::transport::Transport;
 use crate::protocol::Message;
+use crate::supervisor::record_writer::RecordWriter;
 use crate::supervisor::shared::{Client, FirstAttach, Shared, preamble_messages};
 use crate::supervisor::startup::Initialized;
-use crate::{PalFailedError, SessionId, StoreError};
+use crate::{PalFailedError, StoreError};
 
 // Blocking serve loop. A mutation that returns before the accept and PTY threads
 // are wired up leaves the test's client waiting forever, and watchdogs are
@@ -48,8 +49,8 @@ where
         ..
     } = initialized;
 
-    let record_live = Arc::new(Mutex::new(true));
     let attached_generation = Arc::new(AtomicU64::default());
+    let record_writer = RecordWriter::start(store, session_id, Arc::clone(&attached_generation));
     let shared = Arc::new(Shared {
         transport: transport.clone(),
         pty_host: pty_host.clone(),
@@ -76,12 +77,7 @@ where
         }
     });
 
-    let store_flag = store_attached_flag(
-        store,
-        session_id,
-        Arc::clone(&record_live),
-        attached_generation,
-    );
+    let store_flag = record_writer.set_attached();
     thread::spawn({
         let shared = Arc::clone(&shared);
         let transport = transport.clone();
@@ -142,18 +138,12 @@ where
         client.outbox.finish();
     }
 
-    let deleted = {
-        // Client threads take this lock before publishing an attached-flag
-        // update. Clearing it first prevents a late publish from recreating
-        // the record after delete, including over a reused session id.
-        let mut live = record_live
-            .lock()
-            .expect("record_live is only set false here, never held across a panic");
-        *live = false;
-        // Ids are reused, so an unconditional delete could reap whichever
-        // session claimed this id after this supervisor published.
-        store.delete_owned_by(session_id, &identity)
-    };
+    // Nothing can publish the record after this, so the delete below is final
+    // — including over a session id that is later reused.
+    record_writer.finish();
+    // Ids are reused, so an unconditional delete could reap whichever session
+    // claimed this id after this supervisor published.
+    let deleted = store.delete_owned_by(session_id, &identity);
 
     // A wait that failed is the cause and a record that outlives it is only a
     // consequence, so the wait failure is the one worth reporting.
@@ -167,33 +157,6 @@ where
         client.outbox.wait_for_writer();
     }
     Ok(status)
-}
-
-// A mutation that skips a live record's update leaves the deterministic
-// store-stall test waiting for an operation that can never arrive, and
-// watchdogs are disabled under cargo-mutants.
-#[cfg_attr(test, mutants::skip)]
-pub(super) fn store_attached_flag<S: SessionStore + Clone>(
-    store: &S,
-    id: SessionId,
-    record_live: Arc<Mutex<bool>>,
-    current_generation: Arc<AtomicU64>,
-) -> impl Fn(u64, bool) + Clone + Send + 'static {
-    let store = store.clone();
-    move |generation: u64, attached: bool| {
-        let live = record_live
-            .lock()
-            .expect("record_live is only set false at delete, never held across a panic");
-        if !*live || current_generation.load(Ordering::SeqCst) != generation {
-            return;
-        }
-        if let Ok(Some(mut record)) = store.read(id) {
-            record.attached = attached;
-            // A failed write leaves a stale attached flag. The flag is
-            // advisory; liveness is the supervisor process.
-            _ = store.publish(&record);
-        }
-    }
 }
 
 // Blocking accept. A mutation that drops the stop check or the accept error

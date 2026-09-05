@@ -24,10 +24,15 @@ struct PtyState {
     withheld: bool,
 }
 
+/// Told about every close, for tests that care when one happened relative to
+/// something else.
+type CloseObserver = Arc<dyn Fn(PtyId) + Send + Sync>;
+
 struct Inner {
     next_id: AtomicU64,
     ptys: Mutex<HashMap<PtyId, PtyState>>,
     cond: Condvar,
+    on_close: Mutex<Option<CloseObserver>>,
 }
 
 /// Byte-pump stand-in for a pseudoconsole.
@@ -49,8 +54,14 @@ impl MemoryPseudoconsole {
                 next_id: AtomicU64::new(1),
                 ptys: Mutex::new(HashMap::new()),
                 cond: Condvar::new(),
+                on_close: Mutex::new(None),
             }),
         }
+    }
+
+    /// Report every close to `observer`, in the order they happen.
+    pub(crate) fn on_close(&self, observer: impl Fn(PtyId) + Send + Sync + 'static) {
+        *self.inner.on_close.lock().expect("close observer lock") = Some(Arc::new(observer));
     }
 
     /// Push output as if the app wrote to its console.
@@ -196,6 +207,17 @@ impl Pseudoconsole for MemoryPseudoconsole {
     fn close(&self, pty: PtyId) {
         self.inner.ptys.lock().expect("pty map lock").remove(&pty);
         self.inner.cond.notify_all();
+        // Outside every lock this type holds: an observer is user code as far
+        // as this type is concerned. Ref: docs/callback-safety.md.
+        let observer = self
+            .inner
+            .on_close
+            .lock()
+            .expect("close observer lock")
+            .clone();
+        if let Some(observer) = observer {
+            observer(pty);
+        }
     }
 }
 

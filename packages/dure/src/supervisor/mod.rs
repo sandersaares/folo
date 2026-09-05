@@ -5,6 +5,7 @@
 //! the relay that carries the console until the app exits.
 //! Ref: docs/supervisor.md.
 
+mod record_writer;
 mod relay;
 mod shared;
 mod startup;
