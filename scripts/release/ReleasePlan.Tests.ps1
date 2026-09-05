@@ -477,11 +477,16 @@ Describe 'Invoke-ExpandReleasePlan' {
 }
 
 Describe 'Invoke-ApplyReleasePlan' {
-    It 'passes an existing plan to cargo-release-plan apply' {
-        $path = Join-Path $TestDrive 'plan.json'
-        '{}' | Set-Content -LiteralPath $path -Encoding utf8
+    It 'passes an expanded plan to cargo-release-plan apply' {
+        $path = Join-Path $TestDrive 'apply-expanded.json'
+        [ordered]@{
+            schema_version = $script:ValidReleasePlanSchemaVersion
+            expanded       = $true
+            increments     = @([ordered]@{ name = 'events'; version = '1.0.1' })
+        } | ConvertTo-Json -Depth $script:ExpandedPlanFixtureJsonDepth |
+            Set-Content -LiteralPath $path -Encoding utf8
         $script:argument = $null
-        Invoke-ApplyReleasePlan -PlanPath $path -Cargo {
+        Invoke-ApplyReleasePlan -ExpandedPath $path -Cargo {
             param([string[]] $Argument)
             $script:argument = $Argument
         }
@@ -489,8 +494,28 @@ Describe 'Invoke-ApplyReleasePlan' {
         $script:argument | Should -Contain $path
     }
 
+    It 'rejects a proposed plan, which names a narrower set than it applies' {
+        # The publication gate runs over the expanded plan's packages, so applying a proposed one
+        # would edit packages that gate never saw.
+        $path = Join-Path $TestDrive 'apply-proposed.json'
+        [ordered]@{
+            schema_version = $script:ValidReleasePlanSchemaVersion
+            increments     = @([ordered]@{ name = 'nm'; level = 'patch' })
+        } | ConvertTo-Json -Depth $script:ExpandedPlanFixtureJsonDepth |
+            Set-Content -LiteralPath $path -Encoding utf8
+
+        $script:argument = $null
+        {
+            Invoke-ApplyReleasePlan -ExpandedPath $path -Cargo {
+                param([string[]] $Argument)
+                $script:argument = $Argument
+            }
+        } | Should -Throw '*proposed plan*'
+        $script:argument | Should -BeNullOrEmpty
+    }
+
     It 'rejects a missing plan' {
-        { Invoke-ApplyReleasePlan -PlanPath (Join-Path $TestDrive 'missing.json') } |
+        { Invoke-ApplyReleasePlan -ExpandedPath (Join-Path $TestDrive 'missing.json') } |
             Should -Throw '*not found*'
     }
 }
@@ -638,16 +663,16 @@ Describe 'Assert-IncrementPackagePublished' {
         }
     }
 
-    It 'rejects a plan that expansion did not produce' {
-        # An input plan may leave version-group members unnamed, so clearing publication against
-        # one would check a narrower set than apply edits.
+    It 'rejects a proposed plan, which names a narrower set than it reaches' {
+        # A proposed plan may leave version-group members unnamed, so clearing publication
+        # against one would check a narrower set than apply edits.
         $planPath = Join-Path $TestDrive 'unexpanded.json'
         Write-TestExpandedPlan -Path $planPath -Name @('events') -Expanded $false
 
         {
             Assert-IncrementPackagePublished -ExpandedPath $planPath `
                 -GetPublishStatus { 'Published' }
-        } | Should -Throw '*is not an expanded plan*'
+        } | Should -Throw '*proposed plan*'
     }
 
     It 'checks every package the expansion reached, including group members' {

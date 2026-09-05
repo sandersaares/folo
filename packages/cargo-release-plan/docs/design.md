@@ -99,30 +99,46 @@ dependency resolution and Cargo's package preparation work, which the normal
 offline assessment deliberately avoids. A mismatch on a clean tree is evidence
 that the artifact model needs correction.
 
+### Planning stages
+
+A plan exists in two stages, and they carry different guarantees about the
+packages a document names.
+
+A **proposed plan** is what a planner writes. Its entries may name a version
+group, or a single member of one, and leave resolution to reach the rest, so what
+it names is a starting point rather than the full set it moves.
+
+An **expanded plan** is what `expand` writes. It names every package the plan
+reaches at the version each will carry. Because that set is what a caller
+reviews, resolving it again must reproduce it exactly.
+
+Approval is not a third stage. The expanded plan a caller approves is applied
+unchanged, so the reviewed document and the applied document are the same bytes,
+rather than one being a rendering of the other.
+
 ### Preview a decision with `expand`
 
-`expand --plan <plan.json> --out <expanded.json>` resolves a plan's version
-groups and increment levels into one explicit entry per package. An input plan
-may omit version-group members that `apply` will update; `expand` writes the
-complete explicit package/version set for review.
+`expand --plan <plan.json> --out <expanded.json>` resolves a proposed plan's
+version groups and increment levels into one explicit entry per package. A
+proposed plan may omit version-group members that `apply` will update; `expand`
+writes the complete explicit package/version set for review.
 
-The expanded document is itself a plan, so the reviewed document is the one that
-gets applied. It is also marked as expanded, which binds it to the package set it
-names: applying it after a version group gained a member fails rather than
-quietly editing a package that was never reviewed. Recovering from that means
-expanding the source plan again and reviewing the wider set. An unmarked input
-plan keeps the opposite behavior, since naming a group and letting expansion
-reach its members is how such a plan is written.
+An expanded plan records its stage, which binds it to the package set it names:
+applying it after a version group gained a member fails rather than quietly
+editing a package that was never reviewed. Recovering from that means expanding
+the proposal again and reviewing the wider set. A proposed plan keeps the
+opposite behavior, since naming a group and letting resolution reach its members
+is how such a plan is written.
 
 ### Carry out a decision with `apply`
 
-`apply --plan <plan.json>` turns approved version choices into manifest edits. A
-plan is created after reading the report: the maintainer or the
-`increment-versions` skill records a `patch`, `minor`, or `major` level (or an
-exact target version) for each selected package or version group, using the JSON
-format documented in the package README.
+`apply --plan <plan.json>` turns approved version choices into manifest edits,
+and accepts a plan of either stage. A proposed plan is created after reading the
+report: the maintainer or the `increment-versions` skill records a `patch`,
+`minor`, or `major` level (or an exact target version) for each selected package
+or version group, using the JSON format documented in the package README.
 
-The command expands groups, calculates target versions, updates package versions
+The command resolves groups, calculates target versions, updates package versions
 and affected intra-workspace requirements, and refreshes the workspace lockfile.
 `--dry-run` reports what would change without writing.
 

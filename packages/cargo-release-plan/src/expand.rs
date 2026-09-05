@@ -1,8 +1,9 @@
-// `expand` command: write the explicit package/version plan reviewers apply.
+// `expand` command: turn a proposed plan into an expanded plan.
 //
-// Input plans may name a version group or one member of it instead of every
-// package the release decision reaches. This command writes the complete
-// explicit package/version set, so reviewers see the plan that `apply` consumes.
+// A proposed plan may name a version group, or one member of it, instead of
+// every package the release decision reaches. This command resolves it and
+// writes the complete explicit package/version set, so a caller reviews the same
+// document `apply` consumes.
 
 use std::fs;
 use std::path::Path;
@@ -11,20 +12,21 @@ use ohno::AppError;
 use serde::Serialize;
 
 use crate::metadata::load_tracked_work_tree;
-use crate::plan::{PlanFile, SCHEMA_VERSION, expand_plan};
+use crate::plan::{PlanFile, SCHEMA_VERSION, resolve_plan};
 use crate::text::plural;
 use crate::verbose::Verbose;
 use crate::{
     CreateOutputDirectoryError, ParsePlanError, ReadFileError, WriteFileError, quote_path,
 };
 
-/// On-disk expanded plan body.
+/// On-disk body of an expanded plan.
 ///
-/// The expanded document is itself a plan that can be applied directly after
-/// review. Every entry carries an explicit version because expansion has already
-/// resolved the increment against the group's highest declared member version.
-/// The `expanded` stamp is what lets `apply` hold it to the package set it
-/// names, rather than widening it through the group configuration of the day.
+/// An expanded plan is itself applyable, so a caller reviews and applies one
+/// document rather than a rendering of another. Every entry carries an explicit
+/// version because resolution has already applied the increment to the group's
+/// highest declared member version. The `expanded` stamp records the planning
+/// stage, which is what holds the document to the package set it names instead
+/// of letting the group configuration of the day widen it.
 #[derive(Serialize)]
 struct ExpandedPlanFile {
     schema_version: u32,
@@ -32,7 +34,7 @@ struct ExpandedPlanFile {
     increments: Vec<ExpandedPackageVersion>,
 }
 
-/// One package's resolved version in an expanded plan.
+/// One package's resolved version within an expanded plan.
 #[derive(Serialize)]
 struct ExpandedPackageVersion {
     name: String,
@@ -53,23 +55,23 @@ pub(crate) fn run_expand(
     let (work_tree, _) = load_tracked_work_tree(manifest_path)?;
     // Only Git-tracked publishable members are valid targets, and a group
     // increments from the highest version any of its members declares.
-    // Ref: docs/implementation.md, "Plan expansion and application".
+    // Ref: docs/implementation.md, "Plan resolution and application".
     let publishable = work_tree.publishable_versions();
-    let expanded = expand_plan(&plan, &work_tree.groups, &publishable, verbose)?;
+    let resolved = resolve_plan(&plan, &work_tree.groups, &publishable, verbose)?;
 
     verbose.note(|| {
         format!(
             "{} named {} and expands to {}; any difference is group members the plan did not name",
             quote_path(&plan_path.to_string_lossy()),
             plural(plan.increments.len(), "increment"),
-            plural(expanded.packages.len(), "package version")
+            plural(resolved.packages.len(), "package version")
         )
     });
 
     let document = ExpandedPlanFile {
         schema_version: SCHEMA_VERSION,
         expanded: true,
-        increments: expanded
+        increments: resolved
             .packages
             .iter()
             .map(|(name, version)| ExpandedPackageVersion {
@@ -93,7 +95,7 @@ pub(crate) fn run_expand(
 
     Ok(format!(
         "Expanded {} to {}",
-        plural(expanded.packages.len(), "package version"),
+        plural(resolved.packages.len(), "package version"),
         quote_path(&out_path.to_string_lossy())
     ))
 }

@@ -261,7 +261,7 @@ fn work_tree_from_metadata(
     // Apply visits every member Cargo can see so an untracked or ignored
     // dependent cannot retain a stale exact pin. This set is deliberately wider
     // than the tracked package set accepted as plan targets.
-    // Ref: docs/implementation.md, "Plan expansion and application".
+    // Ref: docs/implementation.md, "Plan resolution and application".
     let members_by_dir: BTreeMap<PathBuf, String> = metadata
         .packages
         .iter()

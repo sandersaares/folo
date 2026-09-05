@@ -13,7 +13,7 @@ use crate::command::run_capture;
 use crate::inherited::is_workspace_inherit;
 use crate::manifest::{DEPENDENCY_TABLES, parse_document};
 use crate::metadata::{WorkTree, load_tracked_work_tree};
-use crate::plan::{ExpandedPlan, PlanFile, expand_plan};
+use crate::plan::{PlanFile, ResolvedVersions, resolve_plan};
 use crate::text::plural;
 use crate::verbose::Verbose;
 use crate::{ParsePlanError, ReadFileError, WriteFileError, quote_path};
@@ -92,28 +92,28 @@ pub(crate) fn run_apply(
     // Git-tracked publishable members decide which plan targets are valid and
     // supply their increment bases. All Cargo-visible member manifests remain
     // available below for dependent-pin rewrites.
-    // Ref: docs/implementation.md, "Plan expansion and application".
+    // Ref: docs/implementation.md, "Plan resolution and application".
     let publishable = work_tree.publishable_versions();
-    let expanded = expand_plan(&plan, &work_tree.groups, &publishable, verbose)?;
+    let resolved = resolve_plan(&plan, &work_tree.groups, &publishable, verbose)?;
     verbose.note(|| {
         format!(
             "plan expands to {}; group members are included even when the plan named only one of \
          them, and never-published members on this branch are included in apply",
-            plural(expanded.packages.len(), "package version")
+            plural(resolved.packages.len(), "package version")
         )
     });
 
-    let edits = compute_edits(&work_tree, &expanded, verbose)?;
+    let edits = compute_edits(&work_tree, &resolved, verbose)?;
     let changed = changed_edit_count(&edits);
 
     if dry_run {
-        let skip = lockfile_refresh_skip_reason(&work_tree.workspace_root, &expanded);
+        let skip = lockfile_refresh_skip_reason(&work_tree.workspace_root, &resolved);
         if let Some(reason) = skip {
             verbose.note(|| reason.to_string());
         }
         return Ok(dry_run_summary(
             &edits,
-            expanded.packages.len(),
+            resolved.packages.len(),
             skip.is_none(),
         ));
     }
@@ -130,7 +130,7 @@ pub(crate) fn run_apply(
         ));
     }
 
-    let refreshed = refresh_lockfile(&work_tree, &expanded, verbose)?;
+    let refreshed = refresh_lockfile(&work_tree, &resolved, verbose)?;
 
     let lockfile = if refreshed {
         "refreshed the workspace lockfile"
@@ -145,7 +145,7 @@ pub(crate) fn run_apply(
 
 fn compute_edits(
     work_tree: &WorkTree,
-    expanded: &ExpandedPlan,
+    resolved: &ResolvedVersions,
     verbose: Verbose,
 ) -> Result<Vec<ManifestEdit>, AppError> {
     let mut edits = Vec::new();
@@ -155,9 +155,9 @@ fn compute_edits(
         members_by_dir: &work_tree.members_by_dir,
     };
     edits.push(edit_path(&root, |doc| {
-        rewrite_workspace_dependencies(doc, &root_targets, expanded, verbose);
-        rewrite_package_version(doc, expanded, verbose);
-        rewrite_dependency_tables(doc, &root_targets, expanded, verbose);
+        rewrite_workspace_dependencies(doc, &root_targets, resolved, verbose);
+        rewrite_package_version(doc, resolved, verbose);
+        rewrite_dependency_tables(doc, &root_targets, resolved, verbose);
     })?);
 
     let mut seen = HashSet::new();
@@ -177,8 +177,8 @@ fn compute_edits(
             members_by_dir: &work_tree.members_by_dir,
         };
         edits.push(edit_path(manifest_path, |doc| {
-            rewrite_package_version(doc, expanded, verbose);
-            rewrite_dependency_tables(doc, &targets, expanded, verbose);
+            rewrite_package_version(doc, resolved, verbose);
+            rewrite_dependency_tables(doc, &targets, resolved, verbose);
         })?);
     }
     Ok(edits)
@@ -230,7 +230,7 @@ fn edit_path(
     })
 }
 
-fn rewrite_package_version(doc: &mut DocumentMut, expanded: &ExpandedPlan, verbose: Verbose) {
+fn rewrite_package_version(doc: &mut DocumentMut, resolved: &ResolvedVersions, verbose: Verbose) {
     let Some(package) = doc.get("package").and_then(Item::as_table_like) else {
         return;
     };
@@ -238,7 +238,7 @@ fn rewrite_package_version(doc: &mut DocumentMut, expanded: &ExpandedPlan, verbo
         return;
     };
     let name = name.to_string();
-    let Some(new_version) = expanded.packages.get(&name) else {
+    let Some(new_version) = resolved.packages.get(&name) else {
         return;
     };
     let Some(package) = doc.get_mut("package").and_then(Item::as_table_like_mut) else {
@@ -247,7 +247,7 @@ fn rewrite_package_version(doc: &mut DocumentMut, expanded: &ExpandedPlan, verbo
     if set_package_version_item(package, new_version) {
         verbose.note(|| {
             format!(
-                "{}: set package.version to {new_version} because the expanded plan assigns that \
+                "{}: set package.version to {new_version} because the plan assigns that \
              version to this package",
                 quote_path(&name)
             )
@@ -258,7 +258,7 @@ fn rewrite_package_version(doc: &mut DocumentMut, expanded: &ExpandedPlan, verbo
 fn rewrite_workspace_dependencies(
     doc: &mut DocumentMut,
     targets: &DepTargets<'_>,
-    expanded: &ExpandedPlan,
+    resolved: &ResolvedVersions,
     verbose: Verbose,
 ) {
     let Some(workspace) = doc.get_mut("workspace").and_then(Item::as_table_like_mut) else {
@@ -270,7 +270,7 @@ fn rewrite_workspace_dependencies(
     else {
         return;
     };
-    rewrite_dep_table(deps, targets, expanded, verbose, "workspace.dependencies");
+    rewrite_dep_table(deps, targets, resolved, verbose, "workspace.dependencies");
 }
 
 // Walks every dependency table; entry-level rewrite is tested separately.
@@ -278,12 +278,12 @@ fn rewrite_workspace_dependencies(
 fn rewrite_dependency_tables(
     doc: &mut DocumentMut,
     targets: &DepTargets<'_>,
-    expanded: &ExpandedPlan,
+    resolved: &ResolvedVersions,
     verbose: Verbose,
 ) {
     for table_name in DEPENDENCY_TABLES {
         if let Some(table) = doc.get_mut(table_name).and_then(Item::as_table_like_mut) {
-            rewrite_dep_table(table, targets, expanded, verbose, table_name);
+            rewrite_dep_table(table, targets, resolved, verbose, table_name);
         }
     }
 
@@ -306,7 +306,7 @@ fn rewrite_dependency_tables(
             rewrite_dep_table(
                 table,
                 targets,
-                expanded,
+                resolved,
                 verbose,
                 &format!("target.{spec}.{table_name}"),
             );
@@ -317,12 +317,12 @@ fn rewrite_dependency_tables(
 fn rewrite_dep_table(
     table: &mut dyn TableLike,
     targets: &DepTargets<'_>,
-    expanded: &ExpandedPlan,
+    resolved: &ResolvedVersions,
     verbose: Verbose,
     where_: &str,
 ) {
     for (key, entry) in table.iter_mut() {
-        let Some(new_version) = planned_version(entry, key.get(), targets, expanded) else {
+        let Some(new_version) = planned_version(entry, key.get(), targets, resolved) else {
             continue;
         };
         if rewrite_dep_entry(entry, new_version) {
@@ -350,11 +350,11 @@ fn planned_version<'p>(
     entry: &Item,
     table_key: &str,
     targets: &DepTargets<'_>,
-    expanded: &'p ExpandedPlan,
+    resolved: &'p ResolvedVersions,
 ) -> Option<&'p Version> {
     let dep_path = dep_path(entry)?;
     let package_name = dep_package_name(entry, table_key);
-    let new_version = expanded.packages.get(package_name)?;
+    let new_version = resolved.packages.get(package_name)?;
     targets
         .declares(dep_path, package_name)
         .then_some(new_version)
@@ -405,7 +405,7 @@ fn set_package_version_item(table: &mut dyn TableLike, new_version: &Version) ->
         // than having the shared workspace value changed: the plan increments
         // one package, while the shared value governs every member that
         // inherits it, so editing it would silently increment them all.
-        // Ref: docs/implementation.md, "Plan expansion and application".
+        // Ref: docs/implementation.md, "Plan resolution and application".
         Some(item) if is_workspace_inherit(item) => {
             *item = Item::Value(Value::from(new_version.to_string()));
             true
@@ -450,7 +450,7 @@ fn set_formatted(formatted: &mut Formatted<String>, rewritten: String) -> bool {
 /// which is also what an unparsable requirement gets: Cargo would reject that
 /// anyway, so the apply leaves behind a manifest Cargo can read rather than one
 /// it cannot.
-/// Ref: docs/implementation.md, "Plan expansion and application".
+/// Ref: docs/implementation.md, "Plan resolution and application".
 fn rewrite_req(old: &str, new_version: &Version) -> String {
     let trimmed = old.trim();
     if let Ok(req) = VersionReq::parse(trimmed)
@@ -472,9 +472,9 @@ fn rewrite_req(old: &str, new_version: &Version) -> String {
 /// prints never claims an operation the subsequent apply would decline.
 fn lockfile_refresh_skip_reason(
     workspace_root: &Path,
-    expanded: &ExpandedPlan,
+    resolved: &ResolvedVersions,
 ) -> Option<&'static str> {
-    if expanded.packages.is_empty() {
+    if resolved.packages.is_empty() {
         return Some(
             "plan expands to no packages, so apply skips the lockfile refresh rather than \
              running a workspace-wide cargo update",
@@ -491,10 +491,10 @@ fn lockfile_refresh_skip_reason(
 
 fn refresh_lockfile(
     work_tree: &WorkTree,
-    expanded: &ExpandedPlan,
+    resolved: &ResolvedVersions,
     verbose: Verbose,
 ) -> Result<bool, AppError> {
-    if let Some(reason) = lockfile_refresh_skip_reason(&work_tree.workspace_root, expanded) {
+    if let Some(reason) = lockfile_refresh_skip_reason(&work_tree.workspace_root, resolved) {
         verbose.note(|| reason.to_string());
         return Ok(false);
     }
@@ -597,10 +597,10 @@ mod tests {
 
     #[test]
     fn an_empty_plan_skips_the_lockfile_refresh() {
-        let expanded = ExpandedPlan {
+        let resolved = ResolvedVersions {
             packages: BTreeMap::new(),
         };
-        assert!(lockfile_refresh_skip_reason(Path::new("/ws"), &expanded).is_some());
+        assert!(lockfile_refresh_skip_reason(Path::new("/ws"), &resolved).is_some());
     }
 
     #[cfg_attr(miri, ignore)] // Creates a temporary directory, which Miri cannot do.
@@ -609,11 +609,11 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let mut packages = BTreeMap::new();
         packages.insert("demo".to_string(), v("0.2.0"));
-        let expanded = ExpandedPlan { packages };
-        assert!(lockfile_refresh_skip_reason(dir.path(), &expanded).is_some());
+        let resolved = ResolvedVersions { packages };
+        assert!(lockfile_refresh_skip_reason(dir.path(), &resolved).is_some());
 
         fs::write(dir.path().join("Cargo.lock"), "").unwrap();
-        assert!(lockfile_refresh_skip_reason(dir.path(), &expanded).is_none());
+        assert!(lockfile_refresh_skip_reason(dir.path(), &resolved).is_none());
     }
 
     #[test]
@@ -797,7 +797,7 @@ version = \"0.1.0\"
     /// package, no plan target, or no workspace table at all.
     #[test]
     fn manifests_outside_the_plan_are_left_untouched() {
-        let expanded = ExpandedPlan {
+        let resolved = ResolvedVersions {
             packages: BTreeMap::from([("demo".to_string(), v("0.2.0"))]),
         };
         let members = demo_members();
@@ -805,8 +805,8 @@ version = \"0.1.0\"
         let verbose = Verbose::new(false);
         let unchanged = |text: &str| {
             let mut doc = dep_item(text);
-            rewrite_workspace_dependencies(&mut doc, &targets, &expanded, verbose);
-            rewrite_package_version(&mut doc, &expanded, verbose);
+            rewrite_workspace_dependencies(&mut doc, &targets, &resolved, verbose);
+            rewrite_package_version(&mut doc, &resolved, verbose);
             assert_eq!(doc.to_string(), text);
         };
 
@@ -822,7 +822,7 @@ version = \"0.1.0\"
     /// a different package as far as this workspace goes.
     #[test]
     fn a_dependency_without_a_path_or_a_plan_entry_is_not_rewritten() {
-        let expanded = ExpandedPlan {
+        let resolved = ResolvedVersions {
             packages: BTreeMap::from([("demo".to_string(), v("0.2.0"))]),
         };
         let members = demo_members();
@@ -830,7 +830,7 @@ version = \"0.1.0\"
         let text = "[dependencies]\ndemo = \"0.1.0\"\nother = { version = \"0.1.0\", path = \"../other\" }\n";
         let mut doc = dep_item(text);
 
-        rewrite_dependency_tables(&mut doc, &targets, &expanded, Verbose::new(false));
+        rewrite_dependency_tables(&mut doc, &targets, &resolved, Verbose::new(false));
 
         assert_eq!(doc.to_string(), text);
     }
@@ -842,7 +842,7 @@ version = \"0.1.0\"
     /// alone.
     #[test]
     fn a_path_resolving_to_the_declaring_member_is_rewritten() {
-        let expanded = ExpandedPlan {
+        let resolved = ResolvedVersions {
             packages: BTreeMap::from([("demo".to_string(), v("0.2.0"))]),
         };
         let members = demo_members();
@@ -850,7 +850,7 @@ version = \"0.1.0\"
 
         let mut inside =
             dep_item("[dependencies]\ndemo = { version = \"0.1.0\", path = \"../demo\" }\n");
-        rewrite_dependency_tables(&mut inside, &targets, &expanded, Verbose::new(false));
+        rewrite_dependency_tables(&mut inside, &targets, &resolved, Verbose::new(false));
 
         assert!(inside.to_string().contains("version = \"0.2.0\""));
     }
@@ -864,7 +864,7 @@ version = \"0.1.0\"
     #[cfg_attr(miri, ignore)]
     #[test]
     fn a_path_outside_the_workspace_keeps_its_own_requirement() {
-        let expanded = ExpandedPlan {
+        let resolved = ResolvedVersions {
             packages: BTreeMap::from([("demo".to_string(), v("0.2.0"))]),
         };
         let members = demo_members();
@@ -873,7 +873,7 @@ version = \"0.1.0\"
         let outside_text =
             "[dependencies]\ndemo = { version = \"0.1.0\", path = \"../../vendor/demo\" }\n";
         let mut outside = dep_item(outside_text);
-        rewrite_dependency_tables(&mut outside, &targets, &expanded, Verbose::new(false));
+        rewrite_dependency_tables(&mut outside, &targets, &resolved, Verbose::new(false));
 
         assert_eq!(outside.to_string(), outside_text);
     }
@@ -900,7 +900,7 @@ version = \"0.1.0\"
     /// filesystem would accept and a plain string comparison would not.
     #[test]
     fn a_path_spelled_with_redundant_components_still_resolves_to_the_member() {
-        let expanded = ExpandedPlan {
+        let resolved = ResolvedVersions {
             packages: BTreeMap::from([("demo".to_string(), v("0.2.0"))]),
         };
         let members = demo_members();
@@ -910,7 +910,7 @@ version = \"0.1.0\"
             let mut item = dep_item(&format!(
                 "[dependencies]\ndemo = {{ version = \"0.1.0\", path = \"{path}\" }}\n"
             ));
-            rewrite_dependency_tables(&mut item, &targets, &expanded, Verbose::new(false));
+            rewrite_dependency_tables(&mut item, &targets, &resolved, Verbose::new(false));
             assert!(
                 item.to_string().contains("version = \"0.2.0\""),
                 "path {path} did not resolve to the member"
@@ -932,7 +932,7 @@ version = \"0.1.0\"
         fs::create_dir_all(root.join("packages/caller")).unwrap();
         symlink(root.join("packages/demo"), root.join("packages/demo-link")).unwrap();
 
-        let expanded = ExpandedPlan {
+        let resolved = ResolvedVersions {
             packages: BTreeMap::from([("demo".to_string(), v("0.2.0"))]),
         };
         let members = BTreeMap::from([(root.join("packages/demo"), "demo".to_string())]);
@@ -943,7 +943,7 @@ version = \"0.1.0\"
 
         let mut item =
             dep_item("[dependencies]\ndemo = { version = \"=0.1.0\", path = \"../demo-link\" }\n");
-        rewrite_dependency_tables(&mut item, &targets, &expanded, Verbose::new(false));
+        rewrite_dependency_tables(&mut item, &targets, &resolved, Verbose::new(false));
 
         assert!(item.to_string().contains("=0.2.0"), "{item}");
     }

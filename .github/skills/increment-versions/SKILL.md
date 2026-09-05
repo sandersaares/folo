@@ -49,8 +49,8 @@ afterwards, and read a later stage's inputs from these files rather than from me
 | `semver-checks.log` | Stage 2 | The console output of `cargo-semver-checks`. |
 | `analysis-order.json` | Stage 3 | The analysis batches. |
 | `decisions.json` | Stage 4 | The decided change levels. |
-| `plan.json` | Stage 5 | The generated cargo-release-plan input. |
-| `expanded.json` | Stage 5 | That plan with version groups resolved into per-package versions. |
+| `plan.json` | Stage 5 | The proposed plan: change levels mapped to increment levels. |
+| `expanded.json` | Stage 5 | The expanded plan: that proposal with every package it reaches named. |
 
 Commit none of them.
 
@@ -205,11 +205,13 @@ batch reads its dependency decisions from the file. Omit a package that needs no
 
 # Stage 5: Resolve version groups and present the proposal
 
-A version group's members share one version, so a decision for any member moves all of them.
-Resolve that before asking for approval, so the caller sees every package the decision moves and
-the version each will carry rather than a set that widens during apply.
+A plan exists in two stages, and only the second is safe to present. A **proposed plan** records
+one entry per decision, so a decision about a grouped package names that package or its group and
+leaves the rest of the group implied. An **expanded plan** names every package the plan reaches
+at the version each will carry. Present the expanded plan, so the caller sees the whole set rather
+than one that widens during apply.
 
-Generate the mechanical cargo-release-plan input, then resolve its groups:
+Write the proposed plan, then expand it:
 
 > just create-release-plan "{{WORK_DIR}}/report.json" "{{WORK_DIR}}/decisions.json" "{{WORK_DIR}}/plan.json"
 >
@@ -221,7 +223,8 @@ group the decisions leave unnamed, targeting the highest version its members alr
 `expand-release-plan` names every member of a group the plan reaches, at the single version that
 group resolves to.
 
-`expanded.json` is a cargo-release-plan input whose every entry carries an explicit `version`:
+`expanded.json` carries an explicit `version` on every entry, and an `expanded` stamp recording
+which stage it is:
 
 ```json
 {
@@ -234,10 +237,13 @@ group resolves to.
 }
 ```
 
-The `expanded` stamp binds the document to the packages it names. Applying it after a version
-group gained a member fails rather than editing a package that was never presented, so a group
-membership change between approval and Stage 6 sends the run back to this stage rather than
-widening what was approved. Repeat this stage from `create-release-plan` if that happens.
+That stamp binds the document to the packages it names. Applying it after a version group gained
+a member fails rather than editing a package that was never presented, so a group membership
+change between approval and Stage 6 sends the run back to this stage rather than widening what
+was approved. Repeat this stage from `create-release-plan` if that happens.
+
+Approval does not produce a third document: the expanded plan the caller approves is the one
+Stage 6 applies, unchanged.
 
 Present one row per version group and one per ungrouped package, limited to what the plan moves: a
 group qualifies when `expanded.json` names at least one of its members, and an ungrouped package
@@ -280,14 +286,14 @@ Stop here and report the approved change levels while the temporary rule in Scop
 # Stage 6: Apply approved changes
 
 `cargo-release-plan apply` raises an existing version and cannot create a crate on crates.io, so
-confirm that every package the approved expansion names is already published:
+confirm that every package the approved expanded plan names is already published:
 
 > just check-increment-published "{{WORK_DIR}}/expanded.json"
 
 Stop and report without applying anything if the command exits non-zero, following the
 first-publication handoff above rather than publishing anything from this run.
 
-Apply the approved expansion, which is the document the caller saw:
+Apply the approved expanded plan, which is the document the caller saw:
 
 > just apply-release-plan "{{WORK_DIR}}/expanded.json"
 

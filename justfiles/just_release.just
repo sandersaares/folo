@@ -186,7 +186,7 @@ release-analysis-order REPORT:
 # plan-driven, so a drifted group that no entry reaches would otherwise stay drifted and keep the
 # version check red.
 #
-# Converts the approved change levels in DECISIONS into the plan file PLAN, using the report REPORT.
+# Converts the approved change levels in DECISIONS into the proposed plan PLAN, using report REPORT.
 [group('release')]
 [script]
 create-release-plan REPORT DECISIONS PLAN:
@@ -201,7 +201,7 @@ create-release-plan REPORT DECISIONS PLAN:
 # approved set cannot widen during apply. Group expansion stays in cargo-release-plan rather than
 # being reimplemented here.
 #
-# Resolves the version groups in PLAN into an explicit per-package plan written to EXPANDED.
+# Expands the proposed plan PLAN into the expanded plan EXPANDED, naming every package it reaches.
 [group('release')]
 [script]
 expand-release-plan PLAN EXPANDED:
@@ -226,16 +226,18 @@ check-increment-published EXPANDED:
     Import-Module "{{ justfile_directory() }}/scripts/release/ReleasePlan.psm1" -Force
     Assert-IncrementPackagePublished -ExpandedPath "{{ EXPANDED }}"
 
-# The plan file is an uncommitted working-tree artifact; the version check verifies manifest
+# Takes the expanded plan rather than the proposed one, because the publication gate above runs
+# over the expanded plan's packages and applying a proposed plan would edit packages that gate
+# never saw. The file is an uncommitted working-tree artifact; the version check verifies manifest
 # state, not intent. A failure part way through leaves the work tree partly edited.
 #
-# Applies the plan PLAN: package versions, `=`-pin rewrites, and a workspace lockfile refresh.
+# Applies the expanded plan EXPANDED: package versions, `=`-pin rewrites, and a lockfile refresh.
 [group('release')]
 [script]
-apply-release-plan PLAN:
+apply-release-plan EXPANDED:
     Set-StrictMode -Version Latest
     $ErrorActionPreference = "Stop"
     $PSNativeCommandUseErrorActionPreference = $true
 
     Import-Module "{{ justfile_directory() }}/scripts/release/ReleasePlan.psm1" -Force
-    Invoke-ApplyReleasePlan -PlanPath "{{ PLAN }}"
+    Invoke-ApplyReleasePlan -ExpandedPath "{{ EXPANDED }}"

@@ -227,7 +227,7 @@ impl UnknownPlanTargetError {
 #[ohno::error]
 #[display(
     "Expanded plan reaches packages it does not name: {}. The workspace's version groups changed \
-     after this document was produced, so re-expand the source plan and review it again",
+     after this document was produced, so expand the proposed plan again and review the wider set",
     unnamed.join(", ")
 )]
 pub(crate) struct ExpandedPlanDriftError {

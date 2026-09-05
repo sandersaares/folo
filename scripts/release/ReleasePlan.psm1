@@ -357,9 +357,9 @@ function Invoke-SemverCheck {
 }
 
 function Invoke-ExpandReleasePlan {
-    # Resolves a generated plan's version groups and levels into explicit per-package versions.
-    # Group expansion belongs to cargo-release-plan, so the skill presents the tool's own answer
-    # rather than a second implementation of the same rules.
+    # Expands a proposed plan into an expanded plan, naming every package it reaches at the
+    # version each will carry. Resolution belongs to cargo-release-plan, so the skill presents
+    # the tool's own answer rather than a second implementation of the same rules.
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string] $PlanPath,
@@ -408,22 +408,25 @@ function Invoke-ExpandReleasePlan {
 }
 
 function Invoke-ApplyReleasePlan {
-    # Applies a generated cargo-release-plan file after validating the path supplied by the skill.
+    # Applies an expanded plan, which is the document the caller reviewed.
+    #
+    # A proposed plan is rejected here rather than passed through: the publication gate that runs
+    # immediately before this reads the expanded plan's package set, so applying a proposed plan
+    # would edit packages that gate never saw. `cargo-release-plan apply` itself accepts either
+    # stage; this is the skill's stricter path, not the tool's rule.
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)][string] $PlanPath,
+        [Parameter(Mandatory)][string] $ExpandedPath,
         [scriptblock] $Cargo = { param([string[]] $Argument) & cargo @Argument }
     )
 
-    if ([string]::IsNullOrWhiteSpace($PlanPath)) {
-        throw 'apply-release-plan requires a plan JSON path.'
+    if ([string]::IsNullOrWhiteSpace($ExpandedPath)) {
+        throw 'apply-release-plan requires an expanded plan JSON path.'
     }
-    if (-not (Test-Path -LiteralPath $PlanPath)) {
-        throw "apply-release-plan plan file not found: $PlanPath"
-    }
+    [void] (Read-ExpandedPlan -ExpandedPath $ExpandedPath)
 
-    Write-Verbose "Applying increment plan from $PlanPath via cargo-release-plan apply" -Verbose
-    & $Cargo @('run', '-p', 'cargo-release-plan', '--locked', '--', 'apply', '--plan', $PlanPath)
+    Write-Verbose "Applying expanded plan from $ExpandedPath via cargo-release-plan apply" -Verbose
+    & $Cargo @('run', '-p', 'cargo-release-plan', '--locked', '--', 'apply', '--plan', $ExpandedPath)
 }
 
 function Invoke-ValidateVersions {
@@ -670,11 +673,14 @@ function Read-ChangeDecision {
     return $decision
 }
 
-function Read-ExpandedPlanPackageName {
-    # Reads the per-package names cargo-release-plan resolved a plan into. Group expansion is
-    # the tool's, so this only validates the shape it promises.
+function Read-ExpandedPlan {
+    # Validates that a file is an expanded plan and returns the parsed document.
+    #
+    # The stage matters to every caller here: only an expanded plan names every package apply
+    # will edit, because resolution reaches the version-group members a proposed plan leaves
+    # unnamed. Accepting a proposed plan would let the publication gate clear a narrower set than
+    # the one that gets written, and would apply a set nobody reviewed.
     [CmdletBinding()]
-    [OutputType([string[]])]
     param(
         [Parameter(Mandatory)][string] $ExpandedPath
     )
@@ -692,15 +698,25 @@ function Read-ExpandedPlanPackageName {
         [long] $plan.schema_version -ne $script:ReleasePlanSchemaVersion) {
         throw "expanded plan at '$ExpandedPath' must use schema_version $script:ReleasePlanSchemaVersion."
     }
-    # Only an expanded plan names every package apply will edit. Checking publication against an
-    # input plan would clear a narrower set than the one that gets written, because expansion
-    # reaches the version-group members such a plan leaves unnamed.
     if ($field -notcontains 'expanded' -or $plan.expanded -isnot [bool] -or -not $plan.expanded) {
-        throw "plan at '$ExpandedPath' is not an expanded plan; run 'just expand-release-plan' and check the result."
+        throw "plan at '$ExpandedPath' is a proposed plan, not an expanded one; run 'just expand-release-plan' and review the result first."
     }
     if ($field -notcontains 'increments' -or $plan.increments -isnot [System.Array]) {
         throw "expanded plan at '$ExpandedPath' increments must be an array."
     }
+    return $plan
+}
+
+function Read-ExpandedPlanPackageName {
+    # Reads the per-package names cargo-release-plan resolved a plan into. Group expansion is
+    # the tool's, so this only validates the shape it promises.
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    param(
+        [Parameter(Mandatory)][string] $ExpandedPath
+    )
+
+    $plan = Read-ExpandedPlan -ExpandedPath $ExpandedPath
 
     $name = [System.Collections.Generic.HashSet[string]]::new(
         [System.StringComparer]::Ordinal
@@ -800,7 +816,7 @@ function Assert-IncrementPackagePublished {
         $noun = if ($unknown.Count -eq 1) { 'package' } else { 'packages' }
         throw "Could not confirm crates.io publication for $($noun): $($unknown -join ', ')."
     }
-    Write-Host 'Every package reached by the approved changes is already published.'
+    Write-Host 'Every package the expanded plan names is already published.'
 }
 
 function Get-MinimumVersionForChange {
@@ -973,9 +989,11 @@ function Get-GroupAlignmentIncrement {
 }
 
 function New-ReleasePlanFile {
-    # Converts approved semantic change levels into cargo-release-plan's mechanical input, and
-    # makes every inconsistent version group consistent. Existing pending-release increments are
-    # retained and raised only when insufficient.
+    # Writes the proposed plan: the approved change levels mapped to cargo-release-plan's
+    # mechanical increment levels, plus whatever it takes to make every inconsistent version
+    # group consistent. Existing pending-release increments are retained and raised only when
+    # insufficient. Expanding this proposal is a separate step, because only an expanded plan
+    # names every package the plan reaches.
     [CmdletBinding(SupportsShouldProcess)]
     param(
         [Parameter(Mandatory)][string] $ReportPath,
@@ -1064,7 +1082,7 @@ function New-ReleasePlanFile {
     }
 
     if ($PSCmdlet.ShouldProcess($PlanPath, 'write generated cargo-release-plan input')) {
-        # The generated plan contract contains top-level metadata and increment entries.
+        # The proposed plan contract contains top-level metadata and increment entries.
         $releasePlanInputJsonDepth = 4
         $parent = Split-Path -Parent $PlanPath
         if (-not [string]::IsNullOrWhiteSpace($parent)) {

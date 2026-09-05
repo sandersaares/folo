@@ -199,15 +199,26 @@ before replacing the patch tree and writes the new marker through a same-directo
 staging file after every patch succeeds. A failed rerun therefore cannot present
 stale JSON and a partial patch set as one complete assessment.
 
-## Plan expansion and application
+## Plan resolution and application
 
-`plan` first normalizes package and group entries into one target version per
-publishable package. Levels combine by taking the highest and matching explicit
-versions coalesce. Mixed decision kinds and conflicting explicit versions fail.
+`plan` owns both planning stages and the resolution shared between them. It first
+resolves package and group entries into one target version per publishable
+package. Levels combine by taking the highest and matching explicit versions
+coalesce. Mixed decision kinds and conflicting explicit versions fail.
 
-`expand` and `apply` share that normalization, and both read the same Git-tracked
-publishable package set. The normalized result branches to expanded-plan output
-for `expand`, and to manifest edits, writes, and lockfile processing for `apply`.
+A plan's stage decides what resolution guarantees. A proposed plan may reach
+packages it does not name, which is how a decision about one group member moves
+the group. An expanded plan must resolve to exactly the set it names, because
+that set is what a caller reviewed; reaching any other package means the group
+configuration changed after the document was written, and fails. The stage is
+matched on rather than tested as a condition, so a new code path has to state
+which rule it wants.
+
+`expand` and `apply` share that resolution and both read the same Git-tracked
+publishable package set. The resolved versions branch to expanded-plan output for
+`expand`, and to manifest edits, writes, and lockfile processing for `apply`. The
+resolved versions are not themselves the expanded plan: `apply` resolves a
+proposed plan to the same shape without any expanded plan existing.
 
 `apply` accepts plan targets and validates groups against the same Git-tracked
 publishable package set as classification. It parses and rewrites every affected
@@ -218,7 +229,7 @@ requirement is changed only when:
 
 * the entry has a path,
 * that path resolves to the named workspace member,
-* the expanded plan includes the member, and
+* the resolved versions include the member, and
 * the existing requirement does not admit the new version.
 
 Paths are normalized lexically first and canonicalized only for link or
