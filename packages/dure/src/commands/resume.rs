@@ -14,7 +14,8 @@ use crate::pal::transport::Transport;
 use crate::session_record::SessionRecord;
 use crate::trace::{Trace, trace};
 use crate::{
-    CanonicalizeError, CurrentDirectoryError, InvalidSessionIdError, NoLiveSessionsError, Outcome,
+    CanonicalizeError, CurrentDirectoryError, InvalidSessionIdError, NoConsoleError,
+    NoLiveSessionsError, Outcome,
     OutputFailedError, PromptFailedError, SessionId,
 };
 
@@ -34,6 +35,12 @@ where
     T: Transport + Clone + Send + Sync + 'static,
     C: LocalConsole + Clone + Send + Sync + 'static,
 {
+    // Checked before any selection work: everything below — listing the
+    // candidates, prompting for one, reading the record — is wasted on a
+    // process that cannot attach whatever it picks.
+    if !console.has_console() {
+        return Err(NoConsoleError::new().into());
+    }
     let id = match id {
         Some(id) => {
             trace!(
@@ -179,7 +186,9 @@ mod tests {
         let store = FsSessionStore::new(dir.path().to_path_buf());
         let processes = MockProcesses::new();
         let transport = MemoryTransport::new();
-        let console = LocalConsoleFacade::from_mock(MockLocalConsole::new());
+        let mut console = MockLocalConsole::new();
+        console.expect_has_console().return_const(true);
+        let console = LocalConsoleFacade::from_mock(console);
         execute(
             &store,
             &processes,
@@ -200,7 +209,9 @@ mod tests {
         let store = FsSessionStore::new(dir.path().to_path_buf());
         let processes = MockProcesses::new();
         let transport = MemoryTransport::new();
-        let console = LocalConsoleFacade::from_mock(MockLocalConsole::new());
+        let mut console = MockLocalConsole::new();
+        console.expect_has_console().return_const(true);
+        let console = LocalConsoleFacade::from_mock(console);
         let id = SessionId::from_u32(9).unwrap();
         execute(
             &store,
@@ -312,6 +323,7 @@ mod tests {
             .returning(|_| ProcessLiveness::Live);
         let transport = MemoryTransport::new();
         let mut console = MockLocalConsole::new();
+        console.expect_has_console().return_const(true);
         console.expect_stdin_is_terminal().return_const(false);
         let console = LocalConsoleFacade::from_mock(console);
         let error = execute(
@@ -340,6 +352,7 @@ mod tests {
             .returning(|_| ProcessLiveness::Live);
         let transport = MemoryTransport::new();
         let mut console = MockLocalConsole::new();
+        console.expect_has_console().return_const(true);
         console.expect_stdin_is_terminal().return_const(true);
         console
             .expect_read_prompt_line()

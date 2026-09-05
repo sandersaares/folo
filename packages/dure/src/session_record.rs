@@ -120,6 +120,56 @@ mod tests {
     }
 
     #[test]
+    fn the_stored_shape_is_what_a_later_dure_will_read() {
+        // Records outlive the process that wrote them, and a `dure` that has
+        // been upgraded under a running session still has to read them. The
+        // literal is here so that a change to the field names or nesting is a
+        // decision someone makes rather than a rename that happens to compile.
+        let stored = StoredSession::Published(sample());
+        assert_eq!(
+            serde_json::to_string(&stored).unwrap(),
+            concat!(
+                r#"{"kind":"published","id":1,"supervisor_pid":42,"#,
+                r#""supervisor_creation_time":99,"pipe_name":"\\\\.\\pipe\\dure-abc","#,
+                r#""launch_directory":"C:\\work","command":["copilot.exe"],"#,
+                r#""started_at_unix_ms":1,"attached":false}"#,
+            )
+        );
+    }
+
+    #[test]
+    fn a_claim_stores_the_owner_it_names() {
+        let stored = StoredSession::Reserved {
+            owner: ProcessIdentity {
+                pid: 7,
+                creation_time: 8,
+            },
+        };
+        assert_eq!(
+            serde_json::to_string(&stored).unwrap(),
+            r#"{"kind":"reserved","owner":{"pid":7,"creation_time":8}}"#
+        );
+    }
+
+    #[test]
+    fn a_record_written_before_the_attached_flag_existed_still_reads() {
+        // The flag is advisory and was added after the format existed, so its
+        // absence means "not known to be attached" rather than a broken record.
+        let without_flag = concat!(
+            r#"{"kind":"published","id":1,"supervisor_pid":42,"#,
+            r#""supervisor_creation_time":99,"pipe_name":"p","#,
+            r#""launch_directory":"C:\\work","command":["copilot.exe"],"#,
+            r#""started_at_unix_ms":1}"#,
+        );
+        let StoredSession::Published(record) =
+            serde_json::from_str::<StoredSession>(without_flag).unwrap()
+        else {
+            panic!("expected a published record");
+        };
+        assert!(!record.attached);
+    }
+
+    #[test]
     fn identity_uses_pid_and_creation_time() {
         let identity = sample().identity();
         assert_eq!(identity.pid, 42);

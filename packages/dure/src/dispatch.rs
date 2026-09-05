@@ -94,7 +94,11 @@ mod tests {
             store: SessionStoreFacade::from_mock(store),
             processes: ProcessesFacade::from_mock(processes),
             transport: TransportFacade::from_memory(MemoryTransport::new()),
-            console: LocalConsoleFacade::from_mock(MockLocalConsole::new()),
+            console: LocalConsoleFacade::from_mock({
+                let mut console = MockLocalConsole::new();
+                console.expect_has_console().return_const(true);
+                console
+            }),
             pty: PseudoconsoleFacade::from_memory(MemoryPseudoconsole::new()),
         }
     }

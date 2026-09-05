@@ -23,8 +23,9 @@ pub(crate) fn live_sessions(
     let records = store.list().map_err(StoreError::caused_by)?;
     trace!(
         trace,
-        "read {} session record(s) from the store",
-        records.len()
+        "read {} session {} from the store",
+        records.len(),
+        record_noun(records.len())
     );
     let mut live = Vec::new();
     for record in records {
@@ -63,8 +64,25 @@ pub(crate) fn live_sessions(
         }
     }
     reap_orphan_reservations(store, processes, trace)?;
-    trace!(trace, "{} live session(s)", live.len());
+    trace!(
+        trace,
+        "{} live {}",
+        live.len(),
+        session_noun(live.len())
+    );
     Ok(live)
+}
+
+// English pluralization is not a behavioral contract.
+#[cfg_attr(test, mutants::skip)]
+fn record_noun(count: usize) -> &'static str {
+    if count == 1 { "record" } else { "records" }
+}
+
+// English pluralization is not a behavioral contract.
+#[cfg_attr(test, mutants::skip)]
+fn session_noun(count: usize) -> &'static str {
+    if count == 1 { "session" } else { "sessions" }
 }
 
 /// Deletes id claims whose owner is gone.
@@ -154,8 +172,7 @@ mod tests {
     use super::*;
     use crate::AppCommand;
     use crate::pal::processes::MockProcesses;
-    use crate::pal::session_store::{FsSessionStore, SessionStore};
-    use crate::SessionId;
+    use crate::pal::session_store::{MemorySessionStore, SessionStore};
     use crate::session_record::{ProcessIdentity, SessionRecord};
 
     fn record(id: u32, pid: u32, creation: u64) -> SessionRecord {
@@ -172,11 +189,8 @@ mod tests {
     }
 
     #[test]
-    // Talks to the real operating system: the session store is a real directory.
-    #[cfg_attr(miri, ignore)]
     fn drops_dead_and_keeps_live() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let store = FsSessionStore::new(dir.path().to_path_buf());
+        let store = MemorySessionStore::new();
         let live_id = store.allocate_id(&ProcessIdentity::for_test(1)).unwrap();
         let dead_id = store.allocate_id(&ProcessIdentity::for_test(1)).unwrap();
         store.publish(&record(live_id.get(), 10, 100)).unwrap();
@@ -201,11 +215,8 @@ mod tests {
     }
 
     #[test]
-    // Talks to the real operating system: the session store is a real directory.
-    #[cfg_attr(miri, ignore)]
     fn inspect_failure_keeps_record() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let store = FsSessionStore::new(dir.path().to_path_buf());
+        let store = MemorySessionStore::new();
         let id = store.allocate_id(&ProcessIdentity::for_test(1)).unwrap();
         store.publish(&record(id.get(), 10, 100)).unwrap();
 
@@ -216,15 +227,29 @@ mod tests {
 
         live_sessions(&store, &processes, Trace::default()).unwrap_err();
         assert!(store.read(id).unwrap().is_some());
-        _ = SessionId::MIN;
     }
 
     #[test]
-    // Talks to the real operating system: the session store is a real directory.
-    #[cfg_attr(miri, ignore)]
+    fn an_explicit_id_whose_process_cannot_be_inspected_keeps_its_record() {
+        let store = MemorySessionStore::new();
+        let id = store.allocate_id(&ProcessIdentity::for_test(1)).unwrap();
+        store.publish(&record(id.get(), 10, 100)).unwrap();
+
+        let mut processes = MockProcesses::new();
+        processes
+            .expect_probe()
+            .returning(|_| ProcessLiveness::InspectFailed);
+
+        // Nothing was learned about the supervisor, so nothing is concluded
+        // about the session: reaping it here would delete a live one.
+        let error = require_live_session(&store, &processes, id, Trace::default()).unwrap_err();
+        assert!(error.find_source::<InspectProcessError>().is_some());
+        assert!(store.read(id).unwrap().is_some());
+    }
+
+    #[test]
     fn require_live_session_does_not_inspect_other_records() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let store = FsSessionStore::new(dir.path().to_path_buf());
+        let store = MemorySessionStore::new();
         let live_id = store.allocate_id(&ProcessIdentity::for_test(1)).unwrap();
         let dead_id = store.allocate_id(&ProcessIdentity::for_test(1)).unwrap();
         store.publish(&record(live_id.get(), 10, 100)).unwrap();
@@ -243,11 +268,8 @@ mod tests {
     }
 
     #[test]
-    // Talks to the real operating system: the session store is a real directory.
-    #[cfg_attr(miri, ignore)]
     fn require_live_session_reaps_a_dead_record() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let store = FsSessionStore::new(dir.path().to_path_buf());
+        let store = MemorySessionStore::new();
         let id = store.allocate_id(&ProcessIdentity::for_test(1)).unwrap();
         store.publish(&record(id.get(), 11, 101)).unwrap();
 
@@ -265,8 +287,7 @@ mod tests {
     // Talks to the real operating system: the session store is a real directory.
     #[cfg_attr(miri, ignore)]
     fn reaps_a_reservation_whose_owner_is_gone() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let store = FsSessionStore::new(dir.path().to_path_buf());
+        let store = MemorySessionStore::new();
         let orphan = store.allocate_id(&ProcessIdentity::for_test(12)).unwrap();
 
         let mut processes = MockProcesses::new();
@@ -291,8 +312,7 @@ mod tests {
     // Talks to the real operating system: the session store is a real directory.
     #[cfg_attr(miri, ignore)]
     fn keeps_a_reservation_whose_owner_is_still_initializing() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let store = FsSessionStore::new(dir.path().to_path_buf());
+        let store = MemorySessionStore::new();
         let owner = ProcessIdentity::for_test(12);
         let claimed = store.allocate_id(&owner).unwrap();
 
@@ -313,8 +333,7 @@ mod tests {
     // Talks to the real operating system: the session store is a real directory.
     #[cfg_attr(miri, ignore)]
     fn an_unreadable_reservation_owner_is_left_alone() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let store = FsSessionStore::new(dir.path().to_path_buf());
+        let store = MemorySessionStore::new();
         let owner = ProcessIdentity::for_test(12);
         store.allocate_id(&owner).unwrap();
 

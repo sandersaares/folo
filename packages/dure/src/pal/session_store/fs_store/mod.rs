@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 
 use crate::pal::error::{PalError, PalErrorKind};
 use crate::pal::session_store::SessionStore;
-use crate::pal::session_store::real::windows::{RecordFile, move_file_replace};
+use crate::pal::session_store::fs_store::windows::{RecordFile, move_file_replace};
 use crate::SessionId;
 use crate::session_record::{ProcessIdentity, SessionRecord, StoredSession};
 
@@ -61,6 +61,11 @@ impl FsSessionStore {
     ///
     /// Foreign, torn, and unparseable files are skipped: one bad file must not
     /// hide every session in the store from `dure list`.
+    ///
+    /// A file that names a session but cannot be read is different: it is a
+    /// session the store knows about and cannot report. That is an error, so a
+    /// permission or sharing problem shows up as one rather than as an empty
+    /// session list. Ref: docs/session-store.md.
     fn stored(&self) -> Result<Vec<(SessionId, StoredSession)>, PalError> {
         let entries = match fs::read_dir(&self.root) {
             Ok(entries) => entries,
@@ -83,8 +88,12 @@ impl FsSessionStore {
             let Some(id) = SessionId::from_u32(raw) else {
                 continue;
             };
-            let Ok(bytes) = fs::read(entry.path()) else {
-                continue;
+            let bytes = match fs::read(entry.path()) {
+                Ok(bytes) => bytes,
+                // A file that disappeared between the listing and the read is
+                // a session that ended, which is the store working.
+                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(PalError::from_io(error)),
             };
             let Ok(parsed) = parse_stored(&bytes) else {
                 continue;
@@ -479,13 +488,23 @@ mod tests {
         fs::write(dir.path().join("readme.txt"), b"not a record").unwrap();
         // Names a valid id but holds nothing that parses as a session.
         fs::write(dir.path().join("5.json"), b"nope").unwrap();
-        // Names a valid id but cannot be read at all.
-        fs::create_dir_all(dir.path().join("6.json")).unwrap();
         let id = store.allocate_id(&ProcessIdentity::for_test(1)).unwrap();
         let rec = record(id, dir.path());
         store.publish(&rec).unwrap();
         assert_eq!(store.list().unwrap(), vec![rec]);
         assert!(store.list_reservations().unwrap().is_empty());
+    }
+
+    #[test]
+    // Talks to the real operating system: the session store is a real directory.
+    #[cfg_attr(miri, ignore)]
+    fn a_record_the_store_cannot_read_is_reported_rather_than_omitted() {
+        let (dir, store) = store();
+        // Names a valid session but cannot be read. Omitting it would make an
+        // unreadable store look like an empty one.
+        fs::create_dir_all(dir.path().join("6.json")).unwrap();
+
+        store.list().unwrap_err();
     }
 
     #[test]

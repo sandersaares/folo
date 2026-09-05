@@ -1,4 +1,13 @@
-//! Windows integration tests that drive `dure` inside a test-owned `ConPTY`.
+//! Windows integration tests that drive `dure` inside a test-owned pseudoconsole.
+//!
+//! A test runner has no interactive console, so each test builds one: the
+//! *outer* pseudoconsole is the one this harness owns and reads, standing in
+//! for the user''s terminal. A `dure` session then creates an *inner*
+//! pseudoconsole of its own for the app. `ConPTY` names the Windows facility
+//! both are made from.
+//!
+//! Names beginning `harness_` exercise the harness itself; the rest run the
+//! `dure` binary end to end.
 
 #![cfg(all(windows, feature = "private-test-util"))]
 
@@ -6,7 +15,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use dure::test_support::ConsoleProcess;
-use dure_test_helper::SAMPLE_NON_ASCII_TEXT;
+use dure_test_helper::{SAMPLE_NON_ASCII_TEXT, binary_path};
 use tempfile::TempDir;
 use testing::with_watchdog;
 
@@ -15,21 +24,21 @@ fn dure_exe() -> PathBuf {
 }
 
 fn helper_exe() -> PathBuf {
-    PathBuf::from(dure_test_helper::binary_path())
+    PathBuf::from(binary_path())
 }
 
 /// Introducer for CSI, OSC, and other ECMA-48 sequences.
 const ESC: char = '\u{1b}';
-/// OSC terminator used by `ConPTY` window-title sequences.
+/// OSC terminator used by pseudoconsole window-title sequences.
 const BEL: char = '\u{7}';
 
-/// Strip the control sequences `ConPTY` typically injects around app text.
+/// Strip the control sequences a pseudoconsole typically injects around app text.
 ///
 /// ESC introduces a sequence. CSI (`ESC [`) runs until an ASCII letter, the
 /// ECMA-48 final byte for SGR and cursor commands. OSC (`ESC ]`) runs until
-/// BEL, the terminator `ConPTY` uses for window-title sequences. Any other ESC
-/// form consumes one following character. This recovers app text from `ConPTY`
-/// cursor noise; it is not a full VT parser.
+/// BEL, the terminator the pseudoconsole uses for window-title sequences. Any
+/// other ESC form consumes one following character. This recovers app text from
+/// pseudoconsole cursor noise; it is not a full VT parser.
 fn visible_text(bytes: &[u8]) -> String {
     let raw = String::from_utf8_lossy(bytes);
     let mut chars = raw.chars();
@@ -62,7 +71,7 @@ fn visible_text(bytes: &[u8]) -> String {
 
 /// Text with all whitespace removed.
 ///
-/// `ConPTY` wraps output at the window width and can break a line in the middle
+/// A pseudoconsole wraps output at the window width and can break a line in the middle
 /// of a word, so ignoring whitespace is the only stable way to look for a
 /// phrase in console output.
 fn without_whitespace(text: &str) -> String {
@@ -98,7 +107,7 @@ const HELPER_STEM: &str = "dure-test-helper";
 
 #[cfg_attr(miri, ignore)]
 #[test]
-fn helper_exit_via_conpty() {
+fn harness_forwards_the_helper_exit_status() {
     with_watchdog(|| {
         let dir = TempDir::new().unwrap();
         let args = vec!["exit".to_string(), SAMPLE_NONZERO_EXIT.to_string()];
@@ -110,7 +119,7 @@ fn helper_exit_via_conpty() {
 
 #[cfg_attr(miri, ignore)]
 #[test]
-fn helper_has_console_via_conpty() {
+fn harness_gives_the_helper_a_console() {
     with_watchdog(|| {
         let dir = TempDir::new().unwrap();
         let args = vec!["has-console".to_string()];
@@ -127,7 +136,7 @@ fn helper_has_console_via_conpty() {
 
 #[cfg_attr(miri, ignore)]
 #[test]
-fn run_helper_exit_status() {
+fn run_forwards_the_app_exit_status() {
     with_watchdog(|| {
         let dir = TempDir::new().unwrap();
         let helper = helper_exe();
@@ -152,7 +161,7 @@ fn run_helper_exit_status() {
 
 #[cfg_attr(miri, ignore)]
 #[test]
-fn helper_echo_via_conpty() {
+fn harness_relays_input_to_the_helper() {
     with_watchdog(|| {
         let dir = TempDir::new().unwrap();
         let args = vec!["echo-line".to_string()];
@@ -166,7 +175,7 @@ fn helper_echo_via_conpty() {
 
 #[cfg_attr(miri, ignore)]
 #[test]
-fn helper_sees_a_console() {
+fn run_gives_the_app_a_console() {
     with_watchdog(|| {
         let dir = TempDir::new().unwrap();
         let helper = helper_exe();
@@ -179,8 +188,8 @@ fn helper_sees_a_console() {
             "wait-has-console".to_string(),
         ];
         let client = ConsoleProcess::spawn(&dure_exe(), &args, dir.path());
-        // ConPTY may emit `session` and the id with intervening cursor sequences
-        // instead of a literal `session `.
+        // The pseudoconsole may emit `session` and the id with intervening
+        // cursor sequences instead of a literal `session `.
         _ = collect_until(&client, "session");
         // The helper's console is in line-input mode, so a lone character is
         // not delivered to `stdin.read` until a newline arrives.
@@ -244,7 +253,7 @@ fn relayed_output_keeps_non_ascii_text_intact() {
 
 #[cfg_attr(miri, ignore)]
 #[test]
-fn a_dropped_client_leaves_the_app_resumable() {
+fn a_dropped_client_leaves_the_session_resumable() {
     with_watchdog(|| {
         let dir = TempDir::new().unwrap();
         let helper = helper_exe();
@@ -319,6 +328,25 @@ fn run_helper_args(store_root: &Path, helper: &Path) -> Vec<String> {
     ]
 }
 
+/// Whether the session banner in `output` names exactly `id`.
+///
+/// Whitespace is normalized away first, for the same line-wrapping reason
+/// `collect_until` does it, so the digits are required to end where the id
+/// does rather than merely to start with it.
+fn banner_names_session(output: &str, id: u64) -> bool {
+    let normalized = without_whitespace(output);
+    let wanted = format!("session{id}");
+    normalized
+        .match_indices(&wanted)
+        .any(|(at, _)| {
+            let after = at.saturating_add(wanted.len());
+            normalized
+                .get(after..)
+                .and_then(|rest| rest.chars().next())
+                .is_none_or(|next| !next.is_ascii_digit())
+        })
+}
+
 #[cfg_attr(miri, ignore)]
 #[test]
 fn run_warns_when_an_ancestor_job_would_end_the_session() {
@@ -334,6 +362,15 @@ fn run_warns_when_an_ancestor_job_would_end_the_session() {
         assert!(
             output.contains("will not survive a disconnect"),
             "a session tied to the launcher must say so, got {output:?}"
+        );
+        // `collect_until` removes whitespace before searching, which is what
+        // makes it robust against line wrapping but also erases the boundary
+        // between the word and the id: `session 10` would satisfy a search for
+        // `session 1`. The banner is therefore checked again here, against the
+        // id a fresh store must have handed out.
+        assert!(
+            banner_names_session(&output, FIRST_SESSION_ID),
+            "a fresh store must report session {FIRST_SESSION_ID}, got {output:?}"
         );
         client.write_input(b"x\r\n");
         let status = client.wait();
