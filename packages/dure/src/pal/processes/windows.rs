@@ -39,7 +39,9 @@ use crate::pal::error::{PalError, PalErrorKind};
 use crate::pal::ids::{AppId, JobId};
 use crate::pal::processes::command_line::windows_command_line;
 use crate::pal::processes::resolve::resolve_executable;
-use crate::pal::processes::{AppSpawn, ProcessLiveness, Processes, ResolvedCommand, SupervisorSpawn};
+use crate::pal::processes::{
+    AppSpawn, ProcessLiveness, Processes, ResolvedCommand, SupervisorSpawn,
+};
 use crate::pal::pseudoconsole::windows::hpcon_for;
 use crate::pal::raw_handle::RawHandle;
 use crate::session_record::ProcessIdentity;
@@ -294,7 +296,9 @@ impl BuildTargetProcesses {
         let id = next_id();
         table()
             .lock()
-            .expect("the handle table is only inserted into and looked up, never held across a panic")
+            .expect(
+                "the handle table is only inserted into and looked up, never held across a panic",
+            )
             .jobs
             .insert(id, handles);
         Ok(JobId(id))
@@ -478,7 +482,14 @@ impl Processes for BuildTargetProcesses {
     }
 
     fn close_job(&self, job: JobId) {
-        if let Some(handles) = table().lock().expect("the handle table is only inserted into and looked up, never held across a panic").jobs.remove(&job.0) {
+        if let Some(handles) = table()
+            .lock()
+            .expect(
+                "the handle table is only inserted into and looked up, never held across a panic",
+            )
+            .jobs
+            .remove(&job.0)
+        {
             // Innermost first, so a kill-on-close ancestor never tears down a
             // job this still holds a handle to.
             for handle in handles.into_iter().rev() {
@@ -503,7 +514,9 @@ impl Processes for BuildTargetProcesses {
         // attribute lists them, which is what nests them.
         let mut job_list = table()
             .lock()
-            .expect("the handle table is only inserted into and looked up, never held across a panic")
+            .expect(
+                "the handle table is only inserted into and looked up, never held across a panic",
+            )
             .jobs
             .get(&request.job.0)
             .ok_or_else(|| PalError::new(PalErrorKind::NotFound))?
@@ -619,7 +632,9 @@ impl Processes for BuildTargetProcesses {
         let id = next_id();
         table()
             .lock()
-            .expect("the handle table is only inserted into and looked up, never held across a panic")
+            .expect(
+                "the handle table is only inserted into and looked up, never held across a panic",
+            )
             .apps
             .insert(id, RawHandle::from_handle(pi.hProcess));
         Ok(AppId(id))
@@ -630,7 +645,9 @@ impl Processes for BuildTargetProcesses {
         // app, so the handle is this call's to close whatever the wait says.
         let handle = table()
             .lock()
-            .expect("the handle table is only inserted into and looked up, never held across a panic")
+            .expect(
+                "the handle table is only inserted into and looked up, never held across a panic",
+            )
             .apps
             .remove(&app.0)
             .ok_or_else(|| PalError::new(PalErrorKind::NotFound))?

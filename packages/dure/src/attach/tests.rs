@@ -104,9 +104,11 @@ impl TestConsole {
 
         let mut console = MockLocalConsole::new();
         console.expect_has_console().return_const(has_console);
-        console
-            .expect_begin_raw_relay()
-            .returning(move || begin_raw_relay.map(|()| RelayLeaseId::for_test(1)).map_err(PalError::new));
+        console.expect_begin_raw_relay().returning(move || {
+            begin_raw_relay
+                .map(|()| RelayLeaseId::for_test(1))
+                .map_err(PalError::new)
+        });
         console.expect_end_raw_relay().returning(move |_lease| {
             hand_backs.fetch_add(1, Ordering::SeqCst);
             end_raw_relay.map_err(PalError::new)

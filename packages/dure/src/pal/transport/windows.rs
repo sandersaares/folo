@@ -10,8 +10,7 @@ use std::time::{Duration, Instant};
 use windows::Win32::Foundation::{
     CloseHandle, ERROR_BROKEN_PIPE, ERROR_IO_PENDING, ERROR_NO_DATA, ERROR_PIPE_BUSY,
     ERROR_PIPE_CONNECTED, ERROR_PIPE_NOT_CONNECTED, ERROR_SEM_TIMEOUT, GetLastError, HANDLE,
-    HLOCAL, LocalFree,
-    WAIT_OBJECT_0, WAIT_TIMEOUT, WIN32_ERROR,
+    HLOCAL, LocalFree, WAIT_OBJECT_0, WAIT_TIMEOUT, WIN32_ERROR,
 };
 use windows::Win32::Security::Authorization::{
     ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
@@ -512,7 +511,9 @@ fn conn_write(conn: ConnId) -> Result<(Arc<PipeHandle>, Arc<Mutex<()>>), PalErro
 fn accept_connection(listener: ListenerId, timeout: Option<Duration>) -> Result<ConnId, PalError> {
     let deadline = timeout.map(Deadline::after);
     let (pending, name) = {
-        let table = table().lock().expect("the pipe table is only inserted into and looked up, never held across a panic");
+        let table = table().lock().expect(
+            "the pipe table is only inserted into and looked up, never held across a panic",
+        );
         let listener = table
             .listeners
             .get(&listener)
@@ -587,13 +588,17 @@ impl Transport for BuildTargetTransport {
         let name = wide_z(name);
         let pending = create_instance(&name, true)?;
         let id = ListenerId(next_id());
-        table().lock().expect("the pipe table is only inserted into and looked up, never held across a panic").listeners.insert(
-            id,
-            Listener {
-                name,
-                pending: PipeHandle::new(pending),
-            },
-        );
+        table()
+            .lock()
+            .expect("the pipe table is only inserted into and looked up, never held across a panic")
+            .listeners
+            .insert(
+                id,
+                Listener {
+                    name,
+                    pending: PipeHandle::new(pending),
+                },
+            );
         Ok(id)
     }
 
@@ -671,13 +676,19 @@ impl Transport for BuildTargetTransport {
                 }
             };
             let id = ConnId(next_id());
-            table().lock().expect("the pipe table is only inserted into and looked up, never held across a panic").conns.insert(
-                id,
-                Conn {
-                    handle: PipeHandle::new(handle),
-                    write: Arc::new(Mutex::new(())),
-                },
-            );
+            table()
+                .lock()
+                .expect(
+                    "the pipe table is only inserted into and looked up, never held across a panic",
+                )
+                .conns
+                .insert(
+                    id,
+                    Conn {
+                        handle: PipeHandle::new(handle),
+                        write: Arc::new(Mutex::new(())),
+                    },
+                );
             return Ok(id);
         }
     }
@@ -685,7 +696,9 @@ impl Transport for BuildTargetTransport {
     fn send(&self, conn: ConnId, message: &Message) -> Result<(), PalError> {
         let frame = encode(message);
         let (handle, write) = conn_write(conn)?;
-        let _guard = write.lock().expect("a pipe write holds the lock only across the write itself, which does not panic");
+        let _guard = write.lock().expect(
+            "a pipe write holds the lock only across the write itself, which does not panic",
+        );
         write_all(&handle, &frame)
     }
 
@@ -698,7 +711,11 @@ impl Transport for BuildTargetTransport {
     }
 
     fn disconnect(&self, conn: ConnId) {
-        let removed = table().lock().expect("the pipe table is only inserted into and looked up, never held across a panic").conns.remove(&conn);
+        let removed = table()
+            .lock()
+            .expect("the pipe table is only inserted into and looked up, never held across a panic")
+            .conns
+            .remove(&conn);
         if let Some(conn) = removed {
             // Aborts a read or write another thread is blocked in, so it fails
             // and releases its reference; the handle closes with the last one.

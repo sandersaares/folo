@@ -4,8 +4,8 @@
 
 use std::path::Path;
 
-use crate::path_display::display_path;
 use crate::SessionId;
+use crate::path_display::display_path;
 use crate::session_record::SessionRecord;
 use crate::trace::{Trace, trace};
 

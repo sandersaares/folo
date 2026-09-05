@@ -43,7 +43,10 @@ fn main() -> ExitCode {
     else {
         // The app is launched with the argv given here, so mangling it into
         // something the shell did not ask for is worse than refusing.
-        write_line(&mut io::stderr(), "Error: every argument must be valid Unicode.");
+        write_line(
+            &mut io::stderr(),
+            "Error: every argument must be valid Unicode.",
+        );
         return ExitCode::FAILURE;
     };
     let str_args: Vec<&str> = env_args.iter().map(String::as_str).collect();

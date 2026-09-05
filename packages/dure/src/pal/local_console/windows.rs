@@ -1,9 +1,8 @@
 //! Windows local console PAL.
 
-use std::io;
-use std::slice;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
+use std::{io, slice};
 
 use windows::Win32::Foundation::{HANDLE, WAIT_OBJECT_0};
 use windows::Win32::Globalization::CP_UTF8;
@@ -96,8 +95,8 @@ unsafe extern "system" fn relay_ctrl_handler(ctrl_type: u32) -> BOOL {
 fn std_handle(kind: STD_HANDLE) -> Result<HANDLE, PalError> {
     // SAFETY: GetStdHandle returns a process-lifetime handle that this process
     // does not own or close.
-    let handle =
-        unsafe { GetStdHandle(kind) }.map_err(|error| PalError::with_source(PalErrorKind::Other, error))?;
+    let handle = unsafe { GetStdHandle(kind) }
+        .map_err(|error| PalError::with_source(PalErrorKind::Other, error))?;
     if handle.is_invalid() {
         return Err(PalError::new(PalErrorKind::Other));
     }
@@ -118,7 +117,8 @@ fn restore_mode(kind: STD_HANDLE, mode: CONSOLE_MODE) -> Result<(), PalError> {
     let handle = std_handle(kind)?;
     // SAFETY: `handle` is a standard console handle; `mode` was captured from
     // it before `enter_raw_relay` changed it.
-    unsafe { SetConsoleMode(handle, mode) }.map_err(|error| PalError::with_source(PalErrorKind::Other, error))
+    unsafe { SetConsoleMode(handle, mode) }
+        .map_err(|error| PalError::with_source(PalErrorKind::Other, error))
 }
 
 /// Sets the code pages this console uses to interpret relayed bytes.
@@ -290,11 +290,9 @@ fn hand_back_console(taken: TakenConsole) -> Result<(), PalError> {
     let output = taken
         .out_mode
         .map_or(Ok(()), |mode| restore_mode(STD_OUTPUT_HANDLE, mode));
-    let code_pages = taken
-        .code_pages
-        .map_or(Ok(()), |(in_page, out_page)| {
-            set_code_pages(in_page, out_page)
-        });
+    let code_pages = taken.code_pages.map_or(Ok(()), |(in_page, out_page)| {
+        set_code_pages(in_page, out_page)
+    });
     let ctrl_handler = if taken.ctrl_handler_installed {
         // SAFETY: Add=FALSE removes the handler this process installed.
         unsafe { SetConsoleCtrlHandler(Some(relay_ctrl_handler), false) }

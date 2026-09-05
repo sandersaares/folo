@@ -5,11 +5,9 @@ use std::time::Duration;
 
 use ohno::AppError;
 
-use crate::AppCommand;
 use crate::attach::attach;
 use crate::constants::{CONNECT_TIMEOUT, STARTUP_TIMEOUT, SUPERVISOR_COMMAND};
 use crate::durability::LauncherTie;
-use crate::Outcome;
 use crate::output::note_line;
 use crate::pal::error::{PalError, PalErrorKind};
 use crate::pal::ids::{ConnId, ListenerId};
@@ -19,11 +17,10 @@ use crate::pal::session_store::SessionStore;
 use crate::pal::transport::Transport;
 use crate::path_display::display_path;
 use crate::protocol::Message;
-use crate::SessionId;
 use crate::trace::{Trace, trace};
 use crate::{
-    AttachFailedError, BreakawayDeniedError, CanonicalizeError, CurrentDirectoryError,
-    NoConsoleError, PalFailedError, StartupFailedError, StoreError,
+    AppCommand, AttachFailedError, BreakawayDeniedError, CanonicalizeError, CurrentDirectoryError,
+    NoConsoleError, Outcome, PalFailedError, SessionId, StartupFailedError, StoreError,
 };
 
 /// Said when the supervisor confirmed a job that ends the session with its
@@ -101,12 +98,10 @@ where
     // connection closing as the client giving up, so leaking it across an
     // unwind would leave a session waiting for an attach that is never coming.
     // Ref: docs/implementation.md, "Process split".
-    let mut startup = StartupChannel::listen(transport, &startup_pipe)
-        .map_err(StartupFailedError::caused_by)?;
+    let mut startup =
+        StartupChannel::listen(transport, &startup_pipe).map_err(StartupFailedError::caused_by)?;
 
-    let exe = processes
-        .current_exe()
-        .map_err(PalFailedError::caused_by)?;
+    let exe = processes.current_exe().map_err(PalFailedError::caused_by)?;
     let mut args = vec![
         SUPERVISOR_COMMAND.to_string(),
         "--startup-pipe".to_string(),
@@ -127,8 +122,7 @@ where
         trace!(
             trace,
             "spawning the supervisor: {}",
-            AppCommand::from_argv(spawn_line)
-                .map_or_else(String::new, |line| line.to_string())
+            AppCommand::from_argv(spawn_line).map_or_else(String::new, |line| line.to_string())
         );
     }
     processes

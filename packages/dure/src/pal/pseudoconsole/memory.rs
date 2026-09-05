@@ -213,7 +213,10 @@ mod tests {
         host.resize(pty, WindowSize { cols: 40, rows: 10 }).unwrap();
         assert_eq!(host.size(pty), Some(WindowSize { cols: 40, rows: 10 }));
         host.push_output(pty, b"out");
-        assert_eq!(host.read_output(pty).unwrap().as_deref(), Some(b"out".as_slice()));
+        assert_eq!(
+            host.read_output(pty).unwrap().as_deref(),
+            Some(b"out".as_slice())
+        );
         host.close(pty);
     }
 

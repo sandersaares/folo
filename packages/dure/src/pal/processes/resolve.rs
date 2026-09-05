@@ -89,9 +89,7 @@ fn is_drive_relative(path: &Path) -> bool {
 /// Drops a drive prefix so what remains can be anchored somewhere else.
 fn strip_drive_prefix(path: &Path) -> PathBuf {
     path.components()
-        .skip_while(|component| {
-            matches!(component, Component::Prefix(_) | Component::RootDir)
-        })
+        .skip_while(|component| matches!(component, Component::Prefix(_) | Component::RootDir))
         .collect()
 }
 

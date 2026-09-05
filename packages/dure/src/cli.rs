@@ -9,10 +9,8 @@ use std::path::PathBuf;
 use clap::error::ErrorKind;
 use clap::{Parser, Subcommand};
 
-use crate::AppCommand;
 use crate::constants::SUPERVISOR_COMMAND;
-use crate::{Command, Invocation};
-use crate::SessionId;
+use crate::{AppCommand, Command, Invocation, SessionId};
 
 /// Clap-facing parser for the `dure` binary.
 ///

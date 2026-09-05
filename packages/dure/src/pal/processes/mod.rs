@@ -17,8 +17,8 @@ mod windows;
 pub(crate) use abstractions::*;
 pub(crate) use facade::*;
 pub(crate) use resolve::{HowResolved, ResolvedCommand};
-pub(crate) use windows::BuildTargetProcesses;
 // Job topology is only chosen explicitly by the integration harness; production
 // logic asks for the standard lifetime job and never names a policy.
 #[cfg(any(test, feature = "private-test-util"))]
 pub(crate) use windows::Breakaway;
+pub(crate) use windows::BuildTargetProcesses;

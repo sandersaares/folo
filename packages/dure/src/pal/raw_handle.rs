@@ -66,7 +66,10 @@ impl PipeHandle {
     /// `start` must only issue the operation. Waiting for it belongs outside,
     /// once the caller has the result.
     pub(crate) fn issue<T>(&self, start: impl FnOnce(HANDLE) -> T) -> Option<T> {
-        let cancelled = self.cancelled.lock().expect("the cancellation flag is only read and set, never held across a panic");
+        let cancelled = self
+            .cancelled
+            .lock()
+            .expect("the cancellation flag is only read and set, never held across a panic");
         if *cancelled {
             return None;
         }
@@ -80,7 +83,10 @@ impl PipeHandle {
     /// dropped the table's reference, so nothing can reach the handle to cancel
     /// it again.
     pub(crate) fn cancel(&self) {
-        let mut cancelled = self.cancelled.lock().expect("the cancellation flag is only read and set, never held across a panic");
+        let mut cancelled = self
+            .cancelled
+            .lock()
+            .expect("the cancellation flag is only read and set, never held across a panic");
         *cancelled = true;
         // SAFETY: `self` owns the handle and keeps it alive across this call. A
         // null OVERLAPPED cancels every operation this process has pending on

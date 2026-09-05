@@ -4,13 +4,12 @@ use std::path::PathBuf;
 
 use ohno::AppError;
 
-use crate::AppCommand;
-use crate::Outcome;
 use crate::pal::processes::Processes;
 use crate::pal::pseudoconsole::Pseudoconsole;
 use crate::pal::session_store::SessionStore;
 use crate::pal::transport::Transport;
 use crate::supervisor::run_supervisor;
+use crate::{AppCommand, Outcome};
 
 /// Run the supervisor role until the app exits.
 pub(crate) fn execute<S, P, T, Y>(

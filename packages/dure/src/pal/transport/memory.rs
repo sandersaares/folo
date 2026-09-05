@@ -464,9 +464,7 @@ mod tests {
         let listener = transport.listen("session").unwrap();
         transport.expire_next_accept("session");
 
-        let error = transport
-            .accept_timeout(listener, ANY_TIMEOUT)
-            .unwrap_err();
+        let error = transport.accept_timeout(listener, ANY_TIMEOUT).unwrap_err();
 
         assert_eq!(error.kind(), PalErrorKind::Timeout);
     }

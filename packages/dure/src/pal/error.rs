@@ -101,7 +101,9 @@ impl fmt::Display for PalError {
 #[cfg_attr(test, mutants::skip)]
 impl Error for PalError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
-        self.source.as_deref().map(|error| -> &(dyn Error + 'static) { error })
+        self.source
+            .as_deref()
+            .map(|error| -> &(dyn Error + 'static) { error })
     }
 }
 

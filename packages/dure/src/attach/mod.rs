@@ -20,8 +20,8 @@ use crate::pal::local_console::{ConsoleInput, LocalConsole};
 use crate::pal::transport::Transport;
 use crate::protocol::Message;
 use crate::{
-    AttachFailedError, ConsoleRestoreError, DisplacedError, NoConsoleError, Outcome, PalFailedError,
-    RelayFailedError, ResumeTimeoutError, SessionId, SupervisorLostError,
+    AttachFailedError, ConsoleRestoreError, DisplacedError, NoConsoleError, Outcome,
+    PalFailedError, RelayFailedError, ResumeTimeoutError, SessionId, SupervisorLostError,
 };
 
 /// Connect to a live supervisor and funnel console I/O until the relay ends.
@@ -88,9 +88,7 @@ where
     T: Transport + Clone + Send + Sync + 'static,
     C: LocalConsole + Clone + Send + Sync + 'static,
 {
-    let size = console
-        .window_size()
-        .map_err(PalFailedError::caused_by)?;
+    let size = console.window_size().map_err(PalFailedError::caused_by)?;
 
     let conn = match transport.connect(pipe_name, CONNECT_TIMEOUT) {
         Ok(conn) => conn,

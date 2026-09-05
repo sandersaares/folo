@@ -183,9 +183,9 @@ mod tests {
     use testing::with_watchdog;
 
     use super::*;
+    use crate::SessionId;
     use crate::constants::CONNECT_TIMEOUT;
     use crate::pal::transport::MemoryTransport;
-    use crate::SessionId;
 
     /// A connected pair on an in-memory pipe, as supervisor and client ends.
     fn pair() -> (MemoryTransport, ConnId, ConnId) {

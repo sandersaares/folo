@@ -7,9 +7,9 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 
+use crate::SessionId;
 use crate::pal::error::{PalError, PalErrorKind};
 use crate::pal::session_store::SessionStore;
-use crate::SessionId;
 use crate::session_record::{ProcessIdentity, SessionRecord, StoredSession};
 
 /// Shared stateful session store for supervisor unit tests.

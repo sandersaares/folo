@@ -13,10 +13,10 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
+use crate::SessionId;
 use crate::pal::error::{PalError, PalErrorKind};
 use crate::pal::session_store::SessionStore;
 use crate::pal::session_store::fs_store::windows::{RecordFile, move_file_replace};
-use crate::SessionId;
 use crate::session_record::{ProcessIdentity, SessionRecord, StoredSession};
 
 /// Session store rooted at a caller-supplied directory.

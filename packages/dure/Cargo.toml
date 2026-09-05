@@ -41,18 +41,15 @@ release-targets = ["x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"]
 [package.metadata.cargo-udeps.ignore]
 development = ["dure-test-helper"]
 
-# The intentional external exposures in the public API. The check fails when a public external
-# type matches no entry or matches more than one, so an accidental exposure is caught by being
-# absent from this list; an entry that no longer corresponds to an exposure is removed.
+# External types intentionally exposed in the public API. The check fails when a public external
+# type matches no entry, so an accidental exposure is caught by being absent from this list.
+#
+# The list is empty because the package has no supported API: every exported item is
+# `#[doc(hidden)]` (see `src/lib.rs`), so nothing is advertised for anyone to depend on. An entry
+# here would mean a decision to expose something, which is a decision this package does not make.
 # Ref: docs/external-types.md.
 [package.metadata.cargo_check_external_types]
-allowed_external_types = [
-    "clap_builder::derive::Args",
-    "clap_builder::derive::CommandFactory",
-    "clap_builder::derive::FromArgMatches",
-    "clap_builder::derive::Parser",
-    "ohno::app::error::AppError",
-]
+allowed_external_types = []
 
 [features]
 # Exposes the in-crate test support the Windows integration tests drive the real

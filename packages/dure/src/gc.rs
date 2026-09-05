@@ -4,10 +4,9 @@ use ohno::AppError;
 
 use crate::pal::processes::{ProcessLiveness, Processes};
 use crate::pal::session_store::SessionStore;
-use crate::SessionId;
 use crate::session_record::SessionRecord;
 use crate::trace::{Trace, trace};
-use crate::{InspectProcessError, SessionNotFoundError, StoreError};
+use crate::{InspectProcessError, SessionId, SessionNotFoundError, StoreError};
 
 /// Lists live sessions, deleting records whose supervisor process is gone.
 ///
@@ -64,12 +63,7 @@ pub(crate) fn live_sessions(
         }
     }
     reap_orphan_reservations(store, processes, trace)?;
-    trace!(
-        trace,
-        "{} live {}",
-        live.len(),
-        session_noun(live.len())
-    );
+    trace!(trace, "{} live {}", live.len(), session_noun(live.len()));
     Ok(live)
 }
 
@@ -94,9 +88,7 @@ fn reap_orphan_reservations(
     processes: &impl Processes,
     trace: Trace,
 ) -> Result<(), AppError> {
-    let reservations = store
-        .list_reservations()
-        .map_err(StoreError::caused_by)?;
+    let reservations = store.list_reservations().map_err(StoreError::caused_by)?;
     for (id, owner) in reservations {
         match processes.probe(&owner) {
             ProcessLiveness::Dead => {

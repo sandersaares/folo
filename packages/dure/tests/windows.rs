@@ -336,15 +336,13 @@ fn run_helper_args(store_root: &Path, helper: &Path) -> Vec<String> {
 fn banner_names_session(output: &str, id: u64) -> bool {
     let normalized = without_whitespace(output);
     let wanted = format!("session{id}");
-    normalized
-        .match_indices(&wanted)
-        .any(|(at, _)| {
-            let after = at.saturating_add(wanted.len());
-            normalized
-                .get(after..)
-                .and_then(|rest| rest.chars().next())
-                .is_none_or(|next| !next.is_ascii_digit())
-        })
+    normalized.match_indices(&wanted).any(|(at, _)| {
+        let after = at.saturating_add(wanted.len());
+        normalized
+            .get(after..)
+            .and_then(|rest| rest.chars().next())
+            .is_none_or(|next| !next.is_ascii_digit())
+    })
 }
 
 #[cfg_attr(miri, ignore)]

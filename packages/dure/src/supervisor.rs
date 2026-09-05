@@ -7,7 +7,6 @@ use std::thread;
 
 use ohno::AppError;
 
-use crate::AppCommand;
 use crate::constants::{
     CONNECT_TIMEOUT, DEFAULT_PTY_COLS, DEFAULT_PTY_ROWS, MAX_CLIENT_BACKLOG_BYTES,
     MAX_OUTPUT_CHUNK_BYTES,
@@ -20,10 +19,11 @@ use crate::pal::pseudoconsole::{Pseudoconsole, WindowSize};
 use crate::pal::session_store::SessionStore;
 use crate::pal::transport::Transport;
 use crate::protocol::Message;
-use crate::SessionId;
 use crate::session_record::{ProcessIdentity, SessionRecord};
 use crate::wall_clock::unix_now_ms;
-use crate::{BreakawayDeniedError, PalFailedError, StartupFailedError, StoreError};
+use crate::{
+    AppCommand, BreakawayDeniedError, PalFailedError, SessionId, StartupFailedError, StoreError,
+};
 
 /// Size used until the first client attaches.
 ///
@@ -904,11 +904,15 @@ mod tests {
         close_job: impl Fn(JobId) + Send + Sync + 'static,
     ) -> MockProcesses {
         let mut processes = MockProcesses::new();
-        processes.expect_launcher_tie().returning(move || launcher_tie);
+        processes
+            .expect_launcher_tie()
+            .returning(move || launcher_tie);
         processes
             .expect_create_lifetime_job()
             .returning(|| Ok(JobId::for_test(1)));
-        processes.expect_spawn_app().returning(|_| Ok(AppId::for_test(1)));
+        processes
+            .expect_spawn_app()
+            .returning(|_| Ok(AppId::for_test(1)));
         processes.expect_current_identity().returning(|| {
             Ok(ProcessIdentity {
                 pid: 10,
@@ -1401,11 +1405,8 @@ mod tests {
             let transport = MemoryTransport::new();
             let pty = MemoryPseudoconsole::new();
             let store = MemorySessionStore::new();
-            let processes = mock_processes_with(
-                Arc::clone(&exit),
-                LauncherTie::Confirmed,
-                AppWait::Reports,
-            );
+            let processes =
+                mock_processes_with(Arc::clone(&exit), LauncherTie::Confirmed, AppWait::Reports);
 
             let startup = transport.listen("startup").unwrap();
             let supervisor = thread::spawn({
@@ -2101,5 +2102,4 @@ mod tests {
         set_attached(3, false);
         assert!(store.read(id).unwrap().unwrap().attached);
     }
-
 }

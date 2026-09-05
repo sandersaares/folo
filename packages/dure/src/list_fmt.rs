@@ -204,7 +204,9 @@ mod tests {
             row.find("yes").expect("the attached cell")
         );
         assert_eq!(
-            header.find("SUPERVISOR PID").expect("the supervisor pid heading"),
+            header
+                .find("SUPERVISOR PID")
+                .expect("the supervisor pid heading"),
             row.find("99").expect("the pid cell")
         );
         assert_eq!(
@@ -212,7 +214,9 @@ mod tests {
             row.find("5s").expect("the age cell")
         );
         assert_eq!(
-            header.find("LAUNCH DIRECTORY").expect("the launch directory heading"),
+            header
+                .find("LAUNCH DIRECTORY")
+                .expect("the launch directory heading"),
             row.find("/work").expect("the directory cell")
         );
         assert_eq!(

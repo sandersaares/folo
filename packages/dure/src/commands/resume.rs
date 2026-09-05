@@ -15,8 +15,7 @@ use crate::session_record::SessionRecord;
 use crate::trace::{Trace, trace};
 use crate::{
     CanonicalizeError, CurrentDirectoryError, InvalidSessionIdError, NoConsoleError,
-    NoLiveSessionsError, Outcome,
-    OutputFailedError, PromptFailedError, SessionId,
+    NoLiveSessionsError, Outcome, OutputFailedError, PromptFailedError, SessionId,
 };
 
 /// Attach using auto-detect or an explicit id.

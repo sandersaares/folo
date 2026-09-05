@@ -2,13 +2,13 @@
 
 use ohno::AppError;
 
+use crate::OutputFailedError;
 use crate::gc::live_sessions;
 use crate::list_fmt::format_list;
-use crate::pal::processes::Processes;
 use crate::output::print_line;
+use crate::pal::processes::Processes;
 use crate::pal::session_store::SessionStore;
 use crate::trace::{Trace, trace};
-use crate::OutputFailedError;
 
 /// Print live sessions.
 ///
@@ -22,8 +22,12 @@ pub(crate) fn execute(
     trace: Trace,
 ) -> Result<(), AppError> {
     let live = live_sessions(store, processes, trace)?;
-    trace!(trace, "ages are measured against unix time {now_unix_ms} ms");
-    print_line(format_args!("{}", format_list(&live, now_unix_ms))).map_err(OutputFailedError::caused_by)?;
+    trace!(
+        trace,
+        "ages are measured against unix time {now_unix_ms} ms"
+    );
+    print_line(format_args!("{}", format_list(&live, now_unix_ms)))
+        .map_err(OutputFailedError::caused_by)?;
     Ok(())
 }
 

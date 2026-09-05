@@ -3,8 +3,8 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use crate::pal::error::PalError;
 use crate::SessionId;
+use crate::pal::error::PalError;
 use crate::session_record::{ProcessIdentity, SessionRecord};
 
 /// Per-user filesystem of live-session records.

@@ -146,7 +146,8 @@ impl Serialize for AppCommand {
 impl<'de> Deserialize<'de> for AppCommand {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let argv = Vec::<String>::deserialize(deserializer)?;
-        Self::from_argv(argv).ok_or_else(|| D::Error::custom("a session command names an executable"))
+        Self::from_argv(argv)
+            .ok_or_else(|| D::Error::custom("a session command names an executable"))
     }
 }
 
@@ -209,10 +210,7 @@ mod tests {
         let command = command(&["app.exe", "--foo"]);
         let json = serde_json::to_string(&command).unwrap();
         assert_eq!(json, r#"["app.exe","--foo"]"#);
-        assert_eq!(
-            serde_json::from_str::<AppCommand>(&json).unwrap(),
-            command
-        );
+        assert_eq!(serde_json::from_str::<AppCommand>(&json).unwrap(), command);
     }
 
     #[test]

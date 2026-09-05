@@ -2,12 +2,11 @@
 
 use ohno::AppError;
 
-use crate::{Command, Invocation, Outcome};
 use crate::pal::Pal;
 use crate::path_display::display_path;
 use crate::trace::{Trace, trace};
 use crate::wall_clock::unix_now_ms;
-use crate::{PalFailedError, commands};
+use crate::{Command, Invocation, Outcome, PalFailedError, commands};
 
 /// Executes a parsed `dure` invocation.
 ///
@@ -79,15 +78,13 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
-    use crate::AppCommand;
-    use crate::SessionNotFoundError;
     use crate::pal::local_console::{LocalConsoleFacade, MockLocalConsole};
     use crate::pal::processes::{MockProcesses, ProcessLiveness, ProcessesFacade};
     use crate::pal::pseudoconsole::{MemoryPseudoconsole, PseudoconsoleFacade};
     use crate::pal::session_store::{MockSessionStore, SessionStoreFacade};
     use crate::pal::transport::{MemoryTransport, TransportFacade};
-    use crate::SessionId;
     use crate::session_record::SessionRecord;
+    use crate::{AppCommand, SessionId, SessionNotFoundError};
 
     fn pal_with(store: MockSessionStore, processes: MockProcesses) -> Pal {
         Pal {
@@ -112,6 +109,9 @@ mod tests {
     }
 
     #[test]
+    // The dispatcher reads the wall clock for the commands that render an age,
+    // which Miri's isolation refuses. What this test checks is routing.
+    #[cfg_attr(miri, ignore)]
     fn resume_reaches_the_resume_command() {
         let mut store = MockSessionStore::new();
         store.expect_read().returning(|_| Ok(None));

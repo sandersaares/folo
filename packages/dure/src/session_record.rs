@@ -4,8 +4,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::AppCommand;
-use crate::SessionId;
+use crate::{AppCommand, SessionId};
 
 /// Identity of a supervisor process: pid plus creation time.
 ///
