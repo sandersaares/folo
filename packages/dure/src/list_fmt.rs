@@ -57,7 +57,7 @@ fn row(session: &SessionRecord, now_unix_ms: u64) -> [String; 6] {
         session.supervisor_pid.to_string(),
         format_age(session.started_at_unix_ms, now_unix_ms),
         printable(&display_path(&session.launch_directory)),
-        printable(&session.command.join(" ")),
+        session.command.to_string(),
     ]
 }
 
@@ -145,6 +145,7 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
+    use crate::app_command::AppCommand;
 
     /// Sessions in these tests start at the epoch and are read at a fixed
     /// offset, so ages are chosen per test rather than inherited from a clock.
@@ -160,7 +161,7 @@ mod tests {
             supervisor_creation_time: 1,
             pipe_name: "pipe".to_string(),
             launch_directory: PathBuf::from(directory),
-            command: vec![command.to_string()],
+            command: AppCommand::for_test(&[command]),
             started_at_unix_ms: STARTED_AT,
             attached: true,
         }
@@ -176,7 +177,7 @@ mod tests {
     #[test]
     fn includes_id_directory_and_command() {
         let mut only = session(4, "/work", "copilot.exe");
-        only.command.push("--foo".to_string());
+        only.command = AppCommand::for_test(&["copilot.exe", "--foo"]);
         let text = format_list(&[only], SOME_AGE_MS);
         assert!(text.contains('4'));
         assert!(text.contains("yes"));

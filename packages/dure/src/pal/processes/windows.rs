@@ -519,14 +519,13 @@ impl Processes for BuildTargetProcesses {
     fn spawn_app(&self, request: &AppSpawn) -> Result<AppId, PalError> {
         let hpcon = hpcon_for(request.pty).ok_or_else(|| PalError::new(PalErrorKind::NotFound))?;
         let exe = search_executable(&resolve_command_path(
-            request
-                .command
-                .first()
-                .ok_or_else(|| PalError::new(PalErrorKind::Other))?,
+            request.command.exe(),
             &request.launch_directory,
         ));
-        let rest = request.command.get(1..).unwrap_or(&[]);
-        let mut cmd_wide = wide(&windows_command_line(&exe.to_string_lossy(), rest));
+        let mut cmd_wide = wide(&windows_command_line(
+            &exe.to_string_lossy(),
+            request.command.args(),
+        ));
         let mut exe_wide = wide(&exe.to_string_lossy());
         let mut dir_wide = wide(&request.launch_directory.to_string_lossy());
 

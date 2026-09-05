@@ -152,6 +152,7 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
+    use crate::app_command::AppCommand;
     use crate::pal::processes::MockProcesses;
     use crate::pal::session_store::{FsSessionStore, SessionStore};
     use crate::session_id::SessionId;
@@ -164,7 +165,7 @@ mod tests {
             supervisor_creation_time: creation,
             pipe_name: format!("pipe-{id}"),
             launch_directory: PathBuf::from("/work"),
-            command: vec!["app.exe".to_string()],
+            command: AppCommand::for_test(&["app.exe"]),
             started_at_unix_ms: 1,
             attached: false,
         }

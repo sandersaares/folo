@@ -1,11 +1,12 @@
-//! Library entry point that dispatches a parsed [`crate::RunInput`].
+//! Library entry point that dispatches a parsed [`crate::Invocation`].
 
 use ohno::AppError;
 
+use crate::invocation::{Command, Invocation, Outcome};
 use crate::pal::Pal;
 use crate::path_display::display_path;
 use crate::trace::{Trace, trace};
-use crate::types::{Command, Outcome, RunInput};
+use crate::wall_clock::unix_now_ms;
 use crate::{PalFailedError, commands};
 
 /// Executes a parsed `dure` invocation.
@@ -14,12 +15,12 @@ use crate::{PalFailedError, commands};
 ///
 /// Returns an error when a session cannot be started, resumed, listed, or
 /// killed, or when attach is displaced.
-pub fn run(input: &RunInput) -> Result<Outcome, AppError> {
+pub fn run(input: &Invocation) -> Result<Outcome, AppError> {
     let pal = Pal::target(input.store_root.clone()).map_err(|_error| PalFailedError::new())?;
     dispatch(input, &pal)
 }
 
-pub(crate) fn dispatch(input: &RunInput, pal: &Pal) -> Result<Outcome, AppError> {
+pub(crate) fn dispatch(input: &Invocation, pal: &Pal) -> Result<Outcome, AppError> {
     let trace = Trace::new(input.verbose);
     trace!(
         trace,
@@ -35,7 +36,7 @@ pub(crate) fn dispatch(input: &RunInput, pal: &Pal) -> Result<Outcome, AppError>
             &pal.processes,
             &pal.transport,
             &pal.console,
-            command.clone(),
+            command,
             input.store_root.clone(),
             trace,
         ),
@@ -45,10 +46,11 @@ pub(crate) fn dispatch(input: &RunInput, pal: &Pal) -> Result<Outcome, AppError>
             &pal.transport,
             &pal.console,
             *id,
+            unix_now_ms(),
             trace,
         ),
         Command::List => {
-            commands::list::execute(&pal.store, &pal.processes, trace)?;
+            commands::list::execute(&pal.store, &pal.processes, unix_now_ms(), trace)?;
             Ok(Outcome::Success)
         }
         Command::Kill { id } => {
@@ -59,7 +61,7 @@ pub(crate) fn dispatch(input: &RunInput, pal: &Pal) -> Result<Outcome, AppError>
             startup_pipe,
             launch_directory,
             command,
-        } => commands::supervisor::execute(
+        } => commands::supervise::execute(
             &pal.store,
             &pal.processes,
             &pal.transport,
@@ -77,6 +79,7 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
+    use crate::app_command::AppCommand;
     use crate::SessionNotFoundError;
     use crate::pal::local_console::{LocalConsoleFacade, MockLocalConsole};
     use crate::pal::processes::{MockProcesses, ProcessLiveness, ProcessesFacade};
@@ -96,8 +99,8 @@ mod tests {
         }
     }
 
-    fn input(command: Command) -> RunInput {
-        RunInput {
+    fn input(command: Command) -> Invocation {
+        Invocation {
             verbose: false,
             store_root: None,
             command,
@@ -132,7 +135,7 @@ mod tests {
                 supervisor_creation_time: 100,
                 pipe_name: "pipe".to_string(),
                 launch_directory: PathBuf::from("/work"),
-                command: vec!["app.exe".to_string()],
+                command: AppCommand::for_test(&["app.exe"]),
                 started_at_unix_ms: 1,
                 attached: false,
             }))

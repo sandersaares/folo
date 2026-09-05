@@ -14,7 +14,6 @@ use crate::pal::session_store::SessionStore;
 use crate::pal::transport::Transport;
 use crate::session_record::SessionRecord;
 use crate::trace::{Trace, trace};
-use crate::wall_clock::unix_now_ms;
 use crate::{
     CanonicalizeError, CurrentDirectoryError, InvalidSessionIdError, NoLiveSessionsError, Outcome,
     PalFailedError, PromptFailedError, SessionId,
@@ -27,6 +26,7 @@ pub(crate) fn execute<S, P, T, C>(
     transport: &T,
     console: &C,
     id: Option<SessionId>,
+    now_unix_ms: u64,
     trace: Trace,
 ) -> Result<Outcome, AppError>
 where
@@ -43,7 +43,7 @@ where
             );
             id
         }
-        None => resolve_resume_target(store, console, processes, trace)?,
+        None => resolve_resume_target(store, console, processes, now_unix_ms, trace)?,
     };
     // Read afresh even when the id came from the list printed a moment ago:
     // selection can block on the user, and an id is reusable once its session
@@ -70,6 +70,7 @@ fn resolve_resume_target<S, C, P>(
     store: &S,
     console: &C,
     processes: &P,
+    now_unix_ms: u64,
     trace: Trace,
 ) -> Result<SessionId, AppError>
 where
@@ -87,7 +88,7 @@ where
     match auto_detect(&live, &cwd, trace) {
         DetectOutcome::None => Err(NoLiveSessionsError::new().into()),
         DetectOutcome::Unique(id) => Ok(id),
-        DetectOutcome::NeedsSelection => prompt_for_session(console, &live, unix_now_ms()),
+        DetectOutcome::NeedsSelection => prompt_for_session(console, &live, now_unix_ms),
     }
 }
 
@@ -136,6 +137,11 @@ mod tests {
     use std::thread;
 
     use super::*;
+    use crate::app_command::AppCommand;
+
+    /// A reading of the clock with no structure of its own; the age column has
+    /// its own tests in `list_fmt`.
+    const SOME_NOW_MS: u64 = 60_000;
     use crate::pal::error::{PalError, PalErrorKind};
     use crate::pal::ids::RelayLeaseId;
     use crate::pal::local_console::{LocalConsoleFacade, MockLocalConsole};
@@ -159,7 +165,7 @@ mod tests {
                     supervisor_creation_time: 100,
                     pipe_name: name.to_string(),
                     launch_directory: PathBuf::from(format!("/nowhere/{name}")),
-                    command: vec!["app.exe".to_string()],
+                    command: AppCommand::for_test(&["app.exe"]),
                     started_at_unix_ms: 1,
                     attached: false,
                 })
@@ -182,6 +188,7 @@ mod tests {
             &transport,
             &console,
             None,
+            SOME_NOW_MS,
             Trace::default(),
         )
         .unwrap_err();
@@ -203,6 +210,7 @@ mod tests {
             &transport,
             &console,
             Some(id),
+            SOME_NOW_MS,
             Trace::default(),
         )
         .unwrap_err();
@@ -227,7 +235,7 @@ mod tests {
                     supervisor_creation_time: 100,
                     pipe_name: pipe.to_string(),
                     launch_directory,
-                    command: vec!["app.exe".to_string()],
+                    command: AppCommand::for_test(&["app.exe"]),
                     started_at_unix_ms: 1,
                     attached: false,
                 })
@@ -285,6 +293,7 @@ mod tests {
                 &transport,
                 &console,
                 None,
+                SOME_NOW_MS,
                 Trace::default(),
             )
             .unwrap();
@@ -313,6 +322,7 @@ mod tests {
             &transport,
             &console,
             None,
+            SOME_NOW_MS,
             Trace::default(),
         )
         .unwrap_err();
@@ -343,6 +353,7 @@ mod tests {
             &transport,
             &console,
             None,
+            SOME_NOW_MS,
             Trace::default(),
         )
         .unwrap_err();

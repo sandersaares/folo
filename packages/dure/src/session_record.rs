@@ -4,6 +4,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::app_command::AppCommand;
 use crate::session_id::SessionId;
 
 /// Identity of a supervisor process: pid plus creation time.
@@ -35,7 +36,7 @@ pub(crate) struct SessionRecord {
     /// Canonical absolute launch directory from `dure run`.
     pub launch_directory: PathBuf,
     /// Command argv executed directly, not through a shell.
-    pub command: Vec<String>,
+    pub command: AppCommand,
     /// Unix time in milliseconds when the session was published.
     pub started_at_unix_ms: u64,
     /// Whether the supervisor currently has a client connection.
@@ -104,7 +105,7 @@ mod tests {
             supervisor_creation_time: 99,
             pipe_name: r"\\.\pipe\dure-abc".to_string(),
             launch_directory: PathBuf::from(r"C:\work"),
-            command: vec!["copilot.exe".to_string()],
+            command: AppCommand::for_test(&["copilot.exe"]),
             started_at_unix_ms: 1,
             attached: false,
         }

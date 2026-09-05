@@ -3,6 +3,7 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 
+use crate::app_command::AppCommand;
 use crate::durability::LauncherTie;
 use crate::pal::error::PalError;
 use crate::pal::ids::{AppId, JobId, PtyId};
@@ -33,7 +34,7 @@ pub(crate) struct SupervisorSpawn {
 #[derive(Clone, Debug)]
 pub(crate) struct AppSpawn {
     /// Command argv.
-    pub command: Vec<String>,
+    pub command: AppCommand,
     /// Working directory and relative-path resolution root.
     pub launch_directory: PathBuf,
     /// Pseudoconsole the app should attach to.

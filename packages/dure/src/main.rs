@@ -63,7 +63,15 @@ fn main() -> ExitCode {
         }
     };
 
-    match run(&cli.into_input()) {
+    let invocation = match cli.into_invocation() {
+        Ok(invocation) => invocation,
+        Err(early_exit) => {
+            eprintln!("{}", early_exit.output);
+            return ExitCode::FAILURE;
+        }
+    };
+
+    match run(&invocation) {
         Ok(Outcome::Success) => ExitCode::SUCCESS,
         Ok(Outcome::AppExit(status)) => {
             if status == 0 {

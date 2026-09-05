@@ -1,25 +1,28 @@
 //! `dure run`.
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use ohno::AppError;
 
+use crate::app_command::AppCommand;
 use crate::attach::attach;
 use crate::constants::{CONNECT_TIMEOUT, STARTUP_TIMEOUT, SUPERVISOR_COMMAND};
 use crate::durability::LauncherTie;
-use crate::pal::error::PalErrorKind;
+use crate::invocation::Outcome;
+use crate::pal::error::{PalError, PalErrorKind};
+use crate::pal::ids::{ConnId, ListenerId};
 use crate::pal::local_console::LocalConsole;
-use crate::pal::processes::{Processes, SupervisorSpawn};
+use crate::pal::processes::{Processes, SupervisorSpawn, resolve_command_path};
 use crate::pal::session_store::SessionStore;
 use crate::pal::transport::Transport;
 use crate::path_display::display_path;
 use crate::protocol::Message;
 use crate::session_id::SessionId;
 use crate::trace::{Trace, trace};
-use crate::types::Outcome;
 use crate::{
     AttachFailedError, BreakawayDeniedError, CanonicalizeError, CurrentDirectoryError,
-    EmptyCommandError, NoConsoleError, PalFailedError, StartupFailedError, StoreError,
+    NoConsoleError, PalFailedError, StartupFailedError, StoreError,
 };
 
 /// Said when the supervisor confirmed a job that ends the session with its
@@ -48,7 +51,7 @@ pub(crate) fn execute<S, P, T, C>(
     processes: &P,
     transport: &T,
     console: &C,
-    command: Vec<String>,
+    command: &AppCommand,
     store_root: Option<PathBuf>,
     trace: Trace,
 ) -> Result<Outcome, AppError>
@@ -58,13 +61,10 @@ where
     T: Transport + Clone + Send + Sync + 'static,
     C: LocalConsole + Clone + Send + Sync + 'static,
 {
-    if command.is_empty() {
-        return Err(EmptyCommandError::new().into());
-    }
     if !console.has_console() {
         return Err(NoConsoleError::new().into());
     }
-    trace!(trace, "app to run: {}", command.join(" "));
+    trace!(trace, "app to run: {command}");
 
     let cwd = store
         .current_dir()
@@ -79,6 +79,11 @@ where
         "launch directory: {} (auto-detect will match a resume from here)",
         display_path(&launch_directory)
     );
+    trace!(
+        trace,
+        "app executable resolves to {}",
+        display_path(&resolve_command_path(command.exe(), &launch_directory))
+    );
 
     let nonce = processes.random_nonce();
     let startup_pipe = transport.pipe_name(&format!("startup-{nonce}"));
@@ -86,8 +91,12 @@ where
         trace,
         "listening on {startup_pipe} for the supervisor to report in"
     );
-    let listener = transport
-        .listen(&startup_pipe)
+    // Held in a guard so an unwind from anything below closes the listener and,
+    // once accepted, the startup connection. The supervisor reads that
+    // connection closing as the client giving up, so leaking it across an
+    // unwind would leave a session waiting for an attach that is never coming.
+    // Ref: docs/implementation.md, "Process split".
+    let mut startup = StartupChannel::listen(transport, &startup_pipe)
         .map_err(|_error| StartupFailedError::new())?;
 
     let exe = processes
@@ -105,14 +114,18 @@ where
         args.push(root.to_string_lossy().into_owned());
     }
     args.push("--".to_string());
-    args.extend(command);
+    args.extend(command.argv());
 
-    trace!(
-        trace,
-        "spawning the supervisor: {} {}",
-        display_path(&exe),
-        args.join(" ")
-    );
+    if trace.is_enabled() {
+        let mut spawn_line = vec![exe.to_string_lossy().into_owned()];
+        spawn_line.extend(args.iter().cloned());
+        trace!(
+            trace,
+            "spawning the supervisor: {}",
+            AppCommand::from_argv(spawn_line)
+                .map_or_else(String::new, |line| line.to_string())
+        );
+    }
     processes
         .spawn_supervisor(&SupervisorSpawn { exe, args })
         .map_err(|error| match error.kind() {
@@ -122,14 +135,9 @@ where
 
     // Initialization gets its own full deadline after this connection is
     // established.
-    let conn = match transport.accept_timeout(listener, CONNECT_TIMEOUT) {
-        Ok(conn) => conn,
-        Err(_error) => {
-            transport.close_listener(listener);
-            return Err(StartupFailedError::new().into());
-        }
-    };
-    transport.close_listener(listener);
+    let conn = startup
+        .accept(CONNECT_TIMEOUT)
+        .map_err(|_error| StartupFailedError::new())?;
 
     let response = transport.recv_timeout(conn, STARTUP_TIMEOUT);
     let Ok(Message::StartupOk {
@@ -137,11 +145,9 @@ where
         launcher_tie,
     }) = response
     else {
-        transport.disconnect(conn);
         return Err(StartupFailedError::new().into());
     };
     if transport.send(conn, &Message::StartupCommit).is_err() {
-        transport.disconnect(conn);
         return Err(StartupFailedError::new().into());
     }
     trace!(
@@ -160,9 +166,54 @@ where
     // still on its way, and holds a session whose app exits immediately open
     // until it arrives. So it stays up for as long as this run intends to
     // attach. Ref: docs/implementation.md, "Process split".
-    let outcome = attach_to(store, transport, console, session_id, trace);
-    transport.disconnect(conn);
-    outcome
+    attach_to(store, transport, console, session_id, trace)
+}
+
+/// The one-shot channel `run` gives the supervisor to report in on.
+///
+/// Owning it makes closing it unconditional. The supervisor treats this
+/// connection closing as the client no longer intending to attach, so an unwind
+/// that skipped the close would leave a session waiting forever for a client
+/// that has already gone. Ref: docs/implementation.md, "Process split".
+struct StartupChannel<'a, T: Transport> {
+    transport: &'a T,
+    listener: Option<ListenerId>,
+    conn: Option<ConnId>,
+}
+
+impl<'a, T: Transport> StartupChannel<'a, T> {
+    fn listen(transport: &'a T, pipe_name: &str) -> Result<Self, PalError> {
+        let listener = transport.listen(pipe_name)?;
+        Ok(Self {
+            transport,
+            listener: Some(listener),
+            conn: None,
+        })
+    }
+
+    /// Accepts the supervisor and stops listening for anyone else.
+    fn accept(&mut self, timeout: Duration) -> Result<ConnId, PalError> {
+        let listener = self
+            .listener
+            .take()
+            .ok_or_else(|| PalError::new(PalErrorKind::Other))?;
+        let accepted = self.transport.accept_timeout(listener, timeout);
+        self.transport.close_listener(listener);
+        let conn = accepted?;
+        self.conn = Some(conn);
+        Ok(conn)
+    }
+}
+
+impl<T: Transport> Drop for StartupChannel<'_, T> {
+    fn drop(&mut self) {
+        if let Some(listener) = self.listener.take() {
+            self.transport.close_listener(listener);
+        }
+        if let Some(conn) = self.conn.take() {
+            self.transport.disconnect(conn);
+        }
+    }
 }
 
 /// What to tell the user about a session that may not outlive its launcher.
@@ -217,27 +268,6 @@ mod tests {
     #[test]
     // Talks to the real operating system: the session store is a real directory.
     #[cfg_attr(miri, ignore)]
-    fn empty_command_fails() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let store = FsSessionStore::new(dir.path().to_path_buf());
-        let processes = MockProcesses::new();
-        let transport = MemoryTransport::new();
-        let console = LocalConsoleFacade::from_mock(MockLocalConsole::new());
-        execute(
-            &store,
-            &processes,
-            &transport,
-            &console,
-            Vec::new(),
-            None,
-            Trace::default(),
-        )
-        .unwrap_err();
-    }
-
-    #[test]
-    // Talks to the real operating system: the session store is a real directory.
-    #[cfg_attr(miri, ignore)]
     fn no_console_fails() {
         let dir = tempfile::TempDir::new().unwrap();
         let store = FsSessionStore::new(dir.path().to_path_buf());
@@ -251,7 +281,7 @@ mod tests {
             &processes,
             &transport,
             &console,
-            vec!["app.exe".to_string()],
+            &AppCommand::for_test(&["app.exe"]),
             None,
             Trace::default(),
         )
@@ -283,7 +313,7 @@ mod tests {
             &processes,
             &transport,
             &console,
-            vec!["app.exe".to_string()],
+            &AppCommand::for_test(&["app.exe"]),
             None,
             Trace::default(),
         )
@@ -316,7 +346,7 @@ mod tests {
             &processes,
             &transport,
             &console,
-            vec!["app.exe".to_string()],
+            &AppCommand::for_test(&["app.exe"]),
             None,
             Trace::default(),
         )
@@ -354,7 +384,7 @@ mod tests {
             &processes,
             &transport,
             &console,
-            vec!["app.exe".to_string()],
+            &AppCommand::for_test(&["app.exe"]),
             None,
             Trace::default(),
         )
@@ -401,7 +431,7 @@ mod tests {
             &processes,
             &transport,
             &console,
-            vec!["app.exe".to_string()],
+            &AppCommand::for_test(&["app.exe"]),
             None,
             Trace::default(),
         )
@@ -450,7 +480,7 @@ mod tests {
             &processes,
             &transport,
             &console,
-            vec!["app.exe".to_string()],
+            &AppCommand::for_test(&["app.exe"]),
             None,
             Trace::default(),
         )
@@ -502,7 +532,7 @@ mod tests {
             &processes,
             &transport,
             &console,
-            vec!["app.exe".to_string()],
+            &AppCommand::for_test(&["app.exe"]),
             None,
             Trace::default(),
         )
@@ -562,7 +592,7 @@ mod tests {
             &processes,
             &transport,
             &console,
-            vec!["app.exe".to_string()],
+            &AppCommand::for_test(&["app.exe"]),
             None,
             Trace::default(),
         )

@@ -114,6 +114,7 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
+    use crate::app_command::AppCommand;
 
     fn record(id: u32, dir: &str) -> SessionRecord {
         SessionRecord {
@@ -122,7 +123,7 @@ mod tests {
             supervisor_creation_time: 1,
             pipe_name: format!("pipe-{id}"),
             launch_directory: PathBuf::from(dir),
-            command: vec!["app.exe".to_string()],
+            command: AppCommand::for_test(&["app.exe"]),
             started_at_unix_ms: 1,
             attached: false,
         }

@@ -9,13 +9,14 @@ use std::path::PathBuf;
 use clap::error::ErrorKind;
 use clap::{Parser, Subcommand};
 
+use crate::app_command::AppCommand;
 use crate::constants::SUPERVISOR_COMMAND;
+use crate::invocation::{Command, Invocation};
 use crate::session_id::SessionId;
-use crate::types::{Command, RunInput};
 
 /// Clap-facing parser for the `dure` binary.
 ///
-/// Translates argv into [`RunInput`] so [`crate::run`] does not depend on clap.
+/// Translates argv into [`Invocation`] so [`crate::run`] does not depend on clap.
 #[derive(Debug, Parser)]
 #[command(
     name = "dure",
@@ -117,6 +118,13 @@ impl EarlyExit {
             status: if success { Ok(()) } else { Err(()) },
         }
     }
+
+    fn failure(message: &str) -> Self {
+        Self {
+            output: format!("error: {message}"),
+            status: Err(()),
+        }
+    }
 }
 
 impl Cli {
@@ -131,11 +139,21 @@ impl Cli {
         Self::try_parse_from(argv).map_err(|error| EarlyExit::from_clap(&error))
     }
 
-    /// Translates the parsed arguments into the [`RunInput`] the core logic consumes.
-    #[must_use]
-    pub fn into_input(self) -> RunInput {
+    /// Translates the parsed arguments into the [`Invocation`] the core logic consumes.
+    ///
+    /// This is where the argv shape becomes the values the rest of the crate
+    /// relies on, so a command that names nothing to run is refused here rather
+    /// than travelling as an argv that every later layer has to re-check.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`EarlyExit`] when a subcommand's arguments do not describe
+    /// something the tool can act on.
+    pub fn into_invocation(self) -> Result<Invocation, EarlyExit> {
         let command = match self.command {
-            CliCommand::Run { command } => Command::Run { command },
+            CliCommand::Run { command } => Command::Run {
+                command: app_command(command)?,
+            },
             CliCommand::Resume { id } => Command::Resume {
                 id: id.map(SessionId::new),
             },
@@ -150,15 +168,20 @@ impl Cli {
             } => Command::Supervisor {
                 startup_pipe,
                 launch_directory,
-                command,
+                command: app_command(command)?,
             },
         };
-        RunInput {
+        Ok(Invocation {
             verbose: self.verbose,
             store_root: self.store_root,
             command,
-        }
+        })
     }
+}
+
+fn app_command(argv: Vec<String>) -> Result<AppCommand, EarlyExit> {
+    AppCommand::from_argv(argv)
+        .ok_or_else(|| EarlyExit::failure("dure run requires a command to execute"))
 }
 
 #[cfg(test)]
@@ -166,8 +189,15 @@ impl Cli {
 mod tests {
     use super::*;
 
-    fn parse(args: &[&str]) -> RunInput {
-        Cli::from_args(&["dure"], args).unwrap().into_input()
+    fn parse(args: &[&str]) -> Invocation {
+        Cli::from_args(&["dure"], args)
+            .unwrap()
+            .into_invocation()
+            .unwrap()
+    }
+
+    fn command(argv: &[&str]) -> AppCommand {
+        AppCommand::from_argv(argv.iter().map(|arg| (*arg).to_string()).collect()).unwrap()
     }
 
     #[test]
@@ -176,7 +206,7 @@ mod tests {
         assert_eq!(
             input.command,
             Command::Run {
-                command: vec!["copilot.exe".to_string(), "--foo".to_string()],
+                command: command(&["copilot.exe", "--foo"]),
             }
         );
     }
@@ -269,6 +299,15 @@ mod tests {
     fn naming_no_command_is_a_failure() {
         let err = Cli::from_args(&["dure"], &[]).unwrap_err();
         assert!(err.status.is_err());
+    }
+
+    #[test]
+    fn run_refuses_an_argv_that_names_nothing_to_run() {
+        let exit = Cli::from_args(&["dure"], &["run", ""])
+            .unwrap()
+            .into_invocation()
+            .unwrap_err();
+        assert!(exit.status.is_err());
     }
 
     #[test]

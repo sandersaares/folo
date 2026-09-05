@@ -188,6 +188,7 @@ mod tests {
     use testing::with_watchdog_phases;
 
     use super::*;
+    use crate::app_command::AppCommand;
 
     #[test]
     fn publish_stall_reports_each_rearmed_publisher() {
@@ -208,7 +209,7 @@ mod tests {
                             supervisor_creation_time: owner.creation_time,
                             pipe_name: "pipe".to_string(),
                             launch_directory: PathBuf::from("/work"),
-                            command: vec!["app.exe".to_string()],
+                            command: AppCommand::for_test(&["app.exe"]),
                             started_at_unix_ms: 1,
                             attached,
                         })

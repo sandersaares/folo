@@ -23,37 +23,40 @@
 // platform stub (implementation.md, "Platform gate").
 #![cfg(windows)]
 
+mod app_command;
 mod attach;
 mod cli;
 mod commands;
 mod constants;
 mod detect;
+mod dispatch;
 mod durability;
 mod errors;
 mod gc;
+mod invocation;
 mod list_fmt;
 mod outbox;
 mod pal;
 mod path_display;
 mod protocol;
-mod run;
 mod session_id;
 mod session_record;
 mod supervisor;
 mod trace;
-mod types;
 mod wall_clock;
 
 // The binary and the integration tests are the only intended consumers, so the surface is
 // exported to reach them but not advertised as an API anyone may build on.
 #[doc(hidden)]
+pub use app_command::AppCommand;
+#[doc(hidden)]
 pub use cli::{Cli, EarlyExit};
 #[doc(hidden)]
-pub use run::run;
+pub use dispatch::run;
+#[doc(hidden)]
+pub use invocation::{Command, Invocation, Outcome};
 #[doc(hidden)]
 pub use session_id::SessionId;
-#[doc(hidden)]
-pub use types::{Command, Outcome, RunInput};
 
 // Helpers that exist only so integration tests can drive the Windows PAL, so
 // they are test infrastructure rather than product code. Compiled in the crate's
@@ -81,8 +84,9 @@ mod tests {
     assert_impl_all!(Cli: UnwindSafe, RefUnwindSafe);
     assert_impl_all!(EarlyExit: UnwindSafe, RefUnwindSafe);
     assert_impl_all!(SessionId: UnwindSafe, RefUnwindSafe);
+    assert_impl_all!(AppCommand: UnwindSafe, RefUnwindSafe);
     assert_impl_all!(Command: UnwindSafe, RefUnwindSafe);
-    assert_impl_all!(RunInput: UnwindSafe, RefUnwindSafe);
+    assert_impl_all!(Invocation: UnwindSafe, RefUnwindSafe);
     assert_impl_all!(Outcome: UnwindSafe, RefUnwindSafe);
     assert_impl_all!(test_support::ConsoleProcess: UnwindSafe, RefUnwindSafe);
 }

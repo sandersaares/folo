@@ -4,12 +4,13 @@ use std::path::PathBuf;
 
 use ohno::AppError;
 
+use crate::app_command::AppCommand;
+use crate::invocation::Outcome;
 use crate::pal::processes::Processes;
 use crate::pal::pseudoconsole::Pseudoconsole;
 use crate::pal::session_store::SessionStore;
 use crate::pal::transport::Transport;
 use crate::supervisor::run_supervisor;
-use crate::types::Outcome;
 
 /// Run the supervisor role until the app exits.
 pub(crate) fn execute<S, P, T, Y>(
@@ -19,7 +20,7 @@ pub(crate) fn execute<S, P, T, Y>(
     pty_host: &Y,
     startup_pipe: &str,
     launch_directory: PathBuf,
-    command: Vec<String>,
+    command: AppCommand,
 ) -> Result<Outcome, AppError>
 where
     S: SessionStore + Clone,
@@ -60,7 +61,7 @@ mod tests {
             &MemoryPseudoconsole::new(),
             "missing",
             PathBuf::from("/work"),
-            vec!["app.exe".to_string()],
+            AppCommand::from_argv(vec!["app.exe".to_string()]).unwrap(),
         )
         .unwrap_err();
         assert!(error.find_source::<StartupFailedError>().is_some());

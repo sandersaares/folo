@@ -266,6 +266,7 @@ mod tests {
     use testing::with_watchdog;
 
     use super::*;
+    use crate::app_command::AppCommand;
 
     fn store() -> (TempDir, FsSessionStore) {
         let dir = TempDir::new().unwrap();
@@ -280,7 +281,7 @@ mod tests {
             supervisor_creation_time: 1,
             pipe_name: "pipe".to_string(),
             launch_directory: dir.to_path_buf(),
-            command: vec!["app.exe".to_string()],
+            command: AppCommand::for_test(&["app.exe"]),
             started_at_unix_ms: 1,
             attached: false,
         }
@@ -548,7 +549,8 @@ mod tests {
         // A launch directory and a command line are as long as the user made them, and Windows
         // permits command lines far longer than any convenient buffer size.
         let mut record = record(id, &dir.path().join("d".repeat(9_000)));
-        record.command = vec!["app.exe".to_string(), "a".repeat(20_000)];
+        record.command = AppCommand::from_argv(vec!["app.exe".to_string(), "a".repeat(20_000)])
+            .expect("test argv names an executable");
         store.publish(&record).unwrap();
 
         // A record read short would parse as nobody's and be declined, stranding the id.

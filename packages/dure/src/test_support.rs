@@ -4,6 +4,7 @@ use std::path::Path;
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
 
+use crate::app_command::AppCommand;
 use crate::constants::{DEFAULT_PTY_COLS, DEFAULT_PTY_ROWS};
 use crate::pal::ids::{AppId, JobId, PtyId};
 use crate::pal::processes::{
@@ -71,9 +72,10 @@ impl ConsoleProcess {
                 rows: DEFAULT_PTY_ROWS,
             })
             .expect("create test pseudoconsole");
-        let mut command = Vec::with_capacity(args.len().saturating_add(1));
-        command.push(exe.to_string_lossy().into_owned());
-        command.extend(args.iter().cloned());
+        let mut argv = Vec::with_capacity(args.len().saturating_add(1));
+        argv.push(exe.to_string_lossy().into_owned());
+        argv.extend(args.iter().cloned());
+        let command = AppCommand::from_argv(argv).expect("test argv names an executable");
         let app = processes
             .spawn_app(&AppSpawn {
                 command,

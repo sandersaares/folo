@@ -7,6 +7,7 @@ use std::thread;
 
 use ohno::AppError;
 
+use crate::app_command::AppCommand;
 use crate::constants::{
     CONNECT_TIMEOUT, DEFAULT_PTY_COLS, DEFAULT_PTY_ROWS, MAX_CLIENT_BACKLOG_BYTES,
     MAX_OUTPUT_CHUNK_BYTES,
@@ -84,7 +85,7 @@ pub(crate) fn run_supervisor<P, S, T, C>(
     pty_host: &C,
     startup_pipe: &str,
     launch_directory: PathBuf,
-    command: Vec<String>,
+    command: AppCommand,
 ) -> Result<i32, AppError>
 where
     P: Processes,
@@ -168,7 +169,7 @@ fn initialize<P, S, T, C>(
     transport: &T,
     pty_host: &C,
     launch_directory: PathBuf,
-    command: Vec<String>,
+    command: AppCommand,
 ) -> Result<Initialized, AppError>
 where
     P: Processes,
@@ -927,7 +928,7 @@ mod tests {
                         &pty,
                         "startup",
                         PathBuf::from("/work"),
-                        vec!["app.exe".to_string()],
+                        AppCommand::for_test(&["app.exe"]),
                     )
                 }
             });
@@ -989,7 +990,7 @@ mod tests {
                         &pty,
                         "startup",
                         PathBuf::from("/work"),
-                        vec!["app.exe".to_string()],
+                        AppCommand::for_test(&["app.exe"]),
                     )
                 }
             });
@@ -1063,7 +1064,7 @@ mod tests {
                         &pty,
                         "startup",
                         PathBuf::from("/work"),
-                        vec!["app.exe".to_string()],
+                        AppCommand::for_test(&["app.exe"]),
                     )
                 }
             });
@@ -1127,7 +1128,7 @@ mod tests {
                         &pty,
                         "startup",
                         PathBuf::from("/work"),
-                        vec!["app.exe".to_string()],
+                        AppCommand::for_test(&["app.exe"]),
                     )
                 }
             });
@@ -1191,7 +1192,7 @@ mod tests {
                         &pty,
                         "startup",
                         PathBuf::from("/work"),
-                        vec!["app.exe".to_string()],
+                        AppCommand::for_test(&["app.exe"]),
                     )
                 }
             });
@@ -1233,7 +1234,7 @@ mod tests {
                         &pty,
                         "startup",
                         PathBuf::from("/work"),
-                        vec!["app.exe".to_string()],
+                        AppCommand::for_test(&["app.exe"]),
                     )
                 }
             });
@@ -1309,7 +1310,7 @@ mod tests {
                 &pty,
                 "startup",
                 PathBuf::from("/work"),
-                vec!["app.exe".to_string()],
+                AppCommand::for_test(&["app.exe"]),
             )
             .unwrap_err();
 
@@ -1350,7 +1351,7 @@ mod tests {
                         &pty,
                         "startup",
                         PathBuf::from("/work"),
-                        vec!["app.exe".to_string()],
+                        AppCommand::for_test(&["app.exe"]),
                     )
                 }
             });
@@ -1391,7 +1392,7 @@ mod tests {
                         &pty,
                         "startup",
                         PathBuf::from("/work"),
-                        vec!["app.exe".to_string()],
+                        AppCommand::for_test(&["app.exe"]),
                     )
                 }
             });
@@ -1435,7 +1436,7 @@ mod tests {
                         &pty,
                         "startup",
                         PathBuf::from("/work"),
-                        vec!["app.exe".to_string()],
+                        AppCommand::for_test(&["app.exe"]),
                     )
                 }
             });
@@ -1492,7 +1493,7 @@ mod tests {
                         &pty,
                         "startup",
                         PathBuf::from("/work"),
-                        vec!["app.exe".to_string()],
+                        AppCommand::for_test(&["app.exe"]),
                     )
                 }
             });
@@ -1745,7 +1746,7 @@ mod tests {
                     supervisor_creation_time: owner.creation_time,
                     pipe_name: "pipe".to_string(),
                     launch_directory: PathBuf::from("/work"),
-                    command: vec!["app.exe".to_string()],
+                    command: AppCommand::for_test(&["app.exe"]),
                     started_at_unix_ms: 1,
                     attached: false,
                 })
@@ -2022,7 +2023,7 @@ mod tests {
                 &transport,
                 &pty,
                 PathBuf::from("/work"),
-                vec!["app.exe".to_string()],
+                AppCommand::for_test(&["app.exe"]),
             )
             .err()
             .expect("record publication fails");
@@ -2043,7 +2044,7 @@ mod tests {
                 supervisor_creation_time: 100,
                 pipe_name: "pipe".to_string(),
                 launch_directory: PathBuf::from("/work"),
-                command: vec!["app.exe".to_string()],
+                command: AppCommand::for_test(&["app.exe"]),
                 started_at_unix_ms: 1,
                 attached: false,
             })
