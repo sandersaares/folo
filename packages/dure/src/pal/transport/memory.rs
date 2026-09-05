@@ -2,12 +2,18 @@
 //!
 //! Accept remains possible while another connection's `recv` is blocked, which
 //! is the steal-under-load contract without using the operating system.
+//!
+//! No wall clock is consulted. A test that wants a bounded wait to expire says
+//! so, on the connection or listener it means, and everything else waits until
+//! the thing it is waiting for happens or becomes impossible. A regression
+//! therefore fails an assertion straight away instead of spending a production
+//! timeout first (docs/testing.md, "No real time in tests").
 
 use std::collections::{HashMap, VecDeque};
 use std::fmt;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crate::pal::error::{PalError, PalErrorKind};
 use crate::pal::ids::{ConnId, ListenerId};
@@ -27,10 +33,29 @@ struct ConnState {
     /// Tests observe this under the connection map lock to prove that a
     /// particular send reached the intended blocking boundary.
     stalled_senders: usize,
+    /// The pipe this connection belongs to, which is how a test names it.
+    pipe: String,
 }
 
 struct ListenerState {
     pending: VecDeque<ConnId>,
+    /// The pipe this listener serves, which is how a test names it.
+    name: String,
+}
+
+/// Failures a test has asked this transport to produce, per pipe.
+///
+/// Injections are held against the pipe a test named rather than against the
+/// transport as a whole, so an unrelated accept, receive, or send on another
+/// session cannot consume the failure the scenario under test is waiting for.
+#[derive(Default)]
+struct Faults {
+    /// Timed accepts that report an expired wait.
+    expire_accepts: usize,
+    /// Timed receives that report an expired wait.
+    expire_recvs: usize,
+    /// Sends that fail without delivering.
+    fail_sends: usize,
 }
 
 struct Inner {
@@ -40,12 +65,8 @@ struct Inner {
     conns: Mutex<HashMap<ConnId, ConnState>>,
     /// Successful startup commits, for client-side protocol assertions.
     startup_commits: AtomicUsize,
-    /// Makes the next send fail so callers can exercise transport-failure handling.
-    fail_next_send: AtomicBool,
-    /// Makes the next accept report a timeout without waiting.
-    timeout_next_accept: AtomicBool,
-    /// Makes the next timed receive report a timeout once its connection is idle.
-    timeout_next_recv: AtomicBool,
+    /// Failures tests have asked for, keyed by the pipe they apply to.
+    faults: Mutex<HashMap<String, Faults>>,
     /// Guards the pending-connection predicate under `listener_state`. A
     /// `Condvar` may only ever be paired with one mutex, so the connection side
     /// has its own below.
@@ -75,9 +96,7 @@ impl MemoryTransport {
                 listener_state: Mutex::new(HashMap::new()),
                 conns: Mutex::new(HashMap::new()),
                 startup_commits: AtomicUsize::new(0),
-                fail_next_send: AtomicBool::new(false),
-                timeout_next_accept: AtomicBool::new(false),
-                timeout_next_recv: AtomicBool::new(false),
+                faults: Mutex::new(HashMap::new()),
                 listener_cond: Condvar::new(),
                 conn_cond: Condvar::new(),
             }),
@@ -148,65 +167,82 @@ impl MemoryTransport {
         self.inner.startup_commits.load(Ordering::SeqCst)
     }
 
-    /// Make the next send fail without delivering its message.
-    pub(crate) fn fail_next_send(&self) {
-        self.inner.fail_next_send.store(true, Ordering::SeqCst);
+    /// Make the next send on `pipe` fail without delivering its message.
+    pub(crate) fn fail_next_send(&self, pipe: &str) {
+        self.arm(pipe, |faults| {
+            faults.fail_sends = faults.fail_sends.saturating_add(1);
+        });
     }
 
-    pub(crate) fn timeout_next_accept(&self) {
-        self.inner.timeout_next_accept.store(true, Ordering::SeqCst);
+    /// Make the next timed accept on `pipe` report an expired wait.
+    pub(crate) fn expire_next_accept(&self, pipe: &str) {
+        self.arm(pipe, |faults| {
+            faults.expire_accepts = faults.expire_accepts.saturating_add(1);
+        });
     }
 
-    pub(crate) fn timeout_next_recv(&self) {
-        let _conns = self.inner.conns.lock().expect("conn map lock");
-        self.inner.timeout_next_recv.store(true, Ordering::SeqCst);
+    /// Make the next timed receive on `pipe` report an expired wait.
+    pub(crate) fn expire_next_recv(&self, pipe: &str) {
+        self.arm(pipe, |faults| {
+            faults.expire_recvs = faults.expire_recvs.saturating_add(1);
+        });
+    }
+
+    fn arm(&self, pipe: &str, change: impl FnOnce(&mut Faults)) {
+        change(
+            self.inner
+                .faults
+                .lock()
+                .expect("fault map lock")
+                .entry(pipe.to_string())
+                .or_default(),
+        );
+        self.inner.listener_cond.notify_all();
         self.inner.conn_cond.notify_all();
     }
 
-    fn accept_inner(
-        &self,
-        listener: ListenerId,
-        timeout: Option<Duration>,
-    ) -> Result<ConnId, PalError> {
-        if self.inner.timeout_next_accept.swap(false, Ordering::SeqCst) {
-            return Err(PalError::new(PalErrorKind::Timeout));
+    /// Consumes one armed failure of the kind `take` selects, if any.
+    fn take_fault(&self, pipe: &str, take: impl FnOnce(&mut Faults) -> &mut usize) -> bool {
+        let mut faults = self.inner.faults.lock().expect("fault map lock");
+        let Some(pipe_faults) = faults.get_mut(pipe) else {
+            return false;
+        };
+        let counter = take(pipe_faults);
+        if *counter == 0 {
+            return false;
         }
-        let started = Instant::now();
+        *counter = counter.saturating_sub(1);
+        true
+    }
+
+    /// `bounded` says whether the caller supplied a deadline, not how long it
+    /// is: only an injected expiry ends a bounded wait early here.
+    fn accept_inner(&self, listener: ListenerId, bounded: bool) -> Result<ConnId, PalError> {
         let mut state = self
             .inner
             .listener_state
             .lock()
             .expect("listener state lock");
         loop {
-            if let Some(listener_state) = state.get_mut(&listener)
-                && let Some(conn) = listener_state.pending.pop_front()
-            {
+            let Some(listener_state) = state.get_mut(&listener) else {
+                return Err(PalError::new(PalErrorKind::NotFound));
+            };
+            if let Some(conn) = listener_state.pending.pop_front() {
                 return Ok(conn);
             }
-            if !state.contains_key(&listener) {
-                return Err(PalError::new(PalErrorKind::NotFound));
+            let pipe = listener_state.name.clone();
+            if bounded && self.take_fault(&pipe, |faults| &mut faults.expire_accepts) {
+                return Err(PalError::new(PalErrorKind::Timeout));
             }
-            state = if let Some(timeout) = timeout {
-                let remaining = timeout.saturating_sub(started.elapsed());
-                if remaining.is_zero() {
-                    return Err(PalError::new(PalErrorKind::Timeout));
-                }
-                self.inner
-                    .listener_cond
-                    .wait_timeout(state, remaining)
-                    .expect("listener condvar")
-                    .0
-            } else {
-                self.inner
-                    .listener_cond
-                    .wait(state)
-                    .expect("listener condvar")
-            };
+            state = self
+                .inner
+                .listener_cond
+                .wait(state)
+                .expect("listener condvar");
         }
     }
 
-    fn recv_inner(&self, conn: ConnId, timeout: Option<Duration>) -> Result<Message, PalError> {
-        let started = Instant::now();
+    fn recv_inner(&self, conn: ConnId, bounded: bool) -> Result<Message, PalError> {
         let mut conns = self.inner.conns.lock().expect("conn map lock");
         loop {
             let Some(state) = conns.get_mut(&conn) else {
@@ -218,22 +254,11 @@ impl MemoryTransport {
             if state.closed {
                 return Err(PalError::new(PalErrorKind::Disconnected));
             }
-            if timeout.is_some() && self.inner.timeout_next_recv.swap(false, Ordering::SeqCst) {
+            let pipe = state.pipe.clone();
+            if bounded && self.take_fault(&pipe, |faults| &mut faults.expire_recvs) {
                 return Err(PalError::new(PalErrorKind::Timeout));
             }
-            conns = if let Some(timeout) = timeout {
-                let remaining = timeout.saturating_sub(started.elapsed());
-                if remaining.is_zero() {
-                    return Err(PalError::new(PalErrorKind::Timeout));
-                }
-                self.inner
-                    .conn_cond
-                    .wait_timeout(conns, remaining)
-                    .expect("conn condvar")
-                    .0
-            } else {
-                self.inner.conn_cond.wait(conns).expect("conn condvar")
-            };
+            conns = self.inner.conn_cond.wait(conns).expect("conn condvar");
         }
     }
 }
@@ -260,23 +285,27 @@ impl Transport for MemoryTransport {
                 id,
                 ListenerState {
                     pending: VecDeque::new(),
+                    name: name.to_string(),
                 },
             );
         Ok(id)
     }
 
     fn accept(&self, listener: ListenerId) -> Result<ConnId, PalError> {
-        self.accept_inner(listener, None)
+        self.accept_inner(listener, false)
     }
 
-    fn accept_timeout(&self, listener: ListenerId, timeout: Duration) -> Result<ConnId, PalError> {
-        self.accept_inner(listener, Some(timeout))
+    fn accept_timeout(&self, listener: ListenerId, _timeout: Duration) -> Result<ConnId, PalError> {
+        self.accept_inner(listener, true)
     }
 
     fn connect(&self, name: &str, _timeout: Duration) -> Result<ConnId, PalError> {
         let listeners = self.inner.listeners.lock().expect("listener map lock");
+        // No listener means nothing to connect to, which is not the same as a
+        // wait that was spent: `Timeout` is reserved for a deadline that
+        // actually elapsed. Ref: docs/implementation.md, "Transport".
         let Some(&listener) = listeners.get(name) else {
-            return Err(PalError::new(PalErrorKind::Timeout));
+            return Err(PalError::new(PalErrorKind::NotFound));
         };
         drop(listeners);
 
@@ -292,6 +321,7 @@ impl Transport for MemoryTransport {
                     closed: false,
                     stalled: false,
                     stalled_senders: 0,
+                    pipe: name.to_string(),
                 },
             );
             conns.insert(
@@ -302,6 +332,7 @@ impl Transport for MemoryTransport {
                     closed: false,
                     stalled: false,
                     stalled_senders: 0,
+                    pipe: name.to_string(),
                 },
             );
         }
@@ -322,10 +353,13 @@ impl Transport for MemoryTransport {
     }
 
     fn send(&self, conn: ConnId, message: &Message) -> Result<(), PalError> {
-        if self.inner.fail_next_send.swap(false, Ordering::SeqCst) {
-            return Err(PalError::new(PalErrorKind::Other));
-        }
         let mut conns = self.inner.conns.lock().expect("conn map lock");
+        if let Some(state) = conns.get(&conn) {
+            let pipe = state.pipe.clone();
+            if self.take_fault(&pipe, |faults| &mut faults.fail_sends) {
+                return Err(PalError::new(PalErrorKind::Other));
+            }
+        }
         let mut waiting = false;
         let peer = loop {
             let Some(state) = conns.get_mut(&conn) else {
@@ -367,11 +401,11 @@ impl Transport for MemoryTransport {
     }
 
     fn recv(&self, conn: ConnId) -> Result<Message, PalError> {
-        self.recv_inner(conn, None)
+        self.recv_inner(conn, false)
     }
 
-    fn recv_timeout(&self, conn: ConnId, timeout: Duration) -> Result<Message, PalError> {
-        self.recv_inner(conn, Some(timeout))
+    fn recv_timeout(&self, conn: ConnId, _timeout: Duration) -> Result<Message, PalError> {
+        self.recv_inner(conn, true)
     }
 
     fn disconnect(&self, conn: ConnId) {
@@ -421,28 +455,44 @@ mod tests {
 
     use super::*;
 
+    /// A duration this transport never reads; only an armed expiry ends a wait.
+    const ANY_TIMEOUT: Duration = Duration::ZERO;
+
     #[test]
-    fn accept_timeout_returns_timeout_when_no_connection_is_pending() {
+    fn an_armed_accept_expiry_reports_a_timeout() {
         let transport = MemoryTransport::new();
         let listener = transport.listen("session").unwrap();
+        transport.expire_next_accept("session");
 
         let error = transport
-            .accept_timeout(listener, Duration::ZERO)
+            .accept_timeout(listener, ANY_TIMEOUT)
             .unwrap_err();
 
         assert_eq!(error.kind(), PalErrorKind::Timeout);
     }
 
     #[test]
-    fn recv_timeout_returns_timeout_when_no_message_is_pending() {
+    fn an_armed_receive_expiry_reports_a_timeout() {
         let transport = MemoryTransport::new();
         let listener = transport.listen("session").unwrap();
-        let client = transport.connect("session", Duration::ZERO).unwrap();
+        let client = transport.connect("session", ANY_TIMEOUT).unwrap();
         _ = transport.accept(listener).unwrap();
+        transport.expire_next_recv("session");
 
-        let error = transport.recv_timeout(client, Duration::ZERO).unwrap_err();
+        let error = transport.recv_timeout(client, ANY_TIMEOUT).unwrap_err();
 
         assert_eq!(error.kind(), PalErrorKind::Timeout);
+    }
+
+    #[test]
+    fn connecting_to_a_pipe_nobody_serves_is_not_a_timeout() {
+        // A wait that was never spent must not be reported as one, or the
+        // command layer tells the user it exhausted a deadline it did not.
+        let error = MemoryTransport::new()
+            .connect("nobody", ANY_TIMEOUT)
+            .unwrap_err();
+
+        assert_eq!(error.kind(), PalErrorKind::NotFound);
     }
 
     #[test]

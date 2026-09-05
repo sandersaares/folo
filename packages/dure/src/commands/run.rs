@@ -376,7 +376,7 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let store = FsSessionStore::new(dir.path().to_path_buf());
         let transport = MemoryTransport::new();
-        transport.timeout_next_accept();
+        transport.expire_next_accept(&transport.pipe_name("startup-nonce"));
         let mut processes = MockProcesses::new();
         processes
             .expect_random_nonce()
@@ -405,10 +405,12 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.find_source::<StartupFailedError>().is_some());
+        // The startup channel is closed on the way out, so nothing is left for
+        // a supervisor that turns up late to connect to.
         let error = transport
             .connect(&transport.pipe_name("startup-nonce"), CONNECT_TIMEOUT)
             .unwrap_err();
-        assert_eq!(error.kind(), PalErrorKind::Timeout);
+        assert_eq!(error.kind(), PalErrorKind::NotFound);
     }
 
     #[test]
@@ -418,7 +420,7 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let store = FsSessionStore::new(dir.path().to_path_buf());
         let transport = MemoryTransport::new();
-        transport.timeout_next_recv();
+        transport.expire_next_recv(&transport.pipe_name("startup-nonce"));
         let mut processes = MockProcesses::new();
         processes
             .expect_random_nonce()
@@ -454,10 +456,12 @@ mod tests {
 
         assert!(error.find_source::<StartupFailedError>().is_some());
         assert_eq!(transport.startup_commit_count(), 0);
+        // The startup channel is closed on the way out, so nothing is left for
+        // a supervisor that turns up late to connect to.
         let error = transport
             .connect(&transport.pipe_name("startup-nonce"), CONNECT_TIMEOUT)
             .unwrap_err();
-        assert_eq!(error.kind(), PalErrorKind::Timeout);
+        assert_eq!(error.kind(), PalErrorKind::NotFound);
     }
 
     #[test]

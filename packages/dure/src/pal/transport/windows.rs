@@ -9,7 +9,8 @@ use std::time::{Duration, Instant};
 
 use windows::Win32::Foundation::{
     CloseHandle, ERROR_BROKEN_PIPE, ERROR_IO_PENDING, ERROR_NO_DATA, ERROR_PIPE_BUSY,
-    ERROR_PIPE_CONNECTED, ERROR_PIPE_NOT_CONNECTED, GetLastError, HANDLE, HLOCAL, LocalFree,
+    ERROR_PIPE_CONNECTED, ERROR_PIPE_NOT_CONNECTED, ERROR_SEM_TIMEOUT, GetLastError, HANDLE,
+    HLOCAL, LocalFree,
     WAIT_OBJECT_0, WAIT_TIMEOUT, WIN32_ERROR,
 };
 use windows::Win32::Security::Authorization::{
@@ -22,7 +23,7 @@ use windows::Win32::Security::{
 use windows::Win32::Storage::FileSystem::{
     CreateFileW, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED, FILE_FLAGS_AND_ATTRIBUTES,
     FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_SHARE_NONE, OPEN_EXISTING, PIPE_ACCESS_DUPLEX,
-    ReadFile, WriteFile,
+    ReadFile, SECURITY_IDENTIFICATION, SECURITY_SQOS_PRESENT, WriteFile,
 };
 use windows::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
 use windows::Win32::System::Pipes::{
@@ -41,8 +42,8 @@ use crate::pal::transport::Transport;
 use crate::protocol::{Message, decode_payload, encode, payload_len_ok};
 
 struct PipeTable {
-    listeners: HashMap<u64, Listener>,
-    conns: HashMap<u64, Conn>,
+    listeners: HashMap<ListenerId, Listener>,
+    conns: HashMap<ConnId, Conn>,
 }
 
 struct Listener {
@@ -493,7 +494,7 @@ fn conn_handle(conn: ConnId) -> Result<Arc<PipeHandle>, PalError> {
         .lock()
         .expect("the pipe table is only inserted into and looked up, never held across a panic")
         .conns
-        .get(&conn.0)
+        .get(&conn)
         .map(|conn| Arc::clone(&conn.handle))
         .ok_or_else(|| PalError::new(PalErrorKind::NotFound))
 }
@@ -503,7 +504,7 @@ fn conn_write(conn: ConnId) -> Result<(Arc<PipeHandle>, Arc<Mutex<()>>), PalErro
         .lock()
         .expect("the pipe table is only inserted into and looked up, never held across a panic")
         .conns
-        .get(&conn.0)
+        .get(&conn)
         .map(|conn| (Arc::clone(&conn.handle), Arc::clone(&conn.write)))
         .ok_or_else(|| PalError::new(PalErrorKind::NotFound))
 }
@@ -514,29 +515,25 @@ fn accept_connection(listener: ListenerId, timeout: Option<Duration>) -> Result<
         let table = table().lock().expect("the pipe table is only inserted into and looked up, never held across a panic");
         let listener = table
             .listeners
-            .get(&listener.0)
+            .get(&listener)
             .ok_or_else(|| PalError::new(PalErrorKind::NotFound))?;
         (Arc::clone(&listener.pending), listener.name.clone())
     };
     let connected = connect_instance(&pending, deadline);
-    // After each accept, create the next server instance so another client
-    // can connect while this connection is still live (steal). If
-    // close_listener already removed the listener, this handle must not be
+    let mut table = table()
+        .lock()
+        .expect("the pipe table is only inserted into and looked up, never held across a panic");
+    // If close_listener already removed the listener, this handle must not be
     // published; dropping the last reference closes it.
-    let mut table = table().lock().expect("the pipe table is only inserted into and looked up, never held across a panic");
-    if !table.listeners.contains_key(&listener.0) {
+    if !table.listeners.contains_key(&listener) {
         return Err(PalError::new(PalErrorKind::Disconnected));
     }
     connected?;
-    let next = create_instance(&name, false)?;
-    {
-        let Some(listener_state) = table.listeners.get_mut(&listener.0) else {
-            close(next);
-            return Err(PalError::new(PalErrorKind::Disconnected));
-        };
-        listener_state.pending = PipeHandle::new(next);
-    }
-    let id = next_id();
+    // Published before the next listener instance is created. A client already
+    // owns the other end of this pipe and may have sent its `Attach`, so the
+    // handle has to become a connection someone can answer on rather than sit
+    // in the listener slot describing a pipe nobody is listening on.
+    let id = ConnId(next_id());
     table.conns.insert(
         id,
         Conn {
@@ -544,7 +541,25 @@ fn accept_connection(listener: ListenerId, timeout: Option<Duration>) -> Result<
             write: Arc::new(Mutex::new(())),
         },
     );
-    Ok(ConnId(id))
+    // After each accept, create the next server instance so another client
+    // can connect while this connection is still live (steal).
+    let next = match create_instance(&name, false) {
+        Ok(next) => next,
+        Err(error) => {
+            // Nothing will serve this connection, so it is closed rather than
+            // left for a client to wait on: a dropped pipe tells that client to
+            // try again, where silence would hold it until teardown.
+            table.conns.remove(&id);
+            return Err(error);
+        }
+    };
+    let Some(listener_state) = table.listeners.get_mut(&listener) else {
+        close(next);
+        table.conns.remove(&id);
+        return Err(PalError::new(PalErrorKind::Disconnected));
+    };
+    listener_state.pending = PipeHandle::new(next);
+    Ok(id)
 }
 
 fn recv_message(conn: ConnId, timeout: Option<Duration>) -> Result<Message, PalError> {
@@ -571,7 +586,7 @@ impl Transport for BuildTargetTransport {
     fn listen(&self, name: &str) -> Result<ListenerId, PalError> {
         let name = wide_z(name);
         let pending = create_instance(&name, true)?;
-        let id = next_id();
+        let id = ListenerId(next_id());
         table().lock().expect("the pipe table is only inserted into and looked up, never held across a panic").listeners.insert(
             id,
             Listener {
@@ -579,7 +594,7 @@ impl Transport for BuildTargetTransport {
                 pending: PipeHandle::new(pending),
             },
         );
-        Ok(ListenerId(id))
+        Ok(id)
     }
 
     fn accept(&self, listener: ListenerId) -> Result<ConnId, PalError> {
@@ -611,10 +626,23 @@ impl Transport for BuildTargetTransport {
             // retain the pointer after it returns.
             let ready = unsafe { WaitNamedPipeW(PCWSTR(name.as_ptr()), timeout_ms) };
             if !ready.as_bool() {
-                return Err(PalError::new(PalErrorKind::Timeout));
+                // SAFETY: immediately after the failed WaitNamedPipeW.
+                let err = unsafe { GetLastError() };
+                // The wait fails both when it was spent and when there is no
+                // such pipe at all, and only the first is a timeout: the
+                // command layer turns that into "timed out connecting", which
+                // is the wrong thing to tell someone whose session is gone.
+                if err == ERROR_SEM_TIMEOUT {
+                    // Whether the caller's own deadline is spent is decided by
+                    // the loop, which retries while it has time left.
+                    continue;
+                }
+                return Err(PalError::new(PalErrorKind::NotFound));
             }
             // SAFETY: WaitNamedPipeW reported an instance. CreateFile opens a new
-            // client handle we own. FILE_FLAG_OVERLAPPED matches the server end.
+            // client handle we own. FILE_FLAG_OVERLAPPED matches the server end,
+            // and the SQOS flags cap what the server on the other end may do
+            // with this client's identity.
             let handle = unsafe {
                 CreateFileW(
                     PCWSTR(name.as_ptr()),
@@ -622,7 +650,7 @@ impl Transport for BuildTargetTransport {
                     FILE_SHARE_NONE,
                     None,
                     OPEN_EXISTING,
-                    FILE_FLAG_OVERLAPPED,
+                    FILE_FLAG_OVERLAPPED | SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION,
                     None,
                 )
             };
@@ -642,7 +670,7 @@ impl Transport for BuildTargetTransport {
                     continue;
                 }
             };
-            let id = next_id();
+            let id = ConnId(next_id());
             table().lock().expect("the pipe table is only inserted into and looked up, never held across a panic").conns.insert(
                 id,
                 Conn {
@@ -650,7 +678,7 @@ impl Transport for BuildTargetTransport {
                     write: Arc::new(Mutex::new(())),
                 },
             );
-            return Ok(ConnId(id));
+            return Ok(id);
         }
     }
 
@@ -670,7 +698,7 @@ impl Transport for BuildTargetTransport {
     }
 
     fn disconnect(&self, conn: ConnId) {
-        let removed = table().lock().expect("the pipe table is only inserted into and looked up, never held across a panic").conns.remove(&conn.0);
+        let removed = table().lock().expect("the pipe table is only inserted into and looked up, never held across a panic").conns.remove(&conn);
         if let Some(conn) = removed {
             // Aborts a read or write another thread is blocked in, so it fails
             // and releases its reference; the handle closes with the last one.
@@ -683,7 +711,7 @@ impl Transport for BuildTargetTransport {
             .lock()
             .expect("the pipe table is only inserted into and looked up, never held across a panic")
             .listeners
-            .remove(&listener.0);
+            .remove(&listener);
         if let Some(listener) = removed {
             // Aborts the connect an `accept` is blocked in; see `disconnect`.
             listener.pending.cancel();

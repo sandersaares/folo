@@ -1258,7 +1258,7 @@ mod tests {
                 RejectedStartup::Message(acknowledgement) => {
                     transport.send(startup_conn, &acknowledgement).unwrap();
                 }
-                RejectedStartup::Timeout => transport.timeout_next_recv(),
+                RejectedStartup::Timeout => transport.expire_next_recv("startup"),
             }
 
             phase_reporter.report("waiting for startup rollback");
@@ -1298,7 +1298,7 @@ mod tests {
     fn failure_to_send_startup_ok_rolls_back() {
         with_watchdog_phases("running the rejected startup", |_phase_reporter| {
             let transport = MemoryTransport::new();
-            transport.fail_next_send();
+            transport.fail_next_send("startup");
             let pty = MemoryPseudoconsole::new();
             let store = MemorySessionStore::new();
             let exit = Arc::new((Mutex::new(true), Condvar::new()));
