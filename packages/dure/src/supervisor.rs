@@ -72,6 +72,21 @@ impl<P: Processes, S: SessionStore, T: Transport, C: Pseudoconsole> Drop
     }
 }
 
+/// What the supervisor is being asked to run.
+///
+/// One value rather than three parameters because these travel together and
+/// mean nothing apart: they are the session, as distinct from the platform it
+/// runs on.
+pub(crate) struct SessionSpec {
+    /// Canonical directory the app is started in, and the key auto-detect
+    /// matches a later `resume` against.
+    pub launch_directory: PathBuf,
+    /// Executable and arguments the session runs.
+    pub command: AppCommand,
+    /// When the session was published, for the age `list` renders.
+    pub started_at_unix_ms: u64,
+}
+
 /// Initialize the session, publish the record, then relay until the app exits.
 // Blocking supervisor entry point. A mutation that returns before serving leaves
 // the test's client waiting on a session that never appears, and watchdogs are
@@ -83,9 +98,7 @@ pub(crate) fn run_supervisor<P, S, T, C>(
     transport: &T,
     pty_host: &C,
     startup_pipe: &str,
-    launch_directory: PathBuf,
-    command: AppCommand,
-    started_at_unix_ms: u64,
+    spec: SessionSpec,
 ) -> Result<i32, AppError>
 where
     P: Processes,
@@ -109,16 +122,7 @@ where
         committed: false,
     };
 
-    let result = initialize(
-        &mut guard,
-        processes,
-        store,
-        transport,
-        pty_host,
-        launch_directory,
-        command,
-        started_at_unix_ms,
-    );
+    let result = initialize(&mut guard, processes, store, transport, pty_host, spec);
 
     let initialized = match result {
         Ok(initialized) => initialized,
@@ -169,9 +173,7 @@ fn initialize<P, S, T, C>(
     store: &S,
     transport: &T,
     pty_host: &C,
-    launch_directory: PathBuf,
-    command: AppCommand,
-    started_at_unix_ms: u64,
+    spec: SessionSpec,
 ) -> Result<Initialized, AppError>
 where
     P: Processes,
@@ -191,8 +193,8 @@ where
 
     let app = processes
         .spawn_app(&AppSpawn {
-            command: command.clone(),
-            launch_directory: launch_directory.clone(),
+            command: spec.command.clone(),
+            launch_directory: spec.launch_directory.clone(),
             pty,
             job,
         })
@@ -217,9 +219,9 @@ where
         id: session_id,
         supervisor: identity,
         pipe_name,
-        launch_directory,
-        command,
-        started_at_unix_ms,
+        launch_directory: spec.launch_directory,
+        command: spec.command,
+        started_at_unix_ms: spec.started_at_unix_ms,
         attached: false,
     };
     store.publish(&record).map_err(StoreError::caused_by)?;
@@ -854,6 +856,16 @@ mod tests {
     /// own tests in `list_fmt`.
     const SOME_STARTED_AT_MS: u64 = 1;
 
+    /// An ordinary session to run, for tests about something other than what
+    /// the session happens to be.
+    fn sample_spec() -> SessionSpec {
+        SessionSpec {
+            launch_directory: PathBuf::from("/work"),
+            command: AppCommand::for_test(&["app.exe"]),
+            started_at_unix_ms: SOME_STARTED_AT_MS,
+        }
+    }
+
     /// Arbitrary nonzero status the mock app exits with, so a test can tell a
     /// forwarded status from a defaulted one.
     const SAMPLE_APP_EXIT: i32 = 7;
@@ -962,9 +974,7 @@ mod tests {
                         &transport,
                         &pty,
                         "startup",
-                        PathBuf::from("/work"),
-                        AppCommand::for_test(&["app.exe"]),
-                        SOME_STARTED_AT_MS,
+                        sample_spec(),
                     )
                 }
             });
@@ -1023,9 +1033,7 @@ mod tests {
                         &transport,
                         &pty,
                         "startup",
-                        PathBuf::from("/work"),
-                        AppCommand::for_test(&["app.exe"]),
-                        SOME_STARTED_AT_MS,
+                        sample_spec(),
                     )
                 }
             });
@@ -1094,9 +1102,7 @@ mod tests {
                         &transport,
                         &pty,
                         "startup",
-                        PathBuf::from("/work"),
-                        AppCommand::for_test(&["app.exe"]),
-                        SOME_STARTED_AT_MS,
+                        sample_spec(),
                     )
                 }
             });
@@ -1157,9 +1163,7 @@ mod tests {
                         &transport,
                         &pty,
                         "startup",
-                        PathBuf::from("/work"),
-                        AppCommand::for_test(&["app.exe"]),
-                        SOME_STARTED_AT_MS,
+                        sample_spec(),
                     )
                 }
             });
@@ -1220,9 +1224,7 @@ mod tests {
                         &transport,
                         &pty,
                         "startup",
-                        PathBuf::from("/work"),
-                        AppCommand::for_test(&["app.exe"]),
-                        SOME_STARTED_AT_MS,
+                        sample_spec(),
                     )
                 }
             });
@@ -1263,9 +1265,7 @@ mod tests {
                         &transport,
                         &pty,
                         "startup",
-                        PathBuf::from("/work"),
-                        AppCommand::for_test(&["app.exe"]),
-                        SOME_STARTED_AT_MS,
+                        sample_spec(),
                     )
                 }
             });
@@ -1332,9 +1332,7 @@ mod tests {
                 &transport,
                 &pty,
                 "startup",
-                PathBuf::from("/work"),
-                AppCommand::for_test(&["app.exe"]),
-                SOME_STARTED_AT_MS,
+                sample_spec(),
             )
             .unwrap_err();
 
@@ -1374,9 +1372,7 @@ mod tests {
                         &transport,
                         &pty,
                         "startup",
-                        PathBuf::from("/work"),
-                        AppCommand::for_test(&["app.exe"]),
-                        SOME_STARTED_AT_MS,
+                        sample_spec(),
                     )
                 }
             });
@@ -1411,9 +1407,7 @@ mod tests {
                         &transport,
                         &pty,
                         "startup",
-                        PathBuf::from("/work"),
-                        AppCommand::for_test(&["app.exe"]),
-                        SOME_STARTED_AT_MS,
+                        sample_spec(),
                     )
                 }
             });
@@ -1454,9 +1448,7 @@ mod tests {
                         &transport,
                         &pty,
                         "startup",
-                        PathBuf::from("/work"),
-                        AppCommand::for_test(&["app.exe"]),
-                        SOME_STARTED_AT_MS,
+                        sample_spec(),
                     )
                 }
             });
@@ -1510,9 +1502,7 @@ mod tests {
                         &transport,
                         &pty,
                         "startup",
-                        PathBuf::from("/work"),
-                        AppCommand::for_test(&["app.exe"]),
-                        SOME_STARTED_AT_MS,
+                        sample_spec(),
                     )
                 }
             });
@@ -2044,9 +2034,7 @@ mod tests {
                 &store,
                 &transport,
                 &pty,
-                PathBuf::from("/work"),
-                AppCommand::for_test(&["app.exe"]),
-                SOME_STARTED_AT_MS,
+                sample_spec(),
             )
             .err()
             .expect("record publication fails");

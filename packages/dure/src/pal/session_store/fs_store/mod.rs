@@ -12,11 +12,14 @@ use std::env;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::SessionId;
 use crate::pal::error::{PalError, PalErrorKind};
 use crate::pal::session_store::SessionStore;
-use crate::pal::session_store::fs_store::windows::{RecordFile, move_file_replace};
+use crate::pal::session_store::fs_store::windows::{
+    RecordFile, move_file_no_replace, move_file_replace,
+};
 use crate::pal::session_store::stored::StoredSession;
 use crate::session_record::{ProcessIdentity, SessionRecord};
 
@@ -56,6 +59,40 @@ impl FsSessionStore {
 
     fn record_path(&self, id: SessionId) -> PathBuf {
         self.root.join(format!("{}.json", id.get()))
+    }
+
+    /// Where a claim is assembled before it is given an id's name.
+    ///
+    /// The name carries the process building it and a counter unique within
+    /// that process, so no two allocations share a staging file. The extension
+    /// is one no reader looks at, so a half-written claim is never mistaken for
+    /// a session.
+    fn staging_path(&self, owner: &ProcessIdentity) -> PathBuf {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let attempt = NEXT.fetch_add(1, Ordering::Relaxed);
+        self.root.join(format!("{}-{attempt}.claim", owner.pid))
+    }
+
+    /// Gives the staged claim the name of the smallest id it can take.
+    ///
+    /// Installing fails rather than replaces when the name is taken, so an id
+    /// another process claimed first is simply the next one tried.
+    fn install_claim(&self, staging: &Path) -> Result<SessionId, PalError> {
+        let mut n: u32 = 1;
+        loop {
+            let Some(id) = SessionId::from_u32(n) else {
+                return Err(PalError::new(PalErrorKind::Other));
+            };
+            match move_file_no_replace(staging, &self.record_path(id)) {
+                Ok(()) => return Ok(id),
+                Err(error) if is_id_taken(&error) => {
+                    n = n
+                        .checked_add(1)
+                        .ok_or_else(|| PalError::new(PalErrorKind::Other))?;
+                }
+                Err(error) => return Err(PalError::from_io(error)),
+            }
+        }
     }
 
     /// Every readable record file, paired with the id its name encodes.
@@ -126,37 +163,20 @@ impl SessionStore for FsSessionStore {
                 )
             },
         )?;
-        let mut n: u32 = 1;
-        loop {
-            let Some(id) = SessionId::from_u32(n) else {
-                return Err(PalError::new(PalErrorKind::Other));
-            };
-            let path = self.record_path(id);
-            // Exclusive create of `{id}.json` is the claim, and the claim names
-            // the process making it. `read` and `list` report a claimed id as
-            // absent, while `gc` reaps one whose owner died before publishing.
-            match OpenOptions::new().write(true).create_new(true).open(&path) {
-                Ok(mut file) => {
-                    return write_claim(&mut file, &claim).map_or_else(
-                        |error| {
-                            // A claim nobody owns would occupy the id forever.
-                            drop(file);
-                            _ = fs::remove_file(&path);
-                            Err(PalError::from_io(error))
-                        },
-                        |()| Ok(id),
-                    );
-                }
-                Err(error) => {
-                    if !is_id_taken(&error) {
-                        return Err(PalError::from_io(error));
-                    }
-                    n = n
-                        .checked_add(1)
-                        .ok_or_else(|| PalError::new(PalErrorKind::Other))?;
-                }
-            }
+        // Built under a name nobody looks for, so the claim is complete on disk
+        // before it is given the name that means "this id is taken". A claim
+        // that named nobody could never be proved abandoned, and its id would
+        // stay occupied for the rest of the logon session.
+        // Ref: docs/session-store.md, "Claimed and published".
+        let staging = self.staging_path(owner);
+        write_new_file(&staging, &claim).map_err(PalError::from_io)?;
+        let installed = self.install_claim(&staging);
+        if installed.is_err() {
+            // A staging file nobody installs is this call's to remove; leaving
+            // it would litter the store with files no reader understands.
+            _ = fs::remove_file(&staging);
         }
+        installed
     }
 
     fn publish(&self, record: &SessionRecord) -> Result<(), PalError> {
@@ -256,7 +276,7 @@ fn is_absent(error: &io::Error) -> bool {
     matches!(error.kind(), io::ErrorKind::NotFound)
 }
 
-/// Whether an exclusive-create failure means the id is already reserved.
+/// Whether a failed install means the id is already taken.
 ///
 /// Any other failure is a filesystem fault: treating it as a taken id would
 /// retry the same fault against every remaining id in turn.
@@ -264,9 +284,13 @@ fn is_id_taken(error: &io::Error) -> bool {
     error.kind() == io::ErrorKind::AlreadyExists
 }
 
-/// Writes and flushes a claim so it is durable before the id is handed out.
-fn write_claim(file: &mut File, claim: &[u8]) -> io::Result<()> {
-    file.write_all(claim)?;
+/// Writes `content` to a file that must not already exist, and flushes it.
+///
+/// Flushed before returning so that whatever is given this file's name next is
+/// backed by content that has reached the disk.
+fn write_new_file(path: &Path, content: &[u8]) -> io::Result<()> {
+    let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
+    file.write_all(content)?;
     file.sync_all()
 }
 
@@ -275,6 +299,7 @@ fn write_claim(file: &mut File, claim: &[u8]) -> io::Result<()> {
 mod tests {
     use std::collections::HashSet;
     use std::path::Path;
+    use std::sync::{Arc, Barrier};
     use std::{iter, thread};
 
     use tempfile::TempDir;
@@ -447,24 +472,69 @@ mod tests {
     #[test]
     // Talks to the real operating system: the session store is a real directory.
     #[cfg_attr(miri, ignore)]
+    fn a_claimed_id_is_readable_as_a_claim_the_moment_it_exists() {
+        // The point of building a claim elsewhere and installing it under the
+        // id's name is that the name never exists without its owner behind it.
+        // A claim that named nobody could not be proved abandoned, so its id
+        // would stay taken for the rest of the logon session.
+        let (dir, store) = store();
+        let owner = ProcessIdentity::for_test(1);
+        let id = store.allocate_id(&owner).unwrap();
+
+        let raw = fs::read(dir.path().join(format!("{}.json", id.get()))).unwrap();
+        assert_eq!(
+            parse_stored(&raw).unwrap(),
+            StoredSession::Reserved { owner }
+        );
+        assert_eq!(store.list_reservations().unwrap(), vec![(id, owner)]);
+    }
+
+    #[test]
+    // Talks to the real operating system: the session store is a real directory.
+    #[cfg_attr(miri, ignore)]
+    fn allocating_leaves_no_staging_file_behind() {
+        let (dir, store) = store();
+        _ = store.allocate_id(&ProcessIdentity::for_test(1)).unwrap();
+
+        // A file with no id for a name is one no reader understands, so none
+        // may be left in the store.
+        let leftovers: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .filter(|name| !name.to_string_lossy().ends_with(".json"))
+            .collect();
+        assert!(leftovers.is_empty(), "left behind {leftovers:?}");
+    }
+
+    #[test]
+    // Talks to the real operating system: the session store is a real directory.
+    #[cfg_attr(miri, ignore)]
     fn concurrent_allocations_are_unique() {
         with_watchdog(|| {
+            const WORKERS: usize = 8;
+
             let dir = TempDir::new().unwrap();
             let root = dir.path().to_path_buf();
+            // Released together, so the allocations overlap. Started one at a
+            // time, the first could finish before the last began and the test
+            // would prove only that ids differ in sequence.
+            let start = Arc::new(Barrier::new(WORKERS));
             let threads: Vec<_> = iter::repeat_with(|| {
                 let root = root.clone();
+                let start = Arc::clone(&start);
                 thread::spawn(move || {
                     let store = FsSessionStore::new(root);
+                    start.wait();
                     store.allocate_id(&ProcessIdentity::for_test(1)).unwrap()
                 })
             })
-            .take(8)
+            .take(WORKERS)
             .collect();
             let mut ids = HashSet::new();
             for handle in threads {
                 assert!(ids.insert(handle.join().unwrap().get()));
             }
-            assert_eq!(ids.len(), 8);
+            assert_eq!(ids.len(), WORKERS);
         });
     }
 

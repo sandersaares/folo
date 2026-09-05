@@ -4,6 +4,7 @@ use ohno::AppError;
 
 use crate::pal::Pal;
 use crate::path_display::display_path;
+use crate::supervisor::SessionSpec;
 use crate::trace::{Trace, trace};
 use crate::wall_clock::unix_now_ms;
 use crate::{Command, Invocation, Outcome, PalFailedError, commands};
@@ -66,9 +67,11 @@ pub(crate) fn dispatch(input: &Invocation, pal: &Pal) -> Result<Outcome, AppErro
             &pal.transport,
             &pal.pty,
             startup_pipe,
-            launch_directory.clone(),
-            command.clone(),
-            unix_now_ms(),
+            SessionSpec {
+                launch_directory: launch_directory.clone(),
+                command: command.clone(),
+                started_at_unix_ms: unix_now_ms(),
+            },
         ),
     }
 }
