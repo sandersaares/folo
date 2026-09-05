@@ -54,7 +54,7 @@ fn row(session: &SessionRecord, now_unix_ms: u64) -> [String; 6] {
     [
         session.id.to_string(),
         if session.attached { "yes" } else { "no" }.to_string(),
-        session.supervisor_pid.to_string(),
+        session.supervisor.pid.to_string(),
         format_age(session.started_at_unix_ms, now_unix_ms),
         printable(&display_path(&session.launch_directory)),
         session.command.to_string(),
@@ -150,7 +150,8 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
-    use crate::AppCommand;
+    use crate::session_record::ProcessIdentity;
+    use crate::{AppCommand, SessionId};
 
     /// Sessions in these tests start at the epoch and are read at a fixed
     /// offset, so ages are chosen per test rather than inherited from a clock.
@@ -159,11 +160,18 @@ mod tests {
     /// An age with no interesting structure, for tests about other columns.
     const SOME_AGE_MS: u64 = 5 * 1000;
 
-    fn session(id: u32, directory: &str, command: &str) -> SessionRecord {
+    /// An id for a fixture. Positive because every session id is.
+    fn session_id(raw: u32) -> SessionId {
+        SessionId::from_u32(raw).expect("fixture ids are positive")
+    }
+
+    fn session(id: SessionId, directory: &str, command: &str) -> SessionRecord {
         SessionRecord {
             id,
-            supervisor_pid: 99,
-            supervisor_creation_time: 1,
+            supervisor: ProcessIdentity {
+                pid: 99,
+                creation_time: 1,
+            },
             pipe_name: "pipe".to_string(),
             launch_directory: PathBuf::from(directory),
             command: AppCommand::for_test(&[command]),
@@ -181,7 +189,7 @@ mod tests {
 
     #[test]
     fn includes_id_directory_and_command() {
-        let mut only = session(4, "/work", "copilot.exe");
+        let mut only = session(session_id(4), "/work", "copilot.exe");
         only.command = AppCommand::for_test(&["copilot.exe", "--foo"]);
         let text = format_list(&[only], SOME_AGE_MS);
         assert!(text.contains('4'));
@@ -193,7 +201,10 @@ mod tests {
 
     #[test]
     fn a_heading_starts_where_the_cell_it_labels_starts() {
-        let text = format_list(&[session(1234567, "/work", "app.exe")], SOME_AGE_MS);
+        let text = format_list(
+            &[session(session_id(1234567), "/work", "app.exe")],
+            SOME_AGE_MS,
+        );
         let lines: Vec<&str> = text.lines().collect();
         let header = lines.first().expect("a header line");
         let row = lines.get(1).expect("a session line");
@@ -229,8 +240,8 @@ mod tests {
     fn a_column_is_as_wide_as_the_widest_session_in_it() {
         let text = format_list(
             &[
-                session(1, "/a", "app.exe"),
-                session(2, "/a-much-longer-directory", "app.exe"),
+                session(session_id(1), "/a", "app.exe"),
+                session(session_id(2), "/a-much-longer-directory", "app.exe"),
             ],
             SOME_AGE_MS,
         );
@@ -244,7 +255,10 @@ mod tests {
 
     #[test]
     fn directories_are_shown_without_the_extended_length_prefix() {
-        let text = format_list(&[session(1, r"\\?\C:\Source", "app.exe")], SOME_AGE_MS);
+        let text = format_list(
+            &[session(session_id(1), r"\\?\C:\Source", "app.exe")],
+            SOME_AGE_MS,
+        );
         assert!(text.contains(r"C:\Source"));
         assert!(!text.contains(r"\\?\"));
     }
@@ -253,8 +267,12 @@ mod tests {
     fn no_line_carries_trailing_blanks() {
         let text = format_list(
             &[
-                session(1, r"\\?\C:\a-very-long-source-directory", "copilot.exe"),
-                session(2, r"\\?\C:\b", "app.exe"),
+                session(
+                    session_id(1),
+                    r"\\?\C:\a-very-long-source-directory",
+                    "copilot.exe",
+                ),
+                session(session_id(2), r"\\?\C:\b", "app.exe"),
             ],
             SOME_AGE_MS,
         );
@@ -266,7 +284,11 @@ mod tests {
     #[test]
     fn a_session_stays_one_row_however_its_command_was_written() {
         let text = format_list(
-            &[session(1, "/work", "app.exe\nID  ATTACHED\n2  yes")],
+            &[session(
+                session_id(1),
+                "/work",
+                "app.exe\nID  ATTACHED\n2  yes",
+            )],
             SOME_AGE_MS,
         );
         // A heading line and exactly one session line.
@@ -276,7 +298,10 @@ mod tests {
 
     #[test]
     fn a_command_cannot_repaint_the_screen_it_is_listed_on() {
-        let text = format_list(&[session(1, "/work", "app.exe\u{1b}[2J")], SOME_AGE_MS);
+        let text = format_list(
+            &[session(session_id(1), "/work", "app.exe\u{1b}[2J")],
+            SOME_AGE_MS,
+        );
         assert!(!text.contains('\u{1b}'), "an escape survived in {text:?}");
         assert!(text.contains(r"app.exe\u{1b}[2J"));
     }

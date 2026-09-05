@@ -56,14 +56,12 @@ where
     let record = require_live_session(store, processes, id, trace)?;
     trace!(
         trace,
-        "attaching to session {} on {}",
-        record.session_id(),
-        record.pipe_name
+        "attaching to session {} on {}", record.id, record.pipe_name
     );
     // Said before the console is taken over, because a failure from here on
     // still leaves this session reachable by `list`, `resume`, and `kill`.
-    note_line(format_args!("session {}", record.session_id()));
-    attach(transport, console, &record.pipe_name, record.session_id())
+    note_line(format_args!("session {}", record.id));
+    attach(transport, console, &record.pipe_name, record.id)
 }
 
 /// Chooses which live session to resume, asking the user when it has to.
@@ -164,9 +162,11 @@ mod tests {
             let id = store.allocate_id(&ProcessIdentity::for_test(1)).unwrap();
             store
                 .publish(&SessionRecord {
-                    id: id.get(),
-                    supervisor_pid: 10,
-                    supervisor_creation_time: 100,
+                    id,
+                    supervisor: ProcessIdentity {
+                        pid: 10,
+                        creation_time: 100,
+                    },
                     pipe_name: name.to_string(),
                     launch_directory: PathBuf::from(format!("/nowhere/{name}")),
                     command: AppCommand::for_test(&["app.exe"]),
@@ -238,9 +238,11 @@ mod tests {
             let pipe = "resume-unique";
             store
                 .publish(&SessionRecord {
-                    id: id.get(),
-                    supervisor_pid: 10,
-                    supervisor_creation_time: 100,
+                    id,
+                    supervisor: ProcessIdentity {
+                        pid: 10,
+                        creation_time: 100,
+                    },
                     pipe_name: pipe.to_string(),
                     launch_directory,
                     command: AppCommand::for_test(&["app.exe"]),

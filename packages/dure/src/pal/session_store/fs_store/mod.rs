@@ -17,7 +17,8 @@ use crate::SessionId;
 use crate::pal::error::{PalError, PalErrorKind};
 use crate::pal::session_store::SessionStore;
 use crate::pal::session_store::fs_store::windows::{RecordFile, move_file_replace};
-use crate::session_record::{ProcessIdentity, SessionRecord, StoredSession};
+use crate::pal::session_store::stored::StoredSession;
+use crate::session_record::{ProcessIdentity, SessionRecord};
 
 /// Session store rooted at a caller-supplied directory.
 #[derive(Clone, Debug)]
@@ -38,7 +39,7 @@ fn parse_record(bytes: &[u8], expected: SessionId) -> Result<Option<SessionRecor
     let StoredSession::Published(record) = parse_stored(bytes)? else {
         return Ok(None);
     };
-    if SessionId::from_u32(record.id) != Some(expected) {
+    if record.id != expected {
         return Ok(None);
     }
     Ok(Some(record))
@@ -160,7 +161,7 @@ impl SessionStore for FsSessionStore {
 
     fn publish(&self, record: &SessionRecord) -> Result<(), PalError> {
         fs::create_dir_all(&self.root).map_err(PalError::from_io)?;
-        let id = record.session_id();
+        let id = record.id;
         let path = self.record_path(id);
         let tmp = self.root.join(format!("{}.json.tmp", id.get()));
         let json = serde_json::to_vec_pretty(&StoredSession::Published(record.clone())).map_err(
@@ -197,7 +198,7 @@ impl SessionStore for FsSessionStore {
             .stored()?
             .into_iter()
             .filter_map(|(id, stored)| match stored {
-                StoredSession::Published(record) if record.session_id() == id => Some(record),
+                StoredSession::Published(record) if record.id == id => Some(record),
                 _ => None,
             })
             .collect())
@@ -229,7 +230,7 @@ impl SessionStore for FsSessionStore {
         // after the caller read it, and a file nothing can parse names nobody.
         let owned = match parse_stored(&bytes) {
             Ok(StoredSession::Reserved { owner: current }) => current == *owner,
-            Ok(StoredSession::Published(record)) => record.identity() == *owner,
+            Ok(StoredSession::Published(record)) => record.supervisor == *owner,
             Err(_error) => false,
         };
         if !owned {
@@ -290,9 +291,11 @@ mod tests {
 
     fn record(id: SessionId, dir: &Path) -> SessionRecord {
         SessionRecord {
-            id: id.get(),
-            supervisor_pid: 1,
-            supervisor_creation_time: 1,
+            id,
+            supervisor: ProcessIdentity {
+                pid: 1,
+                creation_time: 1,
+            },
             pipe_name: "pipe".to_string(),
             launch_directory: dir.to_path_buf(),
             command: AppCommand::for_test(&["app.exe"]),
@@ -343,8 +346,10 @@ mod tests {
         let (dir, store) = store();
         let id = store.allocate_id(&ProcessIdentity::for_test(1)).unwrap();
         let mut published = record(id, dir.path());
-        published.supervisor_pid = 20;
-        published.supervisor_creation_time = 200;
+        published.supervisor = ProcessIdentity {
+            pid: 20,
+            creation_time: 200,
+        };
         store.publish(&published).unwrap();
 
         // Stands in for a session that took this id after another process read
@@ -356,7 +361,7 @@ mod tests {
         store.delete_owned_by(id, &stale).unwrap();
         assert_eq!(store.read(id).unwrap().unwrap(), published);
 
-        store.delete_owned_by(id, &published.identity()).unwrap();
+        store.delete_owned_by(id, &published.supervisor).unwrap();
         assert!(store.read(id).unwrap().is_none());
     }
 
@@ -473,7 +478,7 @@ mod tests {
         store.publish(&rec).unwrap();
         assert_eq!(store.read(id).unwrap().unwrap(), rec);
         assert_eq!(store.list().unwrap(), vec![rec.clone()]);
-        store.delete_owned_by(id, &rec.identity()).unwrap();
+        store.delete_owned_by(id, &rec.supervisor).unwrap();
         assert!(store.read(id).unwrap().is_none());
         assert!(store.list().unwrap().is_empty());
     }
@@ -578,7 +583,7 @@ mod tests {
         store.publish(&record).unwrap();
 
         // A record read short would parse as nobody's and be declined, stranding the id.
-        store.delete_owned_by(id, &record.identity()).unwrap();
+        store.delete_owned_by(id, &record.supervisor).unwrap();
         assert!(store.list().unwrap().is_empty());
     }
 
@@ -615,7 +620,7 @@ mod tests {
         // The delete landed on the file it inspected, not on the name it was reached through.
         assert_eq!(store.list().unwrap().len(), 1);
         // And the successor can still be found and removed by the owner it names.
-        store.delete_owned_by(id, &successor.identity()).unwrap();
+        store.delete_owned_by(id, &successor.supervisor).unwrap();
         assert!(store.list().unwrap().is_empty());
     }
 
@@ -646,7 +651,7 @@ mod tests {
         .unwrap();
         assert!(store.read(second).unwrap().is_none());
         assert_eq!(store.list().unwrap(), vec![rec.clone()]);
-        store.delete_owned_by(second, &rec.identity()).unwrap();
+        store.delete_owned_by(second, &rec.supervisor).unwrap();
         assert_eq!(store.read(first).unwrap().unwrap(), rec);
     }
 

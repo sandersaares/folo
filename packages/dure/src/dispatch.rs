@@ -83,7 +83,7 @@ mod tests {
     use crate::pal::pseudoconsole::{MemoryPseudoconsole, PseudoconsoleFacade};
     use crate::pal::session_store::{MockSessionStore, SessionStoreFacade};
     use crate::pal::transport::{MemoryTransport, TransportFacade};
-    use crate::session_record::SessionRecord;
+    use crate::session_record::{ProcessIdentity, SessionRecord};
     use crate::{AppCommand, SessionId, SessionNotFoundError};
 
     fn pal_with(store: MockSessionStore, processes: MockProcesses) -> Pal {
@@ -134,9 +134,11 @@ mod tests {
         let mut store = MockSessionStore::new();
         store.expect_read().returning(|id| {
             Ok(Some(SessionRecord {
-                id: id.get(),
-                supervisor_pid: 10,
-                supervisor_creation_time: 100,
+                id,
+                supervisor: ProcessIdentity {
+                    pid: 10,
+                    creation_time: 100,
+                },
                 pipe_name: "pipe".to_string(),
                 launch_directory: PathBuf::from("/work"),
                 command: AppCommand::for_test(&["app.exe"]),

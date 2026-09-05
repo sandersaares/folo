@@ -17,7 +17,7 @@ pub(crate) fn execute(
     trace: Trace,
 ) -> Result<(), AppError> {
     let record = require_live_session(store, processes, id, trace)?;
-    let identity = record.identity();
+    let identity = record.supervisor;
     trace!(
         trace,
         "terminating supervisor pid {}, which ends the app it owns", identity.pid
@@ -61,11 +61,13 @@ mod tests {
     use crate::pal::session_store::{FsSessionStore, SessionStore};
     use crate::session_record::{ProcessIdentity, SessionRecord};
 
-    fn record(id: u32, pid: u32, creation: u64) -> SessionRecord {
+    fn record(id: SessionId, pid: u32, creation: u64) -> SessionRecord {
         SessionRecord {
             id,
-            supervisor_pid: pid,
-            supervisor_creation_time: creation,
+            supervisor: ProcessIdentity {
+                pid,
+                creation_time: creation,
+            },
             pipe_name: format!("pipe-{id}"),
             launch_directory: PathBuf::from("/work"),
             command: AppCommand::for_test(&["app.exe"]),
@@ -93,7 +95,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let store = FsSessionStore::new(dir.path().to_path_buf());
         let id = store.allocate_id(&ProcessIdentity::for_test(1)).unwrap();
-        store.publish(&record(id.get(), 10, 100)).unwrap();
+        store.publish(&record(id, 10, 100)).unwrap();
 
         let mut processes = MockProcesses::new();
         processes
@@ -115,7 +117,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let store = FsSessionStore::new(dir.path().to_path_buf());
         let id = store.allocate_id(&ProcessIdentity::for_test(1)).unwrap();
-        store.publish(&record(id.get(), 10, 100)).unwrap();
+        store.publish(&record(id, 10, 100)).unwrap();
 
         let mut processes = MockProcesses::new();
         processes
@@ -137,7 +139,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let store = FsSessionStore::new(dir.path().to_path_buf());
         let id = store.allocate_id(&ProcessIdentity::for_test(1)).unwrap();
-        store.publish(&record(id.get(), 10, 100)).unwrap();
+        store.publish(&record(id, 10, 100)).unwrap();
 
         let mut processes = MockProcesses::new();
         processes

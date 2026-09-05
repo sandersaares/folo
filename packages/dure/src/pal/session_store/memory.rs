@@ -10,7 +10,8 @@ use std::sync::{Arc, Condvar, Mutex};
 use crate::SessionId;
 use crate::pal::error::{PalError, PalErrorKind};
 use crate::pal::session_store::SessionStore;
-use crate::session_record::{ProcessIdentity, SessionRecord, StoredSession};
+use crate::pal::session_store::stored::StoredSession;
+use crate::session_record::{ProcessIdentity, SessionRecord};
 
 /// Shared stateful session store for supervisor unit tests.
 ///
@@ -120,10 +121,11 @@ impl SessionStore for MemorySessionStore {
             return Err(PalError::new(PalErrorKind::Other));
         }
         self.await_publish_permission();
-        self.inner.records.lock().unwrap().insert(
-            record.session_id(),
-            StoredSession::Published(record.clone()),
-        );
+        self.inner
+            .records
+            .lock()
+            .unwrap()
+            .insert(record.id, StoredSession::Published(record.clone()));
         Ok(())
     }
 
@@ -161,7 +163,7 @@ impl SessionStore for MemorySessionStore {
         let mut records = self.inner.records.lock().unwrap();
         let owned = match records.get(&id) {
             Some(StoredSession::Reserved { owner: current }) => current == owner,
-            Some(StoredSession::Published(record)) => record.identity() == *owner,
+            Some(StoredSession::Published(record)) => record.supervisor == *owner,
             None => false,
         };
         if owned {
@@ -204,9 +206,8 @@ mod tests {
                     let store = store.clone();
                     move || {
                         store.publish(&SessionRecord {
-                            id: id.get(),
-                            supervisor_pid: owner.pid,
-                            supervisor_creation_time: owner.creation_time,
+                            id,
+                            supervisor: owner,
                             pipe_name: "pipe".to_string(),
                             launch_directory: PathBuf::from("/work"),
                             command: AppCommand::for_test(&["app.exe"]),

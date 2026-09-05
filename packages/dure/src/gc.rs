@@ -28,13 +28,13 @@ pub(crate) fn live_sessions(
     );
     let mut live = Vec::new();
     for record in records {
-        match processes.probe(&record.identity()) {
+        match processes.probe(&record.supervisor) {
             ProcessLiveness::Live => {
                 trace!(
                     trace,
                     "session {}: supervisor pid {} is running, so the session is live",
                     record.id,
-                    record.supervisor_pid
+                    record.supervisor.pid
                 );
                 live.push(record);
             }
@@ -43,12 +43,12 @@ pub(crate) fn live_sessions(
                     trace,
                     "session {}: supervisor pid {} is gone, so the record is dropped",
                     record.id,
-                    record.supervisor_pid
+                    record.supervisor.pid
                 );
                 // Ids are reused, so deleting by id alone can reap a session
                 // that claimed this id since `list` read it.
                 store
-                    .delete_owned_by(record.session_id(), &record.identity())
+                    .delete_owned_by(record.id, &record.supervisor)
                     .map_err(StoreError::caused_by)?;
             }
             ProcessLiveness::InspectFailed => {
@@ -56,9 +56,9 @@ pub(crate) fn live_sessions(
                     trace,
                     "session {}: supervisor pid {} could not be inspected, so nothing is assumed about it",
                     record.id,
-                    record.supervisor_pid
+                    record.supervisor.pid
                 );
-                return Err(InspectProcessError::for_pid(record.supervisor_pid).into());
+                return Err(InspectProcessError::for_pid(record.supervisor.pid).into());
             }
         }
     }
@@ -134,24 +134,24 @@ pub(crate) fn require_live_session(
     trace!(
         trace,
         "session {id}: recorded supervisor pid {}, pipe {}",
-        record.supervisor_pid,
+        record.supervisor.pid,
         record.pipe_name
     );
-    match processes.probe(&record.identity()) {
+    match processes.probe(&record.supervisor) {
         ProcessLiveness::Live => Ok(record),
         ProcessLiveness::Dead => {
             trace!(
                 trace,
                 "session {id}: supervisor pid {} is gone, so the record is dropped",
-                record.supervisor_pid
+                record.supervisor.pid
             );
             store
-                .delete_owned_by(id, &record.identity())
+                .delete_owned_by(id, &record.supervisor)
                 .map_err(StoreError::caused_by)?;
             Err(SessionNotFoundError::for_id(id).into())
         }
         ProcessLiveness::InspectFailed => {
-            Err(InspectProcessError::for_pid(record.supervisor_pid).into())
+            Err(InspectProcessError::for_pid(record.supervisor.pid).into())
         }
     }
 }
@@ -167,11 +167,13 @@ mod tests {
     use crate::pal::session_store::{MemorySessionStore, SessionStore};
     use crate::session_record::{ProcessIdentity, SessionRecord};
 
-    fn record(id: u32, pid: u32, creation: u64) -> SessionRecord {
+    fn record(id: SessionId, pid: u32, creation: u64) -> SessionRecord {
         SessionRecord {
             id,
-            supervisor_pid: pid,
-            supervisor_creation_time: creation,
+            supervisor: ProcessIdentity {
+                pid,
+                creation_time: creation,
+            },
             pipe_name: format!("pipe-{id}"),
             launch_directory: PathBuf::from("/work"),
             command: AppCommand::for_test(&["app.exe"]),
@@ -185,8 +187,8 @@ mod tests {
         let store = MemorySessionStore::new();
         let live_id = store.allocate_id(&ProcessIdentity::for_test(1)).unwrap();
         let dead_id = store.allocate_id(&ProcessIdentity::for_test(1)).unwrap();
-        store.publish(&record(live_id.get(), 10, 100)).unwrap();
-        store.publish(&record(dead_id.get(), 11, 101)).unwrap();
+        store.publish(&record(live_id, 10, 100)).unwrap();
+        store.publish(&record(dead_id, 11, 101)).unwrap();
 
         let mut processes = MockProcesses::new();
         processes
@@ -201,7 +203,7 @@ mod tests {
 
         let live = live_sessions(&store, &processes, Trace::default()).unwrap();
         assert_eq!(live.len(), 1);
-        assert_eq!(live.first().expect("one live session").id, live_id.get());
+        assert_eq!(live.first().expect("one live session").id, live_id);
         assert!(store.read(dead_id).unwrap().is_none());
         assert!(store.read(live_id).unwrap().is_some());
     }
@@ -210,7 +212,7 @@ mod tests {
     fn inspect_failure_keeps_record() {
         let store = MemorySessionStore::new();
         let id = store.allocate_id(&ProcessIdentity::for_test(1)).unwrap();
-        store.publish(&record(id.get(), 10, 100)).unwrap();
+        store.publish(&record(id, 10, 100)).unwrap();
 
         let mut processes = MockProcesses::new();
         processes
@@ -225,7 +227,7 @@ mod tests {
     fn an_explicit_id_whose_process_cannot_be_inspected_keeps_its_record() {
         let store = MemorySessionStore::new();
         let id = store.allocate_id(&ProcessIdentity::for_test(1)).unwrap();
-        store.publish(&record(id.get(), 10, 100)).unwrap();
+        store.publish(&record(id, 10, 100)).unwrap();
 
         let mut processes = MockProcesses::new();
         processes
@@ -244,8 +246,8 @@ mod tests {
         let store = MemorySessionStore::new();
         let live_id = store.allocate_id(&ProcessIdentity::for_test(1)).unwrap();
         let dead_id = store.allocate_id(&ProcessIdentity::for_test(1)).unwrap();
-        store.publish(&record(live_id.get(), 10, 100)).unwrap();
-        store.publish(&record(dead_id.get(), 11, 101)).unwrap();
+        store.publish(&record(live_id, 10, 100)).unwrap();
+        store.publish(&record(dead_id, 11, 101)).unwrap();
 
         let mut processes = MockProcesses::new();
         processes
@@ -255,7 +257,7 @@ mod tests {
             .returning(|_| ProcessLiveness::Live);
 
         let found = require_live_session(&store, &processes, live_id, Trace::default()).unwrap();
-        assert_eq!(found.id, live_id.get());
+        assert_eq!(found.id, live_id);
         assert!(store.read(dead_id).unwrap().is_some());
     }
 
@@ -263,7 +265,7 @@ mod tests {
     fn require_live_session_reaps_a_dead_record() {
         let store = MemorySessionStore::new();
         let id = store.allocate_id(&ProcessIdentity::for_test(1)).unwrap();
-        store.publish(&record(id.get(), 11, 101)).unwrap();
+        store.publish(&record(id, 11, 101)).unwrap();
 
         let mut processes = MockProcesses::new();
         processes

@@ -1,5 +1,6 @@
-//! On-disk session record.
+//! The session metadata the whole crate works with.
 
+use std::fmt;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -8,8 +9,11 @@ use crate::{AppCommand, SessionId};
 
 /// Identity of a supervisor process: pid plus creation time.
 ///
-/// Liveness opens this pid once and verifies the creation time on that handle
-/// (design.md, "Session identity"; docs/session-store.md).
+/// The pair is one value because either half alone is ambiguous: a pid is
+/// reused, and a creation time names nothing on its own. Liveness opens the pid
+/// once and verifies the creation time on that handle, so a record carrying
+/// halves of two different processes would be an identity that never existed.
+/// Ref: design.md, "Session identity"; docs/session-store.md.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct ProcessIdentity {
     /// Operating-system process id of the supervisor.
@@ -18,47 +22,103 @@ pub(crate) struct ProcessIdentity {
     pub creation_time: u64,
 }
 
-/// Persisted description of one live session.
+/// Description of one live session.
 ///
-/// Written under the PAL store root after the session pipe is accepting
-/// (docs/session-store.md and "Process split").
+/// Published by the supervisor once its session pipe is accepting, and read by
+/// every command that works with sessions.
+///
+/// The typed fields are the point. A session id is positive and an owner is a
+/// process, so a record cannot exist that names a session that could not be or
+/// an owner that never was — and the decisions made from these fields, whether
+/// a session is live and whether its record may be removed, would otherwise act
+/// on such a record.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(try_from = "StoredRecord", into = "StoredRecord")]
 pub(crate) struct SessionRecord {
-    /// Session id unique among live sessions for this user.
-    pub id: u32,
-    /// Supervisor process id.
-    pub supervisor_pid: u32,
-    /// Supervisor process creation time (`FILETIME` as `u64`).
-    pub supervisor_creation_time: u64,
+    /// Session id, unique among live sessions for this user.
+    pub id: SessionId,
+    /// The supervisor process that owns this session.
+    pub supervisor: ProcessIdentity,
     /// Named-pipe path the client connects to.
     pub pipe_name: String,
     /// Canonical absolute launch directory from `dure run`.
     pub launch_directory: PathBuf,
-    /// Command argv executed directly, not through a shell.
+    /// Command executed directly, not through a shell.
     pub command: AppCommand,
     /// Unix time in milliseconds when the session was published.
     pub started_at_unix_ms: u64,
     /// Whether the supervisor currently has a client connection.
-    #[serde(default)]
+    ///
+    /// Advisory. It is published after ownership has already transferred and a
+    /// failed write is tolerated, so it is what `list` shows rather than
+    /// something any decision is made from.
     pub attached: bool,
 }
 
-/// Contents of one record file.
+/// The shape a session record has on disk.
 ///
-/// An id is claimed before the supervisor has everything a record needs, so the
-/// claim names the process that made it. That is what lets a reservation left
-/// behind by a supervisor that died mid-initialization be reaped instead of
-/// occupying the id forever (docs/session-store.md).
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub(crate) enum StoredSession {
-    /// The id is claimed and `owner` is still initializing its session.
-    Reserved {
-        /// Process that claimed the id.
-        owner: ProcessIdentity,
-    },
-    /// The session is published and attachable.
-    Published(SessionRecord),
+/// Kept separate from [`SessionRecord`] so the in-memory model can carry typed
+/// values while the file keeps the flat fields it has always had. A record
+/// outlives the process that wrote it, so the file shape is a contract even
+/// though the model above it is free to change.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct StoredRecord {
+    id: u32,
+    supervisor_pid: u32,
+    supervisor_creation_time: u64,
+    pipe_name: String,
+    launch_directory: PathBuf,
+    command: AppCommand,
+    started_at_unix_ms: u64,
+    #[serde(default)]
+    attached: bool,
+}
+
+/// Why a stored record could not become a [`SessionRecord`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct MalformedRecord;
+
+impl fmt::Display for MalformedRecord {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("a session record names a positive session id")
+    }
+}
+
+impl TryFrom<StoredRecord> for SessionRecord {
+    type Error = MalformedRecord;
+
+    fn try_from(stored: StoredRecord) -> Result<Self, Self::Error> {
+        Ok(Self {
+            // Validated here rather than trusted, because a torn or hand-edited
+            // file reaches this point and every later reader assumes the id is
+            // one a session could have had.
+            id: SessionId::from_u32(stored.id).ok_or(MalformedRecord)?,
+            supervisor: ProcessIdentity {
+                pid: stored.supervisor_pid,
+                creation_time: stored.supervisor_creation_time,
+            },
+            pipe_name: stored.pipe_name,
+            launch_directory: stored.launch_directory,
+            command: stored.command,
+            started_at_unix_ms: stored.started_at_unix_ms,
+            attached: stored.attached,
+        })
+    }
+}
+
+impl From<SessionRecord> for StoredRecord {
+    fn from(record: SessionRecord) -> Self {
+        Self {
+            id: record.id.get(),
+            supervisor_pid: record.supervisor.pid,
+            supervisor_creation_time: record.supervisor.creation_time,
+            pipe_name: record.pipe_name,
+            launch_directory: record.launch_directory,
+            command: record.command,
+            started_at_unix_ms: record.started_at_unix_ms,
+            attached: record.attached,
+        }
+    }
 }
 
 impl ProcessIdentity {
@@ -73,25 +133,6 @@ impl ProcessIdentity {
     }
 }
 
-impl SessionRecord {
-    /// Session id newtype.
-    #[must_use]
-    pub(crate) fn session_id(&self) -> SessionId {
-        SessionId::from_u32(self.id).expect(
-            "records are published from allocate_id and rejected on read unless the id is positive",
-        )
-    }
-
-    /// Supervisor process identity used for liveness and kill.
-    #[must_use]
-    pub(crate) fn identity(&self) -> ProcessIdentity {
-        ProcessIdentity {
-            pid: self.supervisor_pid,
-            creation_time: self.supervisor_creation_time,
-        }
-    }
-}
-
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
@@ -99,9 +140,11 @@ mod tests {
 
     fn sample() -> SessionRecord {
         SessionRecord {
-            id: 1,
-            supervisor_pid: 42,
-            supervisor_creation_time: 99,
+            id: SessionId::MIN,
+            supervisor: ProcessIdentity {
+                pid: 42,
+                creation_time: 99,
+            },
             pipe_name: r"\\.\pipe\dure-abc".to_string(),
             launch_directory: PathBuf::from(r"C:\work"),
             command: AppCommand::for_test(&["copilot.exe"]),
@@ -124,29 +167,13 @@ mod tests {
         // been upgraded under a running session still has to read them. The
         // literal is here so that a change to the field names or nesting is a
         // decision someone makes rather than a rename that happens to compile.
-        let stored = StoredSession::Published(sample());
         assert_eq!(
-            serde_json::to_string(&stored).unwrap(),
+            serde_json::to_string(&sample()).unwrap(),
             concat!(
-                r#"{"kind":"published","id":1,"supervisor_pid":42,"#,
-                r#""supervisor_creation_time":99,"pipe_name":"\\\\.\\pipe\\dure-abc","#,
-                r#""launch_directory":"C:\\work","command":["copilot.exe"],"#,
-                r#""started_at_unix_ms":1,"attached":false}"#,
+                r#"{"id":1,"supervisor_pid":42,"supervisor_creation_time":99,"#,
+                r#""pipe_name":"\\\\.\\pipe\\dure-abc","launch_directory":"C:\\work","#,
+                r#""command":["copilot.exe"],"started_at_unix_ms":1,"attached":false}"#,
             )
-        );
-    }
-
-    #[test]
-    fn a_claim_stores_the_owner_it_names() {
-        let stored = StoredSession::Reserved {
-            owner: ProcessIdentity {
-                pid: 7,
-                creation_time: 8,
-            },
-        };
-        assert_eq!(
-            serde_json::to_string(&stored).unwrap(),
-            r#"{"kind":"reserved","owner":{"pid":7,"creation_time":8}}"#
         );
     }
 
@@ -155,44 +182,24 @@ mod tests {
         // The flag is advisory and was added after the format existed, so its
         // absence means "not known to be attached" rather than a broken record.
         let without_flag = concat!(
-            r#"{"kind":"published","id":1,"supervisor_pid":42,"#,
-            r#""supervisor_creation_time":99,"pipe_name":"p","#,
-            r#""launch_directory":"C:\\work","command":["copilot.exe"],"#,
-            r#""started_at_unix_ms":1}"#,
+            r#"{"id":1,"supervisor_pid":42,"supervisor_creation_time":99,"#,
+            r#""pipe_name":"p","launch_directory":"C:\\work","#,
+            r#""command":["copilot.exe"],"started_at_unix_ms":1}"#,
         );
-        let StoredSession::Published(record) =
-            serde_json::from_str::<StoredSession>(without_flag).unwrap()
-        else {
-            panic!("expected a published record");
-        };
+        let record = serde_json::from_str::<SessionRecord>(without_flag).unwrap();
         assert!(!record.attached);
     }
 
     #[test]
-    fn identity_uses_pid_and_creation_time() {
-        let identity = sample().identity();
-        assert_eq!(identity.pid, 42);
-        assert_eq!(identity.creation_time, 99);
-    }
-
-    #[test]
-    fn a_reservation_and_a_published_record_are_distinguishable_on_disk() {
-        let owner = ProcessIdentity {
-            pid: 7,
-            creation_time: 8,
-        };
-        let reserved = StoredSession::Reserved { owner };
-        let published = StoredSession::Published(sample());
-        let reserved_json = serde_json::to_string(&reserved).unwrap();
-        let published_json = serde_json::to_string(&published).unwrap();
-        assert_ne!(reserved_json, published_json);
-        assert_eq!(
-            serde_json::from_str::<StoredSession>(&reserved_json).unwrap(),
-            reserved
+    fn a_record_naming_an_impossible_session_is_refused() {
+        // Zero is not an id any session ever had, so a file claiming it is
+        // rejected where it is read rather than trusted until something later
+        // tries to use it.
+        let zero_id = concat!(
+            r#"{"id":0,"supervisor_pid":42,"supervisor_creation_time":99,"#,
+            r#""pipe_name":"p","launch_directory":"C:\\work","#,
+            r#""command":["copilot.exe"],"started_at_unix_ms":1}"#,
         );
-        assert_eq!(
-            serde_json::from_str::<StoredSession>(&published_json).unwrap(),
-            published
-        );
+        serde_json::from_str::<SessionRecord>(zero_id).unwrap_err();
     }
 }

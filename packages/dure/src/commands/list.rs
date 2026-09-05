@@ -52,9 +52,11 @@ mod tests {
         let id = store.allocate_id(&ProcessIdentity::for_test(1)).unwrap();
         store
             .publish(&SessionRecord {
-                id: id.get(),
-                supervisor_pid: 10,
-                supervisor_creation_time: 100,
+                id,
+                supervisor: ProcessIdentity {
+                    pid: 10,
+                    creation_time: 100,
+                },
                 pipe_name: "pipe".to_string(),
                 launch_directory: dir.to_path_buf(),
                 command: AppCommand::for_test(&["app.exe"]),

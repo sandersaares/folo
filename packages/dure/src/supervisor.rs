@@ -212,9 +212,8 @@ where
     guard.session = Some((session_id, identity));
 
     let record = SessionRecord {
-        id: session_id.get(),
-        supervisor_pid: identity.pid,
-        supervisor_creation_time: identity.creation_time,
+        id: session_id,
+        supervisor: identity,
         pipe_name,
         launch_directory,
         command,
@@ -1774,9 +1773,8 @@ mod tests {
             assert_eq!(id, shared.session_id);
             store
                 .publish(&SessionRecord {
-                    id: id.get(),
-                    supervisor_pid: owner.pid,
-                    supervisor_creation_time: owner.creation_time,
+                    id,
+                    supervisor: owner,
                     pipe_name: "pipe".to_string(),
                     launch_directory: PathBuf::from("/work"),
                     command: AppCommand::for_test(&["app.exe"]),
@@ -2072,9 +2070,11 @@ mod tests {
         let id = store.allocate_id(&ProcessIdentity::for_test(1)).unwrap();
         store
             .publish(&SessionRecord {
-                id: id.get(),
-                supervisor_pid: 10,
-                supervisor_creation_time: 100,
+                id,
+                supervisor: ProcessIdentity {
+                    pid: 10,
+                    creation_time: 100,
+                },
                 pipe_name: "pipe".to_string(),
                 launch_directory: PathBuf::from("/work"),
                 command: AppCommand::for_test(&["app.exe"]),

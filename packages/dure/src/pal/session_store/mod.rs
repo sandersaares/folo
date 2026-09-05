@@ -8,6 +8,9 @@ mod fs_store;
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[cfg(test)]
 mod memory;
+// How a stored id encodes its state. A persistence detail of the store
+// implementations, so it stays inside the slice that owns them.
+mod stored;
 
 pub(crate) use abstractions::*;
 pub(crate) use facade::*;
