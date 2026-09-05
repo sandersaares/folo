@@ -4,7 +4,7 @@
 //! Each argv element is quoted so spaces and embedded quotes survive that split.
 //! See <https://learn.microsoft.com/windows/win32/api/shellapi/nf-shellapi-commandlinetoargvw>.
 
-use std::iter;
+use crate::app_command::quote_windows_arg;
 
 /// Builds a Windows process command line from an executable and following argv.
 #[must_use]
@@ -17,72 +17,20 @@ pub(crate) fn windows_command_line(exe: &str, args: &[String]) -> String {
     line
 }
 
-/// Quotes one argv element for `CommandLineToArgvW`.
-///
-/// Empty arguments become `""`. Arguments without whitespace or quotes are
-/// copied unchanged. Otherwise the argument is wrapped in quotes and internal
-/// quotes are escaped by doubling preceding backslashes, matching the Windows
-/// argv rules.
-#[must_use]
-pub(crate) fn quote_windows_arg(arg: &str) -> String {
-    if arg.is_empty() {
-        return "\"\"".to_string();
-    }
-    let needs_quotes = arg
-        .bytes()
-        .any(|byte| matches!(byte, b' ' | b'\t' | b'\n' | b'\r' | b'"'));
-    if !needs_quotes {
-        return arg.to_string();
-    }
-
-    let mut quoted = String::from("\"");
-    let mut backslashes = 0_usize;
-    for ch in arg.chars() {
-        if ch == '\\' {
-            backslashes = backslashes.saturating_add(1);
-            continue;
-        }
-        if ch == '"' {
-            quoted.extend(iter::repeat_n(
-                '\\',
-                backslashes.saturating_mul(2).saturating_add(1),
-            ));
-            quoted.push('"');
-            backslashes = 0;
-            continue;
-        }
-        quoted.extend(iter::repeat_n('\\', backslashes));
-        quoted.push(ch);
-        backslashes = 0;
-    }
-    quoted.extend(iter::repeat_n('\\', backslashes.saturating_mul(2)));
-    quoted.push('"');
-    quoted
-}
-
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
 
     #[test]
-    fn plain_args_are_unquoted() {
-        assert_eq!(quote_windows_arg("app.exe"), "app.exe");
+    fn each_element_survives_the_split_that_follows() {
         assert_eq!(
             windows_command_line("app.exe", &["--foo".to_string()]),
             "app.exe --foo"
         );
-    }
-
-    #[test]
-    fn spaces_and_quotes_are_escaped() {
-        assert_eq!(quote_windows_arg(""), "\"\"");
-        assert_eq!(quote_windows_arg("a b"), "\"a b\"");
-        assert_eq!(quote_windows_arg(r#"say "hi""#), r#""say \"hi\"""#);
-        assert_eq!(quote_windows_arg(r"C:\dir\"), r"C:\dir\");
         assert_eq!(
-            quote_windows_arg(r"C:\Program Files\"),
-            r#""C:\Program Files\\""#
+            windows_command_line(r"C:\Program Files\app.exe", &["a b".to_string()]),
+            r#""C:\Program Files\app.exe" "a b""#
         );
     }
 }

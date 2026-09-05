@@ -1,11 +1,52 @@
 //! The command a session runs.
 
-use std::fmt;
+use std::{fmt, iter};
 
 use serde::de::Error as _;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::pal::processes::quote_windows_arg;
+/// Quotes one argv element for `CommandLineToArgvW`.
+///
+/// Empty arguments become `""`. Arguments without whitespace or quotes are
+/// copied unchanged. Otherwise the argument is wrapped in quotes and internal
+/// quotes are escaped by doubling preceding backslashes, matching the Windows
+/// argv rules.
+#[must_use]
+pub(crate) fn quote_windows_arg(arg: &str) -> String {
+    if arg.is_empty() {
+        return "\"\"".to_string();
+    }
+    let needs_quotes = arg
+        .bytes()
+        .any(|byte| matches!(byte, b' ' | b'\t' | b'\n' | b'\r' | b'"'));
+    if !needs_quotes {
+        return arg.to_string();
+    }
+
+    let mut quoted = String::from("\"");
+    let mut backslashes = 0_usize;
+    for ch in arg.chars() {
+        if ch == '\\' {
+            backslashes = backslashes.saturating_add(1);
+            continue;
+        }
+        if ch == '"' {
+            quoted.extend(iter::repeat_n(
+                '\\',
+                backslashes.saturating_mul(2).saturating_add(1),
+            ));
+            quoted.push('"');
+            backslashes = 0;
+            continue;
+        }
+        quoted.extend(iter::repeat_n('\\', backslashes));
+        quoted.push(ch);
+        backslashes = 0;
+    }
+    quoted.extend(iter::repeat_n('\\', backslashes.saturating_mul(2)));
+    quoted.push('"');
+    quoted
+}
 
 /// An executable and the arguments it is launched with.
 ///

@@ -13,7 +13,7 @@ use crate::invocation::Outcome;
 use crate::pal::error::{PalError, PalErrorKind};
 use crate::pal::ids::{ConnId, ListenerId};
 use crate::pal::local_console::LocalConsole;
-use crate::pal::processes::{Processes, SupervisorSpawn, resolve_command_path};
+use crate::pal::processes::{HowResolved, Processes, SupervisorSpawn};
 use crate::pal::session_store::SessionStore;
 use crate::pal::transport::Transport;
 use crate::path_display::display_path;
@@ -79,11 +79,15 @@ where
         "launch directory: {} (auto-detect will match a resume from here)",
         display_path(&launch_directory)
     );
-    trace!(
-        trace,
-        "app executable resolves to {}",
-        display_path(&resolve_command_path(command.exe(), &launch_directory))
-    );
+    if trace.is_enabled() {
+        let resolved = processes.resolve_executable(command.exe(), &launch_directory);
+        trace!(
+            trace,
+            "app executable: {} ({})",
+            display_path(&resolved.path),
+            resolution_note(resolved.how)
+        );
+    }
 
     let nonce = processes.random_nonce();
     let startup_pipe = transport.pipe_name(&format!("startup-{nonce}"));
@@ -213,6 +217,17 @@ impl<T: Transport> Drop for StartupChannel<'_, T> {
         if let Some(conn) = self.conn.take() {
             self.transport.disconnect(conn);
         }
+    }
+}
+
+// Trace wording is not a behavioral contract; the resolution it explains is.
+#[cfg_attr(test, mutants::skip)]
+fn resolution_note(how: HowResolved) -> &'static str {
+    match how {
+        HowResolved::Absolute => "an absolute path, taken as written",
+        HowResolved::RelativeToLaunchDirectory => "a path, taken relative to the launch directory",
+        HowResolved::SearchPath => "a bare name, found on the executable search path",
+        HowResolved::NotFound => "a bare name the executable search path does not have",
     }
 }
 

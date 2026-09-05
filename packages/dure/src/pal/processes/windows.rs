@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fmt::Write;
 use std::mem::size_of;
-use std::os::windows::ffi::{OsStrExt, OsStringExt};
+use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
@@ -15,7 +15,6 @@ use windows::Win32::Foundation::{
     CloseHandle, ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER, FILETIME, GetLastError, HANDLE,
     INVALID_HANDLE_VALUE, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
-use windows::Win32::Storage::FileSystem::SearchPathW;
 use windows::Win32::System::Console::HPCON;
 use windows::Win32::System::JobObjects::{
     CreateJobObjectW, IsProcessInJob, JOB_OBJECT_LIMIT, JOB_OBJECT_LIMIT_BREAKAWAY_OK,
@@ -38,10 +37,9 @@ use crate::constants::TERMINATE_TIMEOUT;
 use crate::durability::LauncherTie;
 use crate::pal::error::{PalError, PalErrorKind};
 use crate::pal::ids::{AppId, JobId};
-use crate::pal::processes::{
-    AppSpawn, ProcessLiveness, Processes, SupervisorSpawn, resolve_command_path,
-    windows_command_line,
-};
+use crate::pal::processes::command_line::windows_command_line;
+use crate::pal::processes::resolve::resolve_executable;
+use crate::pal::processes::{AppSpawn, ProcessLiveness, Processes, ResolvedCommand, SupervisorSpawn};
 use crate::pal::pseudoconsole::windows::hpcon_for;
 use crate::pal::raw_handle::RawHandle;
 use crate::session_record::ProcessIdentity;
@@ -165,51 +163,7 @@ fn close(handle: HANDLE) {
     _ = unsafe { CloseHandle(handle) };
 }
 
-/// Resolves a bare command name through the standard executable search order.
-///
-/// `CreateProcessW` performs no search when `lpApplicationName` is supplied, so
-/// a bare `copilot.exe` would otherwise only be found in the launch directory.
-/// Anything that already names a directory, and anything the search cannot
-/// find, is returned unchanged so `CreateProcessW` reports the failure.
-fn search_executable(exe: &Path) -> PathBuf {
-    if exe.components().count() != 1 {
-        return exe.to_path_buf();
-    }
-    let name = wide(&exe.to_string_lossy());
-    // Applied only when the name carries no extension of its own, which is what
-    // makes `dure run -- copilot` behave like typing it in the shell.
-    let extension = wide(".exe");
-    // Long enough for a traditional path; a longer result is retried at the
-    // size the first call reports.
-    let mut buf = vec![0_u16; 260];
-    for _attempt in 0..2_u8 {
-        // SAFETY: `name` and `extension` are NUL-terminated and are not retained
-        // after the call. `buf` is exclusive for the call and its own length is
-        // what bounds the write.
-        let len = unsafe {
-            SearchPathW(
-                PCWSTR::null(),
-                PCWSTR(name.as_ptr()),
-                PCWSTR(extension.as_ptr()),
-                Some(&mut buf),
-                None,
-            )
-        } as usize;
-        if len == 0 {
-            break;
-        }
-        if len < buf.len() {
-            return buf.get(..len).map_or_else(
-                || exe.to_path_buf(),
-                |found| PathBuf::from(OsString::from_wide(found)),
-            );
-        }
-        buf = vec![0_u16; len];
-    }
-    exe.to_path_buf()
-}
-
-fn wide(s: &str) -> Vec<u16> {
+pub(super) fn wide(s: &str) -> Vec<u16> {
     OsString::from(s)
         .encode_wide()
         .chain(iter::once(0))
@@ -518,10 +472,9 @@ impl Processes for BuildTargetProcesses {
 
     fn spawn_app(&self, request: &AppSpawn) -> Result<AppId, PalError> {
         let hpcon = hpcon_for(request.pty).ok_or_else(|| PalError::new(PalErrorKind::NotFound))?;
-        let exe = search_executable(&resolve_command_path(
-            request.command.exe(),
-            &request.launch_directory,
-        ));
+        let exe = self
+            .resolve_executable(request.command.exe(), &request.launch_directory)
+            .path;
         let mut cmd_wide = wide(&windows_command_line(
             &exe.to_string_lossy(),
             request.command.args(),
@@ -688,6 +641,10 @@ impl Processes for BuildTargetProcesses {
             unsafe { GetCurrentProcessId() }
         };
         Ok(identity)
+    }
+
+    fn resolve_executable(&self, command: &str, launch_directory: &Path) -> ResolvedCommand {
+        resolve_executable(command, launch_directory)
     }
 
     fn random_nonce(&self) -> String {

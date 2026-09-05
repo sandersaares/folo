@@ -1,7 +1,7 @@
 //! Facade over process PAL implementations.
 
 use std::fmt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 #[cfg(test)]
 use std::sync::Arc;
 
@@ -11,7 +11,7 @@ use crate::pal::ids::{AppId, JobId};
 #[cfg(test)]
 use crate::pal::processes::MockProcesses;
 use crate::pal::processes::{
-    AppSpawn, BuildTargetProcesses, ProcessLiveness, Processes, SupervisorSpawn,
+    AppSpawn, BuildTargetProcesses, ProcessLiveness, Processes, ResolvedCommand, SupervisorSpawn,
 };
 use crate::session_record::ProcessIdentity;
 
@@ -132,6 +132,14 @@ impl Processes for ProcessesFacade {
             Self::Target(inner) => inner.current_identity(),
             #[cfg(test)]
             Self::Mock(inner) => inner.current_identity(),
+        }
+    }
+
+    fn resolve_executable(&self, command: &str, launch_directory: &Path) -> ResolvedCommand {
+        match self {
+            Self::Target(inner) => inner.resolve_executable(command, launch_directory),
+            #[cfg(test)]
+            Self::Mock(inner) => inner.resolve_executable(command, launch_directory),
         }
     }
 

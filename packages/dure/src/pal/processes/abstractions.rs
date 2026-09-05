@@ -7,6 +7,7 @@ use crate::app_command::AppCommand;
 use crate::durability::LauncherTie;
 use crate::pal::error::PalError;
 use crate::pal::ids::{AppId, JobId, PtyId};
+use crate::pal::processes::ResolvedCommand;
 use crate::session_record::ProcessIdentity;
 
 /// Outcome of probing a recorded supervisor process.
@@ -87,43 +88,10 @@ pub(crate) trait Processes: Send + Sync + fmt::Debug + 'static {
 
     /// Generate a random nonce for pipe names.
     fn random_nonce(&self) -> String;
-}
 
-/// Resolves `exe` relative to `launch_directory` when it contains a path separator.
-///
-/// A bare name is left alone here and resolved through the platform's
-/// executable search order when the app is spawned.
-#[must_use]
-pub(crate) fn resolve_command_path(command: &str, launch_directory: &Path) -> PathBuf {
-    let path = Path::new(command);
-    if path.is_absolute() {
-        path.to_path_buf()
-    } else if command.contains('/') || command.contains('\\') {
-        launch_directory.join(path)
-    } else {
-        path.to_path_buf()
-    }
-}
-
-#[cfg(test)]
-#[cfg_attr(coverage_nightly, coverage(off))]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn resolve_command_path_joins_relative_with_separator() {
-        let dir = Path::new("/work");
-        assert_eq!(
-            resolve_command_path("bin/app.exe", dir),
-            PathBuf::from("/work/bin/app.exe")
-        );
-        assert_eq!(
-            resolve_command_path("app.exe", dir),
-            PathBuf::from("app.exe")
-        );
-        assert_eq!(
-            resolve_command_path("/abs/app.exe", dir),
-            PathBuf::from("/abs/app.exe")
-        );
-    }
+    /// Where a command points and how that was decided.
+    ///
+    /// Answered before the app is spawned so a caller can explain the choice,
+    /// and used by the spawn itself, so the two can never disagree.
+    fn resolve_executable(&self, command: &str, launch_directory: &Path) -> ResolvedCommand;
 }
