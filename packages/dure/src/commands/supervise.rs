@@ -20,6 +20,7 @@ pub(crate) fn execute<S, P, T, Y>(
     startup_pipe: &str,
     launch_directory: PathBuf,
     command: AppCommand,
+    started_at_unix_ms: u64,
 ) -> Result<Outcome, AppError>
 where
     S: SessionStore + Clone,
@@ -35,6 +36,7 @@ where
         startup_pipe,
         launch_directory,
         command,
+        started_at_unix_ms,
     )?;
     Ok(Outcome::AppExit(status))
 }
@@ -49,6 +51,10 @@ mod tests {
     use crate::pal::session_store::{MockSessionStore, SessionStoreFacade};
     use crate::pal::transport::MemoryTransport;
 
+    /// A publication time with no structure of its own; the age column has its
+    /// own tests in `list_fmt`.
+    const SOME_STARTED_AT_MS: u64 = 1;
+
     #[test]
     fn a_supervisor_that_cannot_report_in_fails() {
         // Nothing is listening on the startup pipe, so the supervisor never
@@ -61,6 +67,7 @@ mod tests {
             "missing",
             PathBuf::from("/work"),
             AppCommand::from_argv(vec!["app.exe".to_string()]).unwrap(),
+            SOME_STARTED_AT_MS,
         )
         .unwrap_err();
         assert!(error.find_source::<StartupFailedError>().is_some());

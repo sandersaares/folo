@@ -20,7 +20,6 @@ use crate::pal::session_store::SessionStore;
 use crate::pal::transport::Transport;
 use crate::protocol::Message;
 use crate::session_record::{ProcessIdentity, SessionRecord};
-use crate::wall_clock::unix_now_ms;
 use crate::{
     AppCommand, BreakawayDeniedError, PalFailedError, SessionId, StartupFailedError, StoreError,
 };
@@ -86,6 +85,7 @@ pub(crate) fn run_supervisor<P, S, T, C>(
     startup_pipe: &str,
     launch_directory: PathBuf,
     command: AppCommand,
+    started_at_unix_ms: u64,
 ) -> Result<i32, AppError>
 where
     P: Processes,
@@ -117,6 +117,7 @@ where
         pty_host,
         launch_directory,
         command,
+        started_at_unix_ms,
     );
 
     let initialized = match result {
@@ -170,6 +171,7 @@ fn initialize<P, S, T, C>(
     pty_host: &C,
     launch_directory: PathBuf,
     command: AppCommand,
+    started_at_unix_ms: u64,
 ) -> Result<Initialized, AppError>
 where
     P: Processes,
@@ -217,7 +219,7 @@ where
         pipe_name,
         launch_directory,
         command,
-        started_at_unix_ms: unix_now_ms(),
+        started_at_unix_ms,
         attached: false,
     };
     store.publish(&record).map_err(StoreError::caused_by)?;
@@ -848,6 +850,10 @@ mod tests {
     use crate::protocol::{Message, encode, payload_len_ok};
     use crate::session_record::ProcessIdentity;
 
+    /// A publication time with no structure of its own; the age column has its
+    /// own tests in `list_fmt`.
+    const SOME_STARTED_AT_MS: u64 = 1;
+
     /// Arbitrary nonzero status the mock app exits with, so a test can tell a
     /// forwarded status from a defaulted one.
     const SAMPLE_APP_EXIT: i32 = 7;
@@ -937,8 +943,6 @@ mod tests {
     }
 
     #[test]
-    // Building the session record reads the real system clock.
-    #[cfg_attr(miri, ignore)]
     fn steal_displaces_first_client() {
         with_watchdog_phases("setting up the supervisor", |phase_reporter| {
             let transport = MemoryTransport::new();
@@ -960,6 +964,7 @@ mod tests {
                         "startup",
                         PathBuf::from("/work"),
                         AppCommand::for_test(&["app.exe"]),
+                        SOME_STARTED_AT_MS,
                     )
                 }
             });
@@ -999,8 +1004,6 @@ mod tests {
     }
 
     #[test]
-    // Building the session record reads the real system clock.
-    #[cfg_attr(miri, ignore)]
     fn final_output_arrives_before_the_exit_status() {
         with_watchdog_phases("setting up the supervisor", |phase_reporter| {
             let transport = MemoryTransport::new();
@@ -1022,6 +1025,7 @@ mod tests {
                         "startup",
                         PathBuf::from("/work"),
                         AppCommand::for_test(&["app.exe"]),
+                        SOME_STARTED_AT_MS,
                     )
                 }
             });
@@ -1071,8 +1075,6 @@ mod tests {
     }
 
     #[test]
-    // Building the session record reads the real system clock.
-    #[cfg_attr(miri, ignore)]
     fn an_app_that_exits_before_anyone_attaches_still_reports_its_status() {
         with_watchdog_phases("setting up the supervisor", |phase_reporter| {
             let transport = MemoryTransport::new();
@@ -1094,6 +1096,7 @@ mod tests {
                         "startup",
                         PathBuf::from("/work"),
                         AppCommand::for_test(&["app.exe"]),
+                        SOME_STARTED_AT_MS,
                     )
                 }
             });
@@ -1126,8 +1129,6 @@ mod tests {
     }
 
     #[test]
-    // Building the session record reads the real system clock.
-    #[cfg_attr(miri, ignore)]
     fn a_stalled_attached_flag_does_not_delay_the_exit_status() {
         with_watchdog_phases("setting up the supervisor", |phase_reporter| {
             let transport = MemoryTransport::new();
@@ -1158,6 +1159,7 @@ mod tests {
                         "startup",
                         PathBuf::from("/work"),
                         AppCommand::for_test(&["app.exe"]),
+                        SOME_STARTED_AT_MS,
                     )
                 }
             });
@@ -1199,8 +1201,6 @@ mod tests {
     }
 
     #[test]
-    // Building the session record reads the real system clock.
-    #[cfg_attr(miri, ignore)]
     fn a_session_nobody_comes_for_ends_when_its_initiator_gives_up() {
         with_watchdog_phases("setting up the supervisor", |phase_reporter| {
             let transport = MemoryTransport::new();
@@ -1222,6 +1222,7 @@ mod tests {
                         "startup",
                         PathBuf::from("/work"),
                         AppCommand::for_test(&["app.exe"]),
+                        SOME_STARTED_AT_MS,
                     )
                 }
             });
@@ -1264,6 +1265,7 @@ mod tests {
                         "startup",
                         PathBuf::from("/work"),
                         AppCommand::for_test(&["app.exe"]),
+                        SOME_STARTED_AT_MS,
                     )
                 }
             });
@@ -1299,29 +1301,21 @@ mod tests {
     }
 
     #[test]
-    // Building the session record reads the real system clock.
-    #[cfg_attr(miri, ignore)]
     fn a_session_without_startup_commit_is_rolled_back() {
         assert_rejected_startup_rolls_back(RejectedStartup::Disconnect);
     }
 
     #[test]
-    // Building the session record reads the real system clock.
-    #[cfg_attr(miri, ignore)]
     fn a_session_with_an_invalid_startup_commit_is_rolled_back() {
         assert_rejected_startup_rolls_back(RejectedStartup::Message(Message::StartupErr));
     }
 
     #[test]
-    // Building the session record reads the real system clock.
-    #[cfg_attr(miri, ignore)]
     fn a_startup_commit_timeout_is_rolled_back() {
         assert_rejected_startup_rolls_back(RejectedStartup::Timeout);
     }
 
     #[test]
-    // Building the session record reads the real system clock.
-    #[cfg_attr(miri, ignore)]
     fn failure_to_send_startup_ok_rolls_back() {
         with_watchdog_phases("running the rejected startup", |_phase_reporter| {
             let transport = MemoryTransport::new();
@@ -1340,6 +1334,7 @@ mod tests {
                 "startup",
                 PathBuf::from("/work"),
                 AppCommand::for_test(&["app.exe"]),
+                SOME_STARTED_AT_MS,
             )
             .unwrap_err();
 
@@ -1381,6 +1376,7 @@ mod tests {
                         "startup",
                         PathBuf::from("/work"),
                         AppCommand::for_test(&["app.exe"]),
+                        SOME_STARTED_AT_MS,
                     )
                 }
             });
@@ -1396,8 +1392,6 @@ mod tests {
     }
 
     #[test]
-    // Building the session record reads the real system clock.
-    #[cfg_attr(miri, ignore)]
     fn a_supervisor_that_cannot_outlive_its_launcher_says_so_on_the_startup_pipe() {
         with_watchdog_phases("setting up the supervisor", |phase_reporter| {
             let exit = Arc::new((Mutex::new(false), Condvar::new()));
@@ -1419,6 +1413,7 @@ mod tests {
                         "startup",
                         PathBuf::from("/work"),
                         AppCommand::for_test(&["app.exe"]),
+                        SOME_STARTED_AT_MS,
                     )
                 }
             });
@@ -1439,8 +1434,6 @@ mod tests {
     }
 
     #[test]
-    // Building the session record reads the real system clock.
-    #[cfg_attr(miri, ignore)]
     fn a_wait_that_fails_still_takes_the_session_off_the_host() {
         with_watchdog_phases("setting up the supervisor", |phase_reporter| {
             let exit = Arc::new((Mutex::new(false), Condvar::new()));
@@ -1463,6 +1456,7 @@ mod tests {
                         "startup",
                         PathBuf::from("/work"),
                         AppCommand::for_test(&["app.exe"]),
+                        SOME_STARTED_AT_MS,
                     )
                 }
             });
@@ -1497,8 +1491,6 @@ mod tests {
     }
 
     #[test]
-    // Building the session record reads the real system clock.
-    #[cfg_attr(miri, ignore)]
     fn output_produced_before_the_first_attach_reaches_that_client() {
         with_watchdog_phases("setting up the supervisor", |phase_reporter| {
             let transport = MemoryTransport::new();
@@ -1520,6 +1512,7 @@ mod tests {
                         "startup",
                         PathBuf::from("/work"),
                         AppCommand::for_test(&["app.exe"]),
+                        SOME_STARTED_AT_MS,
                     )
                 }
             });
@@ -2025,8 +2018,6 @@ mod tests {
     }
 
     #[test]
-    // Building the session record reads the real system clock.
-    #[cfg_attr(miri, ignore)]
     fn a_failure_after_id_allocation_releases_the_id() {
         let store = MemorySessionStore::new();
         store.fail_next_publish();
@@ -2055,6 +2046,7 @@ mod tests {
                 &pty,
                 PathBuf::from("/work"),
                 AppCommand::for_test(&["app.exe"]),
+                SOME_STARTED_AT_MS,
             )
             .err()
             .expect("record publication fails");

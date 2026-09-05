@@ -68,6 +68,7 @@ pub(crate) fn dispatch(input: &Invocation, pal: &Pal) -> Result<Outcome, AppErro
             startup_pipe,
             launch_directory.clone(),
             command.clone(),
+            unix_now_ms(),
         ),
     }
 }
