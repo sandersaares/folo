@@ -115,6 +115,7 @@ mod tests {
 
     use super::*;
     use crate::AppCommand;
+    use crate::protocol::PROTOCOL_VERSION;
     use crate::session_record::ProcessIdentity;
 
     /// An id for a fixture. Positive because every session id is.
@@ -134,6 +135,7 @@ mod tests {
             command: AppCommand::for_test(&["app.exe"]),
             started_at_unix_ms: 1,
             attached: false,
+            protocol_version: PROTOCOL_VERSION,
         }
     }
 

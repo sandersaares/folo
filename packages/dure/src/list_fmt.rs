@@ -150,6 +150,7 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
+    use crate::protocol::PROTOCOL_VERSION;
     use crate::session_record::ProcessIdentity;
     use crate::{AppCommand, SessionId};
 
@@ -177,6 +178,7 @@ mod tests {
             command: AppCommand::for_test(&[command]),
             started_at_unix_ms: STARTED_AT,
             attached: true,
+            protocol_version: PROTOCOL_VERSION,
         }
     }
 

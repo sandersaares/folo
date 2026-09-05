@@ -99,13 +99,7 @@ where
     };
 
     transport
-        .send(
-            conn,
-            &Message::Attach {
-                cols: size.cols,
-                rows: size.rows,
-            },
-        )
+        .send(conn, &Message::Attach { size })
         .map_err(|_error| AttachFailedError::for_id(session_id))?;
 
     match transport.recv(conn) {
@@ -219,16 +213,7 @@ where
                         }
                     }
                     Ok(ConsoleInput::Resize(size)) => {
-                        if transport
-                            .send(
-                                conn,
-                                &Message::Resize {
-                                    cols: size.cols,
-                                    rows: size.rows,
-                                },
-                            )
-                            .is_err()
-                        {
+                        if transport.send(conn, &Message::Resize { size }).is_err() {
                             break;
                         }
                     }

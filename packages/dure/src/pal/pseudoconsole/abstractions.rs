@@ -1,17 +1,35 @@
 //! Pseudoconsole PAL: create, resize, close, and byte handles.
 
 use std::fmt;
+use std::num::NonZero;
 
 use crate::pal::error::PalError;
 use crate::pal::ids::PtyId;
 
 /// Console size applied to the app pseudoconsole.
+///
+/// Both dimensions are non-zero because a console of no width or no height is
+/// not a console anyone can render into. Establishing that here is what lets
+/// every layer below stop deciding what to do about a zero: without it, the
+/// Windows implementations quietly repaired such a size while the in-memory one
+/// kept it, so the same value meant different things depending on who held it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct WindowSize {
     /// Width in columns.
-    pub cols: u16,
+    pub cols: NonZero<u16>,
     /// Height in rows.
-    pub rows: u16,
+    pub rows: NonZero<u16>,
+}
+
+impl WindowSize {
+    /// A size, if `cols` and `rows` describe a console that can be rendered.
+    #[must_use]
+    pub(crate) const fn new(cols: u16, rows: u16) -> Option<Self> {
+        let (Some(cols), Some(rows)) = (NonZero::new(cols), NonZero::new(rows)) else {
+            return None;
+        };
+        Some(Self { cols, rows })
+    }
 }
 
 /// Create and relay a Windows pseudoconsole.

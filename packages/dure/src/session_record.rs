@@ -53,6 +53,12 @@ pub(crate) struct SessionRecord {
     /// failed write is tolerated, so it is what `list` shows rather than
     /// something any decision is made from.
     pub attached: bool,
+    /// The wire format this session's supervisor speaks.
+    ///
+    /// Recorded so a client from a different build can refuse the session and
+    /// say why, rather than connecting and failing on a frame it cannot read.
+    /// Ref: docs/transport.md.
+    pub protocol_version: u32,
 }
 
 /// The shape a session record has on disk.
@@ -72,6 +78,15 @@ struct StoredRecord {
     started_at_unix_ms: u64,
     #[serde(default)]
     attached: bool,
+    /// Absent in records written before versioning existed. Those describe the
+    /// format as it stands, so they read as the version that introduced the
+    /// field rather than as a mismatch.
+    #[serde(default = "first_protocol_version")]
+    protocol_version: u32,
+}
+
+const fn first_protocol_version() -> u32 {
+    1
 }
 
 /// Why a stored record could not become a [`SessionRecord`].
@@ -102,6 +117,7 @@ impl TryFrom<StoredRecord> for SessionRecord {
             command: stored.command,
             started_at_unix_ms: stored.started_at_unix_ms,
             attached: stored.attached,
+            protocol_version: stored.protocol_version,
         })
     }
 }
@@ -117,6 +133,7 @@ impl From<SessionRecord> for StoredRecord {
             command: record.command,
             started_at_unix_ms: record.started_at_unix_ms,
             attached: record.attached,
+            protocol_version: record.protocol_version,
         }
     }
 }
@@ -137,6 +154,7 @@ impl ProcessIdentity {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
+    use crate::protocol::PROTOCOL_VERSION;
 
     fn sample() -> SessionRecord {
         SessionRecord {
@@ -150,6 +168,7 @@ mod tests {
             command: AppCommand::for_test(&["copilot.exe"]),
             started_at_unix_ms: 1,
             attached: false,
+            protocol_version: PROTOCOL_VERSION,
         }
     }
 
@@ -172,9 +191,23 @@ mod tests {
             concat!(
                 r#"{"id":1,"supervisor_pid":42,"supervisor_creation_time":99,"#,
                 r#""pipe_name":"\\\\.\\pipe\\dure-abc","launch_directory":"C:\\work","#,
-                r#""command":["copilot.exe"],"started_at_unix_ms":1,"attached":false}"#,
+                r#""command":["copilot.exe"],"started_at_unix_ms":1,"attached":false,"#,
+                r#""protocol_version":1}"#,
             )
         );
+    }
+
+    #[test]
+    fn a_record_written_before_versioning_reads_as_the_first_version() {
+        // Such a record describes the format as it stands, so treating it as a
+        // mismatch would refuse sessions that work.
+        let without_version = concat!(
+            r#"{"id":1,"supervisor_pid":42,"supervisor_creation_time":99,"#,
+            r#""pipe_name":"p","launch_directory":"C:\\work","#,
+            r#""command":["copilot.exe"],"started_at_unix_ms":1,"attached":false}"#,
+        );
+        let record = serde_json::from_str::<SessionRecord>(without_version).unwrap();
+        assert_eq!(record.protocol_version, 1);
     }
 
     #[test]

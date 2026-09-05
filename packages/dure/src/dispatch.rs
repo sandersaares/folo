@@ -87,6 +87,7 @@ mod tests {
     use crate::pal::pseudoconsole::{MemoryPseudoconsole, PseudoconsoleFacade};
     use crate::pal::session_store::{MockSessionStore, SessionStoreFacade};
     use crate::pal::transport::{MemoryTransport, TransportFacade};
+    use crate::protocol::PROTOCOL_VERSION;
     use crate::session_record::{ProcessIdentity, SessionRecord};
     use crate::{AppCommand, SessionId, SessionNotFoundError};
 
@@ -148,6 +149,7 @@ mod tests {
                 command: AppCommand::for_test(&["app.exe"]),
                 started_at_unix_ms: 1,
                 attached: false,
+                protocol_version: PROTOCOL_VERSION,
             }))
         });
         store.expect_delete_owned_by().returning(|_, _| Ok(()));

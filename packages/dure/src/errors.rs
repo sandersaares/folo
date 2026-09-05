@@ -157,6 +157,22 @@ pub(crate) struct SupervisorLostError;
 #[display("Failed to restore the console; run `cmd /c cls` or open a new terminal")]
 pub(crate) struct ConsoleRestoreError;
 
+/// The session was started by a different build of `dure`.
+#[ohno::error]
+#[display(
+    "Session {id} was started by a different version of dure and cannot be resumed by this one; \
+     use `dure kill {id}` to end it"
+)]
+pub(crate) struct ProtocolMismatchError {
+    id: u32,
+}
+
+impl ProtocolMismatchError {
+    pub(crate) fn for_id(id: SessionId) -> Self {
+        Self::new(id.get())
+    }
+}
+
 /// Output the command was asked to produce could not be written.
 #[ohno::error]
 #[display("Failed to write command output")]
@@ -188,6 +204,7 @@ unwind_safe!(
     SupervisorLostError,
     ConsoleRestoreError,
     OutputFailedError,
+    ProtocolMismatchError,
     InvalidSessionIdError,
 );
 

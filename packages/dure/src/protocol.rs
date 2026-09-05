@@ -17,6 +17,22 @@ use std::mem::size_of;
 use crate::SessionId;
 use crate::constants::MAX_FRAME_LEN;
 use crate::durability::LauncherTie;
+use crate::pal::pseudoconsole::WindowSize;
+
+/// The wire format this build speaks.
+///
+/// A supervisor outlives the terminal that started it, so a `dure` upgraded in
+/// the meantime can meet a supervisor from the previous build. Cross-build
+/// resume is not supported: the message layouts below are free to change, and
+/// pretending otherwise would turn a layout change into a corrupt frame rather
+/// than a clear refusal.
+///
+/// A supervisor records the version it speaks when it publishes its session, so
+/// a client can refuse before it connects and say why. Bump this whenever a
+/// message layout changes or a kind byte's meaning changes.
+///
+/// Ref: docs/transport.md; docs/design.md, "Attach, detach, steal".
+pub(crate) const PROTOCOL_VERSION: u32 = 1;
 
 /// One framed message on the client-supervisor pipe or the startup channel.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -24,19 +40,15 @@ use crate::durability::LauncherTie;
 pub(crate) enum Message {
     /// Client is attaching and reports its console size.
     Attach {
-        /// Console width in columns.
-        cols: u16,
-        /// Console height in rows.
-        rows: u16,
+        /// Console the client is attaching from.
+        size: WindowSize,
     },
     /// Console input bytes from the client to the app.
     Input(Vec<u8>),
     /// Client console size changed while attached.
     Resize {
-        /// Console width in columns.
-        cols: u16,
-        /// Console height in rows.
-        rows: u16,
+        /// Size the console now has.
+        size: WindowSize,
     },
     /// Supervisor accepted this client as the sole live console.
     Attached {
@@ -88,19 +100,19 @@ const KIND_STARTUP_COMMIT: u8 = 10;
 pub(crate) fn encode(message: &Message) -> Vec<u8> {
     let mut payload = Vec::new();
     match message {
-        Message::Attach { cols, rows } => {
+        Message::Attach { size } => {
             payload.push(KIND_ATTACH);
-            payload.extend_from_slice(&cols.to_le_bytes());
-            payload.extend_from_slice(&rows.to_le_bytes());
+            payload.extend_from_slice(&size.cols.get().to_le_bytes());
+            payload.extend_from_slice(&size.rows.get().to_le_bytes());
         }
         Message::Input(data) => {
             payload.push(KIND_INPUT);
             payload.extend_from_slice(data);
         }
-        Message::Resize { cols, rows } => {
+        Message::Resize { size } => {
             payload.push(KIND_RESIZE);
-            payload.extend_from_slice(&cols.to_le_bytes());
-            payload.extend_from_slice(&rows.to_le_bytes());
+            payload.extend_from_slice(&size.cols.get().to_le_bytes());
+            payload.extend_from_slice(&size.rows.get().to_le_bytes());
         }
         Message::Attached { session_id } => {
             payload.push(KIND_ATTACHED);
@@ -155,9 +167,9 @@ pub(crate) fn decode_payload(payload: &[u8]) -> Result<Message, DecodeError> {
         return Err(DecodeError::Invalid);
     };
     match *kind {
-        KIND_ATTACH => decode_size(rest).map(|(cols, rows)| Message::Attach { cols, rows }),
+        KIND_ATTACH => decode_size(rest).map(|size| Message::Attach { size }),
         KIND_INPUT => Ok(Message::Input(rest.to_vec())),
-        KIND_RESIZE => decode_size(rest).map(|(cols, rows)| Message::Resize { cols, rows }),
+        KIND_RESIZE => decode_size(rest).map(|size| Message::Resize { size }),
         KIND_ATTACHED => decode_session_id(rest).map(|session_id| Message::Attached { session_id }),
         KIND_OUTPUT => Ok(Message::Output(rest.to_vec())),
         KIND_DISPLACED if rest.is_empty() => Ok(Message::Displaced),
@@ -189,7 +201,12 @@ pub(crate) fn payload_len_ok(len: u32) -> bool {
     len > 0 && len <= MAX_FRAME_LEN
 }
 
-fn decode_size(rest: &[u8]) -> Result<(u16, u16), DecodeError> {
+/// Decodes a console size, refusing one no console could have.
+///
+/// The invariant is established here rather than repaired further down, so a
+/// peer that sends a zero dimension is told its frame is invalid instead of
+/// silently getting a different size than it asked for.
+fn decode_size(rest: &[u8]) -> Result<WindowSize, DecodeError> {
     let (cols_bytes, rest) = rest.split_at_checked(2).ok_or(DecodeError::Invalid)?;
     let (rows_bytes, rest) = rest.split_at_checked(2).ok_or(DecodeError::Invalid)?;
     if !rest.is_empty() {
@@ -205,7 +222,7 @@ fn decode_size(rest: &[u8]) -> Result<(u16, u16), DecodeError> {
             .try_into()
             .map_err(|_error| DecodeError::Invalid)?,
     );
-    Ok((cols, rows))
+    WindowSize::new(cols, rows).ok_or(DecodeError::Invalid)
 }
 
 fn decode_u32(rest: &[u8]) -> Result<u32, DecodeError> {
@@ -235,11 +252,12 @@ mod tests {
     fn round_trips_each_kind() {
         let id = SessionId::MIN;
         let messages = [
-            Message::Attach { cols: 80, rows: 24 },
+            Message::Attach {
+                size: WindowSize::new(80, 24).expect("a fixture size is not empty"),
+            },
             Message::Input(b"hi".to_vec()),
             Message::Resize {
-                cols: 120,
-                rows: 30,
+                size: WindowSize::new(120, 30).expect("a fixture size is not empty"),
             },
             Message::Attached { session_id: id },
             Message::Output(b"out".to_vec()),
@@ -328,6 +346,23 @@ mod tests {
             decode_payload(&[KIND_STARTUP_OK]).unwrap_err(),
             DecodeError::Invalid
         );
+    }
+
+    #[test]
+    fn a_size_no_console_could_have_is_refused() {
+        // The invariant is established here so nothing below has to decide what
+        // a zero means: a peer that sends one is told its frame is invalid
+        // rather than quietly getting a different size than it asked for.
+        for (cols, rows) in [(0_u16, 24_u16), (80, 0), (0, 0)] {
+            let mut attach = vec![KIND_ATTACH];
+            attach.extend_from_slice(&cols.to_le_bytes());
+            attach.extend_from_slice(&rows.to_le_bytes());
+            assert_eq!(
+                decode_payload(&attach).unwrap_err(),
+                DecodeError::Invalid,
+                "{cols}x{rows} is not a console"
+            );
+        }
     }
 
     #[test]

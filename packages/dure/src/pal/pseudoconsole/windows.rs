@@ -64,9 +64,9 @@ fn close_handle(handle: HANDLE) {
 
 fn to_coord(size: WindowSize) -> Result<COORD, PalError> {
     Ok(COORD {
-        X: i16::try_from(size.cols.max(1))
+        X: i16::try_from(size.cols.get())
             .map_err(|error| PalError::with_source(PalErrorKind::Other, error))?,
-        Y: i16::try_from(size.rows.max(1))
+        Y: i16::try_from(size.rows.get())
             .map_err(|error| PalError::with_source(PalErrorKind::Other, error))?,
     })
 }

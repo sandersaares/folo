@@ -33,6 +33,7 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
+    use crate::protocol::PROTOCOL_VERSION;
     use crate::{AppCommand, SessionId};
 
     fn record() -> SessionRecord {
@@ -47,6 +48,7 @@ mod tests {
             command: AppCommand::for_test(&["copilot.exe"]),
             started_at_unix_ms: 1,
             attached: false,
+            protocol_version: PROTOCOL_VERSION,
         }
     }
 

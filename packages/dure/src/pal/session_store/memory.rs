@@ -191,6 +191,7 @@ mod tests {
 
     use super::*;
     use crate::AppCommand;
+    use crate::protocol::PROTOCOL_VERSION;
 
     #[test]
     fn publish_stall_reports_each_rearmed_publisher() {
@@ -213,6 +214,7 @@ mod tests {
                             command: AppCommand::for_test(&["app.exe"]),
                             started_at_unix_ms: 1,
                             attached,
+                            protocol_version: PROTOCOL_VERSION,
                         })
                     }
                 });

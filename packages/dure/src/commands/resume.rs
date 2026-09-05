@@ -11,11 +11,13 @@ use crate::pal::local_console::LocalConsole;
 use crate::pal::processes::Processes;
 use crate::pal::session_store::SessionStore;
 use crate::pal::transport::Transport;
+use crate::protocol::PROTOCOL_VERSION;
 use crate::session_record::SessionRecord;
 use crate::trace::{Trace, trace};
 use crate::{
     CanonicalizeError, CurrentDirectoryError, InvalidSessionIdError, NoConsoleError,
-    NoLiveSessionsError, Outcome, OutputFailedError, PromptFailedError, SessionId,
+    NoLiveSessionsError, Outcome, OutputFailedError, PromptFailedError, ProtocolMismatchError,
+    SessionId,
 };
 
 /// Attach using auto-detect or an explicit id.
@@ -54,6 +56,19 @@ where
     // selection can block on the user, and an id is reusable once its session
     // ends (design.md, "Session identity").
     let record = require_live_session(store, processes, id, trace)?;
+    // Refused before the console is taken over and before a pipe is opened: a
+    // supervisor from another build would answer with frames this one cannot
+    // read, and an unreadable frame is a worse thing to show a user than a
+    // sentence saying which session cannot be resumed and how to end it.
+    // Ref: docs/transport.md.
+    if record.protocol_version != PROTOCOL_VERSION {
+        trace!(
+            trace,
+            "session {id} speaks protocol version {}, this build speaks {PROTOCOL_VERSION}",
+            record.protocol_version
+        );
+        return Err(ProtocolMismatchError::for_id(id).into());
+    }
     trace!(
         trace,
         "attaching to session {} on {}", record.id, record.pipe_name
@@ -172,6 +187,7 @@ mod tests {
                     command: AppCommand::for_test(&["app.exe"]),
                     started_at_unix_ms: 1,
                     attached: false,
+                    protocol_version: PROTOCOL_VERSION,
                 })
                 .unwrap();
         }
@@ -225,6 +241,54 @@ mod tests {
     }
 
     #[test]
+    // Talks to the real operating system: the session store is a real directory.
+    #[cfg_attr(miri, ignore)]
+    fn a_session_from_another_build_is_refused_before_anything_is_taken_over() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = FsSessionStore::new(dir.path().to_path_buf());
+        let id = store.allocate_id(&ProcessIdentity::for_test(1)).unwrap();
+        store
+            .publish(&SessionRecord {
+                id,
+                supervisor: ProcessIdentity {
+                    pid: 10,
+                    creation_time: 100,
+                },
+                pipe_name: "pipe".to_string(),
+                launch_directory: PathBuf::from("/work"),
+                command: AppCommand::for_test(&["app.exe"]),
+                started_at_unix_ms: 1,
+                attached: false,
+                // A supervisor speaking a wire format this build does not.
+                protocol_version: PROTOCOL_VERSION.saturating_add(1),
+            })
+            .unwrap();
+        let mut processes = MockProcesses::new();
+        processes
+            .expect_probe()
+            .returning(|_| ProcessLiveness::Live);
+        // Refusing before the connection is what this checks: a transport that
+        // refuses every operation proves nothing was opened.
+        let transport = MemoryTransport::new();
+        let mut console = MockLocalConsole::new();
+        console.expect_has_console().return_const(true);
+        let console = LocalConsoleFacade::from_mock(console);
+
+        let error = execute(
+            &store,
+            &processes,
+            &transport,
+            &console,
+            Some(id),
+            SOME_NOW_MS,
+            Trace::default(),
+        )
+        .unwrap_err();
+
+        assert!(error.find_source::<ProtocolMismatchError>().is_some());
+    }
+
+    #[test]
     // Talks to the real operating system: the session store is a real directory and
     // the relay threads' blocking recv is guarded by a watchdog thread.
     #[cfg_attr(miri, ignore)]
@@ -248,6 +312,7 @@ mod tests {
                     command: AppCommand::for_test(&["app.exe"]),
                     started_at_unix_ms: 1,
                     attached: false,
+                    protocol_version: PROTOCOL_VERSION,
                 })
                 .unwrap();
             let mut processes = MockProcesses::new();
@@ -273,7 +338,7 @@ mod tests {
             console.expect_end_raw_relay().returning(|_| Ok(()));
             console
                 .expect_window_size()
-                .returning(|| Ok(WindowSize { cols: 80, rows: 24 }));
+                .returning(|| Ok(WindowSize::new(80, 24).expect("a fixture size is not empty")));
             let reader_cancelled = Arc::new((Mutex::new(false), Condvar::new()));
             console.expect_read_input().returning({
                 let reader_cancelled = Arc::clone(&reader_cancelled);

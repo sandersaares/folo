@@ -18,7 +18,7 @@ use crate::pal::processes::{AppSpawn, Processes};
 use crate::pal::pseudoconsole::{Pseudoconsole, WindowSize};
 use crate::pal::session_store::SessionStore;
 use crate::pal::transport::Transport;
-use crate::protocol::Message;
+use crate::protocol::{Message, PROTOCOL_VERSION};
 use crate::session_record::{ProcessIdentity, SessionRecord};
 use crate::{
     AppCommand, BreakawayDeniedError, PalFailedError, SessionId, StartupFailedError, StoreError,
@@ -223,6 +223,7 @@ where
         command: spec.command,
         started_at_unix_ms: spec.started_at_unix_ms,
         attached: false,
+        protocol_version: PROTOCOL_VERSION,
     };
     store.publish(&record).map_err(StoreError::caused_by)?;
 
@@ -659,7 +660,7 @@ where
     C: Pseudoconsole,
 {
     match shared.transport.recv_timeout(conn, CONNECT_TIMEOUT) {
-        Ok(Message::Attach { cols, rows }) => {
+        Ok(Message::Attach { size }) => {
             // One serialized attach transaction: acknowledge, take ownership,
             // and displace the previous client without another attach
             // interleaving between the acknowledgement and the transfer.
@@ -730,9 +731,7 @@ where
             // is already gone; wait_app and read_output observe that and stop
             // the relay.
             // Ref: docs/console.md, "Window size".
-            _ = shared
-                .pty_host
-                .resize(shared.pty, WindowSize { cols, rows });
+            _ = shared.pty_host.resize(shared.pty, size);
             // Store I/O is not part of the serialized ownership transfer. A
             // stalled durable write must not prevent teardown or another client
             // from acquiring the attach lock.
@@ -766,10 +765,8 @@ where
                 // AppExited to the live client.
                 _ = shared.pty_host.write_input(shared.pty, &data);
             }
-            Message::Resize { cols, rows } => {
-                _ = shared
-                    .pty_host
-                    .resize(shared.pty, WindowSize { cols, rows });
+            Message::Resize { size } => {
+                _ = shared.pty_host.resize(shared.pty, size);
             }
             _ => break,
         }
@@ -871,7 +868,9 @@ mod tests {
     const SAMPLE_APP_EXIT: i32 = 7;
 
     /// Ordinary valid geometry for tests where resize behavior is out of scope.
-    const ORDINARY_ATTACH: Message = Message::Attach { cols: 80, rows: 24 };
+    const ORDINARY_ATTACH: Message = Message::Attach {
+        size: WindowSize::new(80, 24).expect("a fixture size is not empty"),
+    };
 
     /// Completes the client side of the startup commit handshake.
     fn commit_startup(
@@ -1763,6 +1762,7 @@ mod tests {
                     command: AppCommand::for_test(&["app.exe"]),
                     started_at_unix_ms: 1,
                     attached: false,
+                    protocol_version: PROTOCOL_VERSION,
                 })
                 .unwrap();
             let record_live = Arc::new(Mutex::new(true));
@@ -1882,8 +1882,7 @@ mod tests {
             .send(
                 client,
                 &Message::Resize {
-                    cols: 120,
-                    rows: 40,
+                    size: WindowSize::new(120, 40).expect("a fixture size is not empty"),
                 },
             )
             .unwrap();
@@ -1896,13 +1895,7 @@ mod tests {
         let (flags, recorder) = attach_recorder();
         client_loop(&shared, supervisor, &recorder);
 
-        assert_eq!(
-            pty_host.size(shared.pty),
-            Some(WindowSize {
-                cols: 120,
-                rows: 40
-            })
-        );
+        assert_eq!(pty_host.size(shared.pty), WindowSize::new(120, 40));
         assert_eq!(pty_host.take_input(shared.pty), b"hi");
         assert!(client_conn(&shared).is_none());
         assert_eq!(*flags.lock().unwrap(), vec![true, false]);
@@ -2060,6 +2053,7 @@ mod tests {
                 command: AppCommand::for_test(&["app.exe"]),
                 started_at_unix_ms: 1,
                 attached: false,
+                protocol_version: PROTOCOL_VERSION,
             })
             .unwrap();
 

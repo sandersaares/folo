@@ -348,6 +348,12 @@ broken away, which is the same rule as losing a terminal, applied twice.
 A machine configured to log the user off when their interactive session ends
 makes the product impossible; `dure` cannot outlive a logoff.
 
+A session belongs to the `dure` build that started it. Replacing `dure` while a
+session is running leaves that session held by the supervisor already in
+memory; the new build reports the session as one it cannot resume rather than
+attaching to it. Detaching before upgrading and killing what is left afterwards
+is the way through.
+
 ## Isolation
 
 Sessions are per Windows user. The session store and the client-supervisor

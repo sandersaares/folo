@@ -207,11 +207,20 @@ mod tests {
     #[test]
     fn pumps_bytes_and_tracks_size() {
         let host = MemoryPseudoconsole::new();
-        let pty = host.create(WindowSize { cols: 80, rows: 24 }).unwrap();
+        let pty = host
+            .create(WindowSize::new(80, 24).expect("a fixture size is not empty"))
+            .unwrap();
         host.write_input(pty, b"in").unwrap();
         assert_eq!(host.take_input(pty), b"in");
-        host.resize(pty, WindowSize { cols: 40, rows: 10 }).unwrap();
-        assert_eq!(host.size(pty), Some(WindowSize { cols: 40, rows: 10 }));
+        host.resize(
+            pty,
+            WindowSize::new(40, 10).expect("a fixture size is not empty"),
+        )
+        .unwrap();
+        assert_eq!(
+            host.size(pty),
+            Some(WindowSize::new(40, 10).expect("a fixture size is not empty"))
+        );
         host.push_output(pty, b"out");
         assert_eq!(
             host.read_output(pty).unwrap().as_deref(),
@@ -223,7 +232,9 @@ mod tests {
     #[test]
     fn a_finished_pty_reports_the_end_of_the_stream() {
         let host = MemoryPseudoconsole::new();
-        let pty = host.create(WindowSize { cols: 80, rows: 24 }).unwrap();
+        let pty = host
+            .create(WindowSize::new(80, 24).expect("a fixture size is not empty"))
+            .unwrap();
         host.push_output(pty, b"tail");
         host.finish(pty);
         // Everything the app wrote is delivered first, and only then does the

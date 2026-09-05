@@ -85,10 +85,10 @@ pub(crate) const SUPERVISOR_COMMAND: &str = "__supervisor";
 ///
 /// VGA text-mode geometry, the historical Windows console default.
 /// Ref: docs/design.md, "Terminal pass-through".
-pub(crate) const DEFAULT_PTY_COLS: u16 = 80;
+pub(crate) const DEFAULT_PTY_COLS: NonZero<u16> = NonZero::new(80).expect("80 is not zero");
 
 /// Rows used until the first client attach reports a real size.
 ///
 /// VGA text-mode geometry, the historical Windows console default.
 /// Ref: docs/design.md, "Terminal pass-through".
-pub(crate) const DEFAULT_PTY_ROWS: u16 = 24;
+pub(crate) const DEFAULT_PTY_ROWS: NonZero<u16> = NonZero::new(24).expect("24 is not zero");

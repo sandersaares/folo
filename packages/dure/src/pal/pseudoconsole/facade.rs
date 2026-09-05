@@ -107,7 +107,9 @@ mod tests {
     fn from_memory_creates_pty() {
         let pty = MemoryPseudoconsole::new();
         let facade = PseudoconsoleFacade::from_memory(pty);
-        let id = facade.create(WindowSize { cols: 80, rows: 24 }).unwrap();
+        let id = facade
+            .create(WindowSize::new(80, 24).expect("a fixture size is not empty"))
+            .unwrap();
         facade.close(id);
         _ = format!("{facade:?}");
     }

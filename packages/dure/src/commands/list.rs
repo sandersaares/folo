@@ -42,6 +42,7 @@ mod tests {
     use crate::AppCommand;
     use crate::pal::processes::{MockProcesses, ProcessLiveness};
     use crate::pal::session_store::{FsSessionStore, SessionStore};
+    use crate::protocol::PROTOCOL_VERSION;
     use crate::session_record::{ProcessIdentity, SessionRecord};
 
     /// A reading of the clock with no structure of its own; the age column has
@@ -62,6 +63,7 @@ mod tests {
                 command: AppCommand::for_test(&["app.exe"]),
                 started_at_unix_ms: 1,
                 attached: false,
+                protocol_version: PROTOCOL_VERSION,
             })
             .unwrap();
     }

@@ -161,10 +161,14 @@ fn read_window_size(output: HANDLE) -> Result<WindowSize, PalError> {
         .checked_sub(info.srWindow.Top)
         .and_then(|delta| delta.checked_add(1))
         .unwrap_or(1);
-    Ok(WindowSize {
-        cols: u16::try_from(width.max(1)).unwrap_or(u16::MAX),
-        rows: u16::try_from(height.max(1)).unwrap_or(u16::MAX),
-    })
+    // A console host that reports an empty window is describing something no
+    // app can paint into. One cell is the smallest thing that is still a
+    // console, and is what the relay carries on with.
+    WindowSize::new(
+        u16::try_from(width.max(1)).unwrap_or(u16::MAX),
+        u16::try_from(height.max(1)).unwrap_or(u16::MAX),
+    )
+    .ok_or_else(|| PalError::new(PalErrorKind::Other))
 }
 
 fn event_kind(record: &INPUT_RECORD) -> u32 {

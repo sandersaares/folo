@@ -165,6 +165,7 @@ mod tests {
     use crate::AppCommand;
     use crate::pal::processes::MockProcesses;
     use crate::pal::session_store::{MemorySessionStore, SessionStore};
+    use crate::protocol::PROTOCOL_VERSION;
     use crate::session_record::{ProcessIdentity, SessionRecord};
 
     fn record(id: SessionId, pid: u32, creation: u64) -> SessionRecord {
@@ -179,6 +180,7 @@ mod tests {
             command: AppCommand::for_test(&["app.exe"]),
             started_at_unix_ms: 1,
             attached: false,
+            protocol_version: PROTOCOL_VERSION,
         }
     }
 

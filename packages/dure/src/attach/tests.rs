@@ -15,7 +15,7 @@ use crate::pal::pseudoconsole::WindowSize;
 use crate::pal::transport::MemoryTransport;
 use crate::protocol::Message;
 
-const SAMPLE_SIZE: WindowSize = WindowSize { cols: 80, rows: 24 };
+const SAMPLE_SIZE: WindowSize = WindowSize::new(80, 24).expect("a fixture size is not empty");
 
 /// Console input a test hands to the relay, and the cancellation that ends it.
 ///
@@ -476,7 +476,7 @@ fn the_console_can_be_taken_over_again_after_a_relay() {
 
 #[test]
 fn console_input_is_forwarded_to_the_supervisor() {
-    let resize = WindowSize { cols: 10, rows: 20 };
+    let resize = WindowSize::new(10, 20).expect("a fixture size is not empty");
     let console = TestConsole {
         input: vec![
             Ok(ConsoleInput::Bytes(b"hi".to_vec())),
@@ -491,7 +491,7 @@ fn console_input_is_forwarded_to_the_supervisor() {
         ));
         assert!(matches!(
             transport.recv(conn),
-            Ok(Message::Resize { cols, rows }) if cols == resize.cols && rows == resize.rows
+            Ok(Message::Resize { size }) if size == resize
         ));
         _ = transport.send(conn, &Message::AppExited { status: 0 });
     })

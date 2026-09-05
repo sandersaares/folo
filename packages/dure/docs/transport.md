@@ -8,6 +8,14 @@ The channel between a supervisor and its clients. Part of the `dure`
 A per-session named pipe carries a framed protocol containing console bytes,
 window-size changes, attach and displacement outcomes, and app exit status.
 
+The framed protocol carries a version. A supervisor stamps the version it
+speaks into its session record, and a client refuses a session whose version
+differs rather than connecting and negotiating. Two `dure` builds therefore
+never have to agree on a wire format between them: an upgrade leaves the
+sessions started by the previous build resumable only by that build, and the
+mismatch is reported instead of appearing as a decode failure mid-relay.
+Records written before the version existed are read as the first version.
+
 Pipe names contain a random nonce. First-instance creation prevents a
 pre-existing pipe from silently impersonating the supervisor; the pipe rejects
 remote clients and its access control list permits only the creating user. The
@@ -80,7 +88,6 @@ so output that cannot be delivered has no later value, and the user recovers the
 session with a fresh `dure resume`.
 
 ## Timeouts
-
 Connecting is a deadline, not an attempt. A pipe instance the wait reported can
 be taken by another client before this one opens it, and the supervisor posts a
 fresh instance as soon as it accepts, so a busy instance is retried for as long
