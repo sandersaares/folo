@@ -138,6 +138,11 @@ impl<'a, C: LocalConsole> ConsoleLease<'a, C> {
         })
     }
 
+    // The only thing this reports that `Drop` does not do anyway is a failed
+    // hand-back, which reaches the user as a line on stderr. A mutation that
+    // stops reporting it is therefore not observable in this process.
+    // Ref: docs/testing.md, "Mutation testing".
+    #[cfg_attr(test, mutants::skip)]
     fn release(mut self) -> Result<(), AppError> {
         self.lease.take().map_or(Ok(()), |lease| {
             self.console

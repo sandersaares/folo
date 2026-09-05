@@ -202,21 +202,23 @@ mod tests {
             let mut publishers = Vec::new();
 
             for attached in [true, false] {
+                // Built before the thread, so a record a test cannot construct
+                // fails the test rather than stranding it waiting on a
+                // publisher that never ran.
+                let record = SessionRecord {
+                    id,
+                    supervisor: owner,
+                    pipe_name: "pipe".to_string(),
+                    launch_directory: PathBuf::from("/work"),
+                    command: AppCommand::for_test(&["app.exe"]),
+                    started_at_unix_ms: 1,
+                    attached,
+                    protocol_version: PROTOCOL_VERSION,
+                };
                 store.stall_publishes();
                 let publisher = thread::spawn({
                     let store = store.clone();
-                    move || {
-                        store.publish(&SessionRecord {
-                            id,
-                            supervisor: owner,
-                            pipe_name: "pipe".to_string(),
-                            launch_directory: PathBuf::from("/work"),
-                            command: AppCommand::for_test(&["app.exe"]),
-                            started_at_unix_ms: 1,
-                            attached,
-                            protocol_version: PROTOCOL_VERSION,
-                        })
-                    }
+                    move || store.publish(&record)
                 });
 
                 phase_reporter.report("waiting for the publisher to stall");

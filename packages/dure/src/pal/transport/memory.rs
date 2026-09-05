@@ -167,6 +167,15 @@ impl MemoryTransport {
         self.inner.startup_commits.load(Ordering::SeqCst)
     }
 
+    /// Listeners still open, for tests about what a command released.
+    pub(crate) fn open_listener_count(&self) -> usize {
+        self.inner
+            .listener_state
+            .lock()
+            .expect("listener state lock")
+            .len()
+    }
+
     /// Make the next send on `pipe` fail without delivering its message.
     pub(crate) fn fail_next_send(&self, pipe: &str) {
         self.arm(pipe, |faults| {

@@ -9,19 +9,13 @@ fn output_produced_before_the_first_attach_reaches_that_client() {
         let processes = mock_processes(Arc::clone(&exit));
 
         let startup = transport.listen("startup").unwrap();
+        // Built before the thread, so a spec a test cannot construct fails the
+        // test rather than stranding it waiting on a supervisor that never ran.
+        let spec = sample_spec();
         let supervisor = thread::spawn({
             let transport = transport.clone();
             let pty = pty.clone();
-            move || {
-                run_supervisor(
-                    &processes,
-                    &store,
-                    &transport,
-                    &pty,
-                    "startup",
-                    sample_spec(),
-                )
-            }
+            move || run_supervisor(&processes, &store, &transport, &pty, "startup", spec)
         });
 
         let started = commit_startup(&transport, startup, &phase_reporter);

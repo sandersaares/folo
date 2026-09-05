@@ -4,6 +4,14 @@ use std::path::Path;
 use std::sync::mpsc::{self, Receiver};
 use std::thread::{self, JoinHandle};
 
+use windows::Win32::Foundation::{HLOCAL, LocalFree};
+use windows::Win32::Security::Authorization::{
+    ConvertSecurityDescriptorToStringSecurityDescriptorW, GetNamedSecurityInfoW, SDDL_REVISION_1,
+    SE_FILE_OBJECT,
+};
+use windows::Win32::Security::{DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR};
+use windows::core::{PCWSTR, PWSTR};
+
 use crate::AppCommand;
 use crate::constants::{DEFAULT_PTY_COLS, DEFAULT_PTY_ROWS};
 use crate::pal::ids::{AppId, JobId, PtyId};
@@ -11,6 +19,80 @@ use crate::pal::processes::{
     AppSpawn, Breakaway, BuildTargetProcesses, Processes, ProcessesFacade,
 };
 use crate::pal::pseudoconsole::{Pseudoconsole, PseudoconsoleFacade, WindowSize};
+use crate::pal::transport::current_user_sid_string;
+
+/// The SID of the user this process is running as, in string form.
+///
+/// # Panics
+///
+/// Panics when the platform will not say who is running, which a test cannot
+/// meaningfully continue past.
+#[must_use]
+pub fn current_user_sid() -> String {
+    current_user_sid_string().expect("the current user has a SID")
+}
+
+/// The discretionary access control list of `object`, in SDDL form.
+///
+/// Named so a test can pass a session pipe path. Lets a test read back what a
+/// session actually permits rather than trusting the code that set it.
+///
+/// # Panics
+///
+/// Panics when the object cannot be queried, which for something a test just
+/// caused to exist means the test itself is wrong.
+#[must_use]
+pub fn dacl_sddl(object: &str) -> String {
+    let wide: Vec<u16> = object.encode_utf16().chain(std::iter::once(0)).collect();
+    let mut descriptor = PSECURITY_DESCRIPTOR::default();
+    // SAFETY: `wide` is a NUL-terminated object name. On success `descriptor`
+    // points into a LocalAlloc block this call allocates and the caller frees.
+    let queried = unsafe {
+        GetNamedSecurityInfoW(
+            PCWSTR(wide.as_ptr()),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            None,
+            None,
+            None,
+            None,
+            &raw mut descriptor,
+        )
+    };
+    assert!(
+        queried.is_ok(),
+        "reading the security of {object:?}: {queried:?}"
+    );
+
+    let mut sddl = PWSTR::null();
+    // SAFETY: `descriptor` is the descriptor returned above. On success `sddl`
+    // is a LocalAlloc string this function owns.
+    let converted = unsafe {
+        ConvertSecurityDescriptorToStringSecurityDescriptorW(
+            descriptor,
+            SDDL_REVISION_1,
+            DACL_SECURITY_INFORMATION,
+            &raw mut sddl,
+            None,
+        )
+    };
+    // SAFETY: `sddl` is a NUL-terminated string that call allocated.
+    let text = converted
+        .is_ok()
+        .then(|| String::from_utf16_lossy(unsafe { sddl.as_wide() }));
+    // SAFETY: `sddl` is the unique LocalAlloc string obtained above, if the
+    // conversion produced one.
+    unsafe {
+        if !sddl.is_null() {
+            _ = LocalFree(Some(HLOCAL(sddl.0.cast())));
+        }
+    }
+    // SAFETY: `descriptor` is the unique LocalAlloc pointer obtained above.
+    unsafe {
+        _ = LocalFree(Some(HLOCAL(descriptor.0.cast())));
+    }
+    text.expect("a security descriptor converts to SDDL")
+}
 
 /// A process started inside a test-owned pseudoconsole.
 ///
@@ -106,6 +188,21 @@ impl ConsoleProcess {
         self.pty_host
             .write_input(self.pty, data)
             .expect("write test console input");
+    }
+
+    /// Resize the console the child is running in, as a user resizing their
+    /// terminal window would.
+    ///
+    /// # Panics
+    ///
+    /// Panics on a size no console can have, which is a mistake in the test
+    /// rather than a condition the product has to handle.
+    pub fn resize(&self, cols: u16, rows: u16) {
+        let size =
+            WindowSize::new(cols, rows).expect("a test resizes to a size a console can have");
+        self.pty_host
+            .resize(self.pty, size)
+            .expect("resize test console");
     }
 
     /// Console output as it arrives, ending once the child has exited.

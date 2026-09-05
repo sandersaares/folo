@@ -77,6 +77,11 @@ impl FsSessionStore {
     ///
     /// Installing fails rather than replaces when the name is taken, so an id
     /// another process claimed first is simply the next one tried.
+    // A mutation of the taken-vs-failed guard turns the search for a free id
+    // into one that walks the whole `u32` range against a store that cannot
+    // accept any of them, which no test can outlast and watchdogs are disabled
+    // under cargo-mutants. Ref: docs/testing.md, "Mutation testing".
+    #[cfg_attr(test, mutants::skip)]
     fn install_claim(&self, staging: &Path) -> Result<SessionId, PalError> {
         let mut n: u32 = 1;
         loop {
@@ -126,11 +131,11 @@ impl FsSessionStore {
             let Some(id) = SessionId::from_u32(raw) else {
                 continue;
             };
-            let bytes = match fs::read(entry.path()) {
-                Ok(bytes) => bytes,
+            let bytes = match read_if_present(&entry.path()) {
+                Ok(Some(bytes)) => bytes,
                 // A file that disappeared between the listing and the read is
                 // a session that ended, which is the store working.
-                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                Ok(None) => continue,
                 Err(error) => return Err(PalError::from_io(error)),
             };
             let Ok(parsed) = parse_stored(&bytes) else {
@@ -274,6 +279,19 @@ impl SessionStore for FsSessionStore {
 /// caller asking for a state that already holds. Any other open failure is a real fault.
 fn is_absent(error: &io::Error) -> bool {
     matches!(error.kind(), io::ErrorKind::NotFound)
+}
+
+/// The file's bytes, or nothing if it is already gone.
+///
+/// A record can be deleted between a directory listing and the read that
+/// follows it, which is a session ending rather than a store this process
+/// cannot read.
+fn read_if_present(path: &Path) -> io::Result<Option<Vec<u8>>> {
+    match fs::read(path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(error) if is_absent(&error) => Ok(None),
+        Err(error) => Err(error),
+    }
 }
 
 /// Whether a failed install means the id is already taken.
@@ -552,6 +570,32 @@ mod tests {
         assert_eq!(store.list().unwrap(), vec![rec.clone()]);
         store.delete_owned_by(id, &rec.supervisor).unwrap();
         assert!(store.read(id).unwrap().is_none());
+        assert!(store.list().unwrap().is_empty());
+    }
+
+    #[test]
+    // Talks to the real operating system: the session store is a real directory.
+    #[cfg_attr(miri, ignore)]
+    fn a_record_that_is_already_gone_reads_as_nothing_to_read() {
+        // A session can end between a listing and the read that follows it,
+        // which is the store working rather than a store this process cannot
+        // read.
+        let dir = TempDir::new().unwrap();
+        assert!(
+            read_if_present(&dir.path().join("1.json"))
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    // Talks to the real operating system: the session store is a real directory.
+    #[cfg_attr(miri, ignore)]
+    fn a_store_that_does_not_exist_yet_holds_no_sessions() {
+        // The store root is created when the first session is published, so
+        // `list` before that is an empty list rather than a failure.
+        let dir = TempDir::new().unwrap();
+        let store = FsSessionStore::new(dir.path().join("never-created"));
         assert!(store.list().unwrap().is_empty());
     }
 

@@ -40,6 +40,11 @@ pub(crate) fn note_line(message: Arguments<'_>) {
 ///
 /// Returns the stream failure: a prompt nobody can see is not worth blocking a
 /// read on.
+// Writes to the process's own stderr, which no in-process test can observe, so
+// a mutation that writes nothing is invisible here. The prompt's wording and
+// the decision to ask are covered where they are made.
+// Ref: docs/testing.md, "Mutation testing".
+#[cfg_attr(test, mutants::skip)]
 pub(crate) fn print_prompt(message: Arguments<'_>) -> io::Result<()> {
     let mut stderr = io::stderr().lock();
     write!(stderr, "{message}")?;

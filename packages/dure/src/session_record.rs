@@ -233,6 +233,12 @@ mod tests {
             r#""pipe_name":"p","launch_directory":"C:\\work","#,
             r#""command":["copilot.exe"],"started_at_unix_ms":1}"#,
         );
-        serde_json::from_str::<SessionRecord>(zero_id).unwrap_err();
+        let error = serde_json::from_str::<SessionRecord>(zero_id).unwrap_err();
+        // Serde renders the refusal, so a reason that says nothing leaves the
+        // user with a file they cannot act on.
+        assert!(
+            error.to_string().contains("positive session id"),
+            "the refusal must say what is wrong with the file, got {error}"
+        );
     }
 }

@@ -1226,6 +1226,7 @@ name = "dure-test-helper"
 version = "0.0.0"
 dependencies = [
  "serde_json",
+ "windows",
 ]
 
 [[package]]

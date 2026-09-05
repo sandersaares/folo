@@ -297,6 +297,116 @@ fn relayed_input_keeps_non_ascii_text_intact() {
 
 #[cfg_attr(miri, ignore)]
 #[test]
+fn the_app_is_given_the_attaching_terminal_size_and_told_when_it_changes() {
+    with_watchdog(|| {
+        let dir = TempDir::new().unwrap();
+        let client = DureCommand::run(dir.path(), Scenario::ReportSizeTwice).spawn(dir.path());
+        let mut watching = Console::watching(&client);
+        // The app's first report proves the attach carried a size at all; the
+        // session starts on a default geometry that the first attach replaces.
+        // Ref: docs/design.md, "Terminal pass-through".
+        let attached_at = watching.until("size:");
+        let attach_size = last_reported_size(&attached_at).expect("the app reports its size");
+
+        // A size no default is, so a stale geometry cannot pass for the new
+        // one. Deliberately smaller in one dimension and larger in the other,
+        // so a report that swapped them would not match either.
+        let resized = (attach_size.0.saturating_add(11), 17_u16);
+        client.resize(resized.0, resized.1);
+        // Read after the resize, so what the app reports is what it was told
+        // rather than what it started with.
+        release(&client);
+        let output = watching.rest();
+        let status = client.wait();
+
+        assert_eq!(status, 0, "client output: {output:?}");
+        assert_eq!(
+            last_reported_size(&output),
+            Some(resized),
+            "a live resize must reach the app, got {output:?}"
+        );
+    });
+}
+
+/// The last `size:<cols>x<rows>` the app reported, if any.
+///
+/// Whitespace is normalized away first, because the console host is free to
+/// wrap the report anywhere in the line.
+fn last_reported_size(output: &str) -> Option<(u16, u16)> {
+    let normalized = without_whitespace(output);
+    let (_, after) = normalized.rsplit_once("size:")?;
+    let digits: String = after
+        .chars()
+        .take_while(|ch| ch.is_ascii_digit() || *ch == 'x')
+        .collect();
+    let (cols, rows) = digits.split_once('x')?;
+    Some((cols.parse().ok()?, rows.parse().ok()?))
+}
+
+#[cfg_attr(miri, ignore)]
+#[test]
+fn a_session_pipe_admits_nobody_but_the_user_who_made_it() {
+    with_watchdog(|| {
+        let dir = TempDir::new().unwrap();
+        let client = DureCommand::run(dir.path(), Scenario::PrintAndWait).spawn(dir.path());
+        let mut watching = Console::watching(&client);
+        // The app is running, so the pipe exists to be inspected.
+        _ = watching.until(HELPER_READY);
+
+        let pipe = published_pipe_name(dir.path());
+        let dacl = dure::test_support::dacl_sddl(&pipe);
+        let sid = dure::test_support::current_user_sid();
+
+        release(&client);
+        _ = watching.rest();
+        _ = client.wait();
+
+        // Protected, so nothing is inherited in from the containing object,
+        // and every entry names this user. Another account has no entry to
+        // reach the session through. Ref: docs/design.md, "Isolation".
+        assert!(
+            dacl.starts_with("D:P"),
+            "the session pipe must not inherit permissions, got {dacl:?}"
+        );
+        let entries = dacl.matches('(').count();
+        let ours = dacl.matches(sid.as_str()).count();
+        assert_eq!(
+            entries, ours,
+            "every entry on the session pipe must name {sid}, got {dacl:?}"
+        );
+        assert_ne!(
+            entries, 0,
+            "an empty list would permit nobody, got {dacl:?}"
+        );
+    });
+}
+
+/// The pipe name in the one published record the store holds.
+fn published_pipe_name(store_root: &std::path::Path) -> String {
+    // A store can also hold a claim or a record being written, so the
+    // published record is picked by name rather than by being alone.
+    // Ref: docs/session-store.md, "Claimed and published".
+    let entries = store_entries(store_root);
+    let published: Vec<&String> = entries
+        .iter()
+        .filter(|name| name.ends_with(".json"))
+        .collect();
+    let [record] = published.as_slice() else {
+        panic!("expected exactly one published session, store holds {entries:?}");
+    };
+    let text = fs::read_to_string(store_root.join(record)).expect("read the published record");
+    let value: serde_json::Value = serde_json::from_str(&text).expect("the record is JSON");
+    value
+        .get("Published")
+        .and_then(|published| published.get("pipe_name"))
+        .or_else(|| value.get("pipe_name"))
+        .and_then(serde_json::Value::as_str)
+        .expect("a published record names its pipe")
+        .to_string()
+}
+
+#[cfg_attr(miri, ignore)]
+#[test]
 fn a_dropped_client_leaves_the_session_resumable() {
     with_watchdog(|| {
         // The launch directory and the store root are deliberately different

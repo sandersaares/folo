@@ -6,15 +6,9 @@
 //! therefore done here, once, so the client can also explain it before the
 //! supervisor exists (design.md, "Commands"; design.md, "Diagnostics").
 
-use std::env;
-use std::ffi::OsString;
-use std::os::windows::ffi::OsStringExt as _;
 use std::path::{Component, Path, PathBuf};
 
-use windows::Win32::Storage::FileSystem::SearchPathW;
-use windows::core::PCWSTR;
-
-use super::windows::wide;
+use super::windows::search_path;
 
 /// The extension a bare command name is completed with.
 ///
@@ -66,7 +60,7 @@ pub(crate) fn resolve_executable(command: &str, launch_directory: &Path) -> Reso
             how: HowResolved::RelativeToLaunchDirectory,
         };
     }
-    match search_path(command) {
+    match search_path(command, EXECUTABLE_EXTENSION) {
         Some(found) => ResolvedCommand {
             path: found,
             how: HowResolved::SearchPath,
@@ -91,49 +85,6 @@ fn strip_drive_prefix(path: &Path) -> PathBuf {
     path.components()
         .skip_while(|component| matches!(component, Component::Prefix(_) | Component::RootDir))
         .collect()
-}
-
-/// Finds a bare command name on the executable search path.
-///
-/// The search path is passed explicitly rather than letting Windows use its
-/// default order, because that order includes the current directory: a bare
-/// `git` would then be satisfied by an executable that happens to sit in the
-/// directory the session was launched from. A path a user spells out still
-/// reaches the launch directory; a bare name is a search-path lookup only.
-fn search_path(command: &str) -> Option<PathBuf> {
-    let search_path = env::var_os("PATH")?;
-    let search_path = wide(&search_path.to_string_lossy());
-    let name = wide(command);
-    // Applied only when the name carries no extension of its own, which is what
-    // makes `dure run -- copilot` behave like typing it in a shell.
-    let extension = wide(EXECUTABLE_EXTENSION);
-    // Long enough for a traditional path; a longer result is retried at the
-    // size the first call reports.
-    let mut buf = vec![0_u16; 260];
-    for _attempt in 0..2_u8 {
-        // SAFETY: every wide string is NUL-terminated and none is retained
-        // after the call. `buf` is exclusive for the call and its own length is
-        // what bounds the write.
-        let len = unsafe {
-            SearchPathW(
-                PCWSTR(search_path.as_ptr()),
-                PCWSTR(name.as_ptr()),
-                PCWSTR(extension.as_ptr()),
-                Some(&mut buf),
-                None,
-            )
-        } as usize;
-        if len == 0 {
-            return None;
-        }
-        if len < buf.len() {
-            return buf
-                .get(..len)
-                .map(|found| PathBuf::from(OsString::from_wide(found)));
-        }
-        buf = vec![0_u16; len];
-    }
-    None
 }
 
 #[cfg(test)]
@@ -174,6 +125,15 @@ mod tests {
         let resolved = resolve(r"C:tools\app.exe");
         assert_eq!(resolved.how, HowResolved::RelativeToLaunchDirectory);
         assert_eq!(resolved.path, PathBuf::from(r"C:\work\tools\app.exe"));
+    }
+
+    #[test]
+    fn a_drive_prefix_alone_is_enough_to_anchor_a_path() {
+        // No separator, so the drive prefix is the only thing distinguishing
+        // this from a bare name that would be looked up on the search path.
+        let resolved = resolve("C:app.exe");
+        assert_eq!(resolved.how, HowResolved::RelativeToLaunchDirectory);
+        assert_eq!(resolved.path, PathBuf::from(r"C:\work\app.exe"));
     }
 
     #[test]

@@ -1,6 +1,7 @@
 //! Attach and relay scenarios driven through mock PAL implementations.
 
 use std::collections::VecDeque;
+use std::panic::{self, AssertUnwindSafe};
 use std::sync::atomic::AtomicUsize;
 use std::sync::{Condvar, Mutex};
 use std::time::Duration;
@@ -254,6 +255,11 @@ where
         }
     });
     let outcome = attach(&transport, &console.build(), "pipe", id);
+    // A client that never connected leaves the stand-in waiting on an accept
+    // that nothing will satisfy, so the listener is closed rather than joined
+    // into. Watchdogs are disabled under cargo-mutants, so a mutation that
+    // stops `attach` from connecting must end here rather than hang.
+    transport.close_listener(listener);
     supervisor.join().unwrap();
     outcome
 }
@@ -345,6 +351,10 @@ fn attached_id_mismatch_is_attach_failure() {
         SessionId::MIN,
     )
     .unwrap_err();
+    // A client that never connected leaves the stand-in waiting on an accept
+    // that nothing will satisfy, so the listener is closed rather than joined
+    // into. Watchdogs are disabled under cargo-mutants.
+    transport.close_listener(listener);
     supervisor.join().unwrap();
     assert!(error.find_source::<AttachFailedError>().is_some());
 }
@@ -378,6 +388,10 @@ fn displaced_handshake_is_displaced() {
         SessionId::MIN,
     )
     .unwrap_err();
+    // A client that never connected leaves the stand-in waiting on an accept
+    // that nothing will satisfy, so the listener is closed rather than joined
+    // into. Watchdogs are disabled under cargo-mutants.
+    transport.close_listener(listener);
     supervisor.join().unwrap();
     assert!(error.find_source::<DisplacedError>().is_some());
 }
@@ -404,6 +418,44 @@ fn connect_other_is_attach_failure() {
     )
     .unwrap_err();
     assert!(error.find_source::<AttachFailedError>().is_some());
+}
+
+#[test]
+fn a_console_taken_over_is_handed_back_even_if_the_attach_unwinds() {
+    // Every ordinary return hands the console back explicitly, so the lease's
+    // own cleanup covers only an unwind — where there is nobody left to report
+    // to and a console left raw is a terminal the user repairs by hand.
+    let hand_backs = Arc::new(AtomicUsize::new(0));
+    let mut console = MockLocalConsole::new();
+    console.expect_has_console().return_const(true);
+    console
+        .expect_begin_raw_relay()
+        .returning(|| Ok(RelayLeaseId::for_test(1)));
+    console.expect_end_raw_relay().returning({
+        let hand_backs = Arc::clone(&hand_backs);
+        move |_lease| {
+            hand_backs.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    });
+    // Stands in for any failure nobody planned for, once the console is
+    // already taken over.
+    console
+        .expect_window_size()
+        .returning(|| panic!("something the attach path does not expect"));
+    let console = LocalConsoleFacade::from_mock(console);
+
+    let unwound = panic::catch_unwind(AssertUnwindSafe(|| {
+        _ = attach(
+            &ConnectFails(PalErrorKind::Other),
+            &console,
+            "pipe",
+            SessionId::MIN,
+        );
+    }));
+
+    assert!(unwound.is_err(), "the attach must have unwound");
+    assert_eq!(hand_backs.load(Ordering::SeqCst), 1);
 }
 
 #[test]

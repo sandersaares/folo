@@ -405,6 +405,10 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.find_source::<StartupFailedError>().is_some());
+        // A supervisor that never started leaves the startup channel behind if
+        // nothing closes it, and a later `run` on the same pipe would then be
+        // answered by a listener nobody serves.
+        assert_eq!(transport.open_listener_count(), 0);
     }
 
     #[test]

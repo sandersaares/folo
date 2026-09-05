@@ -246,13 +246,15 @@ pub(crate) fn decode_body(kind: u8, body: Vec<u8>) -> Result<Message, DecodeErro
     }
 }
 
+/// Decodes every frame whose body is not simply the message's bytes.
+///
+/// The byte-bearing kinds are answered by [`decode_body`] before this is
+/// reached, so they have no arm here.
 fn decode_rest(kind: u8, rest: &[u8]) -> Result<Message, DecodeError> {
     match kind {
         KIND_ATTACH => decode_size(rest).map(|size| Message::Attach { size }),
-        KIND_INPUT => Ok(Message::Input(rest.to_vec())),
         KIND_RESIZE => decode_size(rest).map(|size| Message::Resize { size }),
         KIND_ATTACHED => decode_session_id(rest).map(|session_id| Message::Attached { session_id }),
-        KIND_OUTPUT => Ok(Message::Output(rest.to_vec())),
         KIND_DISPLACED if rest.is_empty() => Ok(Message::Displaced),
         KIND_APP_EXITED => decode_i32(rest).map(|status| Message::AppExited { status }),
         KIND_STARTUP_OK => {
@@ -457,6 +459,56 @@ mod tests {
             decode_payload(&[KIND_STARTUP_ERR, 0]).unwrap_err(),
             DecodeError::Invalid
         );
+    }
+
+    /// Every step, so a new one cannot be added without deciding how it travels.
+    const EVERY_STEP: [StartupStep; 7] = [
+        StartupStep::LifetimeJob,
+        StartupStep::Pseudoconsole,
+        StartupStep::App,
+        StartupStep::Listener,
+        StartupStep::Identity,
+        StartupStep::SessionId,
+        StartupStep::PublishRecord,
+    ];
+
+    #[test]
+    fn every_startup_step_survives_the_wire() {
+        for step in EVERY_STEP {
+            let frame = encode(&Message::StartupErr { step });
+            let (_, payload) = frame
+                .split_first_chunk::<4>()
+                .expect("a frame carries its length");
+            assert_eq!(
+                decode_payload(payload).unwrap(),
+                Message::StartupErr { step },
+                "{step:?} must arrive as itself"
+            );
+        }
+    }
+
+    #[test]
+    fn each_startup_step_says_something_of_its_own() {
+        // The description is what a client with a console prints, so two steps
+        // that read the same would leave the user no better off than a bare
+        // failure.
+        let described: Vec<&str> = EVERY_STEP.iter().map(|step| step.describe()).collect();
+        for (at, description) in described.iter().enumerate() {
+            assert!(
+                !description.is_empty(),
+                "{:?} must describe itself",
+                EVERY_STEP.get(at)
+            );
+            assert_eq!(
+                described
+                    .iter()
+                    .filter(|other| *other == description)
+                    .count(),
+                1,
+                "{description:?} is used for more than one step"
+            );
+        }
+        assert_eq!(StartupStep::App.describe(), "starting the app");
     }
 
     #[test]

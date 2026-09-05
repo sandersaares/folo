@@ -1,10 +1,10 @@
 //! Windows process, job, and spawn implementation.
 
 use std::collections::HashMap;
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::fmt::Write;
 use std::mem::size_of;
-use std::os::windows::ffi::OsStrExt;
+use std::os::windows::ffi::{OsStrExt, OsStringExt as _};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
@@ -15,6 +15,7 @@ use windows::Win32::Foundation::{
     CloseHandle, ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER, FILETIME, GetLastError, HANDLE,
     INVALID_HANDLE_VALUE, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
+use windows::Win32::Storage::FileSystem::SearchPathW;
 use windows::Win32::System::Console::HPCON;
 use windows::Win32::System::JobObjects::{
     CreateJobObjectW, IsProcessInJob, JOB_OBJECT_LIMIT, JOB_OBJECT_LIMIT_BREAKAWAY_OK,
@@ -691,4 +692,47 @@ impl Processes for BuildTargetProcesses {
         }
         nonce
     }
+}
+
+/// Finds a bare command name on the executable search path.
+///
+/// The search path is passed explicitly rather than letting Windows use its
+/// default order, because that order includes the current directory: a bare
+/// `git` would then be satisfied by an executable that happens to sit in the
+/// directory the session was launched from. A path a user spells out still
+/// reaches the launch directory; a bare name is a search-path lookup only.
+pub(super) fn search_path(command: &str, extension: &str) -> Option<PathBuf> {
+    let search_path = env::var_os("PATH")?;
+    let search_path = wide(&search_path.to_string_lossy());
+    let name = wide(command);
+    // The extension is applied only when the name carries no extension of its
+    // own, which is what makes `dure run -- copilot` behave like typing it in a shell.
+    let extension = wide(extension);
+    // Long enough for a traditional path; a longer result is retried at the
+    // size the first call reports.
+    let mut buf = vec![0_u16; 260];
+    for _attempt in 0..2_u8 {
+        // SAFETY: every wide string is NUL-terminated and none is retained
+        // after the call. `buf` is exclusive for the call and its own length is
+        // what bounds the write.
+        let len = unsafe {
+            SearchPathW(
+                PCWSTR(search_path.as_ptr()),
+                PCWSTR(name.as_ptr()),
+                PCWSTR(extension.as_ptr()),
+                Some(&mut buf),
+                None,
+            )
+        } as usize;
+        if len == 0 {
+            return None;
+        }
+        if len < buf.len() {
+            return buf
+                .get(..len)
+                .map(|found| PathBuf::from(OsString::from_wide(found)));
+        }
+        buf = vec![0_u16; len];
+    }
+    None
 }

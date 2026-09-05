@@ -15,19 +15,13 @@ fn assert_rejected_startup_rolls_back(rejection: RejectedStartup) {
         let processes = mock_processes(exit);
 
         let startup = transport.listen("startup").unwrap();
+        // Built before the thread, so a spec a test cannot construct fails the
+        // test rather than stranding it waiting on a supervisor that never ran.
+        let spec = sample_spec();
         let supervisor = thread::spawn({
             let transport = transport.clone();
             let store = store.clone();
-            move || {
-                run_supervisor(
-                    &processes,
-                    &store,
-                    &transport,
-                    &pty,
-                    "startup",
-                    sample_spec(),
-                )
-            }
+            move || run_supervisor(&processes, &store, &transport, &pty, "startup", spec)
         });
 
         phase_reporter.report("waiting for the supervisor startup connection");
@@ -132,18 +126,12 @@ fn rollback_ends_the_job_before_it_closes_the_console() {
         });
 
         let startup = transport.listen("startup").unwrap();
+        // Built before the thread, so a spec a test cannot construct fails the
+        // test rather than stranding it waiting on a supervisor that never ran.
+        let spec = sample_spec();
         let supervisor = thread::spawn({
             let transport = transport.clone();
-            move || {
-                run_supervisor(
-                    &processes,
-                    &store,
-                    &transport,
-                    &pty,
-                    "startup",
-                    sample_spec(),
-                )
-            }
+            move || run_supervisor(&processes, &store, &transport, &pty, "startup", spec)
         });
 
         phase_reporter.report("waiting for the supervisor startup connection");
@@ -182,19 +170,13 @@ fn init_failure_sends_startup_err_and_closes_job() {
         processes.expect_close_job().times(1).returning(|_| ());
 
         let startup = transport.listen("startup").unwrap();
+        // Built before the thread, so a spec a test cannot construct fails the
+        // test rather than stranding it waiting on a supervisor that never ran.
+        let spec = sample_spec();
         let supervisor = thread::spawn({
             let transport = transport.clone();
             let store = store.clone();
-            move || {
-                run_supervisor(
-                    &processes,
-                    &store,
-                    &transport,
-                    &pty,
-                    "startup",
-                    sample_spec(),
-                )
-            }
+            move || run_supervisor(&processes, &store, &transport, &pty, "startup", spec)
         });
 
         phase_reporter.report("waiting for the supervisor startup connection");
@@ -223,18 +205,12 @@ fn a_supervisor_that_cannot_outlive_its_launcher_says_so_on_the_startup_pipe() {
             mock_processes_with(Arc::clone(&exit), LauncherTie::Confirmed, AppWait::Reports);
 
         let startup = transport.listen("startup").unwrap();
+        // Built before the thread, so a spec a test cannot construct fails the
+        // test rather than stranding it waiting on a supervisor that never ran.
+        let spec = sample_spec();
         let supervisor = thread::spawn({
             let transport = transport.clone();
-            move || {
-                run_supervisor(
-                    &processes,
-                    &store,
-                    &transport,
-                    &pty,
-                    "startup",
-                    sample_spec(),
-                )
-            }
+            move || run_supervisor(&processes, &store, &transport, &pty, "startup", spec)
         });
 
         // Only the client has a console to report this on.
@@ -262,19 +238,13 @@ fn a_wait_that_fails_still_takes_the_session_off_the_host() {
             mock_processes_with(Arc::clone(&exit), LauncherTie::NoneDetected, AppWait::Fails);
 
         let startup = transport.listen("startup").unwrap();
+        // Built before the thread, so a spec a test cannot construct fails the
+        // test rather than stranding it waiting on a supervisor that never ran.
+        let spec = sample_spec();
         let supervisor = thread::spawn({
             let transport = transport.clone();
             let store = store.clone();
-            move || {
-                run_supervisor(
-                    &processes,
-                    &store,
-                    &transport,
-                    &pty,
-                    "startup",
-                    sample_spec(),
-                )
-            }
+            move || run_supervisor(&processes, &store, &transport, &pty, "startup", spec)
         });
 
         let started = commit_startup(&transport, startup, &phase_reporter);

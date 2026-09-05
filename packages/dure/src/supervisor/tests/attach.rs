@@ -208,43 +208,63 @@ fn two_attaches_racing_leave_one_of_them_installed_and_the_other_displaced() {
     let transport = MemoryTransport::new();
     let pty_host = MemoryPseudoconsole::new();
     let shared = Arc::new(shared_session(&transport, &pty_host));
-    let attaches = 2;
-    let gate = Arc::new(Barrier::new(attaches));
+    let gate = Arc::new(Barrier::new(2));
+    let (attached_tx, attached_rx) = mpsc::channel();
 
-    let contenders: Vec<_> = ["first", "second"]
-        .into_iter()
-        .map(|name| {
-            let (supervisor, client) = connected_pair(&transport, name);
-            transport.send(client, &ORDINARY_ATTACH).unwrap();
-            // The relay ends after the attach, so each thread finishes and the
-            // installed slot is whichever attach transaction ran last.
-            transport.disconnect(client);
-            thread::spawn({
-                let shared = Arc::clone(&shared);
-                let gate = Arc::clone(&gate);
-                move || {
-                    gate.wait();
-                    client_loop(&shared, supervisor, &|_generation, _attached| {});
-                }
-            })
-        })
-        .collect();
-
-    for contender in contenders {
-        contender.join().unwrap();
+    let mut ends = Vec::new();
+    let mut relays = Vec::new();
+    for name in ["first", "second"] {
+        let (supervisor, client) = connected_pair(&transport, name);
+        transport.send(client, &ORDINARY_ATTACH).unwrap();
+        ends.push((supervisor, client));
+        relays.push(thread::spawn({
+            let shared = Arc::clone(&shared);
+            let gate = Arc::clone(&gate);
+            let attached_tx = attached_tx.clone();
+            move || {
+                gate.wait();
+                client_loop(&shared, supervisor, &move |_generation, attached| {
+                    if attached {
+                        attached_tx.send(()).expect("the test is still watching");
+                    }
+                });
+            }
+        }));
     }
+    // The test's own copy goes, so a relay thread that dies takes the last
+    // sender with it and the waits below fail instead of blocking. Watchdogs
+    // are disabled under cargo-mutants, so nothing else would end this.
+    drop(attached_tx);
 
-    // Both clients left, so neither is left owning the console however the
-    // two transactions interleaved.
-    assert!(client_conn(&shared).is_none());
-    // Whichever attached last is the one the generation counter names, so an
-    // attach that acknowledged first can never overwrite it.
-    assert_eq!(
-        shared.attached_generation.load(Ordering::SeqCst),
-        u64::try_from(attaches.checked_mul(2).unwrap()).unwrap(),
-        "each attach installs and then releases the slot, in order"
+    // Both transactions have completed, whichever order they ran in.
+    attached_rx.recv().unwrap();
+    attached_rx.recv().unwrap();
+
+    // Exactly one of them owns the console, and it is the one the other was
+    // displaced in favor of: last attach wins, however the acknowledgements
+    // interleaved. Ref: docs/design.md, "Attach, detach, steal".
+    let installed = client_conn(&shared).expect("one attach is left holding the session");
+    let (_, loser) = ends
+        .iter()
+        .find(|(supervisor, _)| *supervisor != installed)
+        .expect("the other attach was displaced");
+    let notices: Vec<Message> = std::iter::from_fn(|| transport.recv(*loser).ok())
+        .take_while(|message| !matches!(message, Message::Displaced))
+        .collect();
+    assert!(
+        notices
+            .iter()
+            .any(|message| matches!(message, Message::Attached { .. })),
+        "a displaced client was still acknowledged first, got {notices:?}"
     );
     assert!(shared.first_attach().claimed);
+
+    for (_, client) in &ends {
+        transport.disconnect(*client);
+    }
+    for relay in relays {
+        relay.join().unwrap();
+    }
 }
 
 #[test]

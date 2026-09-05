@@ -270,13 +270,14 @@ The app under supervision is `dure-test-helper`, a separate unpublished package
 so that a helper binary never ships inside the product crate; it reports whether
 it has a console and can be told to print, wait, or exit with a chosen status.
 
-That suite proves the app sees a console, `run` forwards exit status, non-ASCII
-text survives the relay in both directions, a session whose client dies outright
-is still resumable and still interactive afterwards, a second client takes the
-session from one that is still attached, `run` refuses a launcher whose job
-forbids breakaway, and `run` warns when an ancestor job it cannot leave would
-end the session. Tests wait on process and pipe events inside the workspace
-watchdog.
+That suite proves the app sees a console, `run` forwards exit status, the app is
+given the attaching terminal's size and told when it changes, non-ASCII text
+survives the relay in both directions, a session whose client dies outright is
+still resumable and still interactive afterwards, a second client takes the
+session from one that is still attached, a session pipe admits nobody but the
+user who made it, `run` refuses a launcher whose job forbids breakaway, and
+`run` warns when an ancestor job it cannot leave would end the session. Tests
+wait on process and pipe events inside the workspace watchdog.
 
 Where a scenario needs the session to be up, it waits for the app's own greeting
 rather than for anything `dure` prints, and it releases an app parked on input
@@ -297,6 +298,11 @@ command line is a change in one place.
 Assertions about console output ignore whitespace. A pseudoconsole wraps at the
 window width and may break a line mid-word, so the exact spacing of relayed
 output is a property of the console host rather than of `dure`.
+
+Per-user isolation is checked by reading back what a live session pipe actually
+permits, rather than by logging in as a second user. A second account in the
+test environment would be a standing cost for a property the access control
+list states outright.
 
 Integration tests do not try to prove console-host cosmetics, nested
 pseudoconsole rendering, or behavior when Windows logs the user off.

@@ -9,19 +9,13 @@ fn steal_displaces_first_client() {
         let processes = mock_processes(Arc::clone(&exit));
 
         let startup = transport.listen("startup").unwrap();
+        // Built before the thread, so a spec a test cannot construct fails the
+        // test rather than stranding it waiting on a supervisor that never ran.
+        let spec = sample_spec();
         let supervisor = thread::spawn({
             let transport = transport.clone();
             let store = store.clone();
-            move || {
-                run_supervisor(
-                    &processes,
-                    &store,
-                    &transport,
-                    &pty,
-                    "startup",
-                    sample_spec(),
-                )
-            }
+            move || run_supervisor(&processes, &store, &transport, &pty, "startup", spec)
         });
 
         let started = commit_startup(&transport, startup, &phase_reporter);
@@ -67,19 +61,13 @@ fn final_output_arrives_before_the_exit_status() {
         let processes = mock_processes(Arc::clone(&exit));
 
         let startup = transport.listen("startup").unwrap();
+        // Built before the thread, so a spec a test cannot construct fails the
+        // test rather than stranding it waiting on a supervisor that never ran.
+        let spec = sample_spec();
         let supervisor = thread::spawn({
             let transport = transport.clone();
             let pty = pty.clone();
-            move || {
-                run_supervisor(
-                    &processes,
-                    &store,
-                    &transport,
-                    &pty,
-                    "startup",
-                    sample_spec(),
-                )
-            }
+            move || run_supervisor(&processes, &store, &transport, &pty, "startup", spec)
         });
 
         let started = commit_startup(&transport, startup, &phase_reporter);
@@ -148,18 +136,12 @@ fn teardown_ends_the_job_before_it_closes_the_console() {
         );
 
         let startup = transport.listen("startup").unwrap();
+        // Built before the thread, so a spec a test cannot construct fails the
+        // test rather than stranding it waiting on a supervisor that never ran.
+        let spec = sample_spec();
         let supervisor = thread::spawn({
             let transport = transport.clone();
-            move || {
-                run_supervisor(
-                    &processes,
-                    &store,
-                    &transport,
-                    &pty,
-                    "startup",
-                    sample_spec(),
-                )
-            }
+            move || run_supervisor(&processes, &store, &transport, &pty, "startup", spec)
         });
 
         let started = commit_startup(&transport, startup, &phase_reporter);
@@ -193,18 +175,12 @@ fn an_app_that_exits_before_anyone_attaches_still_reports_its_status() {
         let processes = mock_processes(Arc::clone(&exit));
 
         let startup = transport.listen("startup").unwrap();
+        // Built before the thread, so a spec a test cannot construct fails the
+        // test rather than stranding it waiting on a supervisor that never ran.
+        let spec = sample_spec();
         let supervisor = thread::spawn({
             let transport = transport.clone();
-            move || {
-                run_supervisor(
-                    &processes,
-                    &store,
-                    &transport,
-                    &pty,
-                    "startup",
-                    sample_spec(),
-                )
-            }
+            move || run_supervisor(&processes, &store, &transport, &pty, "startup", spec)
         });
 
         let started = commit_startup(&transport, startup, &phase_reporter);
@@ -252,19 +228,13 @@ fn a_stalled_attached_flag_does_not_delay_the_exit_status() {
             });
 
         let startup = transport.listen("startup").unwrap();
+        // Built before the thread, so a spec a test cannot construct fails the
+        // test rather than stranding it waiting on a supervisor that never ran.
+        let spec = sample_spec();
         let supervisor = thread::spawn({
             let transport = transport.clone();
             let store = store.clone();
-            move || {
-                run_supervisor(
-                    &processes,
-                    &store,
-                    &transport,
-                    &pty,
-                    "startup",
-                    sample_spec(),
-                )
-            }
+            move || run_supervisor(&processes, &store, &transport, &pty, "startup", spec)
         });
 
         let started = commit_startup(&transport, startup, &phase_reporter);
@@ -312,19 +282,13 @@ fn a_session_nobody_comes_for_ends_when_its_initiator_gives_up() {
         let processes = mock_processes(Arc::clone(&exit));
 
         let startup = transport.listen("startup").unwrap();
+        // Built before the thread, so a spec a test cannot construct fails the
+        // test rather than stranding it waiting on a supervisor that never ran.
+        let spec = sample_spec();
         let supervisor = thread::spawn({
             let transport = transport.clone();
             let store = store.clone();
-            move || {
-                run_supervisor(
-                    &processes,
-                    &store,
-                    &transport,
-                    &pty,
-                    "startup",
-                    sample_spec(),
-                )
-            }
+            move || run_supervisor(&processes, &store, &transport, &pty, "startup", spec)
         });
 
         let started = commit_startup(&transport, startup, &phase_reporter);

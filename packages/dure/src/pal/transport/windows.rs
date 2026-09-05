@@ -182,7 +182,7 @@ impl Drop for UserPipeSecurity {
     }
 }
 
-fn current_user_sid_string() -> Result<String, PalError> {
+pub(crate) fn current_user_sid_string() -> Result<String, PalError> {
     let mut token = HANDLE::default();
     // SAFETY: a pseudo-handle to this process; it is not closed.
     let process = unsafe { GetCurrentProcess() };
