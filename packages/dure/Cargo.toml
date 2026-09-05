@@ -10,10 +10,18 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 
-include = ["Cargo.toml", "README.md", "docs/**/*", "src/**/*"]
+# Only what builds the source, plus the landing page crates.io renders. The guides under `docs/`
+# are written for maintainers of this repository and link to repository-root documents that no
+# crate archive carries, so a packaged copy could not be followed to a complete picture anyway.
+include = ["Cargo.toml", "README.md", "src/**/*"]
 
+# `dure` is a command-line tool; its Rust API exists only so the in-package binary and the
+# integration tests can reach the crate, and every exported item is therefore `#[doc(hidden)]`
+# (see `src/lib.rs`). Documenting the Windows targets is what keeps the rendered page the tool's
+# own introduction rather than an empty Linux build, where `#![cfg(windows)]` removes the crate.
 [package.metadata.docs.rs]
-all-features = true
+default-target = "x86_64-pc-windows-msvc"
+targets = ["x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"]
 
 # The release workflow publishes prebuilt archives under release-plz's `<crate>-v<version>` tag,
 # which cargo-binstall cannot derive on its own. Ref: docs/release-automation.md.
@@ -33,8 +41,9 @@ release-targets = ["x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"]
 [package.metadata.cargo-udeps.ignore]
 development = ["dure-test-helper"]
 
-# Baseline of external types intentionally exposed in the public API. Any new
-# external type here trips the check so accidental exposures are caught.
+# The intentional external exposures in the public API. The check fails when a public external
+# type matches no entry or matches more than one, so an accidental exposure is caught by being
+# absent from this list; an entry that no longer corresponds to an exposure is removed.
 # Ref: docs/external-types.md.
 [package.metadata.cargo_check_external_types]
 allowed_external_types = [

@@ -25,7 +25,7 @@ pub(crate) struct NoConsoleError;
 
 /// `dure run` was given no command to execute.
 #[ohno::error]
-#[display("dure run requires a command after --")]
+#[display("dure run requires a command to execute")]
 pub(crate) struct EmptyCommandError;
 
 /// There is no live session to resume.

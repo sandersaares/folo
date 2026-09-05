@@ -9,7 +9,18 @@ use crate::path_display::display_path;
 use crate::session_record::SessionRecord;
 
 /// Column headings, in the order they are printed.
-const HEADERS: [&str; 6] = ["ID", "ATTACHED", "PID", "AGE", "DIRECTORY", "COMMAND"];
+///
+/// The pid is the supervisor's and the directory is the launch directory that
+/// auto-detect keys on, so the headings name both rather than leaving a reader
+/// to guess which process or which directory a cell refers to.
+const HEADERS: [&str; 6] = [
+    "ID",
+    "ATTACHED",
+    "SUPERVISOR PID",
+    "AGE",
+    "LAUNCH DIRECTORY",
+    "COMMAND",
+];
 
 /// Blank columns between one field and the next.
 const COLUMN_GAP: usize = 2;
@@ -187,7 +198,7 @@ mod tests {
             row.find("yes").expect("the attached cell")
         );
         assert_eq!(
-            header.find("PID").expect("the pid heading"),
+            header.find("SUPERVISOR PID").expect("the supervisor pid heading"),
             row.find("99").expect("the pid cell")
         );
         assert_eq!(
@@ -195,7 +206,7 @@ mod tests {
             row.find("5s").expect("the age cell")
         );
         assert_eq!(
-            header.find("DIRECTORY").expect("the directory heading"),
+            header.find("LAUNCH DIRECTORY").expect("the launch directory heading"),
             row.find("/work").expect("the directory cell")
         );
         assert_eq!(

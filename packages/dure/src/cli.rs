@@ -16,13 +16,11 @@ use crate::types::{Command, RunInput};
 /// Clap-facing parser for the `dure` binary.
 ///
 /// Translates argv into [`RunInput`] so [`crate::run`] does not depend on clap.
-/// Version is omitted because this crate is unpublished; `--version` would
-/// report a workspace placeholder rather than a released artifact.
 #[derive(Debug, Parser)]
 #[command(
     name = "dure",
     about = "Detachable Windows console sessions that outlive the terminal.",
-    disable_version_flag = true
+    version
 )]
 pub struct Cli {
     /// Explain on stderr what each command inspects and decides.
@@ -42,19 +40,36 @@ pub struct Cli {
 #[derive(Debug, Subcommand)]
 enum CliCommand {
     /// Start a new session and attach immediately.
+    ///
+    /// Always creates a new session, never reconnecting to an existing one. The
+    /// command runs directly rather than through a shell, in the current
+    /// directory, which also becomes the launch directory `resume` matches on.
     Run {
         /// Command to execute directly, not through a shell.
+        ///
+        /// A leading `--` is optional and only needed to keep an argument that
+        /// starts with a hyphen away from `dure`'s own options.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
         command: Vec<String>,
     },
     /// Attach to a live session.
+    ///
+    /// Without an id, attaches to the single live session launched from the
+    /// current directory; if that match is not unique, the live sessions are
+    /// listed and an id is read from the terminal. Attaching displaces whatever
+    /// client held the session before.
     Resume {
         /// Session id to attach to, skipping auto-detect.
         id: Option<NonZero<u32>>,
     },
     /// Print live sessions.
+    ///
+    /// The ids, attachment state, and launch directories shown here are what an
+    /// explicit `resume <id>` or `kill <id>` is chosen from.
     List,
     /// Abruptly terminate the supervisor for a session.
+    ///
+    /// The app and its ordinary descendants die with the supervisor.
     Kill {
         /// Session id to kill. Required; kill does not auto-detect.
         id: NonZero<u32>,
@@ -83,21 +98,19 @@ enum CliCommand {
 pub struct EarlyExit {
     /// The rendered message (help text or error) to print.
     pub output: String,
-    /// `Ok` for help or usage text, `Err` for a parse error.
-    ///
-    /// Missing subcommand or argument is success because clap's implicit help
-    /// for that case is the usage text the user asked to see, not a failed
-    /// command.
+    /// `Ok` for help or version text the user asked for, `Err` otherwise.
     pub status: Result<(), ()>,
 }
 
 impl EarlyExit {
     fn from_clap(error: &clap::Error) -> Self {
+        // Only an explicit request for help or version is work the invocation
+        // asked for and got. An invocation that named no command performed no
+        // session operation, so a wrapper must not read its usage screen as
+        // success.
         let success = matches!(
             error.kind(),
-            ErrorKind::DisplayHelp
-                | ErrorKind::DisplayVersion
-                | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+            ErrorKind::DisplayHelp | ErrorKind::DisplayVersion
         );
         Self {
             output: error.to_string(),
@@ -243,5 +256,33 @@ mod tests {
         let err = Cli::from_args(&["dure"], &["--help"]).unwrap_err();
         assert!(err.status.is_ok());
         assert!(err.output.contains("dure"));
+    }
+
+    #[test]
+    fn version_reports_the_package_release() {
+        let err = Cli::from_args(&["dure"], &["--version"]).unwrap_err();
+        assert!(err.status.is_ok());
+        assert!(err.output.contains(env!("CARGO_PKG_VERSION")));
+    }
+
+    #[test]
+    fn naming_no_command_is_a_failure() {
+        let err = Cli::from_args(&["dure"], &[]).unwrap_err();
+        assert!(err.status.is_err());
+    }
+
+    #[test]
+    fn run_accepts_a_command_with_or_without_the_separator() {
+        let with = parse(&["run", "--", "copilot.exe", "--foo"]);
+        let without = parse(&["run", "copilot.exe", "--foo"]);
+        assert_eq!(with.command, without.command);
+    }
+
+    #[test]
+    fn subcommand_help_explains_how_a_session_is_chosen() {
+        let err = Cli::from_args(&["dure"], &["resume", "--help"]).unwrap_err();
+        assert!(err.output.contains("launched from the current directory"));
+        let err = Cli::from_args(&["dure"], &["run", "--help"]).unwrap_err();
+        assert!(err.output.contains("Always creates a new session"));
     }
 }

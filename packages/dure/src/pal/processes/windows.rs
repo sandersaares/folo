@@ -39,7 +39,7 @@ use crate::durability::Durability;
 use crate::pal::error::{PalError, PalErrorKind};
 use crate::pal::ids::{AppId, JobId};
 use crate::pal::processes::{
-    AppSpawn, Breakaway, ProcessLiveness, Processes, SupervisorSpawn, resolve_command_path,
+    AppSpawn, ProcessLiveness, Processes, SupervisorSpawn, resolve_command_path,
     windows_command_line,
 };
 use crate::pal::pseudoconsole::hpcon_for;
@@ -49,6 +49,26 @@ use crate::session_record::ProcessIdentity;
 /// Real Windows process control.
 #[derive(Debug, Default)]
 pub(crate) struct BuildTargetProcesses;
+
+/// Whether a job object lets its members create processes that escape it.
+///
+/// Job topology is a Windows concept that the `Processes` contract does not
+/// express: production logic only ever asks for the standard lifetime job. The
+/// policy is therefore named here, alongside the job helpers that consume it,
+/// rather than in the slice-wide abstraction.
+///
+/// Ref: docs/implementation.md, "Job breakaway".
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Breakaway {
+    /// A member may escape the job by asking for breakaway at creation time.
+    Permitted,
+    /// Members and everything they spawn stay confined to the job.
+    ///
+    /// `dure` never confines a session this way. Only the integration harness
+    /// builds such a job, to model the launchers `dure run` must refuse.
+    #[cfg(any(test, feature = "private-test-util"))]
+    Forbidden,
+}
 
 struct HandleTable {
     jobs: HashMap<u64, Vec<RawHandle>>,
@@ -318,7 +338,7 @@ fn create_job_handle(breakaway: Breakaway) -> Result<HANDLE, PalError> {
     let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
     info.BasicLimitInformation.LimitFlags = match breakaway {
         Breakaway::Permitted => JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_BREAKAWAY_OK,
-        #[cfg(feature = "private-test-util")]
+        #[cfg(any(test, feature = "private-test-util"))]
         Breakaway::Forbidden => JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     };
     // SAFETY: `info` is a stack structure of the size SetInformationJobObject

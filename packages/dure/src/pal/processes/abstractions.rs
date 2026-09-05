@@ -20,21 +20,6 @@ pub(crate) enum ProcessLiveness {
     InspectFailed,
 }
 
-/// Whether a job object lets its members create processes that escape it.
-///
-/// Ref: docs/implementation.md, "Job breakaway".
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum Breakaway {
-    /// A member may escape the job by asking for breakaway at creation time.
-    Permitted,
-    /// Members and everything they spawn stay confined to the job.
-    ///
-    /// `dure` never confines a session this way. Only the integration harness
-    /// builds such a job, to model the launchers `dure run` must refuse.
-    #[cfg(feature = "private-test-util")]
-    Forbidden,
-}
-
 /// Request to spawn a console-detached supervisor with job breakaway.
 #[derive(Clone, Debug)]
 pub(crate) struct SupervisorSpawn {
