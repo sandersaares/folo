@@ -132,7 +132,7 @@ where
         // Only this process can see the job it landed in, and the client is
         // the one with a console to report it on.
         // Ref: docs/implementation.md, "Job breakaway".
-        durability: processes.durability(),
+        launcher_tie: processes.launcher_tie(),
     };
     if transport.send(startup, &startup_ok).is_err() {
         transport.disconnect(startup);
@@ -812,7 +812,7 @@ mod tests {
     use testing::{WatchdogPhaseReporter, with_watchdog_phases};
 
     use super::*;
-    use crate::durability::Durability;
+    use crate::durability::LauncherTie;
     use crate::pal::ids::{AppId, ConnId, JobId, ListenerId};
     use crate::pal::processes::MockProcesses;
     use crate::pal::pseudoconsole::MemoryPseudoconsole;
@@ -832,23 +832,23 @@ mod tests {
         transport: &MemoryTransport,
         listener: ListenerId,
         phase_reporter: &WatchdogPhaseReporter,
-    ) -> (ConnId, SessionId, Durability) {
+    ) -> (ConnId, SessionId, LauncherTie) {
         phase_reporter.report("waiting for the supervisor startup connection");
         let conn = transport.accept(listener).unwrap();
         phase_reporter.report("waiting for the supervisor startup response");
         let Message::StartupOk {
             session_id,
-            durability,
+            launcher_tie,
         } = transport.recv(conn).unwrap()
         else {
             panic!("expected startup ok");
         };
         transport.send(conn, &Message::StartupCommit).unwrap();
-        (conn, session_id, durability)
+        (conn, session_id, launcher_tie)
     }
 
     fn mock_processes(exit: Arc<(Mutex<bool>, Condvar)>) -> MockProcesses {
-        mock_processes_with(exit, Durability::Durable, AppWait::Reports)
+        mock_processes_with(exit, LauncherTie::NoneDetected, AppWait::Reports)
     }
 
     /// How the mock app's wait ends once the test releases it.
@@ -862,20 +862,20 @@ mod tests {
 
     fn mock_processes_with(
         exit: Arc<(Mutex<bool>, Condvar)>,
-        durability: Durability,
+        launcher_tie: LauncherTie,
         wait: AppWait,
     ) -> MockProcesses {
-        mock_processes_with_close_job(exit, durability, wait, |_| {})
+        mock_processes_with_close_job(exit, launcher_tie, wait, |_| {})
     }
 
     fn mock_processes_with_close_job(
         exit: Arc<(Mutex<bool>, Condvar)>,
-        durability: Durability,
+        launcher_tie: LauncherTie,
         wait: AppWait,
         close_job: impl Fn(JobId) + Send + Sync + 'static,
     ) -> MockProcesses {
         let mut processes = MockProcesses::new();
-        processes.expect_durability().returning(move || durability);
+        processes.expect_launcher_tie().returning(move || launcher_tie);
         processes
             .expect_create_lifetime_job()
             .returning(|| Ok(JobId(1)));
@@ -1107,7 +1107,7 @@ mod tests {
             // the supervisor to report its status.
             let exit = Arc::new((Mutex::new(true), Condvar::new()));
             let processes =
-                mock_processes_with_close_job(exit, Durability::Durable, AppWait::Reports, {
+                mock_processes_with_close_job(exit, LauncherTie::NoneDetected, AppWait::Reports, {
                     let store = store.clone();
                     // Hold teardown after the first-attach lifetime gate opens
                     // but before it claims the client slot and invalidates the
@@ -1326,8 +1326,8 @@ mod tests {
             let store = MemorySessionStore::new();
             let mut processes = MockProcesses::new();
             processes
-                .expect_durability()
-                .returning(|| Durability::Durable);
+                .expect_launcher_tie()
+                .returning(|| LauncherTie::NoneDetected);
             processes
                 .expect_create_lifetime_job()
                 .returning(|| Ok(JobId(1)));
@@ -1376,7 +1376,7 @@ mod tests {
             let store = MemorySessionStore::new();
             let processes = mock_processes_with(
                 Arc::clone(&exit),
-                Durability::TiedToLauncher,
+                LauncherTie::Confirmed,
                 AppWait::Reports,
             );
 
@@ -1397,9 +1397,9 @@ mod tests {
             });
 
             // Only the client has a console to report this on.
-            let (startup_conn, _session_id, durability) =
+            let (startup_conn, _session_id, launcher_tie) =
                 commit_startup(&transport, startup, &phase_reporter);
-            assert_eq!(durability, Durability::TiedToLauncher);
+            assert_eq!(launcher_tie, LauncherTie::Confirmed);
             transport.disconnect(startup_conn);
             {
                 let (lock, cvar) = &*exit;
@@ -1421,7 +1421,7 @@ mod tests {
             let pty = MemoryPseudoconsole::new();
             let store = MemorySessionStore::new();
             let processes =
-                mock_processes_with(Arc::clone(&exit), Durability::Durable, AppWait::Fails);
+                mock_processes_with(Arc::clone(&exit), LauncherTie::NoneDetected, AppWait::Fails);
 
             let startup = transport.listen("startup").unwrap();
             let supervisor = thread::spawn({

@@ -5,7 +5,7 @@ use std::path::PathBuf;
 #[cfg(test)]
 use std::sync::Arc;
 
-use crate::durability::Durability;
+use crate::durability::LauncherTie;
 use crate::pal::error::PalError;
 use crate::pal::ids::{AppId, JobId};
 #[cfg(test)]
@@ -71,11 +71,11 @@ impl Processes for ProcessesFacade {
         }
     }
 
-    fn durability(&self) -> Durability {
+    fn launcher_tie(&self) -> LauncherTie {
         match self {
-            Self::Target(inner) => inner.durability(),
+            Self::Target(inner) => inner.launcher_tie(),
             #[cfg(test)]
-            Self::Mock(inner) => inner.durability(),
+            Self::Mock(inner) => inner.launcher_tie(),
         }
     }
 

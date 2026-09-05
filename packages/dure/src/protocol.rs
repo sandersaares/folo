@@ -15,7 +15,7 @@
 use std::mem::size_of;
 
 use crate::constants::MAX_FRAME_LEN;
-use crate::durability::Durability;
+use crate::durability::LauncherTie;
 use crate::session_id::SessionId;
 
 /// One framed message on the client-supervisor pipe or the startup channel.
@@ -57,7 +57,7 @@ pub(crate) enum Message {
         /// Newly published session id.
         session_id: SessionId,
         /// Whether the session can outlive the client that started it.
-        durability: Durability,
+        launcher_tie: LauncherTie,
     },
     /// Supervisor initialization failed.
     StartupErr,
@@ -65,9 +65,10 @@ pub(crate) enum Message {
     StartupCommit,
 }
 
-// Durability bytes are stable assigned integers, like the kind bytes below.
-const DURABILITY_DURABLE: u8 = 1;
-const DURABILITY_TIED_TO_LAUNCHER: u8 = 2;
+// Launcher-tie bytes are stable assigned integers, like the kind bytes below.
+const LAUNCHER_TIE_NONE_DETECTED: u8 = 1;
+const LAUNCHER_TIE_CONFIRMED: u8 = 2;
+const LAUNCHER_TIE_UNKNOWN: u8 = 3;
 
 // Kind bytes are stable assigned integers. New kinds take the next unused
 // value. Retired kinds are never reused.
@@ -116,13 +117,14 @@ pub(crate) fn encode(message: &Message) -> Vec<u8> {
         }
         Message::StartupOk {
             session_id,
-            durability,
+            launcher_tie,
         } => {
             payload.push(KIND_STARTUP_OK);
             payload.extend_from_slice(&session_id.get().to_le_bytes());
-            payload.push(match *durability {
-                Durability::Durable => DURABILITY_DURABLE,
-                Durability::TiedToLauncher => DURABILITY_TIED_TO_LAUNCHER,
+            payload.push(match *launcher_tie {
+                LauncherTie::NoneDetected => LAUNCHER_TIE_NONE_DETECTED,
+                LauncherTie::Confirmed => LAUNCHER_TIE_CONFIRMED,
+                LauncherTie::Unknown => LAUNCHER_TIE_UNKNOWN,
             });
         }
         Message::StartupErr => payload.push(KIND_STARTUP_ERR),
@@ -161,17 +163,18 @@ pub(crate) fn decode_payload(payload: &[u8]) -> Result<Message, DecodeError> {
         KIND_DISPLACED if rest.is_empty() => Ok(Message::Displaced),
         KIND_APP_EXITED => decode_i32(rest).map(|status| Message::AppExited { status }),
         KIND_STARTUP_OK => {
-            let Some((durability, id_bytes)) = rest.split_last() else {
+            let Some((launcher_tie, id_bytes)) = rest.split_last() else {
                 return Err(DecodeError::Invalid);
             };
-            let durability = match *durability {
-                DURABILITY_DURABLE => Durability::Durable,
-                DURABILITY_TIED_TO_LAUNCHER => Durability::TiedToLauncher,
+            let launcher_tie = match *launcher_tie {
+                LAUNCHER_TIE_NONE_DETECTED => LauncherTie::NoneDetected,
+                LAUNCHER_TIE_CONFIRMED => LauncherTie::Confirmed,
+                LAUNCHER_TIE_UNKNOWN => LauncherTie::Unknown,
                 _ => return Err(DecodeError::Invalid),
             };
             decode_session_id(id_bytes).map(|session_id| Message::StartupOk {
                 session_id,
-                durability,
+                launcher_tie,
             })
         }
         KIND_STARTUP_ERR if rest.is_empty() => Ok(Message::StartupErr),
@@ -244,11 +247,15 @@ mod tests {
             Message::AppExited { status: 7 },
             Message::StartupOk {
                 session_id: id,
-                durability: Durability::Durable,
+                launcher_tie: LauncherTie::NoneDetected,
             },
             Message::StartupOk {
                 session_id: id,
-                durability: Durability::TiedToLauncher,
+                launcher_tie: LauncherTie::Confirmed,
+            },
+            Message::StartupOk {
+                session_id: id,
+                launcher_tie: LauncherTie::Unknown,
             },
             Message::StartupErr,
             Message::StartupCommit,
@@ -303,18 +310,18 @@ mod tests {
     }
 
     #[test]
-    fn startup_ok_rejects_a_missing_or_unknown_durability() {
+    fn startup_ok_rejects_a_missing_or_unassigned_launcher_tie() {
         let id = SessionId::MIN;
-        let mut without_durability = vec![KIND_STARTUP_OK];
-        without_durability.extend_from_slice(&id.get().to_le_bytes());
+        let mut without_tie = vec![KIND_STARTUP_OK];
+        without_tie.extend_from_slice(&id.get().to_le_bytes());
         assert_eq!(
-            decode_payload(&without_durability).unwrap_err(),
+            decode_payload(&without_tie).unwrap_err(),
             DecodeError::Invalid
         );
-        let mut unknown_durability = without_durability.clone();
-        unknown_durability.push(0);
+        let mut unassigned_tie = without_tie.clone();
+        unassigned_tie.push(0);
         assert_eq!(
-            decode_payload(&unknown_durability).unwrap_err(),
+            decode_payload(&unassigned_tie).unwrap_err(),
             DecodeError::Invalid
         );
         assert_eq!(

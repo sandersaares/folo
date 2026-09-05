@@ -5,7 +5,7 @@
 use std::path::Path;
 
 use crate::path_display::display_path;
-use crate::session_id::SessionId;
+use crate::SessionId;
 use crate::session_record::SessionRecord;
 use crate::trace::{Trace, trace};
 
@@ -16,8 +16,10 @@ pub(crate) enum DetectOutcome {
     None,
     /// Exactly one live session was launched from the current directory.
     Unique(SessionId),
-    /// Zero or several matches for this directory; the caller lists and prompts.
-    Ambiguous(Vec<SessionRecord>),
+    /// Zero or several matches for this directory, so the caller has to ask which\r
+    /// session to take. The candidates are the live sessions the caller already\r
+    /// holds, so none are carried here.
+    NeedsSelection,
 }
 
 /// Chooses a session using the launch-directory rule.
@@ -59,7 +61,7 @@ pub(crate) fn auto_detect(live: &[SessionRecord], cwd: &Path, trace: Trace) -> D
 
     match unique_match(&matches) {
         Some(id) => DetectOutcome::Unique(id),
-        None => DetectOutcome::Ambiguous(live.to_vec()),
+        None => DetectOutcome::NeedsSelection,
     }
 }
 
@@ -170,16 +172,16 @@ mod tests {
     }
 
     #[test]
-    fn several_matches_are_ambiguous() {
+    fn several_matches_need_selection() {
         let live = [record(1, "/work"), record(2, "/work")];
         let outcome = auto_detect(&live, Path::new("/work"), Trace::default());
-        assert!(matches!(outcome, DetectOutcome::Ambiguous(_)));
+        assert_eq!(outcome, DetectOutcome::NeedsSelection);
     }
 
     #[test]
-    fn single_session_in_other_directory_is_ambiguous() {
+    fn single_session_in_other_directory_needs_selection() {
         let live = [record(1, "/other")];
         let outcome = auto_detect(&live, Path::new("/work"), Trace::default());
-        assert!(matches!(outcome, DetectOutcome::Ambiguous(sessions) if sessions.len() == 1));
+        assert_eq!(outcome, DetectOutcome::NeedsSelection);
     }
 }

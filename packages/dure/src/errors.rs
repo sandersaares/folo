@@ -143,6 +143,20 @@ pub(crate) struct PalFailedError;
 #[display("Console relay failed")]
 pub(crate) struct RelayFailedError;
 
+/// The supervisor went away without reporting the app's exit status.
+///
+/// A supervisor ends a relay by saying why — the app exited, or another client
+/// took the session. A connection that simply closes means the supervisor is
+/// gone, so the app's outcome is unknown and cannot be reported as success.
+#[ohno::error]
+#[display("Lost the session before the app reported an exit status")]
+pub(crate) struct SupervisorLostError;
+
+/// The console could not be handed back the way it was found.
+#[ohno::error]
+#[display("Failed to restore the console; run `cmd /c cls` or open a new terminal")]
+pub(crate) struct ConsoleRestoreError;
+
 /// The user entered a session id that is not a positive integer.
 #[ohno::error]
 #[display("Invalid session id")]
@@ -166,6 +180,8 @@ unwind_safe!(
     InspectProcessError,
     PalFailedError,
     RelayFailedError,
+    SupervisorLostError,
+    ConsoleRestoreError,
     InvalidSessionIdError,
 );
 
@@ -173,15 +189,6 @@ impl InspectProcessError {
     pub(crate) fn for_pid(pid: u32) -> Self {
         Self::new(pid)
     }
-}
-
-/// Parses a decimal session id from a prompt line.
-pub(crate) fn parse_prompted_id(line: &str) -> Result<SessionId, InvalidSessionIdError> {
-    let line = line.trim();
-    let id: u32 = line
-        .parse()
-        .map_err(|_error| InvalidSessionIdError::new())?;
-    SessionId::from_u32(id).ok_or_else(InvalidSessionIdError::new)
 }
 
 #[cfg(test)]
@@ -194,11 +201,4 @@ mod tests {
     use super::*;
 
     assert_impl_all!(NoConsoleError: Send, Sync, Debug, UnwindSafe, RefUnwindSafe);
-
-    #[test]
-    fn parse_prompted_id_rejects_zero_and_garbage() {
-        parse_prompted_id("0").unwrap_err();
-        parse_prompted_id("nope").unwrap_err();
-        assert_eq!(parse_prompted_id("  3\n").unwrap().get(), 3);
-    }
 }

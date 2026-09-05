@@ -1,23 +1,28 @@
 //! Windows local console PAL.
 
 use std::io;
+use std::slice;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use windows::Win32::Foundation::{HANDLE, WAIT_OBJECT_0};
 use windows::Win32::Globalization::CP_UTF8;
 use windows::Win32::Storage::FileSystem::{ReadFile, WriteFile};
 use windows::Win32::System::Console::{
-    CONSOLE_MODE, CONSOLE_SCREEN_BUFFER_INFO, ENABLE_ECHO_INPUT, ENABLE_LINE_INPUT,
-    ENABLE_PROCESSED_INPUT, ENABLE_PROCESSED_OUTPUT, ENABLE_VIRTUAL_TERMINAL_INPUT,
-    ENABLE_VIRTUAL_TERMINAL_PROCESSING, ENABLE_WINDOW_INPUT, ENABLE_WRAP_AT_EOL_OUTPUT,
-    GetConsoleCP, GetConsoleMode, GetConsoleOutputCP, GetConsoleScreenBufferInfo, GetStdHandle,
-    INPUT_RECORD, KEY_EVENT, PeekConsoleInputW, ReadConsoleInputW, STD_HANDLE, STD_INPUT_HANDLE,
+    CONSOLE_MODE, CONSOLE_SCREEN_BUFFER_INFO, CTRL_BREAK_EVENT, CTRL_C_EVENT, ENABLE_ECHO_INPUT,
+    ENABLE_LINE_INPUT, ENABLE_PROCESSED_INPUT, ENABLE_PROCESSED_OUTPUT,
+    ENABLE_VIRTUAL_TERMINAL_INPUT, ENABLE_VIRTUAL_TERMINAL_PROCESSING, ENABLE_WINDOW_INPUT,
+    ENABLE_WRAP_AT_EOL_OUTPUT, FOCUS_EVENT, FOCUS_EVENT_RECORD, GetConsoleCP, GetConsoleMode,
+    GetConsoleOutputCP, GetConsoleScreenBufferInfo, GetStdHandle, INPUT_RECORD, INPUT_RECORD_0,
+    KEY_EVENT, PeekConsoleInputW, ReadConsoleInputW, STD_HANDLE, STD_INPUT_HANDLE,
     STD_OUTPUT_HANDLE, SetConsoleCP, SetConsoleCtrlHandler, SetConsoleMode, SetConsoleOutputCP,
-    WINDOW_BUFFER_SIZE_EVENT,
+    WINDOW_BUFFER_SIZE_EVENT, WriteConsoleInputW,
 };
 use windows::Win32::System::Threading::{INFINITE, WaitForSingleObject};
+use windows::core::BOOL;
 
 use crate::pal::error::{PalError, PalErrorKind};
+use crate::pal::ids::RelayLeaseId;
 use crate::pal::local_console::{ConsoleInput, LocalConsole};
 use crate::pal::pseudoconsole::WindowSize;
 
@@ -29,19 +34,63 @@ pub(crate) struct BuildTargetConsole;
 /// `ReadFile` may return less. Not a protocol bound.
 const INPUT_READ_BUF: usize = 4096;
 
-/// Console state the relay replaces, kept so the terminal can be handed back
-/// the way it was found. Ref: docs/implementation.md, "Local console".
-#[derive(Clone, Copy, Debug)]
-struct SavedConsole {
-    in_mode: CONSOLE_MODE,
-    out_mode: CONSOLE_MODE,
-    in_code_page: u32,
-    out_code_page: u32,
+/// Input records inspected per `PeekConsoleInputW` call.
+///
+/// Bounds how many leading records one pass can classify and discard; the queue
+/// is re-inspected until it starts with a key, so a smaller batch costs extra
+/// passes rather than losing events. It also sizes the stack buffer the discard
+/// path reads into, which is why the discard path allocates nothing.
+const PEEK_INPUT_RECORDS: usize = 16;
+
+/// Console state one relay takeover replaced, kept so the console can be handed
+/// back the way it was found. Ref: docs/implementation.md, "Console modes".
+///
+/// Each field records a change that succeeded, so restoring undoes exactly what
+/// was done rather than assuming the whole takeover completed.
+#[derive(Clone, Copy, Debug, Default)]
+struct TakenConsole {
+    in_mode: Option<CONSOLE_MODE>,
+    out_mode: Option<CONSOLE_MODE>,
+    code_pages: Option<(u32, u32)>,
+    ctrl_handler_installed: bool,
 }
 
-fn saved_console() -> &'static Mutex<Option<SavedConsole>> {
-    static SAVED: OnceLock<Mutex<Option<SavedConsole>>> = OnceLock::new();
-    SAVED.get_or_init(|| Mutex::new(None))
+/// The outstanding console takeover, if any.
+///
+/// A console is process-wide state, so at most one relay may hold it; a second
+/// takeover is refused rather than sharing the first one's saved state and
+/// restoring it out from under a live relay.
+fn relay_lease() -> &'static Mutex<Option<(RelayLeaseId, TakenConsole)>> {
+    static LEASE: OnceLock<Mutex<Option<(RelayLeaseId, TakenConsole)>>> = OnceLock::new();
+    LEASE.get_or_init(|| Mutex::new(None))
+}
+
+fn next_lease_id() -> RelayLeaseId {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    RelayLeaseId(NEXT.fetch_add(1, Ordering::Relaxed))
+}
+
+/// Whether the current relay's console reader has been asked to stop.
+///
+/// Cleared by each takeover, so a later relay reads the console normally.
+fn input_cancelled() -> &'static AtomicBool {
+    static CANCELLED: AtomicBool = AtomicBool::new(false);
+    &CANCELLED
+}
+
+/// Consumes Ctrl+C and Ctrl+Break so the client does not act on a key that
+/// belongs to the app.
+///
+/// An owned handler rather than the process-wide ignore flag, because a
+/// takeover has to be reversible: removing this handler restores whatever
+/// control-signal policy the caller had, which setting the ignore flag would
+/// have overwritten permanently.
+#[cfg_attr(coverage_nightly, coverage(off))]
+unsafe extern "system" fn relay_ctrl_handler(ctrl_type: u32) -> BOOL {
+    // Close, logoff, and shutdown are left to run their course: the session
+    // ends with the logon session either way, and refusing them would only
+    // delay a shutdown.
+    BOOL::from(ctrl_type == CTRL_C_EVENT || ctrl_type == CTRL_BREAK_EVENT)
 }
 
 fn std_handle(kind: STD_HANDLE) -> Result<HANDLE, PalError> {
@@ -122,8 +171,8 @@ fn event_kind(record: &INPUT_RECORD) -> u32 {
     u32::from(record.EventType)
 }
 
-fn peek_input(handle: HANDLE) -> Result<([INPUT_RECORD; 16], usize), PalError> {
-    let mut peek = [INPUT_RECORD::default(); 16];
+fn peek_input(handle: HANDLE) -> Result<([INPUT_RECORD; PEEK_INPUT_RECORDS], usize), PalError> {
+    let mut peek = [INPUT_RECORD::default(); PEEK_INPUT_RECORDS];
     let mut count = 0_u32;
     // SAFETY: `handle` is stdin; `peek` is exclusive for this call.
     unsafe { PeekConsoleInputW(handle, &mut peek, &raw mut count) }
@@ -131,14 +180,21 @@ fn peek_input(handle: HANDLE) -> Result<([INPUT_RECORD; 16], usize), PalError> {
     Ok((peek, count as usize))
 }
 
+/// Reads and throws away `count` leading records.
+///
+/// `count` is always a prefix of one peek, so the records fit on the stack and
+/// this path — which runs before every blocking read — allocates nothing.
 fn consume_records(handle: HANDLE, count: usize) -> Result<(), PalError> {
     if count == 0 {
         return Ok(());
     }
-    let mut discarded = vec![INPUT_RECORD::default(); count];
+    let mut discarded = [INPUT_RECORD::default(); PEEK_INPUT_RECORDS];
+    let discarded = discarded
+        .get_mut(..count)
+        .ok_or_else(|| PalError::new(PalErrorKind::Other))?;
     let mut read = 0_u32;
-    // SAFETY: `discarded` is exclusive and large enough for `count`.
-    unsafe { ReadConsoleInputW(handle, &mut discarded, &raw mut read) }
+    // SAFETY: `discarded` is exclusive and exactly `count` records long.
+    unsafe { ReadConsoleInputW(handle, discarded, &raw mut read) }
         .map_err(|_error| PalError::new(PalErrorKind::Other))?;
     Ok(())
 }
@@ -182,14 +238,87 @@ fn discard_leading_noise(handle: HANDLE) -> Result<bool, PalError> {
     Ok(true)
 }
 
+/// Puts both console directions into the relay's modes, recording each success.
+///
+/// Ref: docs/implementation.md, "Console modes".
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn take_over_console(
+    taken: &mut TakenConsole,
+    input: HANDLE,
+    output: HANDLE,
+    in_mode: CONSOLE_MODE,
+    out_mode: CONSOLE_MODE,
+) -> Result<(), PalError> {
+    // Disable cooked input so keystrokes reach the app immediately. Enable
+    // VT input for CSI sequences and window-input so resizes appear as
+    // `WINDOW_BUFFER_SIZE_EVENT` records rather than being dropped.
+    let raw_in = CONSOLE_MODE(
+        (in_mode.0 & !(ENABLE_ECHO_INPUT.0 | ENABLE_LINE_INPUT.0 | ENABLE_PROCESSED_INPUT.0))
+            | ENABLE_VIRTUAL_TERMINAL_INPUT.0
+            | ENABLE_WINDOW_INPUT.0,
+    );
+    // VT processing plus wrap so the local console host renders the same
+    // sequences the app writes through its pseudoconsole.
+    let raw_out = CONSOLE_MODE(
+        out_mode.0
+            | ENABLE_VIRTUAL_TERMINAL_PROCESSING.0
+            | ENABLE_PROCESSED_OUTPUT.0
+            | ENABLE_WRAP_AT_EOL_OUTPUT.0,
+    );
+    // SAFETY: `input` is the process stdin console handle; `raw_in` is a
+    // combination of documented console mode flags.
+    unsafe { SetConsoleMode(input, raw_in) }
+        .map_err(|_error| PalError::new(PalErrorKind::Other))?;
+    taken.in_mode = Some(in_mode);
+    // SAFETY: `output` is the process stdout console handle; `raw_out` is a
+    // combination of documented console mode flags.
+    unsafe { SetConsoleMode(output, raw_out) }
+        .map_err(|_error| PalError::new(PalErrorKind::Other))?;
+    taken.out_mode = Some(out_mode);
+    Ok(())
+}
+
+/// Undoes every change `taken` records, attempting all of them.
+///
+/// Stopping at the first failure would leave the console partly raw, which is
+/// worse for the user than the error being reported one step later.
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn hand_back_console(taken: TakenConsole) -> Result<(), PalError> {
+    let input = taken
+        .in_mode
+        .map_or(Ok(()), |mode| restore_mode(STD_INPUT_HANDLE, mode));
+    let output = taken
+        .out_mode
+        .map_or(Ok(()), |mode| restore_mode(STD_OUTPUT_HANDLE, mode));
+    let code_pages = taken
+        .code_pages
+        .map_or(Ok(()), |(in_page, out_page)| {
+            set_code_pages(in_page, out_page)
+        });
+    let ctrl_handler = if taken.ctrl_handler_installed {
+        // SAFETY: Add=FALSE removes the handler this process installed.
+        unsafe { SetConsoleCtrlHandler(Some(relay_ctrl_handler), false) }
+            .map_err(|_error| PalError::new(PalErrorKind::Other))
+    } else {
+        Ok(())
+    };
+    input.and(output).and(code_pages).and(ctrl_handler)
+}
+
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[cfg_attr(test, mutants::skip)]
 impl LocalConsole for BuildTargetConsole {
     fn has_console(&self) -> bool {
-        std_handle(STD_OUTPUT_HANDLE)
-            .ok()
-            .and_then(|handle| console_mode(handle).ok())
-            .is_some()
+        // The relay drives both directions, and raw-relay setup needs the mode
+        // of each, so a console on only one of them cannot carry an attach.
+        [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE]
+            .into_iter()
+            .all(|kind| {
+                std_handle(kind)
+                    .ok()
+                    .and_then(|handle| console_mode(handle).ok())
+                    .is_some()
+            })
     }
 
     fn stdin_is_terminal(&self) -> bool {
@@ -199,14 +328,13 @@ impl LocalConsole for BuildTargetConsole {
             .is_some()
     }
 
-    fn disable_ctrl_c_handler(&self) -> Result<(), PalError> {
-        // SAFETY: a null handler with Add=TRUE tells Windows to ignore control
-        // signals in this process so Ctrl+C is delivered as console input.
-        unsafe { SetConsoleCtrlHandler(None, true) }
-            .map_err(|_error| PalError::new(PalErrorKind::Other))
-    }
-
-    fn enter_raw_relay(&self) -> Result<(), PalError> {
+    fn begin_raw_relay(&self) -> Result<RelayLeaseId, PalError> {
+        let mut lease = relay_lease()
+            .lock()
+            .expect("the relay lease is only replaced, never held across a panic");
+        if lease.is_some() {
+            return Err(PalError::new(PalErrorKind::Other));
+        }
         let input = std_handle(STD_INPUT_HANDLE)?;
         let output = std_handle(STD_OUTPUT_HANDLE)?;
         let in_mode = console_mode(input)?;
@@ -215,69 +343,48 @@ impl LocalConsole for BuildTargetConsole {
         let in_code_page = unsafe { GetConsoleCP() };
         // SAFETY: reads process-wide console state and takes no arguments.
         let out_code_page = unsafe { GetConsoleOutputCP() };
-        {
-            let mut saved = saved_console()
-                .lock()
-                .expect("saved console state is only copied, never held across a panic");
-            if saved.is_none() {
-                *saved = Some(SavedConsole {
-                    in_mode,
-                    out_mode,
-                    in_code_page,
-                    out_code_page,
-                });
-            }
+
+        let mut taken = TakenConsole::default();
+        // Each step records itself before the next is attempted, so a takeover
+        // that fails halfway is handed back exactly as far as it got.
+        let result = take_over_console(&mut taken, input, output, in_mode, out_mode)
+            .and_then(|()| {
+                taken.code_pages = Some((in_code_page, out_code_page));
+                set_code_pages(CP_UTF8, CP_UTF8)
+            })
+            .and_then(|()| {
+                // SAFETY: installs an owned handler that this process removes
+                // again when the lease ends.
+                unsafe { SetConsoleCtrlHandler(Some(relay_ctrl_handler), true) }
+                    .map_err(|_error| PalError::new(PalErrorKind::Other))
+            })
+            .inspect(|()| taken.ctrl_handler_installed = true);
+        if let Err(error) = result {
+            _ = hand_back_console(taken);
+            return Err(error);
         }
-        // Disable cooked input so keystrokes reach the app immediately. Enable
-        // VT input for CSI sequences and window-input so resizes appear as
-        // `WINDOW_BUFFER_SIZE_EVENT` records rather than being dropped.
-        // Ref: docs/implementation.md, "Console modes".
-        let raw_in = CONSOLE_MODE(
-            (in_mode.0 & !(ENABLE_ECHO_INPUT.0 | ENABLE_LINE_INPUT.0 | ENABLE_PROCESSED_INPUT.0))
-                | ENABLE_VIRTUAL_TERMINAL_INPUT.0
-                | ENABLE_WINDOW_INPUT.0,
-        );
-        // VT processing plus wrap so the local host renders the same sequences
-        // the app writes through ConPTY.
-        let raw_out = CONSOLE_MODE(
-            out_mode.0
-                | ENABLE_VIRTUAL_TERMINAL_PROCESSING.0
-                | ENABLE_PROCESSED_OUTPUT.0
-                | ENABLE_WRAP_AT_EOL_OUTPUT.0,
-        );
-        // SAFETY: `input` is the process stdin console handle; `raw_in` is a
-        // combination of documented console mode flags.
-        unsafe { SetConsoleMode(input, raw_in) }
-            .map_err(|_error| PalError::new(PalErrorKind::Other))?;
-        // SAFETY: `output` is the process stdout console handle; `raw_out` is a
-        // combination of documented console mode flags.
-        unsafe { SetConsoleMode(output, raw_out) }
-            .map_err(|_error| PalError::new(PalErrorKind::Other))?;
-        set_code_pages(CP_UTF8, CP_UTF8)?;
-        Ok(())
+        let id = next_lease_id();
+        input_cancelled().store(false, Ordering::SeqCst);
+        *lease = Some((id, taken));
+        Ok(id)
     }
 
-    fn leave_raw_relay(&self) -> Result<(), PalError> {
-        let saved = saved_console()
-            .lock()
-            .expect("saved console state is only copied, never held across a panic")
-            .take();
-        // Every restoration is attempted even when an earlier one fails, and the
-        // Ctrl+C request is undone even when no modes were ever captured:
-        // leaving the console half-raw is worse than losing a later error.
-        let input = saved.map_or(Ok(()), |saved| {
-            restore_mode(STD_INPUT_HANDLE, saved.in_mode)
-        });
-        let output = saved.map_or(Ok(()), |saved| {
-            restore_mode(STD_OUTPUT_HANDLE, saved.out_mode)
-        });
-        let code_pages = saved.map_or(Ok(()), |saved| {
-            set_code_pages(saved.in_code_page, saved.out_code_page)
-        });
-        // SAFETY: Add=FALSE undoes the ignore-Ctrl+C request from attach.
-        let ctrl_c = unsafe { SetConsoleCtrlHandler(None, false) }
-            .map_err(|_error| PalError::new(PalErrorKind::Other));
-        input.and(output).and(code_pages).and(ctrl_c)
+    fn end_raw_relay(&self, lease: RelayLeaseId) -> Result<(), PalError> {
+        let taken = {
+            let mut held = relay_lease()
+                .lock()
+                .expect("the relay lease is only replaced, never held across a panic");
+            match *held {
+                Some((id, taken)) if id == lease => {
+                    *held = None;
+                    taken
+                }
+                // A lease this console never issued, or one already handed
+                // back, must not restore state a live relay owns.
+                _ => return Err(PalError::new(PalErrorKind::Other)),
+            }
+        };
+        hand_back_console(taken)
     }
 
     fn window_size(&self) -> Result<WindowSize, PalError> {
@@ -287,6 +394,9 @@ impl LocalConsole for BuildTargetConsole {
     fn read_input(&self) -> Result<ConsoleInput, PalError> {
         let handle = std_handle(STD_INPUT_HANDLE)?;
         loop {
+            if input_cancelled().load(Ordering::SeqCst) {
+                return Err(PalError::new(PalErrorKind::Disconnected));
+            }
             if let Some(size) = take_leading_resize(handle)? {
                 return Ok(ConsoleInput::Resize(size));
             }
@@ -323,6 +433,31 @@ impl LocalConsole for BuildTargetConsole {
             buf.truncate(transferred as usize);
             return Ok(ConsoleInput::Bytes(buf));
         }
+    }
+
+    fn cancel_input(&self) -> Result<(), PalError> {
+        input_cancelled().store(true, Ordering::SeqCst);
+        // The reader may be waiting on the input handle, which only signals
+        // when a record arrives, so one is written to wake it. A focus record
+        // is what the relay already discards, so a reader that has not been
+        // cancelled loses nothing by receiving it.
+        let handle = std_handle(STD_INPUT_HANDLE)?;
+        let mut wake = INPUT_RECORD {
+            // The record type is a `u32` constant stored in a `u16` field, and
+            // every defined event type fits.
+            EventType: u16::try_from(FOCUS_EVENT)
+                .map_err(|_error| PalError::new(PalErrorKind::Other))?,
+            Event: INPUT_RECORD_0 {
+                FocusEvent: FOCUS_EVENT_RECORD {
+                    bSetFocus: BOOL::from(false),
+                },
+            },
+        };
+        let mut written = 0_u32;
+        // SAFETY: `handle` is stdin; `wake` is a stack record exclusive to this
+        // call and outlives it.
+        unsafe { WriteConsoleInputW(handle, slice::from_mut(&mut wake), &raw mut written) }
+            .map_err(|_error| PalError::new(PalErrorKind::Other))
     }
 
     fn write_output(&self, data: &[u8]) -> Result<(), PalError> {

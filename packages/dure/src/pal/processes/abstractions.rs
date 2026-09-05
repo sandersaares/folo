@@ -3,7 +3,7 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use crate::durability::Durability;
+use crate::durability::LauncherTie;
 use crate::pal::error::PalError;
 use crate::pal::ids::{AppId, JobId, PtyId};
 use crate::session_record::ProcessIdentity;
@@ -53,14 +53,15 @@ pub(crate) trait Processes: Send + Sync + fmt::Debug + 'static {
     /// Spawn a supervisor that is not in the caller's kill-on-close job.
     fn spawn_supervisor(&self, request: &SupervisorSpawn) -> Result<ProcessIdentity, PalError>;
 
-    /// Whether a job object would end this process along with its launcher.
+    /// What the job this process is directly in says about its lifetime.
     ///
     /// Breakaway leaves only the immediate job, so the supervisor asks about the
     /// job it actually landed in. Windows reports job membership only to the
-    /// process itself, so no other process can answer this.
+    /// process itself, so no other process can answer this, and it exposes no
+    /// ancestor jobs, so an outer job is never ruled out.
     ///
     /// Ref: docs/implementation.md, "Job breakaway".
-    fn durability(&self) -> Durability;
+    fn launcher_tie(&self) -> LauncherTie;
 
     /// Open the pid, verify creation time, and report whether it is running.
     fn probe(&self, identity: &ProcessIdentity) -> ProcessLiveness;

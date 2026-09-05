@@ -6,7 +6,7 @@ use ohno::AppError;
 
 use crate::attach::attach;
 use crate::constants::{CONNECT_TIMEOUT, STARTUP_TIMEOUT, SUPERVISOR_COMMAND};
-use crate::durability::Durability;
+use crate::durability::LauncherTie;
 use crate::pal::error::PalErrorKind;
 use crate::pal::local_console::LocalConsole;
 use crate::pal::processes::{Processes, SupervisorSpawn};
@@ -22,10 +22,25 @@ use crate::{
     EmptyCommandError, NoConsoleError, PalFailedError, StartupFailedError, StoreError,
 };
 
-/// Said when the session cannot outlive the process that launched it.
+/// Said when the supervisor confirmed a job that ends the session with its
+/// launcher.
 ///
 /// Ref: docs/implementation.md, "Job breakaway".
-const TIED_TO_LAUNCHER_WARNING: &str = "Warning: this session belongs to a Windows job object that will end it when the launcher exits, so it will not survive a disconnect. Launch dure.exe directly instead of through a wrapper such as `cargo run`.";
+const TIED_TO_LAUNCHER_WARNING: &str = concat!(
+    "Warning: this session belongs to a Windows job object that will end it when the launcher ",
+    "exits, so it will not survive a disconnect. Launch dure.exe directly instead of through a ",
+    "wrapper such as `cargo run`."
+);
+
+/// Said when the supervisor could not inspect the job it is in.
+///
+/// Nothing was established either way, so this reports the uncertainty rather
+/// than naming a cause that was never confirmed.
+/// Ref: docs/implementation.md, "Job breakaway".
+const UNKNOWN_TIE_WARNING: &str = concat!(
+    "Warning: this session's Windows job object could not be inspected, so whether it survives ",
+    "the launcher is unknown. Launch dure.exe directly if the session must outlive this terminal."
+);
 
 /// Start a new session, spawn the supervisor, and attach.
 pub(crate) fn execute<S, P, T, C>(
@@ -119,7 +134,7 @@ where
     let response = transport.recv_timeout(conn, STARTUP_TIMEOUT);
     let Ok(Message::StartupOk {
         session_id,
-        durability,
+        launcher_tie,
     }) = response
     else {
         transport.disconnect(conn);
@@ -131,14 +146,16 @@ where
     }
     trace!(
         trace,
-        "supervisor reported in as session {session_id}, durability {}",
-        durability_note(durability)
+        "supervisor reported in as session {session_id}; launcher tie: {launcher_tie}"
     );
-    if durability == Durability::TiedToLauncher {
+    if launcher_tie.warrants_warning() {
         // The supervisor discovers this about itself but has no console
         // to say it on. Ref: docs/implementation.md, "Job breakaway".
-        eprintln!("{TIED_TO_LAUNCHER_WARNING}");
+        eprintln!("{}", launcher_warning(launcher_tie));
     }
+    // Said before the console is taken over, because a failure from here on
+    // still leaves this session reachable by `list`, `resume`, and `kill`.
+    eprintln!("session {session_id}");
     // The supervisor reads this connection as the signal that an attach is
     // still on its way, and holds a session whose app exits immediately open
     // until it arrives. So it stays up for as long as this run intends to
@@ -148,13 +165,17 @@ where
     outcome
 }
 
-// Trace wording is not a behavioral contract; the warning that follows a
-// tied-to-launcher session is.
+/// What to tell the user about a session that may not outlive its launcher.
+///
+/// A confirmed tie names the cause; an unreadable job does not, because the
+/// supervisor established nothing and saying otherwise would send the user
+/// after a diagnosis that was never made.
 #[cfg_attr(test, mutants::skip)]
-fn durability_note(durability: Durability) -> &'static str {
-    match durability {
-        Durability::Durable => "survives this terminal",
-        Durability::TiedToLauncher => "tied to the launcher, so it will not survive",
+fn launcher_warning(launcher_tie: LauncherTie) -> &'static str {
+    match launcher_tie {
+        LauncherTie::Confirmed => TIED_TO_LAUNCHER_WARNING,
+        LauncherTie::Unknown => UNKNOWN_TIE_WARNING,
+        LauncherTie::NoneDetected => "",
     }
 }
 
@@ -461,7 +482,7 @@ mod tests {
                         conn,
                         &Message::StartupOk {
                             session_id: SessionId::MIN,
-                            durability: Durability::Durable,
+                            launcher_tie: LauncherTie::NoneDetected,
                         },
                     )
                     .unwrap();
@@ -491,9 +512,9 @@ mod tests {
     }
 
     /// Drives `execute` through a successful startup handshake against a
-    /// supervisor stand-in that reports `durability`, and fails the store read
+    /// supervisor stand-in that reports `launcher_tie`, and fails the store read
     /// that follows so the run ends without a live session to attach to.
-    fn execute_past_startup(durability: Durability) -> AppError {
+    fn execute_past_startup(launcher_tie: LauncherTie) -> AppError {
         let transport = MemoryTransport::new();
         let mut store = MockSessionStore::new();
         store
@@ -522,7 +543,7 @@ mod tests {
                         conn,
                         &Message::StartupOk {
                             session_id: SessionId::MIN,
-                            durability,
+                            launcher_tie,
                         },
                     )
                     .unwrap();
@@ -552,13 +573,31 @@ mod tests {
 
     #[test]
     fn a_started_session_is_looked_up_in_the_store() {
-        let error = execute_past_startup(Durability::Durable);
+        let error = execute_past_startup(LauncherTie::NoneDetected);
         assert!(error.find_source::<StoreError>().is_some());
     }
 
     #[test]
     fn a_session_tied_to_the_launcher_still_starts() {
-        let error = execute_past_startup(Durability::TiedToLauncher);
+        let error = execute_past_startup(LauncherTie::Confirmed);
         assert!(error.find_source::<StoreError>().is_some());
+    }
+
+    #[test]
+    fn a_session_whose_job_could_not_be_inspected_still_starts() {
+        let error = execute_past_startup(LauncherTie::Unknown);
+        assert!(error.find_source::<StoreError>().is_some());
+    }
+
+    #[test]
+    fn only_an_established_or_unknown_tie_is_worth_warning_about() {
+        assert!(LauncherTie::Confirmed.warrants_warning());
+        assert!(LauncherTie::Unknown.warrants_warning());
+        assert!(!LauncherTie::NoneDetected.warrants_warning());
+        // An unreadable job must not be reported as a confirmed diagnosis.
+        assert_ne!(
+            launcher_warning(LauncherTie::Unknown),
+            launcher_warning(LauncherTie::Confirmed)
+        );
     }
 }

@@ -35,14 +35,14 @@ use windows::Win32::System::Threading::{
 use windows::core::{BOOL, PCWSTR, PWSTR};
 
 use crate::constants::TERMINATE_TIMEOUT;
-use crate::durability::Durability;
+use crate::durability::LauncherTie;
 use crate::pal::error::{PalError, PalErrorKind};
 use crate::pal::ids::{AppId, JobId};
 use crate::pal::processes::{
     AppSpawn, ProcessLiveness, Processes, SupervisorSpawn, resolve_command_path,
     windows_command_line,
 };
-use crate::pal::pseudoconsole::hpcon_for;
+use crate::pal::pseudoconsole::windows::hpcon_for;
 use crate::pal::raw_handle::RawHandle;
 use crate::session_record::ProcessIdentity;
 
@@ -419,22 +419,21 @@ impl Processes for BuildTargetProcesses {
         identity
     }
 
-    fn durability(&self) -> Durability {
+    fn launcher_tie(&self) -> LauncherTie {
         match immediate_job_limits() {
-            JobLimits::None => Durability::Durable,
-            // An unanswerable query is reported as the cautious answer: a
-            // spurious warning costs the user a line of text, a missed one
-            // costs a session.
-            JobLimits::Unknown => Durability::TiedToLauncher,
+            JobLimits::None => LauncherTie::NoneDetected,
+            // Nothing was established, so nothing is claimed: the client warns
+            // about the uncertainty rather than naming a cause.
+            JobLimits::Unknown => LauncherTie::Unknown,
             // Only kill-on-close ties this process's lifetime to the launcher's
             // job. Membership in a job without it is harmless, and terminals and
             // remote session hosts routinely impose such a job on everything
             // they start.
             JobLimits::Known(flags) => {
                 if (flags & JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE).0 == 0 {
-                    Durability::Durable
+                    LauncherTie::NoneDetected
                 } else {
-                    Durability::TiedToLauncher
+                    LauncherTie::Confirmed
                 }
             }
         }

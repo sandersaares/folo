@@ -6,7 +6,8 @@ use crate::pal::error::PalError;
 use crate::pal::ids::PtyId;
 #[cfg(test)]
 use crate::pal::pseudoconsole::MemoryPseudoconsole;
-use crate::pal::pseudoconsole::{BuildTargetPseudoconsole, Pseudoconsole, WindowSize};
+use crate::pal::pseudoconsole::windows::BuildTargetPseudoconsole;
+use crate::pal::pseudoconsole::{Pseudoconsole, WindowSize};
 
 /// Dispatches pseudoconsole calls to the real PAL or an in-memory test host.
 #[derive(Clone)]
