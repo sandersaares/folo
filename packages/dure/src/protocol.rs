@@ -151,7 +151,10 @@ const KIND_STARTUP_COMMIT: u8 = 10;
 /// Encodes a message as a length-prefixed frame.
 #[must_use]
 pub(crate) fn encode(message: &Message) -> Vec<u8> {
-    let mut payload = Vec::new();
+    // The frame is built in its final allocation: the length is written last,
+    // over the room reserved for it here, so the body is copied once.
+    let mut frame = vec![0_u8; size_of::<u32>()];
+    let payload = &mut frame;
     match message {
         Message::Attach { size } => {
             payload.push(KIND_ATTACH);
@@ -209,14 +212,17 @@ pub(crate) fn encode(message: &Message) -> Vec<u8> {
         Message::StartupCommit => payload.push(KIND_STARTUP_COMMIT),
     }
 
-    let len = u32::try_from(payload.len()).expect("frame payload fits in u32");
-    let mut frame = Vec::with_capacity(
-        size_of::<u32>()
-            .checked_add(payload.len())
-            .expect("frame length fits in usize"),
-    );
-    frame.extend_from_slice(&len.to_le_bytes());
-    frame.extend_from_slice(&payload);
+    let len = u32::try_from(
+        frame
+            .len()
+            .checked_sub(size_of::<u32>())
+            .expect("the length prefix was reserved above"),
+    )
+    .expect("frame payload fits in u32");
+    let (prefix, _) = frame
+        .split_at_mut_checked(size_of::<u32>())
+        .expect("the length prefix was reserved above");
+    prefix.copy_from_slice(&len.to_le_bytes());
     frame
 }
 
@@ -227,12 +233,21 @@ pub(crate) enum DecodeError {
     Invalid,
 }
 
-/// Decodes one length-prefixed frame. `data` is the payload after the length word.
-pub(crate) fn decode_payload(payload: &[u8]) -> Result<Message, DecodeError> {
-    let Some((kind, rest)) = payload.split_first() else {
-        return Err(DecodeError::Invalid);
-    };
-    match *kind {
+/// Decodes one frame whose kind byte the reader has already taken.
+///
+/// The byte-bearing messages take the body allocation as it is rather than
+/// copying out of it, which is what keeps the relay from copying every
+/// keystroke and every screenful of output a second time.
+pub(crate) fn decode_body(kind: u8, body: Vec<u8>) -> Result<Message, DecodeError> {
+    match kind {
+        KIND_INPUT => Ok(Message::Input(body)),
+        KIND_OUTPUT => Ok(Message::Output(body)),
+        _ => decode_rest(kind, &body),
+    }
+}
+
+fn decode_rest(kind: u8, rest: &[u8]) -> Result<Message, DecodeError> {
+    match kind {
         KIND_ATTACH => decode_size(rest).map(|size| Message::Attach { size }),
         KIND_INPUT => Ok(Message::Input(rest.to_vec())),
         KIND_RESIZE => decode_size(rest).map(|size| Message::Resize { size }),
@@ -335,6 +350,17 @@ fn decode_i32(rest: &[u8]) -> Result<i32, DecodeError> {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
+
+    /// Decodes a whole payload, kind byte and all.
+    ///
+    /// The transport reads the kind separately so a body allocation can become
+    /// the message; a test is describing a frame, so it writes one.
+    fn decode_payload(payload: &[u8]) -> Result<Message, DecodeError> {
+        let Some((kind, rest)) = payload.split_first() else {
+            return Err(DecodeError::Invalid);
+        };
+        decode_body(*kind, rest.to_vec())
+    }
 
     #[test]
     fn round_trips_each_kind() {

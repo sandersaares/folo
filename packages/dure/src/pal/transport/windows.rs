@@ -38,7 +38,7 @@ use crate::pal::error::{PalError, PalErrorKind};
 use crate::pal::ids::{ConnId, ListenerId};
 use crate::pal::raw_handle::PipeHandle;
 use crate::pal::transport::Transport;
-use crate::protocol::{Message, decode_payload, encode, payload_len_ok};
+use crate::protocol::{Message, decode_body, encode, payload_len_ok};
 
 struct PipeTable {
     listeners: HashMap<ListenerId, Listener>,
@@ -572,9 +572,16 @@ fn recv_message(conn: ConnId, timeout: Option<Duration>) -> Result<Message, PalE
     if !payload_len_ok(len) {
         return Err(PalError::new(PalErrorKind::Other));
     }
-    let mut payload = vec![0_u8; len as usize];
-    read_exact_until(&handle, &mut payload, deadline)?;
-    decode_payload(&payload).map_err(|_error| PalError::new(PalErrorKind::Other))
+    // The kind byte is read on its own so the body arrives in an allocation
+    // the message can simply take. Ref: docs/transport.md.
+    let mut kind = [0_u8; 1];
+    read_exact_until(&handle, &mut kind, deadline)?;
+    let body_len = (len as usize)
+        .checked_sub(kind.len())
+        .ok_or_else(|| PalError::new(PalErrorKind::Other))?;
+    let mut body = vec![0_u8; body_len];
+    read_exact_until(&handle, &mut body, deadline)?;
+    decode_body(kind[0], body).map_err(|_error| PalError::new(PalErrorKind::Other))
 }
 
 /// Real Windows named-pipe transport.

@@ -132,6 +132,15 @@ impl<T: Transport + Clone> Outbox<T> {
         }
     }
 
+    /// Whether this outbox has given up on its connection.
+    ///
+    /// Lets a test observe abandonment without waiting for the writer, which
+    /// is the thread abandonment exists to release.
+    #[cfg(test)]
+    pub(crate) fn is_abandoned(&self) -> bool {
+        self.lock().abandoned
+    }
+
     fn lock(&self) -> MutexGuard<'_, OutboxState> {
         self.state
             .lock()
@@ -248,17 +257,34 @@ mod tests {
             // The peer stops draining its pipe, so every write to it blocks.
             transport.stall(server);
             let outbox = Outbox::start(transport.clone(), server);
-            // The backlog cap is the only thing that can end this loop. A
-            // blocking send would never return.
             let chunk = vec![0_u8; 64 * 1024];
+            outbox.send(Message::Output(chunk.clone()));
+            // The writer is now parked on the wedged client, which is the
+            // state abandonment has to get it out of.
+            transport.wait_for_stalled_send(server);
+
             // One extra round covers the message the writer already took off
             // the queue and is blocked on.
             let rounds = MAX_CLIENT_BACKLOG_BYTES.div_euclid(chunk.len()) + 2;
             for _ in 0..rounds {
                 outbox.send(Message::Output(chunk.clone()));
             }
+            // Read before the teardown below, because the teardown would
+            // abandon it too.
+            let abandoned_itself = outbox.is_abandoned();
+
+            // Teardown the harness owns, so the writer is released whether or
+            // not the code under test released it. Without this a mutation of
+            // the backlog check would park this test forever instead of
+            // failing it, and mutation runs have no watchdog.
+            transport.resume(server);
+            outbox.abandon();
             outbox.wait_for_writer();
-            transport.send(server, &Message::Displaced).unwrap_err();
+
+            assert!(
+                abandoned_itself,
+                "a backlog past the cap must give up on the client on its own"
+            );
         });
     }
 
