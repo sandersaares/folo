@@ -65,11 +65,33 @@ pub struct Invocation {
     /// visible example, but store location, record reads, and liveness
     /// decisions are explained the same way (design.md, "Diagnostics").
     pub verbose: bool,
-    /// Store-root override. Hidden; tests use it so they never touch `LocalAppData`.
+    /// Where the session store lives, when it is not the per-user default.
+    ///
+    /// Compiled only into test builds. Session isolation is a property of the
+    /// per-user store root: a directory chosen by a caller carries whatever
+    /// access control it happens to have, and records under it are trusted by
+    /// `list`, `resume`, and `kill`. The released tool therefore has no way to
+    /// point at one (design.md, "Isolation").
+    #[cfg(any(test, feature = "private-test-util"))]
     #[doc(hidden)]
     pub store_root: Option<PathBuf>,
     /// Subcommand to execute.
     pub command: Command,
+}
+
+impl Invocation {
+    /// Where the session store lives, when it is not the per-user default.
+    #[must_use]
+    pub(crate) fn session_store_root(&self) -> Option<PathBuf> {
+        #[cfg(any(test, feature = "private-test-util"))]
+        {
+            self.store_root.clone()
+        }
+        #[cfg(not(any(test, feature = "private-test-util")))]
+        {
+            None
+        }
+    }
 }
 
 /// Result of a successful `dure` invocation.

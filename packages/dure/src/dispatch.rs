@@ -16,7 +16,7 @@ use crate::{PalFailedError, commands};
 /// Returns an error when a session cannot be started, resumed, listed, or
 /// killed, and when an attached client is displaced by a newer attach.
 pub fn run(input: &Invocation) -> Result<Outcome, AppError> {
-    let pal = Pal::target(input.store_root.clone()).map_err(PalFailedError::caused_by)?;
+    let pal = Pal::target(input.session_store_root()).map_err(PalFailedError::caused_by)?;
     dispatch(input, &pal)
 }
 
@@ -26,7 +26,7 @@ pub(crate) fn dispatch(input: &Invocation, pal: &Pal) -> Result<Outcome, AppErro
         trace,
         "store root: {}",
         input
-            .store_root
+            .session_store_root()
             .as_deref()
             .map_or_else(|| "per-user default".to_string(), display_path)
     );
@@ -37,7 +37,7 @@ pub(crate) fn dispatch(input: &Invocation, pal: &Pal) -> Result<Outcome, AppErro
             &pal.transport,
             &pal.console,
             command,
-            input.store_root.clone(),
+            input.session_store_root(),
             trace,
         ),
         Command::Resume { id } => commands::resume::execute(

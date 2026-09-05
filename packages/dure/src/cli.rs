@@ -30,7 +30,10 @@ pub struct Cli {
 
     /// Override the session store root.
     ///
-    /// Hidden; integration tests use this so they never touch `LocalAppData`.
+    /// Compiled only into test builds, so the released tool always uses the
+    /// per-user store that gives sessions their isolation
+    /// (design.md, "Isolation").
+    #[cfg(any(test, feature = "private-test-util"))]
     #[arg(long, global = true, hide = true)]
     store_root: Option<PathBuf>,
 
@@ -173,6 +176,7 @@ impl Cli {
         };
         Ok(Invocation {
             verbose: self.verbose,
+            #[cfg(any(test, feature = "private-test-util"))]
             store_root: self.store_root,
             command,
         })
