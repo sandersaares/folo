@@ -160,7 +160,7 @@ impl UserPipeSecurity {
                 None,
             )
         };
-        converted.map_err(|_error| PalError::new(PalErrorKind::Other))?;
+        converted.map_err(|error| PalError::with_source(PalErrorKind::Other, error))?;
         let attrs = SECURITY_ATTRIBUTES {
             nLength: u32::try_from(size_of::<SECURITY_ATTRIBUTES>())
                 .expect("SECURITY_ATTRIBUTES fits in u32"),
@@ -189,7 +189,7 @@ fn current_user_sid_string() -> Result<String, PalError> {
     // SAFETY: `token` is an out-handle on the stack. `process` is the
     // current-process pseudo-handle.
     unsafe { OpenProcessToken(process, TOKEN_QUERY, &raw mut token) }
-        .map_err(|_error| PalError::new(PalErrorKind::Other))?;
+        .map_err(|error| PalError::with_source(PalErrorKind::Other, error))?;
     let mut len = 0_u32;
     // SAFETY: size query; a null information buffer is allowed.
     _ = unsafe { GetTokenInformation(token, TokenUser, None, 0, &raw mut len) };
@@ -210,7 +210,7 @@ fn current_user_sid_string() -> Result<String, PalError> {
         )
     };
     close(token);
-    queried.map_err(|_error| PalError::new(PalErrorKind::Other))?;
+    queried.map_err(|error| PalError::with_source(PalErrorKind::Other, error))?;
     let mut sid_str = PWSTR::null();
     {
         // SAFETY: `buf` holds a TOKEN_USER written by GetTokenInformation. No
@@ -219,14 +219,14 @@ fn current_user_sid_string() -> Result<String, PalError> {
         // SAFETY: `user.User.Sid` is a valid SID inside `buf`. On success
         // `sid_str` is a LocalAlloc string we own.
         unsafe { ConvertSidToStringSidW(user.User.Sid, &raw mut sid_str) }
-            .map_err(|_error| PalError::new(PalErrorKind::Other))?;
+            .map_err(|error| PalError::with_source(PalErrorKind::Other, error))?;
     }
     // SAFETY: `sid_str` is the unique owner of a NUL-terminated SID string.
     // Copy before LocalFree so conversion errors cannot leak the allocation.
     let wide = unsafe { sid_str.as_wide() }.to_vec();
     // SAFETY: `sid_str` is the ConvertSidToStringSidW allocation we copied.
     _ = unsafe { LocalFree(Some(HLOCAL(sid_str.0.cast()))) };
-    String::from_utf16(&wide).map_err(|_error| PalError::new(PalErrorKind::Other))
+    String::from_utf16(&wide).map_err(|error| PalError::with_source(PalErrorKind::Other, error))
 }
 
 fn create_instance(name: &[u16], first: bool) -> Result<HANDLE, PalError> {
@@ -259,7 +259,7 @@ fn create_instance(name: &[u16], first: bool) -> Result<HANDLE, PalError> {
 fn create_event() -> Result<HANDLE, PalError> {
     // SAFETY: a manual-reset event used only as an overlapped completion event.
     unsafe { CreateEventW(None, true, false, None) }
-        .map_err(|_error| PalError::new(PalErrorKind::Other))
+        .map_err(|error| PalError::with_source(PalErrorKind::Other, error))
 }
 
 fn wait_event(event: HANDLE, timeout_ms: u32) -> Result<(), PalError> {
@@ -354,7 +354,7 @@ fn connect_instance(pipe: &PipeHandle, deadline: Option<Deadline>) -> Result<(),
     let completed =
         unsafe { GetOverlappedResult(handle, &raw const overlapped, &raw mut transferred, true) };
     close(event);
-    completed.map_err(|_error| PalError::new(PalErrorKind::Disconnected))
+    completed.map_err(|error| PalError::with_source(PalErrorKind::Disconnected, error))
 }
 
 fn read_exact_until(
@@ -491,7 +491,7 @@ fn write_all(pipe: &PipeHandle, mut buf: &[u8]) -> Result<(), PalError> {
 fn conn_handle(conn: ConnId) -> Result<Arc<PipeHandle>, PalError> {
     table()
         .lock()
-        .expect("pipe table")
+        .expect("the pipe table is only inserted into and looked up, never held across a panic")
         .conns
         .get(&conn.0)
         .map(|conn| Arc::clone(&conn.handle))
@@ -501,7 +501,7 @@ fn conn_handle(conn: ConnId) -> Result<Arc<PipeHandle>, PalError> {
 fn conn_write(conn: ConnId) -> Result<(Arc<PipeHandle>, Arc<Mutex<()>>), PalError> {
     table()
         .lock()
-        .expect("pipe table")
+        .expect("the pipe table is only inserted into and looked up, never held across a panic")
         .conns
         .get(&conn.0)
         .map(|conn| (Arc::clone(&conn.handle), Arc::clone(&conn.write)))
@@ -511,7 +511,7 @@ fn conn_write(conn: ConnId) -> Result<(Arc<PipeHandle>, Arc<Mutex<()>>), PalErro
 fn accept_connection(listener: ListenerId, timeout: Option<Duration>) -> Result<ConnId, PalError> {
     let deadline = timeout.map(Deadline::after);
     let (pending, name) = {
-        let table = table().lock().expect("pipe table");
+        let table = table().lock().expect("the pipe table is only inserted into and looked up, never held across a panic");
         let listener = table
             .listeners
             .get(&listener.0)
@@ -523,7 +523,7 @@ fn accept_connection(listener: ListenerId, timeout: Option<Duration>) -> Result<
     // can connect while this connection is still live (steal). If
     // close_listener already removed the listener, this handle must not be
     // published; dropping the last reference closes it.
-    let mut table = table().lock().expect("pipe table");
+    let mut table = table().lock().expect("the pipe table is only inserted into and looked up, never held across a panic");
     if !table.listeners.contains_key(&listener.0) {
         return Err(PalError::new(PalErrorKind::Disconnected));
     }
@@ -572,7 +572,7 @@ impl Transport for BuildTargetTransport {
         let name = wide_z(name);
         let pending = create_instance(&name, true)?;
         let id = next_id();
-        table().lock().expect("pipe table").listeners.insert(
+        table().lock().expect("the pipe table is only inserted into and looked up, never held across a panic").listeners.insert(
             id,
             Listener {
                 name,
@@ -643,7 +643,7 @@ impl Transport for BuildTargetTransport {
                 }
             };
             let id = next_id();
-            table().lock().expect("pipe table").conns.insert(
+            table().lock().expect("the pipe table is only inserted into and looked up, never held across a panic").conns.insert(
                 id,
                 Conn {
                     handle: PipeHandle::new(handle),
@@ -657,7 +657,7 @@ impl Transport for BuildTargetTransport {
     fn send(&self, conn: ConnId, message: &Message) -> Result<(), PalError> {
         let frame = encode(message);
         let (handle, write) = conn_write(conn)?;
-        let _guard = write.lock().expect("pipe write lock");
+        let _guard = write.lock().expect("a pipe write holds the lock only across the write itself, which does not panic");
         write_all(&handle, &frame)
     }
 
@@ -670,7 +670,7 @@ impl Transport for BuildTargetTransport {
     }
 
     fn disconnect(&self, conn: ConnId) {
-        let removed = table().lock().expect("pipe table").conns.remove(&conn.0);
+        let removed = table().lock().expect("the pipe table is only inserted into and looked up, never held across a panic").conns.remove(&conn.0);
         if let Some(conn) = removed {
             // Aborts a read or write another thread is blocked in, so it fails
             // and releases its reference; the handle closes with the last one.
@@ -681,7 +681,7 @@ impl Transport for BuildTargetTransport {
     fn close_listener(&self, listener: ListenerId) {
         let removed = table()
             .lock()
-            .expect("pipe table")
+            .expect("the pipe table is only inserted into and looked up, never held across a panic")
             .listeners
             .remove(&listener.0);
         if let Some(listener) = removed {

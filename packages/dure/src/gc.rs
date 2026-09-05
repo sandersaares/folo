@@ -20,7 +20,7 @@ pub(crate) fn live_sessions(
     processes: &impl Processes,
     trace: Trace,
 ) -> Result<Vec<SessionRecord>, AppError> {
-    let records = store.list().map_err(|_error| StoreError::new())?;
+    let records = store.list().map_err(StoreError::caused_by)?;
     trace!(
         trace,
         "read {} session record(s) from the store",
@@ -49,7 +49,7 @@ pub(crate) fn live_sessions(
                 // that claimed this id since `list` read it.
                 store
                     .delete_owned_by(record.session_id(), &record.identity())
-                    .map_err(|_error| StoreError::new())?;
+                    .map_err(StoreError::caused_by)?;
             }
             ProcessLiveness::InspectFailed => {
                 trace!(
@@ -78,7 +78,7 @@ fn reap_orphan_reservations(
 ) -> Result<(), AppError> {
     let reservations = store
         .list_reservations()
-        .map_err(|_error| StoreError::new())?;
+        .map_err(StoreError::caused_by)?;
     for (id, owner) in reservations {
         match processes.probe(&owner) {
             ProcessLiveness::Dead => {
@@ -89,7 +89,7 @@ fn reap_orphan_reservations(
                 );
                 store
                     .delete_owned_by(id, &owner)
-                    .map_err(|_error| StoreError::new())?;
+                    .map_err(StoreError::caused_by)?;
             }
             ProcessLiveness::Live => {
                 trace!(
@@ -117,7 +117,7 @@ pub(crate) fn require_live_session(
     id: SessionId,
     trace: Trace,
 ) -> Result<SessionRecord, AppError> {
-    let Some(record) = store.read(id).map_err(|_error| StoreError::new())? else {
+    let Some(record) = store.read(id).map_err(StoreError::caused_by)? else {
         trace!(trace, "no record for session {id} in the store");
         return Err(SessionNotFoundError::for_id(id).into());
     };
@@ -137,7 +137,7 @@ pub(crate) fn require_live_session(
             );
             store
                 .delete_owned_by(id, &record.identity())
-                .map_err(|_error| StoreError::new())?;
+                .map_err(StoreError::caused_by)?;
             Err(SessionNotFoundError::for_id(id).into())
         }
         ProcessLiveness::InspectFailed => {

@@ -68,7 +68,7 @@ where
 
     let cwd = store
         .current_dir()
-        .map_err(|_error| CurrentDirectoryError::new())?;
+        .map_err(CurrentDirectoryError::caused_by)?;
     let launch_directory = store
         .canonicalize(&cwd)
         .map_err(|_error| CanonicalizeError::new(cwd))?;
@@ -101,11 +101,11 @@ where
     // unwind would leave a session waiting for an attach that is never coming.
     // Ref: docs/implementation.md, "Process split".
     let mut startup = StartupChannel::listen(transport, &startup_pipe)
-        .map_err(|_error| StartupFailedError::new())?;
+        .map_err(StartupFailedError::caused_by)?;
 
     let exe = processes
         .current_exe()
-        .map_err(|_error| PalFailedError::new())?;
+        .map_err(PalFailedError::caused_by)?;
     let mut args = vec![
         SUPERVISOR_COMMAND.to_string(),
         "--startup-pipe".to_string(),
@@ -141,7 +141,7 @@ where
     // established.
     let conn = startup
         .accept(CONNECT_TIMEOUT)
-        .map_err(|_error| StartupFailedError::new())?;
+        .map_err(StartupFailedError::caused_by)?;
 
     let response = transport.recv_timeout(conn, STARTUP_TIMEOUT);
     let Ok(Message::StartupOk {
@@ -260,7 +260,7 @@ where
 {
     let record = store
         .read(session_id)
-        .map_err(|_error| StoreError::new())?
+        .map_err(StoreError::caused_by)?
         .ok_or_else(|| AttachFailedError::for_id(session_id))?;
     trace!(
         trace,

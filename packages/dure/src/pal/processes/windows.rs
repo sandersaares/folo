@@ -121,7 +121,7 @@ fn identity_of(handle: HANDLE) -> Result<ProcessIdentity, PalError> {
             &raw mut user,
         )
     }
-    .map_err(|_error| PalError::new(PalErrorKind::InspectFailed))?;
+    .map_err(|error| PalError::with_source(PalErrorKind::InspectFailed, error))?;
     Ok(ProcessIdentity {
         pid,
         creation_time: filetime_u64(creation),
@@ -170,13 +170,30 @@ pub(super) fn wide(s: &str) -> Vec<u16> {
         .collect()
 }
 
+/// Waits for a process to exit and reports the status it exited with.
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn exit_status_of(handle: HANDLE) -> Result<i32, PalError> {
+    // SAFETY: `handle` is a process handle this call keeps alive throughout.
+    let wait = unsafe { WaitForSingleObject(handle, INFINITE) };
+    if wait != WAIT_OBJECT_0 {
+        return Err(PalError::new(PalErrorKind::Other));
+    }
+    let mut code = 0_u32;
+    // SAFETY: the process has exited; `code` is a stack u32.
+    unsafe { GetExitCodeProcess(handle, &raw mut code) }
+        .map_err(|error| PalError::with_source(PalErrorKind::Other, error))?;
+    // Windows process statuses are `u32`; NTSTATUS-style failure codes use
+    // the high bit and do not fit in a non-negative `i32`.
+    Ok(code.cast_signed())
+}
+
 /// Whether `process` belongs to any job object.
 fn process_in_a_job(process: HANDLE) -> Result<bool, PalError> {
     let mut in_job = BOOL::default();
     // SAFETY: `process` is a valid process handle, a null job asks about any
     // job, and `in_job` outlives the call.
     unsafe { IsProcessInJob(process, None, &raw mut in_job) }
-        .map_err(|_error| PalError::new(PalErrorKind::InspectFailed))?;
+        .map_err(|error| PalError::with_source(PalErrorKind::InspectFailed, error))?;
     Ok(in_job.as_bool())
 }
 
@@ -277,7 +294,7 @@ impl BuildTargetProcesses {
         let id = next_id();
         table()
             .lock()
-            .expect("handle table")
+            .expect("the handle table is only inserted into and looked up, never held across a panic")
             .jobs
             .insert(id, handles);
         Ok(JobId(id))
@@ -288,7 +305,7 @@ impl BuildTargetProcesses {
 fn create_job_handle(breakaway: Breakaway) -> Result<HANDLE, PalError> {
     // SAFETY: a null name creates an unnamed job object.
     let handle = unsafe { CreateJobObjectW(None, PCWSTR::null()) }
-        .map_err(|_error| PalError::new(PalErrorKind::Other))?;
+        .map_err(|error| PalError::with_source(PalErrorKind::Other, error))?;
     let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
     info.BasicLimitInformation.LimitFlags = match breakaway {
         Breakaway::Permitted => JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_BREAKAWAY_OK,
@@ -445,7 +462,7 @@ impl Processes for BuildTargetProcesses {
             false
         };
         close(handle);
-        result.map_err(|_error| PalError::new(PalErrorKind::Other))?;
+        result.map_err(|error| PalError::with_source(PalErrorKind::Other, error))?;
         if settled {
             Ok(())
         } else {
@@ -461,7 +478,7 @@ impl Processes for BuildTargetProcesses {
     }
 
     fn close_job(&self, job: JobId) {
-        if let Some(handles) = table().lock().expect("handle table").jobs.remove(&job.0) {
+        if let Some(handles) = table().lock().expect("the handle table is only inserted into and looked up, never held across a panic").jobs.remove(&job.0) {
             // Innermost first, so a kill-on-close ancestor never tears down a
             // job this still holds a handle to.
             for handle in handles.into_iter().rev() {
@@ -486,7 +503,7 @@ impl Processes for BuildTargetProcesses {
         // attribute lists them, which is what nests them.
         let mut job_list = table()
             .lock()
-            .expect("handle table")
+            .expect("the handle table is only inserted into and looked up, never held across a panic")
             .jobs
             .get(&request.job.0)
             .ok_or_else(|| PalError::new(PalErrorKind::NotFound))?
@@ -517,7 +534,7 @@ impl Processes for BuildTargetProcesses {
                 &raw mut attr_size,
             )
         }
-        .map_err(|_error| PalError::new(PalErrorKind::Other))?;
+        .map_err(|error| PalError::with_source(PalErrorKind::Other, error))?;
 
         // PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE stores `lpValue` as the HPCON
         // itself. The Microsoft sample passes `hPC`, not `&hPC`.
@@ -537,7 +554,7 @@ impl Processes for BuildTargetProcesses {
                 None,
             )
         }
-        .map_err(|_error| PalError::new(PalErrorKind::Other))?;
+        .map_err(|error| PalError::with_source(PalErrorKind::Other, error))?;
 
         // SAFETY: the list still has a free slot. `job_list` holds the lifetime
         // job handles and lives until CreateProcessW returns.
@@ -555,7 +572,7 @@ impl Processes for BuildTargetProcesses {
                 None,
             )
         }
-        .map_err(|_error| PalError::new(PalErrorKind::Other))?;
+        .map_err(|error| PalError::with_source(PalErrorKind::Other, error))?;
 
         let mut si = STARTUPINFOEXW::default();
         si.StartupInfo.cb =
@@ -596,39 +613,31 @@ impl Processes for BuildTargetProcesses {
         unsafe {
             DeleteProcThreadAttributeList(attr_list);
         }
-        created.map_err(|_error| PalError::new(PalErrorKind::Other))?;
+        created.map_err(|error| PalError::with_source(PalErrorKind::Other, error))?;
 
         close(pi.hThread);
         let id = next_id();
         table()
             .lock()
-            .expect("handle table")
+            .expect("the handle table is only inserted into and looked up, never held across a panic")
             .apps
             .insert(id, RawHandle::from_handle(pi.hProcess));
         Ok(AppId(id))
     }
 
     fn wait_app(&self, app: AppId) -> Result<i32, PalError> {
+        // Taken out of the table rather than borrowed: this call consumes the
+        // app, so the handle is this call's to close whatever the wait says.
         let handle = table()
             .lock()
-            .expect("handle table")
+            .expect("the handle table is only inserted into and looked up, never held across a panic")
             .apps
-            .get(&app.0)
-            .copied()
+            .remove(&app.0)
             .ok_or_else(|| PalError::new(PalErrorKind::NotFound))?
             .as_handle();
-        // SAFETY: `handle` is a process handle stored in the table.
-        let wait = unsafe { WaitForSingleObject(handle, INFINITE) };
-        if wait != WAIT_OBJECT_0 {
-            return Err(PalError::new(PalErrorKind::Other));
-        }
-        let mut code = 0_u32;
-        // SAFETY: the process has exited; `code` is a stack u32.
-        unsafe { GetExitCodeProcess(handle, &raw mut code) }
-            .map_err(|_error| PalError::new(PalErrorKind::Other))?;
-        // Windows process statuses are `u32`; NTSTATUS-style failure codes use
-        // the high bit and do not fit in a non-negative `i32`.
-        Ok(code.cast_signed())
+        let status = exit_status_of(handle);
+        close(handle);
+        status
     }
 
     fn current_identity(&self) -> Result<ProcessIdentity, PalError> {

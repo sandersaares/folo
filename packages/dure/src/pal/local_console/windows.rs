@@ -97,7 +97,7 @@ fn std_handle(kind: STD_HANDLE) -> Result<HANDLE, PalError> {
     // SAFETY: GetStdHandle returns a process-lifetime handle that this process
     // does not own or close.
     let handle =
-        unsafe { GetStdHandle(kind) }.map_err(|_error| PalError::new(PalErrorKind::Other))?;
+        unsafe { GetStdHandle(kind) }.map_err(|error| PalError::with_source(PalErrorKind::Other, error))?;
     if handle.is_invalid() {
         return Err(PalError::new(PalErrorKind::Other));
     }
@@ -109,7 +109,7 @@ fn console_mode(handle: HANDLE) -> Result<CONSOLE_MODE, PalError> {
     // SAFETY: `handle` is a standard handle from `std_handle`; `mode` is a
     // stack value that outlives the call.
     unsafe { GetConsoleMode(handle, &raw mut mode) }
-        .map_err(|_error| PalError::new(PalErrorKind::Other))?;
+        .map_err(|error| PalError::with_source(PalErrorKind::Other, error))?;
     Ok(mode)
 }
 
@@ -118,7 +118,7 @@ fn restore_mode(kind: STD_HANDLE, mode: CONSOLE_MODE) -> Result<(), PalError> {
     let handle = std_handle(kind)?;
     // SAFETY: `handle` is a standard console handle; `mode` was captured from
     // it before `enter_raw_relay` changed it.
-    unsafe { SetConsoleMode(handle, mode) }.map_err(|_error| PalError::new(PalErrorKind::Other))
+    unsafe { SetConsoleMode(handle, mode) }.map_err(|error| PalError::with_source(PalErrorKind::Other, error))
 }
 
 /// Sets the code pages this console uses to interpret relayed bytes.
@@ -140,7 +140,7 @@ fn set_code_pages(input: u32, output: u32) -> Result<(), PalError> {
     let output = unsafe { SetConsoleOutputCP(output) };
     input
         .and(output)
-        .map_err(|_error| PalError::new(PalErrorKind::Other))
+        .map_err(|error| PalError::with_source(PalErrorKind::Other, error))
 }
 
 fn read_window_size(output: HANDLE) -> Result<WindowSize, PalError> {
@@ -148,7 +148,7 @@ fn read_window_size(output: HANDLE) -> Result<WindowSize, PalError> {
     // SAFETY: `output` is a console handle; `info` is a stack structure that
     // outlives the call.
     unsafe { GetConsoleScreenBufferInfo(output, &raw mut info) }
-        .map_err(|_error| PalError::new(PalErrorKind::Other))?;
+        .map_err(|error| PalError::with_source(PalErrorKind::Other, error))?;
     let width = info
         .srWindow
         .Right
@@ -176,7 +176,7 @@ fn peek_input(handle: HANDLE) -> Result<([INPUT_RECORD; PEEK_INPUT_RECORDS], usi
     let mut count = 0_u32;
     // SAFETY: `handle` is stdin; `peek` is exclusive for this call.
     unsafe { PeekConsoleInputW(handle, &mut peek, &raw mut count) }
-        .map_err(|_error| PalError::new(PalErrorKind::Other))?;
+        .map_err(|error| PalError::with_source(PalErrorKind::Other, error))?;
     Ok((peek, count as usize))
 }
 
@@ -195,7 +195,7 @@ fn consume_records(handle: HANDLE, count: usize) -> Result<(), PalError> {
     let mut read = 0_u32;
     // SAFETY: `discarded` is exclusive and exactly `count` records long.
     unsafe { ReadConsoleInputW(handle, discarded, &raw mut read) }
-        .map_err(|_error| PalError::new(PalErrorKind::Other))?;
+        .map_err(|error| PalError::with_source(PalErrorKind::Other, error))?;
     Ok(())
 }
 
@@ -268,12 +268,12 @@ fn take_over_console(
     // SAFETY: `input` is the process stdin console handle; `raw_in` is a
     // combination of documented console mode flags.
     unsafe { SetConsoleMode(input, raw_in) }
-        .map_err(|_error| PalError::new(PalErrorKind::Other))?;
+        .map_err(|error| PalError::with_source(PalErrorKind::Other, error))?;
     taken.in_mode = Some(in_mode);
     // SAFETY: `output` is the process stdout console handle; `raw_out` is a
     // combination of documented console mode flags.
     unsafe { SetConsoleMode(output, raw_out) }
-        .map_err(|_error| PalError::new(PalErrorKind::Other))?;
+        .map_err(|error| PalError::with_source(PalErrorKind::Other, error))?;
     taken.out_mode = Some(out_mode);
     Ok(())
 }
@@ -298,7 +298,7 @@ fn hand_back_console(taken: TakenConsole) -> Result<(), PalError> {
     let ctrl_handler = if taken.ctrl_handler_installed {
         // SAFETY: Add=FALSE removes the handler this process installed.
         unsafe { SetConsoleCtrlHandler(Some(relay_ctrl_handler), false) }
-            .map_err(|_error| PalError::new(PalErrorKind::Other))
+            .map_err(|error| PalError::with_source(PalErrorKind::Other, error))
     } else {
         Ok(())
     };
@@ -356,7 +356,7 @@ impl LocalConsole for BuildTargetConsole {
                 // SAFETY: installs an owned handler that this process removes
                 // again when the lease ends.
                 unsafe { SetConsoleCtrlHandler(Some(relay_ctrl_handler), true) }
-                    .map_err(|_error| PalError::new(PalErrorKind::Other))
+                    .map_err(|error| PalError::with_source(PalErrorKind::Other, error))
             })
             .inspect(|()| taken.ctrl_handler_installed = true);
         if let Err(error) = result {
@@ -426,7 +426,7 @@ impl LocalConsole for BuildTargetConsole {
                     None,
                 )
             }
-            .map_err(|_error| PalError::new(PalErrorKind::Disconnected))?;
+            .map_err(|error| PalError::with_source(PalErrorKind::Disconnected, error))?;
             if transferred == 0 {
                 return Err(PalError::new(PalErrorKind::Disconnected));
             }
@@ -446,7 +446,7 @@ impl LocalConsole for BuildTargetConsole {
             // The record type is a `u32` constant stored in a `u16` field, and
             // every defined event type fits.
             EventType: u16::try_from(FOCUS_EVENT)
-                .map_err(|_error| PalError::new(PalErrorKind::Other))?,
+                .map_err(|error| PalError::with_source(PalErrorKind::Other, error))?,
             Event: INPUT_RECORD_0 {
                 FocusEvent: FOCUS_EVENT_RECORD {
                     bSetFocus: BOOL::from(false),
@@ -457,7 +457,7 @@ impl LocalConsole for BuildTargetConsole {
         // SAFETY: `handle` is stdin; `wake` is a stack record exclusive to this
         // call and outlives it.
         unsafe { WriteConsoleInputW(handle, slice::from_mut(&mut wake), &raw mut written) }
-            .map_err(|_error| PalError::new(PalErrorKind::Other))
+            .map_err(|error| PalError::with_source(PalErrorKind::Other, error))
     }
 
     fn write_output(&self, data: &[u8]) -> Result<(), PalError> {
@@ -467,7 +467,7 @@ impl LocalConsole for BuildTargetConsole {
             let mut transferred = 0_u32;
             // SAFETY: `handle` is stdout; `remaining` is exclusive for this call.
             unsafe { WriteFile(handle, Some(remaining), Some(&raw mut transferred), None) }
-                .map_err(|_error| PalError::new(PalErrorKind::Other))?;
+                .map_err(|error| PalError::with_source(PalErrorKind::Other, error))?;
             if transferred == 0 {
                 return Err(PalError::new(PalErrorKind::Other));
             }

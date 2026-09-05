@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use windows::Win32::Foundation::{CloseHandle, HANDLE};
+use windows::Win32::Foundation::{CloseHandle, ERROR_BROKEN_PIPE, HANDLE};
 use windows::Win32::Storage::FileSystem::{ReadFile, WriteFile};
 use windows::Win32::System::Console::{
     COORD, ClosePseudoConsole, CreatePseudoConsole, HPCON, ResizePseudoConsole,
@@ -16,14 +16,20 @@ use crate::pal::ids::PtyId;
 use crate::pal::pseudoconsole::{Pseudoconsole, WindowSize};
 use crate::pal::raw_handle::PipeHandle;
 
-/// One live pseudoconsole and the host ends of its pipes.
+/// One console `ReadFile` burst from the host end of the app's output pipe.
 ///
-/// The pipe ends are shared owners because `read_output` and `write_input`
-/// release the table lock before their blocking I/O, so a concurrent `close`
-/// must not free a handle they are still using. The `HPCON` is taken by
-/// whichever of `finish` and `close` runs first, so it is closed exactly once
-/// and no later call can hand out a pseudoconsole that is already gone.
+/// Sized to match the client's input burst so neither direction of the relay is
+/// the narrower one; `ReadFile` may return less.
+const OUTPUT_READ_BUF: usize = 4096;
+
+/// One live pseudoconsole and its host pipe endpoints.
+///
+/// Owns one console the app is attached to until shutdown releases it. The
+/// endpoints stay valid for any read or write already in flight, and the
+/// console itself is released exactly once however shutdown is reached.
 /// Ref: docs/implementation.md, "Pseudoconsole".
+// The `HPCON` is taken by whichever of `finish` and `close` runs first, which is
+// what makes that "exactly once" true.
 struct Pty {
     hpcon: Option<HPCON>,
     host_input: Arc<PipeHandle>,
@@ -58,8 +64,8 @@ fn close_handle(handle: HANDLE) {
 
 fn to_coord(size: WindowSize) -> Result<COORD, PalError> {
     Ok(COORD {
-        X: i16::try_from(size.cols.max(1)).map_err(|_error| PalError::new(PalErrorKind::Other))?,
-        Y: i16::try_from(size.rows.max(1)).map_err(|_error| PalError::new(PalErrorKind::Other))?,
+        X: i16::try_from(size.cols.max(1)).map_err(|error| PalError::with_source(PalErrorKind::Other, error))?,
+        Y: i16::try_from(size.rows.max(1)).map_err(|error| PalError::with_source(PalErrorKind::Other, error))?,
     })
 }
 
@@ -67,7 +73,7 @@ fn to_coord(size: WindowSize) -> Result<COORD, PalError> {
 pub(crate) fn hpcon_for(pty: PtyId) -> Option<HPCON> {
     table()
         .lock()
-        .expect("pty table")
+        .expect("the pseudoconsole table is only inserted into and looked up, never held across a panic")
         .ptys
         .get(&pty.0)
         .and_then(|pty| pty.hpcon)
@@ -88,7 +94,7 @@ impl Pseudoconsole for BuildTargetPseudoconsole {
         // SAFETY: the four HANDLE slots are stack values. Inherit handles are
         // not requested; ConPTY duplicates the ends it needs.
         unsafe { CreatePipe(&raw mut input_read, &raw mut input_write, None, 0) }
-            .map_err(|_error| PalError::new(PalErrorKind::Other))?;
+            .map_err(|error| PalError::with_source(PalErrorKind::Other, error))?;
         // SAFETY: same as the input pipe pair; output ends are distinct stack
         // HANDLEs owned by this function until stored or closed.
         if unsafe { CreatePipe(&raw mut output_read, &raw mut output_write, None, 0) }.is_err() {
@@ -120,7 +126,7 @@ impl Pseudoconsole for BuildTargetPseudoconsole {
         close_handle(input_read);
         close_handle(output_write);
         let id = next_id();
-        table().lock().expect("pty table").ptys.insert(
+        table().lock().expect("the pseudoconsole table is only inserted into and looked up, never held across a panic").ptys.insert(
             id,
             Pty {
                 hpcon: Some(hpcon),
@@ -133,7 +139,7 @@ impl Pseudoconsole for BuildTargetPseudoconsole {
 
     fn resize(&self, pty: PtyId, size: WindowSize) -> Result<(), PalError> {
         let coord = to_coord(size)?;
-        let table = table().lock().expect("pty table");
+        let table = table().lock().expect("the pseudoconsole table is only inserted into and looked up, never held across a panic");
         let hpcon = table
             .ptys
             .get(&pty.0)
@@ -143,7 +149,7 @@ impl Pseudoconsole for BuildTargetPseudoconsole {
         // is held for this nonblocking call so `finish` and `close` cannot free
         // it first.
         unsafe { ResizePseudoConsole(hpcon, coord) }
-            .map_err(|_error| PalError::new(PalErrorKind::Other))
+            .map_err(|error| PalError::with_source(PalErrorKind::Other, error))
     }
 
     fn write_input(&self, pty: PtyId, data: &[u8]) -> Result<(), PalError> {
@@ -151,7 +157,7 @@ impl Pseudoconsole for BuildTargetPseudoconsole {
         // handle while the write below is blocked on it.
         let handle = table()
             .lock()
-            .expect("pty table")
+            .expect("the pseudoconsole table is only inserted into and looked up, never held across a panic")
             .ptys
             .get(&pty.0)
             .map(|pty| Arc::clone(&pty.host_input))
@@ -171,7 +177,7 @@ impl Pseudoconsole for BuildTargetPseudoconsole {
                     None,
                 )
             }
-            .map_err(|_error| PalError::new(PalErrorKind::Other))?;
+            .map_err(|error| PalError::with_source(PalErrorKind::Other, error))?;
             if transferred == 0 {
                 return Err(PalError::new(PalErrorKind::Other));
             }
@@ -182,31 +188,42 @@ impl Pseudoconsole for BuildTargetPseudoconsole {
         Ok(())
     }
 
-    fn read_output(&self, pty: PtyId) -> Result<Vec<u8>, PalError> {
+    fn read_output(&self, pty: PtyId) -> Result<Option<Vec<u8>>, PalError> {
         // Cloned out of the table so a concurrent `close` cannot free the
         // handle while the read below is blocked on it.
         let handle = table()
             .lock()
-            .expect("pty table")
+            .expect("the pseudoconsole table is only inserted into and looked up, never held across a panic")
             .ptys
             .get(&pty.0)
             .map(|pty| Arc::clone(&pty.host_output))
             .ok_or_else(|| PalError::new(PalErrorKind::NotFound))?;
-        let mut buf = vec![0_u8; 4096];
+        let mut buf = vec![0_u8; OUTPUT_READ_BUF];
         let mut transferred = 0_u32;
         // SAFETY: `handle` is the host output pipe for a pty and this reference
         // keeps it open across the call; `buf` is exclusive for this call.
-        unsafe {
+        let read = unsafe {
             ReadFile(
                 handle.as_handle(),
                 Some(buf.as_mut_slice()),
                 Some(&raw mut transferred),
                 None,
             )
+        };
+        if let Err(error) = read {
+            // Closing the pseudoconsole drops the host's write end, and a read
+            // on a pipe with no writers left reports exactly this. It is the
+            // app's output ending, not a failure to read it.
+            if error.code() == ERROR_BROKEN_PIPE.to_hresult() {
+                return Ok(None);
+            }
+            return Err(PalError::with_source(PalErrorKind::Other, error));
         }
-        .map_err(|_error| PalError::new(PalErrorKind::Other))?;
+        if transferred == 0 {
+            return Ok(None);
+        }
         buf.truncate(transferred as usize);
-        Ok(buf)
+        Ok(Some(buf))
     }
 
     fn finish(&self, pty: PtyId) {
@@ -216,7 +233,7 @@ impl Pseudoconsole for BuildTargetPseudoconsole {
         // which needs this same lock.
         let taken = table()
             .lock()
-            .expect("pty table")
+            .expect("the pseudoconsole table is only inserted into and looked up, never held across a panic")
             .ptys
             .get_mut(&pty.0)
             .and_then(|entry| {
@@ -241,7 +258,7 @@ impl Pseudoconsole for BuildTargetPseudoconsole {
     }
 
     fn close(&self, pty: PtyId) {
-        let Some(entry) = table().lock().expect("pty table").ptys.remove(&pty.0) else {
+        let Some(entry) = table().lock().expect("the pseudoconsole table is only inserted into and looked up, never held across a panic").ptys.remove(&pty.0) else {
             return;
         };
         if let Some(hpcon) = entry.hpcon {

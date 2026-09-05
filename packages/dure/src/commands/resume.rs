@@ -81,7 +81,7 @@ where
     let live = live_sessions(store, processes, trace)?;
     let cwd = store
         .current_dir()
-        .map_err(|_error| CurrentDirectoryError::new())?;
+        .map_err(CurrentDirectoryError::caused_by)?;
     let cwd = store
         .canonicalize(&cwd)
         .map_err(|_error| CanonicalizeError::new(cwd))?;
@@ -113,10 +113,10 @@ where
     eprint!("Session id to resume: ");
     io::stderr()
         .flush()
-        .map_err(|_error| PalFailedError::new())?;
+        .map_err(PalFailedError::caused_by)?;
     let line = console
         .read_prompt_line()
-        .map_err(|_error| PromptFailedError::new())?;
+        .map_err(PromptFailedError::caused_by)?;
     parse_prompted_id(&line).map_err(AppError::from)
 }
 

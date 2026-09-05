@@ -95,7 +95,7 @@ where
 {
     let startup = transport
         .connect(startup_pipe, CONNECT_TIMEOUT)
-        .map_err(|_error| StartupFailedError::new())?;
+        .map_err(StartupFailedError::caused_by)?;
 
     let mut guard = InitGuard {
         processes,
@@ -208,7 +208,7 @@ where
         .map_err(|error| map_startup(&error))?;
     let session_id = store
         .allocate_id(&identity)
-        .map_err(|_error| StoreError::new())?;
+        .map_err(StoreError::caused_by)?;
     guard.session = Some((session_id, identity));
 
     let record = SessionRecord {
@@ -221,7 +221,7 @@ where
         started_at_unix_ms: unix_now_ms(),
         attached: false,
     };
-    store.publish(&record).map_err(|_error| StoreError::new())?;
+    store.publish(&record).map_err(StoreError::caused_by)?;
 
     Ok(Initialized {
         session_id,
@@ -550,8 +550,8 @@ where
 
     // A wait that failed is the cause and a record that outlives it is only a
     // consequence, so the wait failure is the one worth reporting.
-    let status = waited.map_err(|_error| PalFailedError::new())?;
-    deleted.map_err(|_error| StoreError::new())?;
+    let status = waited.map_err(PalFailedError::caused_by)?;
+    deleted.map_err(StoreError::caused_by)?;
 
     if let Some(client) = client {
         // The session already owns nothing, so waiting here for the exit status
@@ -779,7 +779,11 @@ where
     C: Pseudoconsole,
 {
     while !shared.stopping.load(Ordering::SeqCst) {
-        let Ok(bytes) = shared.pty_host.read_output(shared.pty) else {
+        // A failed read leaves the app's output incomplete, but there is
+        // nothing further to relay either way, so both end the pump; the
+        // difference is that a clean end means everything the app wrote has
+        // been delivered.
+        let Ok(Some(bytes)) = shared.pty_host.read_output(shared.pty) else {
             break;
         };
         // Queued, never written here: a client that stopped reading must not be

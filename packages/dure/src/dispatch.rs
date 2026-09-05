@@ -16,7 +16,7 @@ use crate::{PalFailedError, commands};
 /// Returns an error when a session cannot be started, resumed, listed, or
 /// killed, or when attach is displaced.
 pub fn run(input: &Invocation) -> Result<Outcome, AppError> {
-    let pal = Pal::target(input.store_root.clone()).map_err(|_error| PalFailedError::new())?;
+    let pal = Pal::target(input.store_root.clone()).map_err(PalFailedError::caused_by)?;
     dispatch(input, &pal)
 }
 

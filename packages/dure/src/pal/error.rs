@@ -1,16 +1,16 @@
-//! PAL failure kinds.
+//! PAL failure classification.
 //!
-//! Logic maps these into semantic `ohno` leaves. Tests match on `kind`, not
-//! messages.
+//! Every PAL operation reports failure as a [`PalError`]: a [`PalErrorKind`]
+//! that says which of the outcomes logic distinguishes occurred, and, where the
+//! platform gave one, the underlying error as its source.
 
 use std::error::Error;
 use std::{fmt, io};
 
 /// Failure produced by a PAL operation.
-#[derive(Debug)]
 pub(crate) struct PalError {
     kind: PalErrorKind,
-    source: Option<io::Error>,
+    source: Option<Box<dyn Error + Send + Sync>>,
 }
 
 /// Distinguishes PAL failures that logic handles differently.
@@ -36,10 +36,19 @@ impl PalError {
         Self { kind, source: None }
     }
 
-    pub(crate) fn with_source(kind: PalErrorKind, source: io::Error) -> Self {
+    /// A failure that keeps whatever the platform said about it.
+    ///
+    /// The source is erased rather than typed, because a slice of a Win32-backed
+    /// PAL fails through several unrelated error types — process, console,
+    /// filesystem, and text decoding — and collapsing them all to a kind leaves
+    /// a maintainer with nothing to read but the call stack.
+    pub(crate) fn with_source(
+        kind: PalErrorKind,
+        source: impl Into<Box<dyn Error + Send + Sync>>,
+    ) -> Self {
         Self {
             kind,
-            source: Some(source),
+            source: Some(source.into()),
         }
     }
 
@@ -55,6 +64,18 @@ impl PalError {
             _ => PalErrorKind::Other,
         };
         Self::with_source(kind, error)
+    }
+}
+
+// Error text is not an API contract.
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[cfg_attr(test, mutants::skip)]
+impl fmt::Debug for PalError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PalError")
+            .field("kind", &self.kind)
+            .field("source", &self.source)
+            .finish()
     }
 }
 
@@ -80,10 +101,7 @@ impl fmt::Display for PalError {
 #[cfg_attr(test, mutants::skip)]
 impl Error for PalError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
-        match self.source.as_ref() {
-            Some(error) => Some(error),
-            None => None,
-        }
+        self.source.as_deref().map(|error| -> &(dyn Error + 'static) { error })
     }
 }
 
@@ -102,5 +120,15 @@ mod tests {
     fn from_io_maps_other_kinds_to_other() {
         let error = PalError::from_io(io::Error::other("platform"));
         assert_eq!(error.kind(), PalErrorKind::Other);
+    }
+
+    #[test]
+    fn a_platform_failure_keeps_what_the_platform_said() {
+        let error = PalError::with_source(PalErrorKind::Other, io::Error::other("CreateProcessW"));
+        assert!(
+            error
+                .source()
+                .is_some_and(|source| source.to_string().contains("CreateProcessW"))
+        );
     }
 }

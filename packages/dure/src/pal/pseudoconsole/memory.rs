@@ -54,12 +54,18 @@ impl MemoryPseudoconsole {
     }
 
     /// Push output as if the app wrote to its console.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `pty` is not live. A test that pushes into a pseudoconsole
+    /// that was never created, or was already closed, is not exercising the
+    /// scenario it names, so the mistake is reported here rather than as an
+    /// unexplained absence of output later.
     pub(crate) fn push_output(&self, pty: PtyId, data: &[u8]) {
         let mut ptys = self.inner.ptys.lock().expect("pty map lock");
-        if let Some(state) = ptys.get_mut(&pty) {
-            state.output.extend(data.iter().copied());
-            self.inner.cond.notify_all();
-        }
+        let state = ptys.get_mut(&pty).expect("pushing output into a live pty");
+        state.output.extend(data.iter().copied());
+        self.inner.cond.notify_all();
     }
 
     /// Withhold output from readers until this pty is finished.
@@ -67,19 +73,27 @@ impl MemoryPseudoconsole {
     /// A reader already parked in `read_output` stays parked, so a test can put
     /// output out of reach of the pump and then require that shutdown still
     /// delivers it.
+    /// # Panics
+    ///
+    /// Panics when `pty` is not live, for the same reason as `push_output`.
     pub(crate) fn withhold_output(&self, pty: PtyId) {
         let mut ptys = self.inner.ptys.lock().expect("pty map lock");
-        if let Some(state) = ptys.get_mut(&pty) {
-            state.withheld = true;
-        }
+        let state = ptys
+            .get_mut(&pty)
+            .expect("withholding output from a live pty");
+        state.withheld = true;
     }
 
     /// Take input the supervisor wrote to the app.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `pty` is not live: an empty result would otherwise be
+    /// indistinguishable from the supervisor having written nothing.
     pub(crate) fn take_input(&self, pty: PtyId) -> Vec<u8> {
         let mut ptys = self.inner.ptys.lock().expect("pty map lock");
-        ptys.get_mut(&pty)
-            .map(|state| state.input.drain(..).collect())
-            .unwrap_or_default()
+        let state = ptys.get_mut(&pty).expect("taking input from a live pty");
+        state.input.drain(..).collect()
     }
 
     /// Current size last applied to this pty.
@@ -136,7 +150,7 @@ impl Pseudoconsole for MemoryPseudoconsole {
     // Blocking condvar wait. A mutation that drops the closed check or the
     // wake hangs tests because watchdogs are disabled under cargo-mutants.
     #[cfg_attr(test, mutants::skip)]
-    fn read_output(&self, pty: PtyId) -> Result<Vec<u8>, PalError> {
+    fn read_output(&self, pty: PtyId) -> Result<Option<Vec<u8>>, PalError> {
         let mut ptys = self.inner.ptys.lock().expect("pty map lock");
         loop {
             let Some(state) = ptys.get_mut(&pty) else {
@@ -145,10 +159,10 @@ impl Pseudoconsole for MemoryPseudoconsole {
             // Withheld output becomes readable once the pty is finished, which
             // is what makes shutdown the only path that can deliver it.
             if !state.output.is_empty() && (state.closed || !state.withheld) {
-                return Ok(state.output.drain(..).collect());
+                return Ok(Some(state.output.drain(..).collect()));
             }
             if state.closed {
-                return Err(PalError::new(PalErrorKind::NotFound));
+                return Ok(None);
             }
             ptys = self.inner.cond.wait(ptys).expect("pty condvar");
         }
@@ -182,7 +196,29 @@ mod tests {
         host.resize(pty, WindowSize { cols: 40, rows: 10 }).unwrap();
         assert_eq!(host.size(pty), Some(WindowSize { cols: 40, rows: 10 }));
         host.push_output(pty, b"out");
-        assert_eq!(host.read_output(pty).unwrap(), b"out");
+        assert_eq!(host.read_output(pty).unwrap().as_deref(), Some(b"out".as_slice()));
         host.close(pty);
+    }
+
+    #[test]
+    fn a_finished_pty_reports_the_end_of_the_stream() {
+        let host = MemoryPseudoconsole::new();
+        let pty = host.create(WindowSize { cols: 80, rows: 24 }).unwrap();
+        host.push_output(pty, b"tail");
+        host.finish(pty);
+        // Everything the app wrote is delivered first, and only then does the
+        // stream end; neither is a read failure.
+        assert_eq!(
+            host.read_output(pty).unwrap().as_deref(),
+            Some(b"tail".as_slice())
+        );
+        assert_eq!(host.read_output(pty).unwrap(), None);
+        host.close(pty);
+    }
+
+    #[test]
+    #[should_panic(expected = "live pty")]
+    fn pushing_into_an_unknown_pty_is_a_mistake_the_test_hears_about() {
+        MemoryPseudoconsole::new().push_output(PtyId(404), b"out");
     }
 }

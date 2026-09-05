@@ -81,6 +81,9 @@ pub(crate) trait Processes: Send + Sync + fmt::Debug + 'static {
     fn spawn_app(&self, request: &AppSpawn) -> Result<AppId, PalError>;
 
     /// Block until the app exits and return its status.
+    ///
+    /// Consumes the app: the handle it names is released here, so the id must
+    /// not be used again.
     fn wait_app(&self, app: AppId) -> Result<i32, PalError>;
 
     /// Identity of the current process, used when the supervisor publishes its record.

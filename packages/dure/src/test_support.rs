@@ -2,7 +2,7 @@
 
 use std::path::Path;
 use std::sync::mpsc::{self, Receiver};
-use std::thread;
+use std::thread::{self, JoinHandle};
 
 use crate::app_command::AppCommand;
 use crate::constants::{DEFAULT_PTY_COLS, DEFAULT_PTY_ROWS};
@@ -16,18 +16,26 @@ use crate::pal::pseudoconsole::{Pseudoconsole, PseudoconsoleFacade, WindowSize};
 ///
 /// Integration tests use this so they do not depend on the runner having an
 /// interactive console (implementation.md, "Integration tests").
+///
+/// This is an owning handle: dropping it closes the job and pseudoconsole that
+/// own the child's lifetime, which ends a child that is still running.
+/// [`ConsoleProcess::wait`] is the explicit way out, and is also what reports
+/// the child's exit status.
 #[derive(Debug)]
 pub struct ConsoleProcess {
-    processes: ProcessesFacade,
     pty_host: PseudoconsoleFacade,
-    app: AppId,
     pty: PtyId,
     job: JobId,
+    /// The single wait on the child, which also ends its console.
+    ///
+    /// Started at spawn so there is exactly one wait per child: waiting twice
+    /// would consume a process handle that only the first wait owns.
+    waiter: Option<JoinHandle<i32>>,
     closed: bool,
 }
 
 impl ConsoleProcess {
-    /// Spawn `exe` with `args` in `cwd`, attached to a new `ConPTY`.
+    /// Spawn `exe` with `args` in `cwd`, attached to a new pseudoconsole.
     ///
     /// The surrounding job permits breakaway, which models the shell an SSH
     /// session provides (implementation.md, "Job breakaway").
@@ -85,11 +93,10 @@ impl ConsoleProcess {
             })
             .expect("spawn test client in pseudoconsole");
         Self {
-            processes,
-            pty_host,
-            app,
+            pty_host: pty_host.clone(),
             pty,
             job,
+            waiter: Some(spawn_waiter(&processes, &pty_host, app, pty)),
             closed: false,
         }
     }
@@ -102,6 +109,10 @@ impl ConsoleProcess {
     }
 
     /// Console output as it arrives, ending once the child has exited.
+    ///
+    /// These are raw console bytes in whatever chunks the reads happened to
+    /// produce, so a caller has to assemble them and strip the terminal control
+    /// sequences the console host emits before asserting on text.
     ///
     /// A pseudoconsole keeps its read side open for as long as this process
     /// holds it, so a caller waiting for a phrase the child never printed would
@@ -119,25 +130,19 @@ impl ConsoleProcess {
             move || {
                 loop {
                     match pty_host.read_output(pty) {
-                        Ok(bytes) if bytes.is_empty() => break,
-                        Ok(bytes) => {
+                        Ok(Some(bytes)) => {
                             if sender.send(bytes).is_err() {
                                 break;
                             }
                         }
-                        Err(_error) => break,
+                        // The child has said everything it is going to say.
+                        Ok(None) => break,
+                        // A failed read is not the child finishing, and ending
+                        // the stream quietly here would turn it into a missing
+                        // phrase in some unrelated assertion.
+                        Err(error) => panic!("reading test console output: {error}"),
                     }
                 }
-            }
-        });
-        thread::spawn({
-            let processes = self.processes.clone();
-            let pty_host = self.pty_host.clone();
-            let app = self.app;
-            let pty = self.pty;
-            move || {
-                _ = processes.wait_app(app);
-                pty_host.finish(pty);
             }
         });
         receiver
@@ -145,24 +150,21 @@ impl ConsoleProcess {
 
     /// Wait for the child to exit and tear down the job and pseudoconsole.
     ///
-    /// Output is drained on a helper thread so a child that writes to the
-    /// pseudoconsole cannot block on a full pipe while this wait runs.
+    /// Output is drained here so a child that writes to the pseudoconsole
+    /// cannot block on a full pipe while this wait runs.
     #[must_use]
     pub fn wait(mut self) -> i32 {
-        let drain = thread::spawn({
-            let pty_host = self.pty_host.clone();
-            let pty = self.pty;
-            move || loop {
-                match pty_host.read_output(pty) {
-                    Ok(bytes) if bytes.is_empty() => break,
-                    Ok(_) => {}
-                    Err(_) => break,
-                }
-            }
-        });
-        let status = self.processes.wait_app(self.app).expect("wait test child");
+        let drain = self.output_until_exit();
+        let status = self
+            .waiter
+            .take()
+            .expect("a console process waits for its child exactly once")
+            .join()
+            .expect("wait test child");
+        // Drained to the end, so the child is never blocked writing while this
+        // waits and teardown below is not racing a live reader.
+        for _chunk in drain {}
         self.shutdown();
-        _ = drain.join();
         status
     }
 
@@ -175,10 +177,28 @@ impl ConsoleProcess {
         // closed, and closing a pseudoconsole waits for its attached clients. A
         // drop while the child is still running would otherwise never reach
         // `close_job`.
-        self.processes.close_job(self.job);
+        ProcessesFacade::target().close_job(self.job);
         self.pty_host.close(self.pty);
         self.closed = true;
     }
+}
+
+/// Waits for the child, then ends its console so readers stop.
+fn spawn_waiter(
+    processes: &ProcessesFacade,
+    pty_host: &PseudoconsoleFacade,
+    app: AppId,
+    pty: PtyId,
+) -> JoinHandle<i32> {
+    thread::spawn({
+        let processes = processes.clone();
+        let pty_host = pty_host.clone();
+        move || {
+            let status = processes.wait_app(app).expect("wait test child");
+            pty_host.finish(pty);
+            status
+        }
+    })
 }
 
 impl Drop for ConsoleProcess {

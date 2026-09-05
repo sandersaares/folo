@@ -73,7 +73,7 @@ impl Pseudoconsole for PseudoconsoleFacade {
         }
     }
 
-    fn read_output(&self, pty: PtyId) -> Result<Vec<u8>, PalError> {
+    fn read_output(&self, pty: PtyId) -> Result<Option<Vec<u8>>, PalError> {
         match self {
             Self::Target(inner) => inner.read_output(pty),
             #[cfg(test)]

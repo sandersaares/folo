@@ -74,7 +74,7 @@ pub(crate) use errors::*;
 mod tests {
     use std::panic::{RefUnwindSafe, UnwindSafe};
 
-    use static_assertions::assert_impl_all;
+    use static_assertions::{assert_impl_all, assert_not_impl_any};
 
     use super::*;
 
@@ -88,5 +88,11 @@ mod tests {
     assert_impl_all!(Command: UnwindSafe, RefUnwindSafe);
     assert_impl_all!(Invocation: UnwindSafe, RefUnwindSafe);
     assert_impl_all!(Outcome: UnwindSafe, RefUnwindSafe);
-    assert_impl_all!(test_support::ConsoleProcess: UnwindSafe, RefUnwindSafe);
+
+    // The test harness owns a thread it must join, so it holds a `JoinHandle`
+    // and is deliberately neither unwind-safe nor ref-unwind-safe: a handle to
+    // a thread that may have been left mid-work is exactly what those contracts
+    // exist to refuse. It never crosses a `catch_unwind` boundary.
+    // Ref: docs/unwind-safety.md.
+    assert_not_impl_any!(test_support::ConsoleProcess: UnwindSafe, RefUnwindSafe);
 }

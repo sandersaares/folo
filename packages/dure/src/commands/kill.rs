@@ -35,7 +35,7 @@ pub(crate) fn execute(
             );
             store
                 .delete_owned_by(id, &identity)
-                .map_err(|_error| StoreError::new())?;
+                .map_err(StoreError::caused_by)?;
             return Err(SessionNotFoundError::for_id(id).into());
         }
         Err(_error) => return Err(KillFailedError::for_id(id).into()),
@@ -43,7 +43,7 @@ pub(crate) fn execute(
     trace!(trace, "removing the record for session {id}");
     store
         .delete_owned_by(id, &identity)
-        .map_err(|_error| StoreError::new())?;
+        .map_err(StoreError::caused_by)?;
     Ok(())
 }
 

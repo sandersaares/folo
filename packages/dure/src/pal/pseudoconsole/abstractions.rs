@@ -16,7 +16,9 @@ pub(crate) struct WindowSize {
 
 /// Create and relay a Windows pseudoconsole.
 ///
-/// Whether a child *sees* a console is an integration concern.
+/// One pseudoconsole is one console the app is attached to: it has a size, it
+/// carries the app's input and output as bytes, and it ends in two steps so a
+/// reader can finish the app's output before the console is released.
 /// Ref: docs/implementation.md, PAL slicing and "Pseudoconsole".
 #[cfg_attr(test, mockall::automock)]
 pub(crate) trait Pseudoconsole: Send + Sync + fmt::Debug + 'static {
@@ -30,7 +32,12 @@ pub(crate) trait Pseudoconsole: Send + Sync + fmt::Debug + 'static {
     fn write_input(&self, pty: PtyId, data: &[u8]) -> Result<(), PalError>;
 
     /// Read bytes from the app's console output. Blocks until some data arrives.
-    fn read_output(&self, pty: PtyId) -> Result<Vec<u8>, PalError>;
+    ///
+    /// `None` is the end of the app's output, and the only clean way for the
+    /// stream to end. An error is a failed read and leaves the output
+    /// incomplete, which callers must not mistake for the app having finished
+    /// writing.
+    fn read_output(&self, pty: PtyId) -> Result<Option<Vec<u8>>, PalError>;
 
     /// End the app console, leaving its remaining output readable.
     ///

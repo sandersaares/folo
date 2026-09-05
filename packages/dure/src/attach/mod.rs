@@ -41,7 +41,7 @@ where
     if !console.has_console() {
         return Err(NoConsoleError::new().into());
     }
-    let lease = ConsoleLease::take(console).map_err(|_error| PalFailedError::new())?;
+    let lease = ConsoleLease::take(console).map_err(PalFailedError::caused_by)?;
     // Read after taking the console over so the size is the one the app will be
     // rendered at, and sent with `Attach` so the supervisor can apply it as
     // part of taking the client slot.
@@ -89,7 +89,7 @@ where
 {
     let size = console
         .window_size()
-        .map_err(|_error| PalFailedError::new())?;
+        .map_err(PalFailedError::caused_by)?;
 
     let conn = match transport.connect(pipe_name, CONNECT_TIMEOUT) {
         Ok(conn) => conn,
@@ -149,7 +149,7 @@ impl<'a, C: LocalConsole> ConsoleLease<'a, C> {
         self.lease.take().map_or(Ok(()), |lease| {
             self.console
                 .end_raw_relay(lease)
-                .map_err(|_error| ConsoleRestoreError::new().into())
+                .map_err(|error| ConsoleRestoreError::caused_by(error).into())
         })
     }
 }

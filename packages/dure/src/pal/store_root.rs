@@ -32,7 +32,7 @@ fn windows_local_app_data() -> Result<PathBuf, PalError> {
     // returned PWSTR is a non-null NUL-terminated string we own and must free
     // with CoTaskMemFree. No other alias of this allocation exists.
     let pwstr = unsafe { SHGetKnownFolderPath(&FOLDERID_LocalAppData, KF_FLAG_DEFAULT, None) }
-        .map_err(|_error| PalError::new(PalErrorKind::Other))?;
+        .map_err(|error| PalError::with_source(PalErrorKind::Other, error))?;
     let path = {
         // SAFETY: `pwstr` is the unique owner of a valid NUL-terminated path
         // string returned by SHGetKnownFolderPath. Creating a temporary `&[u16]`
@@ -41,7 +41,7 @@ fn windows_local_app_data() -> Result<PathBuf, PalError> {
         let wide = unsafe { pwstr.as_wide() };
         String::from_utf16(wide)
             .map(PathBuf::from)
-            .map_err(|_error| PalError::new(PalErrorKind::Other))?
+            .map_err(|error| PalError::with_source(PalErrorKind::Other, error))?
     };
     // SAFETY: `pwstr` is the pointer SHGetKnownFolderPath allocated and we have
     // finished copying it. CoTaskMemFree is the required deallocator.

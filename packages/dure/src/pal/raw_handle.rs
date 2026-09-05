@@ -5,12 +5,13 @@ use std::sync::{Arc, Mutex};
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
 use windows::Win32::System::IO::CancelIoEx;
 
-/// Process-local handle stored as an integer.
+/// A Windows handle value this type does not own.
 ///
-/// `HANDLE` is a raw pointer and therefore `!Send`. Windows handles are
-/// pointer-sized integers; storing that integer lets a mutex table be shared
-/// across the supervisor's relay threads. Closing remains the table owner's
-/// job; this type does not take ownership on `Drop`.
+/// Copying a handle around is all this offers: closing it stays with whoever
+/// owns the object, and dropping this changes nothing.
+// Stored as an integer because `HANDLE` is a raw pointer and therefore `!Send`,
+// which would keep a handle table from being shared across the supervisor's
+// relay threads.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct RawHandle(isize);
 
@@ -24,14 +25,14 @@ impl RawHandle {
     }
 }
 
-/// Shared owner of one pipe handle.
+/// A pipe handle that stays valid for as long as anyone is using it.
 ///
-/// PAL tables hand out handles and release the table lock before doing I/O on
-/// them, so closing one on teardown could invalidate a handle another thread is
-/// still operating on, or let Windows reuse the value for an unrelated object.
-/// Ownership is shared instead: teardown cancels the I/O outstanding on the
-/// handle and drops the table's reference, and the handle is closed once the
-/// last in-flight operation releases it.
+/// Every holder keeps the handle alive, so an operation in flight can never be
+/// left addressing a closed handle, nor one Windows has reused for an unrelated
+/// object. Teardown cancels whatever is outstanding — which is what unblocks a
+/// waiting reader — and refuses any operation started after that, since a later
+/// operation would have nothing left to release it. The handle is closed once
+/// the last holder lets go.
 /// Ref: docs/implementation.md, "Transport" and "Pseudoconsole".
 pub(crate) struct PipeHandle {
     handle: RawHandle,
@@ -65,7 +66,7 @@ impl PipeHandle {
     /// `start` must only issue the operation. Waiting for it belongs outside,
     /// once the caller has the result.
     pub(crate) fn issue<T>(&self, start: impl FnOnce(HANDLE) -> T) -> Option<T> {
-        let cancelled = self.cancelled.lock().expect("pipe cancellation state");
+        let cancelled = self.cancelled.lock().expect("the cancellation flag is only read and set, never held across a panic");
         if *cancelled {
             return None;
         }
@@ -79,7 +80,7 @@ impl PipeHandle {
     /// dropped the table's reference, so nothing can reach the handle to cancel
     /// it again.
     pub(crate) fn cancel(&self) {
-        let mut cancelled = self.cancelled.lock().expect("pipe cancellation state");
+        let mut cancelled = self.cancelled.lock().expect("the cancellation flag is only read and set, never held across a panic");
         *cancelled = true;
         // SAFETY: `self` owns the handle and keeps it alive across this call. A
         // null OVERLAPPED cancels every operation this process has pending on
@@ -104,6 +105,9 @@ impl Drop for PipeHandle {
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
+    use std::sync::Barrier;
+    use std::thread;
+
     use super::*;
 
     #[test]
@@ -132,6 +136,48 @@ mod tests {
         pipe.cancel();
         // Refusing is the point: `CancelIoEx` cannot reach an operation that
         // does not exist yet, so one started now would never be released.
+        assert_eq!(pipe.issue(|_handle| 7), None);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)] // Cancellation calls a real Windows API, which Miri cannot execute.
+    fn every_racing_operation_is_either_started_or_refused() {
+        // The contract this checks is an exclusion, not a count: an operation
+        // that runs concurrently with a cancellation must land on one side of
+        // it, never half-way. A thread that observed a started operation after
+        // cancellation had completed would be the failure.
+        const WORKERS: usize = 8;
+        const ATTEMPTS: usize = 200;
+
+        let pipe = detached_pipe();
+        let start = Arc::new(Barrier::new(WORKERS.saturating_add(1)));
+        let mut workers = Vec::with_capacity(WORKERS);
+        for _ in 0..WORKERS {
+            let pipe = Arc::clone(&pipe);
+            let start = Arc::clone(&start);
+            workers.push(thread::spawn(move || {
+                start.wait();
+                let mut refused_then_started = false;
+                let mut refused = false;
+                for _ in 0..ATTEMPTS {
+                    match pipe.issue(|_handle| ()) {
+                        Some(()) => refused_then_started |= refused,
+                        None => refused = true,
+                    }
+                }
+                refused_then_started
+            }));
+        }
+
+        start.wait();
+        pipe.cancel();
+
+        for worker in workers {
+            assert!(
+                !worker.join().unwrap(),
+                "an operation started after this thread had seen the handle cancelled"
+            );
+        }
         assert_eq!(pipe.issue(|_handle| 7), None);
     }
 }
