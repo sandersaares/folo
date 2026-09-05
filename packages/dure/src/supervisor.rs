@@ -1,4 +1,4 @@
-//! Supervisor role: own the app, accept clients, last-connect-wins steal.
+//! Supervisor role: own the app, accept clients, last-attach-wins steal.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -240,6 +240,28 @@ fn map_startup(error: &PalError) -> AppError {
     }
 }
 
+/// Everything the supervisor's threads coordinate through.
+///
+/// A live session runs four things at once: an accept loop waiting for the next
+/// client, a relay reading whichever client currently owns the console, a pump
+/// reading the app's output, and a wait on the app itself. They meet only here,
+/// and the fields below are the whole of what they share.
+///
+/// Three questions are decided in this struct, each with its own lock, and they
+/// are separate because they are answered at different moments:
+///
+/// * **Who owns the console** — `client`, serialized by `attach`. An attach is
+///   one transaction: acknowledge, install, displace. `attached_generation`
+///   names each successive answer so a slower observer cannot publish a stale
+///   one.
+/// * **Whether anyone has come for the session yet** — `first_attach`. An app
+///   that exits immediately must not be torn down before the client that
+///   started it arrives.
+/// * **What the app has written** — `preamble` for the output it produced before
+///   the first attach, and `stopping` for the point after which nothing more
+///   will be relayed.
+///
+/// Ref: docs/implementation.md, "Accept loop and steal".
 struct Shared<T: Transport, C> {
     transport: T,
     pty_host: C,
@@ -270,7 +292,8 @@ struct Shared<T: Transport, C> {
     preamble: Mutex<Option<Vec<u8>>>,
     /// The supervisor's first-attach lifetime gate.
     ///
-    /// Holds an exited app's session open until somebody has come for it.
+    /// Holds an exited app's session open until a client has attached or the
+    /// initiating startup connection has closed.
     first_attach: Mutex<FirstAttach>,
     first_attach_changed: Condvar,
     stopping: AtomicBool,
@@ -295,12 +318,19 @@ impl<T: Transport> Clone for Client<T> {
 ///
 /// An app that exits immediately would otherwise be torn down before `dure run`
 /// finishes attaching, losing both its output and its exit status. The
-/// supervisor therefore holds the session open after the app exits until either
-/// the first client attaches or the process that started the session goes away.
+/// supervisor therefore holds the session open after the app exits until one of
+/// these two flags is set: a client has completed an attach, or the startup
+/// connection the initiating `dure run` held has closed.
 /// Ref: docs/design.md, "Commands"; docs/implementation.md, "Process split".
 #[derive(Debug, Default)]
 struct FirstAttach {
-    attached: bool,
+    /// Whether a client has ever taken the session.
+    ///
+    /// Never cleared: this records that the gate opened, not that a client is
+    /// attached now. A client that later detaches leaves it set, because the
+    /// session it was waiting for has already been claimed once.
+    claimed: bool,
+    /// Whether the process that started the session dropped its channel.
     initiator_gone: bool,
 }
 
@@ -316,8 +346,8 @@ impl<T: Transport, C> Shared<T, C> {
     // watchdogs are disabled under cargo-mutants, so the test hangs instead of
     // failing.
     #[cfg_attr(test, mutants::skip)]
-    fn note_attached(&self) {
-        self.first_attach().attached = true;
+    fn note_claimed(&self) {
+        self.first_attach().claimed = true;
         self.first_attach_changed.notify_all();
     }
 
@@ -328,11 +358,12 @@ impl<T: Transport, C> Shared<T, C> {
         self.first_attach_changed.notify_all();
     }
 
-    /// Blocks until the session has been claimed or nobody is coming for it.
+    /// Blocks until the first client has attached or the initiating startup
+    /// connection has closed.
     #[cfg_attr(test, mutants::skip)]
     fn await_first_attach(&self) {
         let mut state = self.first_attach();
-        while !state.attached && !state.initiator_gone {
+        while !state.claimed && !state.initiator_gone {
             state = self
                 .first_attach_changed
                 .wait(state)
@@ -363,12 +394,12 @@ impl<T: Transport, C> Shared<T, C> {
             .expect("try_update only succeeds when the next generation exists")
     }
 
-    /// Holds output produced before the first client attached.
+    /// Holds opening output: what the app wrote before the first attach.
     ///
     /// `dure run` starts the app and only then attaches, so an app that prints
-    /// immediately can speak before it has an audience. Those are the app's
-    /// first words rather than scrollback, so they wait for the client that is
-    /// already on its way. Ref: docs/design.md, "Screen contents".
+    /// immediately writes into that window. Opening output is not scrollback —
+    /// it is held for the first client rather than replayed to later ones.
+    /// Ref: docs/design.md, "Screen contents".
     ///
     /// The caller holds the client slot, which is what keeps this from landing
     /// behind an attach that has already taken what was held.
@@ -388,11 +419,11 @@ impl<T: Transport, C> Shared<T, C> {
         held.extend(bytes.iter().take(free));
     }
 
-    /// Takes what was held for the first client, permanently.
+    /// Takes the opening output, permanently.
     ///
-    /// Output produced while no client is attached has no audience once the
-    /// session has been claimed and given up again, so only the first attach
-    /// receives anything. Ref: docs/design.md, "Screen contents".
+    /// Only the first attach receives it; a later attach finds nothing, which
+    /// is what makes a resumed session start on an empty screen.
+    /// Ref: docs/design.md, "Screen contents".
     fn take_preamble(&self) -> Option<Vec<u8>> {
         self.preamble
             .lock()
@@ -402,12 +433,12 @@ impl<T: Transport, C> Shared<T, C> {
     }
 }
 
-/// Splits output held for the first client into frames the transport accepts.
+/// Splits the opening output into frames the transport accepts.
 ///
 /// The hold grows to `MAX_CLIENT_BACKLOG_BYTES`, which is several frames' worth,
 /// and a receiver rejects any frame past the cap rather than reassembling it. A
-/// single `Output` message would therefore fail the attach it is meant to open
-/// exactly when the app had the most to say.
+/// single `Output` message would therefore fail the very attach it exists to
+/// open, and would fail it precisely when the app had written the most.
 /// Ref: docs/implementation.md, "Opening output".
 fn preamble_messages(held: &[u8]) -> impl Iterator<Item = Message> + use<'_> {
     held.chunks(MAX_OUTPUT_CHUNK_BYTES.get())
@@ -624,7 +655,7 @@ where
     T: Transport + Clone,
     C: Pseudoconsole,
 {
-    match shared.transport.recv(conn) {
+    match shared.transport.recv_timeout(conn, CONNECT_TIMEOUT) {
         Ok(Message::Attach { cols, rows }) => {
             // One serialized attach transaction: acknowledge, take ownership,
             // and displace the previous client without another attach
@@ -647,27 +678,16 @@ where
             let outbox = Outbox::start(shared.transport.clone(), conn);
             let (previous, generation) = {
                 let mut slot = shared.client();
-                // Acknowledging under the client slot keeps `Attached` ahead of
-                // any `Output` on this connection, and installing in the same
-                // critical section means output the app produces right after the
-                // acknowledgement is not discarded for want of an installed
-                // client. This one write is direct rather than queued because
-                // the peer is blocked waiting for exactly this frame, and a
-                // failure here is how a client that is already gone is detected.
-                if shared
-                    .transport
-                    .send(
-                        conn,
-                        &Message::Attached {
-                            session_id: shared.session_id,
-                        },
-                    )
-                    .is_err()
-                {
-                    drop(slot);
-                    outbox.abandon();
-                    return;
-                }
+                // Queued, never written here. The acknowledgement is the first
+                // thing on this connection's queue, and delivery is FIFO, so
+                // the client sees `Attached` before any output or exit status
+                // without this critical section waiting on a pipe write. A
+                // client that is already gone is detected by that write failing
+                // on the writer thread, which abandons the connection and ends
+                // this loop.
+                outbox.send(Message::Attached {
+                    session_id: shared.session_id,
+                });
                 if let Some(held) = shared.take_preamble() {
                     for message in preamble_messages(&held) {
                         outbox.send(message);
@@ -684,12 +704,12 @@ where
             // first-attach lifetime gate lets it finish delivering an
             // already-exited app's output and status before the advisory store
             // update below can encounter durable I/O.
-            shared.note_attached();
+            shared.note_claimed();
             if let Some(old) = previous {
                 // Queued rather than written here, so a client that stopped
                 // reading cannot hold up the steal that is replacing it. The
                 // displaced client may already have disconnected; steal still
-                // proceeds, because last-connect-wins does not depend on this
+                // proceeds, because last-attach-wins does not depend on this
                 // notice.
                 //
                 // A client that is alive but has stopped draining leaves its
@@ -717,6 +737,10 @@ where
             set_attached(generation, true);
         }
         _ => {
+            // Anything else — a client that connected and then said nothing
+            // within the connect budget, or one that opened with a message
+            // that is not an attach — never becomes the live console, so it is
+            // dropped rather than left holding a relay thread.
             shared.transport.disconnect(conn);
             return;
         }
@@ -1672,7 +1696,7 @@ mod tests {
     }
 
     #[test]
-    fn acknowledgement_failure_leaves_the_slot_empty() {
+    fn a_client_that_leaves_before_it_is_acknowledged_leaves_the_slot_empty() {
         let transport = MemoryTransport::new();
         let pty_host = MemoryPseudoconsole::new();
         let shared = shared_session(&transport, &pty_host);
@@ -1684,12 +1708,18 @@ mod tests {
         let (flags, recorder) = attach_recorder();
         client_loop(&shared, supervisor, &recorder);
 
+        // The session is never left believing a client that has gone still owns
+        // it, however far into the attach that client got.
         assert!(client_conn(&shared).is_none());
-        assert!(flags.lock().unwrap().is_empty());
+        assert_eq!(
+            flags.lock().unwrap().last().copied(),
+            Some(false),
+            "the last thing published about a departed client must be that it left"
+        );
     }
 
     #[test]
-    fn a_stalled_attach_acknowledgement_does_not_signal_attachment() {
+    fn a_stalled_attach_acknowledgement_does_not_hold_up_the_attach() {
         with_watchdog_phases("setting up the client relay", |phase_reporter| {
             let transport = MemoryTransport::new();
             let pty_host = MemoryPseudoconsole::new();
@@ -1710,7 +1740,12 @@ mod tests {
 
             phase_reporter.report("waiting for the attach acknowledgement to stall");
             transport.wait_for_stalled_send(supervisor);
-            assert!(!shared.first_attach().attached);
+            // The acknowledgement is queued, so a client that has stopped
+            // reading holds up only its own delivery: ownership has already
+            // transferred and the session is claimed.
+            phase_reporter.report("waiting for the attached-flag update");
+            assert!(attached_rx.recv().unwrap());
+            assert!(shared.first_attach().claimed);
 
             transport.resume(supervisor);
             phase_reporter.report("waiting for the attach acknowledgement");
@@ -1718,9 +1753,6 @@ mod tests {
                 transport.recv(client).unwrap(),
                 Message::Attached { .. }
             ));
-            phase_reporter.report("waiting for the attached-flag update");
-            assert!(attached_rx.recv().unwrap());
-            assert!(shared.first_attach().attached);
 
             transport.send(client, &Message::StartupErr).unwrap();
             phase_reporter.report("waiting for the client relay to stop");
