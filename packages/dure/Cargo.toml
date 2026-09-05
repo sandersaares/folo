@@ -93,5 +93,20 @@ static_assertions = { workspace = true }
 tempfile = { workspace = true }
 testing = { path = "../testing" }
 
+# The end-to-end Windows suite needs the test support above, which is not part of the product and
+# is therefore behind a feature. The CLI suite drives `--store-root`, which is behind the same
+# feature so that a released binary cannot be pointed at another store. Declaring the requirement
+# here is what makes that visible: a `cargo test -p dure` without the feature skips those targets
+# and says so, rather than building empty ones and reporting success for coverage it never
+# compiled. The package's own validation (`just package=dure validate-local`) enables all
+# features, so both suites always run there.
+[[test]]
+name = "windows"
+required-features = ["private-test-util"]
+
+[[test]]
+name = "cli"
+required-features = ["private-test-util"]
+
 [lints]
 workspace = true

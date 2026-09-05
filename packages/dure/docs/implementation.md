@@ -270,12 +270,29 @@ The app under supervision is `dure-test-helper`, a separate unpublished package
 so that a helper binary never ships inside the product crate; it reports whether
 it has a console and can be told to print, wait, or exit with a chosen status.
 
-That suite proves the app sees a console, `run` forwards exit status, session
-records disappear when the app exits, a session whose client dies outright is
-still resumable and still interactive afterwards, `run` refuses a launcher whose
-job forbids breakaway, and `run` warns when an ancestor job it cannot leave would
+That suite proves the app sees a console, `run` forwards exit status, non-ASCII
+text survives the relay in both directions, a session whose client dies outright
+is still resumable and still interactive afterwards, a second client takes the
+session from one that is still attached, `run` refuses a launcher whose job
+forbids breakaway, and `run` warns when an ancestor job it cannot leave would
 end the session. Tests wait on process and pipe events inside the workspace
 watchdog.
+
+Where a scenario needs the session to be up, it waits for the app's own greeting
+rather than for anything `dure` prints, and it releases an app parked on input
+before examining the terminal. A regression in `dure`'s output then fails an
+assertion that names it, instead of leaving the app waiting for input the test
+never sent.
+
+Ordinary session-record cleanup is not asserted there. The client exits when it
+is handed the app's exit status, and the supervisor deletes the record after
+sending it, so a store the client has outlived says nothing about whether
+cleanup happened. Cleanup is covered where it is observable: the supervisor's
+own tests for the normal path, and the breakaway-refusal test for rollback.
+
+The helper's accepted modes and the bytes that release a waiting one live in one
+fixture rather than being spelled out per test, so a change to the helper's
+command line is a change in one place.
 
 Assertions about console output ignore whitespace. A pseudoconsole wraps at the
 window width and may break a line mid-word, so the exact spacing of relayed
