@@ -127,11 +127,14 @@ highest, while explicit versions must match.
 
 An optional top-level `expanded` records which planning stage a document belongs to. A **proposed
 plan** leaves it absent: its entries may name a version group and let resolution reach the
-members, so what it names is a starting point rather than the full set it moves. An **expanded
-plan**, written by `expand`, sets it and names every package the plan reaches. Resolving an
-expanded plan must reproduce exactly the set it names; reaching any other package means the
-workspace's version groups changed after the document was written, and is rejected rather than
-applied.
+members, and may carry an increment level resolved when the plan is applied, so what it names is
+a starting point rather than the full set it moves. An **expanded plan**, written by `expand`,
+sets it, names every package the plan reaches, and gives each an explicit `version`. Both are
+required of it: an entry left at a level would be resolved against the manifests as they stand
+when it is applied, so the same document could apply a version other than the reviewed one.
+Resolving an expanded plan must reproduce exactly the set it names; reaching any other package
+means the workspace's version groups changed after the document was written, and is rejected
+rather than applied.
 
 ### Plan and report schema
 

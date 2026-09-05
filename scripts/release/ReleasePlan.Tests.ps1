@@ -864,6 +864,90 @@ Describe 'New-ReleasePlanFile' {
         $plan.increments[0].version | Should -Be '1.1.0'
     }
 
+    It 'realigns a group whose outside dependent is already pending release without a decision' {
+        # The dependent's decision was dropped as already covered, so it is absent from the plan
+        # while sitting above its anchor. Plan-entry names would call that stranded; its resolved
+        # version says it already ships the rewrite.
+        $reportPath = Join-Path $TestDrive 'pending-dependent-report.json'
+        $decisionPath = Join-Path $TestDrive 'pending-dependent-decision.json'
+        $planPath = Join-Path $TestDrive 'pending-dependent-plan.json'
+        Write-TestReport -Path $reportPath -Package @(
+            Get-TestPackage -Name 'nm' -Group 'nm' -DeclaredVersion '1.1.0' -AnchorVersion '1.1.0'
+            Get-TestPackage -Name 'nm_impl' -Group 'nm' -DeclaredVersion '1.0.0' `
+                -AnchorVersion '1.0.0'
+            Get-TestPackage -Name 'events' -Status 'pending-release' `
+                -Changed @(@{ path = 'src/lib.rs' }) -DeclaredVersion '2.1.0' `
+                -AnchorVersion '2.0.0' -Dependencies @(@{ name = 'nm_impl' })
+        ) -Group @{
+            nm = @{ members = @('nm', 'nm_impl'); consistent = $false; version = '1.1.0' }
+        }
+        # A patch is already covered by the declared version, so no entry is emitted for events.
+        Write-TestDecision -Path $decisionPath -Change @(
+            @{ name = 'events'; level = 'patch' }
+        )
+
+        New-ReleasePlanFile -ReportPath $reportPath -DecisionPath $decisionPath `
+            -PlanPath $planPath
+        $plan = Get-Content -LiteralPath $planPath -Raw | ConvertFrom-Json
+
+        @($plan.increments).Count | Should -Be 1
+        $plan.increments[0].name | Should -Be 'nm'
+        $plan.increments[0].version | Should -Be '1.1.0'
+    }
+
+    It 'realigns a group whose outside dependent has never been published' {
+        # An anchorless package has published nothing for a rewritten requirement to collide
+        # with, and it cannot take a change level, so treating it as stranded would be a dead end.
+        $reportPath = Join-Path $TestDrive 'anchorless-dependent-report.json'
+        $decisionPath = Join-Path $TestDrive 'anchorless-dependent-decision.json'
+        $planPath = Join-Path $TestDrive 'anchorless-dependent-plan.json'
+        $newcomer = Get-TestPackage -Name 'events' -DeclaredVersion '0.1.0' `
+            -Dependencies @(@{ name = 'nm_impl' })
+        $newcomer.Remove('anchor')
+        Write-TestReport -Path $reportPath -Package @(
+            Get-TestPackage -Name 'nm' -Group 'nm' -DeclaredVersion '1.1.0' -AnchorVersion '1.1.0'
+            Get-TestPackage -Name 'nm_impl' -Group 'nm' -DeclaredVersion '1.0.0' `
+                -AnchorVersion '1.0.0'
+            $newcomer
+        ) -Group @{
+            nm = @{ members = @('nm', 'nm_impl'); consistent = $false; version = '1.1.0' }
+        }
+        Write-TestDecision -Path $decisionPath -Change @()
+
+        New-ReleasePlanFile -ReportPath $reportPath -DecisionPath $decisionPath `
+            -PlanPath $planPath
+        $plan = Get-Content -LiteralPath $planPath -Raw | ConvertFrom-Json
+
+        @($plan.increments).Count | Should -Be 1
+        $plan.increments[0].name | Should -Be 'nm'
+    }
+
+    It 'refuses to realign when a decision names a group whose leader does not move' {
+        # The entry names group `other`, but its leader already declares the target version, so
+        # being named tells nothing about whether it ships a new version. It does not, and it
+        # pins a moving member.
+        $reportPath = Join-Path $TestDrive 'named-leader-report.json'
+        $decisionPath = Join-Path $TestDrive 'named-leader-decision.json'
+        Write-TestReport -Path $reportPath -Package @(
+            Get-TestPackage -Name 'nm' -Group 'nm' -DeclaredVersion '1.1.0' -AnchorVersion '1.1.0'
+            Get-TestPackage -Name 'nm_impl' -Group 'nm' -DeclaredVersion '1.0.0' `
+                -AnchorVersion '1.0.0'
+            Get-TestPackage -Name 'events' -Group 'other' -DeclaredVersion '3.0.0' `
+                -AnchorVersion '3.0.0' -Dependencies @(@{ name = 'nm_impl' })
+            Get-TestPackage -Name 'events_impl' -Group 'other' -DeclaredVersion '2.0.0' `
+                -AnchorVersion '2.0.0'
+        ) -Group @{
+            nm    = @{ members = @('nm', 'nm_impl'); consistent = $false; version = '1.1.0' }
+            other = @{ members = @('events', 'events_impl'); consistent = $false; version = '3.0.0' }
+        }
+        Write-TestDecision -Path $decisionPath -Change @()
+
+        {
+            New-ReleasePlanFile -ReportPath $reportPath -DecisionPath $decisionPath `
+                -PlanPath (Join-Path $TestDrive 'named-leader-plan.json')
+        } | Should -Throw '*published package: events*'
+    }
+
     It 'refuses to realign a group that strands an outside published dependent' {
         # Applying the plan rewrites the requirement an outside package pins the moving member
         # at, changing that package's published manifest under a version crates.io already

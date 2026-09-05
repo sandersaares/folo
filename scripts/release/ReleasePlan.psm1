@@ -888,6 +888,80 @@ function Get-DecisionKey {
     return [string] $package.group
 }
 
+function Test-PackageShipsPublishedVersion {
+    # Whether a package would end the plan still declaring a version crates.io already carries.
+    #
+    # This is the question every pin-rewrite guard actually asks. Whether the plan happens to
+    # name a package is not the same question and cannot stand in for it: a decision dropped as
+    # already covered leaves its package unnamed yet already pending release, an exact
+    # group-alignment entry names a leader whose version does not move, and a package with no
+    # anchor has never published anything for a rewrite to collide with.
+    param(
+        [Parameter(Mandatory)] $Package,
+        [Parameter(Mandatory)][bool] $Moves
+    )
+
+    if ($Moves) {
+        return $false
+    }
+    if ($Package.PSObject.Properties.Name -notcontains 'anchor' -or
+        $null -eq $Package.anchor -or
+        [string]::IsNullOrWhiteSpace([string] $Package.anchor.version)) {
+        return $false
+    }
+    try {
+        $anchor = [semver] [string] $Package.anchor.version
+        $declared = [semver] [string] $Package.declared_version
+    } catch {
+        throw "Package '$($Package.name)' has an invalid semantic version in the release-plan report."
+    }
+    # A version above the anchor is already pending release, so the rewrite ships with it.
+    return $declared -le $anchor
+}
+
+function Get-PackageMovedByIncrement {
+    # The packages a set of plan increments moves off the version they declare today.
+    #
+    # Resolution reaches every member of a group an entry names, and an exact-version entry
+    # leaves a member that already declares that version exactly where it is, so neither the
+    # entry names nor their group closure answer this on their own. Takes the generator's own
+    # in-progress entries, which are ordered dictionaries rather than parsed JSON objects.
+    [OutputType([System.Collections.Generic.HashSet[string]])]
+    param(
+        [Parameter(Mandatory)] $Report,
+        [Parameter(Mandatory)] $ByName,
+        [Parameter(Mandatory)][AllowEmptyCollection()][System.Collections.IDictionary[]] $Increment
+    )
+
+    $moved = [System.Collections.Generic.HashSet[string]]::new(
+        [System.StringComparer]::Ordinal
+    )
+    foreach ($entry in $Increment) {
+        $entryName = [string] $entry['name']
+        $reached = [System.Collections.Generic.List[string]]::new()
+        $group = $Report.groups.PSObject.Properties[$entryName]
+        if ($null -eq $group) {
+            $reached.Add($entryName)
+        } else {
+            foreach ($member in $group.Value.members) {
+                $reached.Add([string] $member)
+            }
+        }
+        foreach ($packageName in $reached) {
+            if (-not $ByName.Contains($packageName)) {
+                continue
+            }
+            # A level always raises the package; an exact version moves only those not already
+            # declaring it.
+            if ($entry.Contains('level') -or
+                [string] $ByName[$packageName].declared_version -cne [string] $entry['version']) {
+                [void] $moved.Add($packageName)
+            }
+        }
+    }
+    return , $moved
+}
+
 function Get-GroupAlignmentIncrement {
     # Plan entry that puts a drifted group back on one version.
     #
@@ -907,7 +981,8 @@ function Get-GroupAlignmentIncrement {
         [Parameter(Mandatory)][string] $Name,
         [Parameter(Mandatory)] $Group,
         [Parameter(Mandatory)] $ByName,
-        [Parameter(Mandatory)][AllowEmptyCollection()][string[]] $DecidedPackage
+        [Parameter(Mandatory)] $Report,
+        [Parameter(Mandatory)][AllowEmptyCollection()][System.Collections.IDictionary[]] $Increment
     )
 
     if ($Group.PSObject.Properties.Name -notcontains 'version' -or
@@ -936,22 +1011,27 @@ function Get-GroupAlignmentIncrement {
         }
     }
 
-    # A package outside the group is never moved by realigning it, so a dependent that already
-    # has an increment of its own is fine and only an undecided one is a problem.
-    $decided = [System.Collections.Generic.HashSet[string]]::new(
-        [string[]] $DecidedPackage,
-        [System.StringComparer]::Ordinal
-    )
+    # Realigning this group does not move a package outside it, so such a dependent has to be
+    # shipping an unpublished version already for the rewritten requirement to reach consumers.
+    $movedByPlan = Get-PackageMovedByIncrement -Report $Report -ByName $ByName -Increment $Increment
     $stranded = [System.Collections.Generic.List[string]]::new()
     foreach ($packageName in $ByName.Keys) {
-        if ($member.Contains($packageName) -or $decided.Contains($packageName)) {
+        if ($member.Contains($packageName)) {
             continue
         }
+        $dependsOnMover = $false
         foreach ($dependency in $ByName[$packageName].dependencies) {
             if ($moving.Contains([string] $dependency.name)) {
-                $stranded.Add($packageName)
+                $dependsOnMover = $true
                 break
             }
+        }
+        if (-not $dependsOnMover) {
+            continue
+        }
+        if (Test-PackageShipsPublishedVersion -Package $ByName[$packageName] `
+                -Moves $movedByPlan.Contains($packageName)) {
+            $stranded.Add($packageName)
         }
     }
     if ($stranded.Count -gt 0) {
@@ -960,6 +1040,9 @@ function Get-GroupAlignmentIncrement {
     }
 
     foreach ($memberName in $staying) {
+        if (-not (Test-PackageShipsPublishedVersion -Package $ByName[$memberName] -Moves $false)) {
+            continue
+        }
         foreach ($dependency in $ByName[$memberName].dependencies) {
             $dependencyName = [string] $dependency.name
             if (-not $moving.Contains($dependencyName)) {
@@ -1076,9 +1159,8 @@ function New-ReleasePlanFile {
             $planned.Contains($group.Name)) {
             continue
         }
-        $decidedPackage = @($increment | ForEach-Object { [string] $_.name })
         $increment.Add((Get-GroupAlignmentIncrement -Name $group.Name -Group $group.Value `
-                    -ByName $byName -DecidedPackage $decidedPackage))
+                    -ByName $byName -Report $report -Increment $increment))
     }
 
     if ($PSCmdlet.ShouldProcess($PlanPath, 'write generated cargo-release-plan input')) {

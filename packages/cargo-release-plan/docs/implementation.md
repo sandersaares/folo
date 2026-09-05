@@ -208,11 +208,12 @@ coalesce. Mixed decision kinds and conflicting explicit versions fail.
 
 A plan's stage decides what resolution guarantees. A proposed plan may reach
 packages it does not name, which is how a decision about one group member moves
-the group. An expanded plan must resolve to exactly the set it names, because
-that set is what a caller reviewed; reaching any other package means the group
-configuration changed after the document was written, and fails. The stage is
-matched on rather than tested as a condition, so a new code path has to state
-which rule it wants.
+the group. An expanded plan must resolve to exactly the set it names and must
+already carry a version for each, because that document is what a caller
+reviewed; reaching another package means the group configuration changed after it
+was written, and a surviving increment level would be re-resolved against the
+manifests of the day. Both are rejected. The stage is matched on rather than
+tested as a condition, so a new code path has to state which rule it wants.
 
 `expand` and `apply` share that resolution and both read the same Git-tracked
 publishable package set. The resolved versions branch to expanded-plan output for

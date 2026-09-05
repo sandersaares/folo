@@ -16,8 +16,8 @@ use crate::verbose::Verbose;
 use crate::{
     ConflictingPlanIncrementKindError, ConflictingPlanVersionError, ExpandedPlanDriftError,
     InvalidVersionError, PlanIncrementSpecError, PlanVersionRegressionError,
-    UnknownIncrementLevelError, UnknownPlanTargetError, UnsupportedPlanSchemaError,
-    VersionOverflowError, quote_path,
+    UnknownIncrementLevelError, UnknownPlanTargetError, UnresolvedExpandedPlanError,
+    UnsupportedPlanSchemaError, VersionOverflowError, quote_path,
 };
 
 /// Shared plan and report schema revision.
@@ -82,11 +82,14 @@ impl PlanFile {
 pub(crate) enum PlanStage {
     /// A planner's input, which may name a version group or a single member of
     /// one and leave resolution to reach the rest. What it names is therefore a
-    /// starting point rather than the full set of packages it moves.
+    /// starting point rather than the full set of packages it moves, and an
+    /// entry may carry an increment level to be resolved when it is applied.
     Proposed,
     /// The document `expand` writes, which names every package the plan reaches
-    /// at the version each will carry. Because that set is what a caller
-    /// reviews, resolving it again must reproduce it exactly.
+    /// and records the version each will carry. Both halves matter: the first
+    /// makes the reviewed set complete, and the second makes it stable, since a
+    /// level would be re-resolved against whatever the manifests say when the
+    /// document is applied. Resolving one must therefore reproduce it exactly.
     Expanded,
 }
 
@@ -116,6 +119,22 @@ pub(crate) fn resolve_plan(
 ) -> Result<ResolvedVersions, AppError> {
     if plan.schema_version != SCHEMA_VERSION {
         return Err(UnsupportedPlanSchemaError::new(plan.schema_version).into());
+    }
+
+    // An expanded plan claims two things: that it records the version each package takes, and
+    // that it names every package the plan reaches. The first is a property of the document
+    // alone and is checked here; the second needs the resolved set and is checked below, once
+    // that set exists. Enforcing only one of them would leave the stage a half-kept promise.
+    if matches!(plan.stage(), PlanStage::Expanded) {
+        let unresolved: Vec<String> = plan
+            .increments
+            .iter()
+            .filter(|increment| increment.version.is_none())
+            .map(|increment| increment.name.clone())
+            .collect();
+        if !unresolved.is_empty() {
+            return Err(UnresolvedExpandedPlanError::new(unresolved).into());
+        }
     }
 
     let mut decisions: BTreeMap<String, IncrementSpec> = BTreeMap::new();
@@ -534,6 +553,35 @@ mod tests {
         );
         let expanded = resolve_plan(&plan, &nm_groups(), &current(), Verbose::new(false)).unwrap();
         assert!(expanded.packages.contains_key("nm_impl"));
+    }
+
+    /// An expanded plan carrying a level is rejected.
+    ///
+    /// A level is resolved against the manifests as they stand when it is
+    /// applied, so an expanded plan carrying one would let the same approved
+    /// document apply a version other than the reviewed one.
+    #[test]
+    fn an_expanded_plan_rejects_an_unresolved_increment_level() {
+        let plan = PlanFile::new(
+            PlanStage::Expanded,
+            vec![
+                PlanIncrement {
+                    name: "nm".to_string(),
+                    level: None,
+                    version: Some("0.1.1".to_string()),
+                },
+                PlanIncrement {
+                    name: "nm_impl".to_string(),
+                    level: Some("patch".to_string()),
+                    version: None,
+                },
+            ],
+        );
+        let error = resolve_plan(&plan, &nm_groups(), &current(), Verbose::new(false)).unwrap_err();
+        let unresolved = error
+            .find_source::<UnresolvedExpandedPlanError>()
+            .expect("an expanded plan carrying a level reports it as unresolved");
+        assert_eq!(unresolved.unresolved(), ["nm_impl".to_string()]);
     }
 
     #[test]

@@ -244,6 +244,32 @@ impl ExpandedPlanDriftError {
     }
 }
 
+/// An expanded plan carries an increment level instead of an explicit version.
+///
+/// An expanded plan records the version each package will take, which is what
+/// makes reviewing one meaningful. A level is resolved against the manifests as
+/// they stand when it is applied, so the same approved document could apply a
+/// different version than the one that was reviewed.
+#[ohno::error]
+#[display(
+    "Expanded plan leaves an increment level unresolved for: {}. An expanded plan records the \
+     version each package takes, so expand the proposed plan again",
+    unresolved.join(", ")
+)]
+pub(crate) struct UnresolvedExpandedPlanError {
+    unresolved: Vec<String>,
+}
+
+impl UnwindSafe for UnresolvedExpandedPlanError {}
+impl RefUnwindSafe for UnresolvedExpandedPlanError {}
+
+#[cfg(test)]
+impl UnresolvedExpandedPlanError {
+    pub(crate) fn unresolved(&self) -> &[String] {
+        &self.unresolved
+    }
+}
+
 /// An increment level is not `major`, `minor`, or `patch`.
 #[ohno::error]
 #[display(
@@ -838,6 +864,14 @@ mod tests {
     );
     assert_impl_all!(
         ExpandedPlanDriftError: Send,
+        Sync,
+        Debug,
+        error::Error,
+        UnwindSafe,
+        RefUnwindSafe
+    );
+    assert_impl_all!(
+        UnresolvedExpandedPlanError: Send,
         Sync,
         Debug,
         error::Error,

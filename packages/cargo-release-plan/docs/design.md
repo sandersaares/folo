@@ -109,8 +109,11 @@ group, or a single member of one, and leave resolution to reach the rest, so wha
 it names is a starting point rather than the full set it moves.
 
 An **expanded plan** is what `expand` writes. It names every package the plan
-reaches at the version each will carry. Because that set is what a caller
-reviews, resolving it again must reproduce it exactly.
+reaches and records the version each will carry. Both halves matter: the first
+makes the reviewed set complete, and the second makes it stable, since an
+increment level would be resolved again against whatever the manifests say when
+the document is applied. Resolving an expanded plan must therefore reproduce it
+exactly.
 
 Approval is not a third stage. The expanded plan a caller approves is applied
 unchanged, so the reviewed document and the applied document are the same bytes,
