@@ -125,14 +125,20 @@ impl<A: GlobalAlloc> Allocator<A> {
     }
 }
 
-// SAFETY: We delegate all allocation operations to the underlying allocator,
-// which already implements GlobalAlloc safely, while adding tracking functionality.
+// SAFETY: `GlobalAlloc` requires an implementation to hand out blocks that match the
+// requested layout and to keep them valid until they are released. Every pointer this
+// wrapper returns comes from `self.inner`, which already upholds that; the tracking added
+// around each call is counter arithmetic that neither reads nor writes the blocks
+// themselves, so it cannot affect their validity.
 unsafe impl<A: GlobalAlloc> GlobalAlloc for Allocator<A> {
     #[inline]
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         check_and_panic_if_enabled();
 
-        // SAFETY: We forward the call to the underlying allocator which implements GlobalAlloc.
+        // SAFETY: `GlobalAlloc::alloc` requires `layout` to have non-zero size. This method
+        // is itself `GlobalAlloc::alloc`, so its caller already owes that guarantee for this
+        // exact `layout`, which is forwarded unchanged to an allocator posing the identical
+        // requirement.
         let ptr = unsafe { self.inner.alloc(layout) };
 
         // A failed allocation reserves nothing, so recording it would permanently inflate the
@@ -146,7 +152,11 @@ unsafe impl<A: GlobalAlloc> GlobalAlloc for Allocator<A> {
 
     #[inline]
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        // SAFETY: We forward the call to the underlying allocator which implements GlobalAlloc.
+        // SAFETY: `GlobalAlloc::dealloc` requires that `ptr` was allocated by this same
+        // allocator under `layout` and has not been freed. This method is itself
+        // `GlobalAlloc::dealloc`, so its caller owes exactly that. Every block this wrapper
+        // hands out is one `self.inner` produced, because all of its allocating methods
+        // return the inner allocator's pointer unchanged, so the obligation carries over.
         unsafe {
             self.inner.dealloc(ptr, layout);
         }
@@ -158,7 +168,9 @@ unsafe impl<A: GlobalAlloc> GlobalAlloc for Allocator<A> {
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
         check_and_panic_if_enabled();
 
-        // SAFETY: We forward the call to the underlying allocator which implements GlobalAlloc.
+        // SAFETY: `GlobalAlloc::alloc_zeroed` places the same non-zero-size requirement on
+        // `layout` as `alloc` does. This method is itself `GlobalAlloc::alloc_zeroed`, so its
+        // caller owes that guarantee for this exact `layout`, which is forwarded unchanged.
         let ptr = unsafe { self.inner.alloc_zeroed(layout) };
 
         if !ptr.is_null() {
@@ -172,7 +184,11 @@ unsafe impl<A: GlobalAlloc> GlobalAlloc for Allocator<A> {
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         check_and_panic_if_enabled();
 
-        // SAFETY: We forward the call to the underlying allocator which implements GlobalAlloc.
+        // SAFETY: `GlobalAlloc::realloc` requires that `ptr` was allocated by this same
+        // allocator under `layout`, and that `new_size` is non-zero and does not overflow
+        // `isize::MAX` once rounded up to `layout`'s alignment. This method is itself
+        // `GlobalAlloc::realloc`, so its caller owes all three. Every block this wrapper hands
+        // out is one `self.inner` produced, and the three values reach it unchanged.
         let new_ptr = unsafe { self.inner.realloc(ptr, layout, new_size) };
 
         // On failure the original block is still live and unchanged, so no counter moves.
