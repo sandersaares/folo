@@ -5,8 +5,10 @@ use ohno::AppError;
 use crate::gc::live_sessions;
 use crate::list_fmt::format_list;
 use crate::pal::processes::Processes;
+use crate::output::print_line;
 use crate::pal::session_store::SessionStore;
 use crate::trace::{Trace, trace};
+use crate::OutputFailedError;
 
 /// Print live sessions.
 ///
@@ -21,7 +23,7 @@ pub(crate) fn execute(
 ) -> Result<(), AppError> {
     let live = live_sessions(store, processes, trace)?;
     trace!(trace, "ages are measured against unix time {now_unix_ms} ms");
-    println!("{}", format_list(&live, now_unix_ms));
+    print_line(format_args!("{}", format_list(&live, now_unix_ms))).map_err(OutputFailedError::caused_by)?;
     Ok(())
 }
 
@@ -33,7 +35,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::app_command::AppCommand;
+    use crate::AppCommand;
     use crate::pal::processes::{MockProcesses, ProcessLiveness};
     use crate::pal::session_store::{FsSessionStore, SessionStore};
     use crate::session_record::{ProcessIdentity, SessionRecord};

@@ -16,7 +16,7 @@ use std::mem::size_of;
 
 use crate::constants::MAX_FRAME_LEN;
 use crate::durability::LauncherTie;
-use crate::session_id::SessionId;
+use crate::SessionId;
 
 /// One framed message on the client-supervisor pipe or the startup channel.
 #[derive(Clone, Debug, Eq, PartialEq)]

@@ -13,6 +13,7 @@ use std::thread;
 use ohno::AppError;
 
 use crate::constants::CONNECT_TIMEOUT;
+use crate::output::note_line;
 use crate::pal::error::{PalError, PalErrorKind};
 use crate::pal::ids::{ConnId, RelayLeaseId};
 use crate::pal::local_console::{ConsoleInput, LocalConsole};
@@ -67,7 +68,7 @@ fn finish(
     match (outcome, restored) {
         (outcome, Ok(())) => outcome,
         (Ok(Outcome::AppExit(status)), Err(error)) => {
-            eprintln!("Warning: {error}");
+            note_line(format_args!("Warning: {error}"));
             Ok(Outcome::AppExit(status))
         }
         (Ok(Outcome::Success), Err(error)) => Err(error),

@@ -4,7 +4,7 @@ use std::path::Path;
 use std::sync::mpsc::{self, Receiver};
 use std::thread::{self, JoinHandle};
 
-use crate::app_command::AppCommand;
+use crate::AppCommand;
 use crate::constants::{DEFAULT_PTY_COLS, DEFAULT_PTY_ROWS};
 use crate::pal::ids::{AppId, JobId, PtyId};
 use crate::pal::processes::{

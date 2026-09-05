@@ -1,13 +1,12 @@
 //! `dure resume`.
 
-use std::io::{self, Write};
-
 use ohno::AppError;
 
 use crate::attach::attach;
 use crate::detect::{DetectOutcome, auto_detect};
 use crate::gc::{live_sessions, require_live_session};
 use crate::list_fmt::format_list;
+use crate::output::{note_line, print_prompt};
 use crate::pal::local_console::LocalConsole;
 use crate::pal::processes::Processes;
 use crate::pal::session_store::SessionStore;
@@ -16,7 +15,7 @@ use crate::session_record::SessionRecord;
 use crate::trace::{Trace, trace};
 use crate::{
     CanonicalizeError, CurrentDirectoryError, InvalidSessionIdError, NoLiveSessionsError, Outcome,
-    PalFailedError, PromptFailedError, SessionId,
+    OutputFailedError, PromptFailedError, SessionId,
 };
 
 /// Attach using auto-detect or an explicit id.
@@ -57,7 +56,7 @@ where
     );
     // Said before the console is taken over, because a failure from here on
     // still leaves this session reachable by `list`, `resume`, and `kill`.
-    eprintln!("session {}", record.session_id());
+    note_line(format_args!("session {}", record.session_id()));
     attach(transport, console, &record.pipe_name, record.session_id())
 }
 
@@ -108,12 +107,11 @@ where
     if !console.stdin_is_terminal() {
         return Err(PromptFailedError::new().into());
     }
-    eprintln!("{}", format_list(live, now_unix_ms));
-    // The read below blocks, so say what is being waited for.
-    eprint!("Session id to resume: ");
-    io::stderr()
-        .flush()
-        .map_err(PalFailedError::caused_by)?;
+    note_line(format_args!("{}", format_list(live, now_unix_ms)));
+    // The read below blocks, so say what is being waited for. A prompt the user
+    // cannot see is not worth blocking a read on, so a stream that refuses it
+    // fails the command instead.
+    print_prompt(format_args!("Session id to resume: ")).map_err(OutputFailedError::caused_by)?;
     let line = console
         .read_prompt_line()
         .map_err(PromptFailedError::caused_by)?;
@@ -137,7 +135,7 @@ mod tests {
     use std::thread;
 
     use super::*;
-    use crate::app_command::AppCommand;
+    use crate::AppCommand;
 
     /// A reading of the clock with no structure of its own; the age column has
     /// its own tests in `list_fmt`.

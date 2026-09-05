@@ -112,9 +112,14 @@ fn column_widths(rows: &[[String; 6]]) -> [usize; 6] {
     widths
 }
 
-/// Columns are counted in characters. Rendered width is a property of the
-/// terminal and its font; a character count approximates it well enough for a
-/// session list, and a byte count would not approximate it at all.
+/// Columns are counted in Unicode scalar values.
+///
+/// Rendered width is a property of the terminal and its font: a wide CJK
+/// character occupies two cells and a combining accent none, and terminals do
+/// not agree on the ambiguous cases. A scalar count approximates that well
+/// enough for a session list, and a byte count would not approximate it at all,
+/// so alignment is exact for the paths and command lines people actually have
+/// and best effort beyond them. Ref: docs/design.md, "Listing sessions".
 fn cell_width(cell: &str) -> usize {
     cell.chars().count()
 }
@@ -145,7 +150,7 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
-    use crate::app_command::AppCommand;
+    use crate::AppCommand;
 
     /// Sessions in these tests start at the epoch and are read at a fixed
     /// offset, so ages are chosen per test rather than inherited from a clock.

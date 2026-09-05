@@ -5,7 +5,7 @@
 use std::panic::{RefUnwindSafe, UnwindSafe};
 use std::path::PathBuf;
 
-use crate::session_id::SessionId;
+use crate::SessionId;
 
 // `ohno::error` leaves hold no shared mutable state. Empty impls match the
 // workspace unwind-safety contract (docs/unwind-safety.md).
@@ -157,6 +157,11 @@ pub(crate) struct SupervisorLostError;
 #[display("Failed to restore the console; run `cmd /c cls` or open a new terminal")]
 pub(crate) struct ConsoleRestoreError;
 
+/// Output the command was asked to produce could not be written.
+#[ohno::error]
+#[display("Failed to write command output")]
+pub(crate) struct OutputFailedError;
+
 /// The user entered a session id that is not a positive integer.
 #[ohno::error]
 #[display("Invalid session id")]
@@ -182,6 +187,7 @@ unwind_safe!(
     RelayFailedError,
     SupervisorLostError,
     ConsoleRestoreError,
+    OutputFailedError,
     InvalidSessionIdError,
 );
 

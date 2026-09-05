@@ -2,7 +2,7 @@
 
 use ohno::AppError;
 
-use crate::invocation::{Command, Invocation, Outcome};
+use crate::{Command, Invocation, Outcome};
 use crate::pal::Pal;
 use crate::path_display::display_path;
 use crate::trace::{Trace, trace};
@@ -79,14 +79,14 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
-    use crate::app_command::AppCommand;
+    use crate::AppCommand;
     use crate::SessionNotFoundError;
     use crate::pal::local_console::{LocalConsoleFacade, MockLocalConsole};
     use crate::pal::processes::{MockProcesses, ProcessLiveness, ProcessesFacade};
     use crate::pal::pseudoconsole::{MemoryPseudoconsole, PseudoconsoleFacade};
     use crate::pal::session_store::{MockSessionStore, SessionStoreFacade};
     use crate::pal::transport::{MemoryTransport, TransportFacade};
-    use crate::session_id::SessionId;
+    use crate::SessionId;
     use crate::session_record::SessionRecord;
 
     fn pal_with(store: MockSessionStore, processes: MockProcesses) -> Pal {

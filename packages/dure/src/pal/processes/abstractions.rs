@@ -3,7 +3,7 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use crate::app_command::AppCommand;
+use crate::AppCommand;
 use crate::durability::LauncherTie;
 use crate::pal::error::PalError;
 use crate::pal::ids::{AppId, JobId, PtyId};

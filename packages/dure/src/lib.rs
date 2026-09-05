@@ -36,6 +36,7 @@ mod gc;
 mod invocation;
 mod list_fmt;
 mod outbox;
+mod output;
 mod pal;
 mod path_display;
 mod protocol;

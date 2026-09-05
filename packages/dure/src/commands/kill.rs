@@ -55,7 +55,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::app_command::AppCommand;
+    use crate::AppCommand;
     use crate::pal::error::PalError;
     use crate::pal::processes::{MockProcesses, ProcessLiveness};
     use crate::pal::session_store::{FsSessionStore, SessionStore};

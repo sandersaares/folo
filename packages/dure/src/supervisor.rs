@@ -7,7 +7,7 @@ use std::thread;
 
 use ohno::AppError;
 
-use crate::app_command::AppCommand;
+use crate::AppCommand;
 use crate::constants::{
     CONNECT_TIMEOUT, DEFAULT_PTY_COLS, DEFAULT_PTY_ROWS, MAX_CLIENT_BACKLOG_BYTES,
     MAX_OUTPUT_CHUNK_BYTES,
@@ -20,7 +20,7 @@ use crate::pal::pseudoconsole::{Pseudoconsole, WindowSize};
 use crate::pal::session_store::SessionStore;
 use crate::pal::transport::Transport;
 use crate::protocol::Message;
-use crate::session_id::SessionId;
+use crate::SessionId;
 use crate::session_record::{ProcessIdentity, SessionRecord};
 use crate::wall_clock::unix_now_ms;
 use crate::{BreakawayDeniedError, PalFailedError, StartupFailedError, StoreError};
@@ -557,7 +557,7 @@ where
         // The session already owns nothing, so waiting here for the exit status
         // to land costs a client that is still reading nothing and a client
         // that has stopped reading only this process outliving it.
-        client.outbox.flush();
+        client.outbox.wait_for_writer();
     }
     Ok(status)
 }
@@ -1939,9 +1939,9 @@ mod tests {
             .unwrap()
             .take()
             .expect("the steal displaced the first client")
-            .flush();
+            .wait_for_writer();
         successor_outbox.finish();
-        successor_outbox.flush();
+        successor_outbox.wait_for_writer();
     }
 
     #[test]
@@ -1962,7 +1962,7 @@ mod tests {
 
         pty_output_loop(&shared);
         outbox.finish();
-        outbox.flush();
+        outbox.wait_for_writer();
 
         assert!(matches!(
             transport.recv(client).unwrap(),
@@ -1990,7 +1990,7 @@ mod tests {
         // The pump must not be the thread that notices, so it completes even
         // though nothing can be delivered.
         pty_output_loop(&shared);
-        outbox.flush();
+        outbox.wait_for_writer();
     }
 
     #[test]

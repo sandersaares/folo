@@ -5,11 +5,12 @@ use std::time::Duration;
 
 use ohno::AppError;
 
-use crate::app_command::AppCommand;
+use crate::AppCommand;
 use crate::attach::attach;
 use crate::constants::{CONNECT_TIMEOUT, STARTUP_TIMEOUT, SUPERVISOR_COMMAND};
 use crate::durability::LauncherTie;
-use crate::invocation::Outcome;
+use crate::Outcome;
+use crate::output::note_line;
 use crate::pal::error::{PalError, PalErrorKind};
 use crate::pal::ids::{ConnId, ListenerId};
 use crate::pal::local_console::LocalConsole;
@@ -18,7 +19,7 @@ use crate::pal::session_store::SessionStore;
 use crate::pal::transport::Transport;
 use crate::path_display::display_path;
 use crate::protocol::Message;
-use crate::session_id::SessionId;
+use crate::SessionId;
 use crate::trace::{Trace, trace};
 use crate::{
     AttachFailedError, BreakawayDeniedError, CanonicalizeError, CurrentDirectoryError,
@@ -161,11 +162,11 @@ where
     if launcher_tie.warrants_warning() {
         // The supervisor discovers this about itself but has no console
         // to say it on. Ref: docs/implementation.md, "Job breakaway".
-        eprintln!("{}", launcher_warning(launcher_tie));
+        note_line(format_args!("{}", launcher_warning(launcher_tie)));
     }
     // Said before the console is taken over, because a failure from here on
     // still leaves this session reachable by `list`, `resume`, and `kill`.
-    eprintln!("session {session_id}");
+    note_line(format_args!("session {session_id}"));
     // The supervisor reads this connection as the signal that an attach is
     // still on its way, and holds a session whose app exits immediately open
     // until it arrives. So it stays up for as long as this run intends to

@@ -9,7 +9,7 @@ use std::sync::{Arc, Condvar, Mutex};
 
 use crate::pal::error::{PalError, PalErrorKind};
 use crate::pal::session_store::SessionStore;
-use crate::session_id::SessionId;
+use crate::SessionId;
 use crate::session_record::{ProcessIdentity, SessionRecord, StoredSession};
 
 /// Shared stateful session store for supervisor unit tests.
@@ -188,7 +188,7 @@ mod tests {
     use testing::with_watchdog_phases;
 
     use super::*;
-    use crate::app_command::AppCommand;
+    use crate::AppCommand;
 
     #[test]
     fn publish_stall_reports_each_rearmed_publisher() {

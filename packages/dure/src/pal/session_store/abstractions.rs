@@ -4,7 +4,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 use crate::pal::error::PalError;
-use crate::session_id::SessionId;
+use crate::SessionId;
 use crate::session_record::{ProcessIdentity, SessionRecord};
 
 /// Per-user filesystem of live-session records.

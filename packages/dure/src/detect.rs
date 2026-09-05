@@ -114,7 +114,7 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
-    use crate::app_command::AppCommand;
+    use crate::AppCommand;
 
     fn record(id: u32, dir: &str) -> SessionRecord {
         SessionRecord {

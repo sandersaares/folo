@@ -4,7 +4,7 @@ use ohno::AppError;
 
 use crate::pal::processes::{ProcessLiveness, Processes};
 use crate::pal::session_store::SessionStore;
-use crate::session_id::SessionId;
+use crate::SessionId;
 use crate::session_record::SessionRecord;
 use crate::trace::{Trace, trace};
 use crate::{InspectProcessError, SessionNotFoundError, StoreError};
@@ -152,10 +152,10 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
-    use crate::app_command::AppCommand;
+    use crate::AppCommand;
     use crate::pal::processes::MockProcesses;
     use crate::pal::session_store::{FsSessionStore, SessionStore};
-    use crate::session_id::SessionId;
+    use crate::SessionId;
     use crate::session_record::{ProcessIdentity, SessionRecord};
 
     fn record(id: u32, pid: u32, creation: u64) -> SessionRecord {
