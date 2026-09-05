@@ -62,7 +62,7 @@ pub(crate) struct MemoryTransport {
 
 impl fmt::Debug for MemoryTransport {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("MemoryTransport").finish()
+        f.debug_struct(stringify!(MemoryTransport)).finish()
     }
 }
 

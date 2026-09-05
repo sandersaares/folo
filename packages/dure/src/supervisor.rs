@@ -813,7 +813,6 @@ mod tests {
     use std::sync::{Arc, Condvar, Mutex, mpsc};
     use std::thread;
 
-    use memory_session_store::MemorySessionStore;
     use testing::{WatchdogPhaseReporter, with_watchdog_phases};
 
     use super::*;
@@ -821,6 +820,7 @@ mod tests {
     use crate::pal::ids::{AppId, ConnId, JobId, ListenerId};
     use crate::pal::processes::MockProcesses;
     use crate::pal::pseudoconsole::MemoryPseudoconsole;
+    use crate::pal::session_store::MemorySessionStore;
     use crate::pal::transport::MemoryTransport;
     use crate::protocol::{Message, encode, payload_len_ok};
     use crate::session_record::ProcessIdentity;
@@ -883,8 +883,8 @@ mod tests {
         processes.expect_launcher_tie().returning(move || launcher_tie);
         processes
             .expect_create_lifetime_job()
-            .returning(|| Ok(JobId(1)));
-        processes.expect_spawn_app().returning(|_| Ok(AppId(1)));
+            .returning(|| Ok(JobId::for_test(1)));
+        processes.expect_spawn_app().returning(|_| Ok(AppId::for_test(1)));
         processes.expect_current_identity().returning(|| {
             Ok(ProcessIdentity {
                 pid: 10,
@@ -1013,15 +1013,13 @@ mod tests {
                 Message::Attached { .. }
             ));
 
-            // The supervisor creates exactly one pty on this host, so it holds
-            // the first allocated id.
-            //
             // Withholding puts the bytes past the pump's reach, modelling output
             // still in flight when the app exits. Only an orderly shutdown can
             // deliver them, so a teardown that abandons the console instead
             // fails here rather than intermittently.
-            pty.withhold_output(PtyId(1));
-            pty.push_output(PtyId(1), b"bye");
+            let app_console = pty.only_pty();
+            pty.withhold_output(app_console);
+            pty.push_output(app_console, b"bye");
             {
                 let (lock, cvar) = &*exit;
                 *lock.lock().expect("exit lock") = true;
@@ -1335,7 +1333,7 @@ mod tests {
                 .returning(|| LauncherTie::NoneDetected);
             processes
                 .expect_create_lifetime_job()
-                .returning(|| Ok(JobId(1)));
+                .returning(|| Ok(JobId::for_test(1)));
             // Spawn fails before initialization constructs the session record,
             // so this path never reads the system clock.
             processes
@@ -1507,9 +1505,7 @@ mod tests {
 
             // The app speaks before anyone has attached, which is the window
             // `dure run` spends spawning the supervisor and connecting to it.
-            // The supervisor creates exactly one pty on this host, so it holds
-            // the first allocated id.
-            pty.push_output(PtyId(1), b"hello");
+            pty.push_output(pty.only_pty(), b"hello");
             transport.disconnect(startup_conn);
 
             let client = transport
@@ -2074,5 +2070,4 @@ mod tests {
         assert!(store.read(id).unwrap().unwrap().attached);
     }
 
-    mod memory_session_store;
 }

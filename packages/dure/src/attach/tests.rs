@@ -106,7 +106,7 @@ impl TestConsole {
         console.expect_has_console().return_const(has_console);
         console
             .expect_begin_raw_relay()
-            .returning(move || begin_raw_relay.map(|()| RelayLeaseId(1)).map_err(PalError::new));
+            .returning(move || begin_raw_relay.map(|()| RelayLeaseId::for_test(1)).map_err(PalError::new));
         console.expect_end_raw_relay().returning(move |_lease| {
             hand_backs.fetch_add(1, Ordering::SeqCst);
             end_raw_relay.map_err(PalError::new)
@@ -206,7 +206,7 @@ impl Transport for SendFails {
     }
 
     fn connect(&self, _name: &str, _timeout: Duration) -> Result<ConnId, PalError> {
-        Ok(ConnId(1))
+        Ok(ConnId::for_test(1))
     }
 
     fn send(&self, _conn: ConnId, _message: &Message) -> Result<(), PalError> {

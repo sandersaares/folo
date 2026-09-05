@@ -259,7 +259,7 @@ mod tests {
             console.expect_has_console().return_const(true);
             console
                 .expect_begin_raw_relay()
-                .returning(|| Ok(RelayLeaseId(1)));
+                .returning(|| Ok(RelayLeaseId::for_test(1)));
             console.expect_end_raw_relay().returning(|_| Ok(()));
             console
                 .expect_window_size()

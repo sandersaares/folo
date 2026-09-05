@@ -18,4 +18,3 @@ pub(crate) use abstractions::*;
 pub(crate) use facade::*;
 #[cfg(test)]
 pub(crate) use memory::*;
-pub(crate) use windows::BuildTargetTransport;

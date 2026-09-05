@@ -35,7 +35,12 @@ pub(crate) trait Transport: Send + Sync + fmt::Debug + 'static {
     /// Receive one framed message, failing if `timeout` elapses first.
     fn recv_timeout(&self, conn: ConnId, timeout: Duration) -> Result<Message, PalError>;
 
-    /// Drop the connection so the peer unblocks.
+    /// End the connection, releasing work blocked on it at both ends.
+    ///
+    /// A send or receive this side already has in flight is aborted and reports
+    /// a failure rather than waiting for a peer that will never answer. Shutdown
+    /// paths depend on that: a supervisor abandoning a client that stopped
+    /// reading has no other way to free the thread blocked writing to it.
     fn disconnect(&self, conn: ConnId);
 
     /// Stop accepting. Unblocks a thread waiting in [`Transport::accept`].

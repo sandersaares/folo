@@ -3,6 +3,11 @@
 //! Id allocation uses exclusive file creation so two concurrent `run`
 //! invocations cannot take the same id.
 
+// The Win32 record-file mechanics this store is built on: they are meaningful only
+// here, so they live under it rather than beside it.
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod windows;
+
 use std::env;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
@@ -10,7 +15,7 @@ use std::path::{Path, PathBuf};
 
 use crate::pal::error::{PalError, PalErrorKind};
 use crate::pal::session_store::SessionStore;
-use crate::pal::session_store::windows::{RecordFile, move_file_replace};
+use crate::pal::session_store::real::windows::{RecordFile, move_file_replace};
 use crate::session_id::SessionId;
 use crate::session_record::{ProcessIdentity, SessionRecord, StoredSession};
 

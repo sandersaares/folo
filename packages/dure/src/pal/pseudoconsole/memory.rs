@@ -101,6 +101,23 @@ impl MemoryPseudoconsole {
         let ptys = self.inner.ptys.lock().expect("pty map lock");
         ptys.get(&pty).map(|state| state.size)
     }
+
+    /// The one live pseudoconsole on this host.
+    ///
+    /// A supervisor creates exactly one, so a test that drives it can name it
+    /// without assuming which integer the allocator happened to hand out.
+    ///
+    /// # Panics
+    ///
+    /// Panics unless exactly one pseudoconsole is live, which means the test
+    /// reached this point in a state it did not intend.
+    pub(crate) fn only_pty(&self) -> PtyId {
+        let ptys = self.inner.ptys.lock().expect("pty map lock");
+        let mut live = ptys.keys();
+        let only = *live.next().expect("exactly one live pty");
+        assert!(live.next().is_none(), "exactly one live pty");
+        only
+    }
 }
 
 impl Default for MemoryPseudoconsole {
