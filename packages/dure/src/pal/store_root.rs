@@ -1,5 +1,7 @@
 //! Default session store root.
 
+use std::ffi::OsString;
+use std::os::windows::ffi::OsStringExt;
 use std::path::PathBuf;
 
 use windows::Win32::System::Com::CoTaskMemFree;
@@ -39,9 +41,7 @@ fn windows_local_app_data() -> Result<PathBuf, PalError> {
         // via `PWSTR::as_wide` does not create a conflicting exclusive borrow;
         // we copy into a PathBuf before freeing.
         let wide = unsafe { pwstr.as_wide() };
-        String::from_utf16(wide)
-            .map(PathBuf::from)
-            .map_err(|error| PalError::with_source(PalErrorKind::Other, error))?
+        PathBuf::from(OsString::from_wide(wide))
     };
     // SAFETY: `pwstr` is the pointer SHGetKnownFolderPath allocated and we have
     // finished copying it. CoTaskMemFree is the required deallocator.
