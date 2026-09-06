@@ -180,11 +180,6 @@ justifiable reasons are:
 To skip a mutation, use the `#[cfg_attr(test, mutants::skip)]` style and leave a
 comment to justify why we are skipping it.
 
-If one test makes an otherwise-covered mutation hang, exclude only that test
-from mutation runs with `#[cfg_attr(mutants, ignore = "reason")]`. The reason
-must identify the non-terminating scenario and the separate test that preserves
-the mutation signal. The test remains enabled for ordinary and coverage runs.
-
 Before skipping a mutation, consider how to catch it. Beyond simply improving test
 coverage, the following techniques may help:
 

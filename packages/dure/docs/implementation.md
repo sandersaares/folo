@@ -269,6 +269,9 @@ the harness builds the console the client requires rather than assuming one.
 The app under supervision is `dure-test-helper`, a separate unpublished package
 so that a helper binary never ships inside the product crate; it reports whether
 it has a console and can be told to print, wait, or exit with a chosen status.
+The standard test recipes build this binary before starting the test runner and
+pass its absolute path through the environment, so no Cargo build competes with
+the pseudoconsole scenarios while they execute.
 
 That suite proves the app sees a console, `run` forwards exit status, the app is
 given the attaching terminal's size and told when it changes, non-ASCII text

@@ -10,16 +10,50 @@ use std::{env, str};
 ///
 /// The binary is built on demand — a fast no-op once it is up to date — so a
 /// test never spawns a stale helper, and the path is resolved once per process.
+/// A test runner can provide a prebuilt binary through `DURE_TEST_HELPER` so no
+/// build runs after the tests start.
 ///
 /// # Panics
 ///
-/// Panics when the helper cannot be built, or when Cargo reports no executable
-/// for it. Both mean the integration tests have nothing to drive, so failing
-/// loudly beats spawning something else.
+/// Panics when a configured helper path is invalid, when the helper cannot be
+/// built, or when Cargo reports no executable for it. Each means the integration
+/// tests have nothing to drive, so failing loudly beats spawning something else.
 #[must_use]
 pub fn binary_path() -> &'static str {
-    static PATH: LazyLock<String> = LazyLock::new(|| interpret_build(&run_cargo_build()));
+    static PATH: LazyLock<String> = LazyLock::new(locate_or_build);
     PATH.as_str()
+}
+
+/// Selects a prebuilt helper when available, otherwise builds it on demand.
+fn locate_or_build() -> String {
+    resolve(
+        env::var_os("DURE_TEST_HELPER"),
+        Path::is_file,
+        run_cargo_build,
+    )
+}
+
+/// Resolves a prebuilt helper or invokes `build` to create one.
+fn resolve(
+    prebuilt: Option<OsString>,
+    is_file: impl FnOnce(&Path) -> bool,
+    build: impl FnOnce() -> BuildOutput,
+) -> String {
+    if let Some(path) = prebuilt {
+        let path = PathBuf::from(path);
+        assert!(
+            path.is_absolute(),
+            "DURE_TEST_HELPER must be an absolute path: {}",
+            path.display()
+        );
+        assert!(
+            is_file(&path),
+            "DURE_TEST_HELPER does not name an existing file: {}",
+            path.display()
+        );
+        return path.to_string_lossy().into_owned();
+    }
+    interpret_build(&build())
 }
 
 /// The outcome of spawning `cargo build`, reduced to the fields the resolver
@@ -286,9 +320,42 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_prebuilt_helper_skips_the_build() {
+        let helper = PathBuf::from(r"C:\target\dure-test-helper.exe");
+
+        let resolved = resolve(
+            Some(helper.clone().into_os_string()),
+            |_path| true,
+            || panic!("a prebuilt helper must skip the build"),
+        );
+
+        assert_eq!(Path::new(&resolved), helper);
+    }
+
+    #[test]
+    #[should_panic(expected = "does not name an existing file")]
+    fn a_missing_prebuilt_helper_is_rejected() {
+        drop(resolve(
+            Some(OsString::from(r"C:\target\missing-helper.exe")),
+            |_path| false,
+            || panic!("a configured helper must skip the build"),
+        ));
+    }
+
+    #[test]
+    #[should_panic(expected = "must be an absolute path")]
+    fn a_relative_prebuilt_helper_is_rejected() {
+        drop(resolve(
+            Some(OsString::from("dure-test-helper.exe")),
+            |_path| true,
+            || panic!("a configured helper must skip the build"),
+        ));
+    }
+
     // Drives the real build seam rather than an injected fake: it spawns
-    // `cargo build` and reads the filesystem, so it is native-only. Cargo's
-    // freshness check makes the build a fast no-op once the crate is compiled.
+    // `cargo build` when no prebuilt path is present and reads the filesystem,
+    // so it is native-only.
     #[cfg(not(miri))]
     #[test]
     fn binary_path_returns_an_existing_absolute_file() {

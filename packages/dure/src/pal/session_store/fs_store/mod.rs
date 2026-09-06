@@ -119,7 +119,7 @@ impl FsSessionStore {
         loop {
             match move_file_no_replace(staging, &self.record_path(id)) {
                 Ok(()) => return Ok(id),
-                Err(error) if is_id_taken(&error) => {
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
                     id = next_session_id(id)?;
                 }
                 Err(error) => return Err(PalError::from_io(error)),
@@ -297,14 +297,6 @@ fn read_if_present(path: &Path) -> io::Result<Option<Vec<u8>>> {
     }
 }
 
-/// Whether a failed install means the id is already taken.
-///
-/// Any other failure is a filesystem fault: treating it as a taken id would
-/// retry the same fault against every remaining id in turn.
-fn is_id_taken(error: &io::Error) -> bool {
-    error.kind() == io::ErrorKind::AlreadyExists
-}
-
 /// Writes `content` to a file that must not already exist, and flushes it.
 ///
 /// Flushed before returning so that whatever is given this file's name next is
@@ -375,11 +367,6 @@ mod tests {
     #[test]
     // Talks to the real operating system: the session store calls a real file move.
     #[cfg_attr(miri, ignore)]
-    #[cfg_attr(
-        mutants,
-        ignore = "a mutated collision predicate makes this scan the complete id space; \
-                  only_an_already_exists_failure_means_the_id_is_taken preserves its signal"
-    )]
     fn installing_a_missing_staging_file_reports_the_filesystem_error() {
         let (dir, store) = store();
         store
@@ -491,14 +478,6 @@ mod tests {
         store
             .delete_owned_by(SessionId::from_u32(99).unwrap(), &owner)
             .unwrap();
-    }
-
-    #[test]
-    fn only_an_already_exists_failure_means_the_id_is_taken() {
-        assert!(is_id_taken(&io::Error::from(io::ErrorKind::AlreadyExists)));
-        assert!(!is_id_taken(&io::Error::from(
-            io::ErrorKind::PermissionDenied
-        )));
     }
 
     #[test]
