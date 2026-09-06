@@ -740,11 +740,6 @@ fn directory_of(manifest_path: &str) -> String {
     }
 }
 
-/// Workspace-relative form of a work-tree path.
-///
-/// A member may be outside the workspace root while remaining inside the same
-/// repository. Leading parent components preserve that relationship until the
-/// caller rebases the path into Git's repository-relative path space.
 /// Whether a requirement names exactly `version` rather than a range containing it.
 ///
 /// This is the workspace's intra-workspace requirement convention in one place,
@@ -762,6 +757,11 @@ pub(crate) fn requirement_names_version(requirement: &str, version: &Version) ->
     trimmed == bare || trimmed == format!("^{bare}") || trimmed == format!("={bare}")
 }
 
+/// Workspace-relative form of a work-tree path.
+///
+/// A member may be outside the workspace root while remaining inside the same
+/// repository. Leading parent components preserve that relationship until the
+/// caller rebases the path into Git's repository-relative path space.
 pub(crate) fn workspace_relative_path(workspace_root: &Path, path: &Path) -> Option<String> {
     if let Ok(relative) = path.strip_prefix(workspace_root) {
         return Some(os_path(relative));
