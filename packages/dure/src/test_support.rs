@@ -6,7 +6,8 @@ use std::thread::{self, JoinHandle};
 
 use windows::Win32::Foundation::{HLOCAL, LocalFree};
 use windows::Win32::Security::Authorization::{
-    ConvertSecurityDescriptorToStringSecurityDescriptorW, GetNamedSecurityInfoW, SDDL_REVISION_1,
+    ConvertSecurityDescriptorToStringSecurityDescriptorW,
+    ConvertStringSecurityDescriptorToSecurityDescriptorW, GetNamedSecurityInfoW, SDDL_REVISION_1,
     SE_FILE_OBJECT,
 };
 use windows::Win32::Security::{DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR};
@@ -30,6 +31,35 @@ use crate::pal::transport::current_user_sid_string;
 #[must_use]
 pub fn current_user_sid() -> String {
     current_user_sid_string().expect("the current user has a SID")
+}
+
+/// The canonical protected file-object DACL that grants only this user full access.
+///
+/// Windows can render well-known SIDs through SDDL aliases, so tests compare
+/// descriptors after asking Windows to canonicalize both sides.
+#[must_use]
+pub fn current_user_file_dacl_sddl() -> String {
+    let sid = current_user_sid();
+    let sddl = format!("D:P(A;;FA;;;{sid})");
+    let wide: Vec<u16> = sddl.encode_utf16().chain(std::iter::once(0)).collect();
+    let mut descriptor = PSECURITY_DESCRIPTOR::default();
+    // SAFETY: `wide` is a NUL-terminated SDDL string. On success `descriptor`
+    // points to the LocalAlloc block released below.
+    unsafe {
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            PCWSTR(wide.as_ptr()),
+            SDDL_REVISION_1,
+            &raw mut descriptor,
+            None,
+        )
+    }
+    .expect("the expected DACL is valid SDDL");
+    let text = descriptor_dacl_sddl(descriptor);
+    // SAFETY: `descriptor` is the unique LocalAlloc pointer obtained above.
+    unsafe {
+        _ = LocalFree(Some(HLOCAL(descriptor.0.cast())));
+    }
+    text
 }
 
 /// The discretionary access control list of `object`, in SDDL form.
@@ -64,6 +94,15 @@ pub fn dacl_sddl(object: &str) -> String {
         "reading the security of {object:?}: {queried:?}"
     );
 
+    let text = descriptor_dacl_sddl(descriptor);
+    // SAFETY: `descriptor` is the unique LocalAlloc pointer obtained above.
+    unsafe {
+        _ = LocalFree(Some(HLOCAL(descriptor.0.cast())));
+    }
+    text
+}
+
+fn descriptor_dacl_sddl(descriptor: PSECURITY_DESCRIPTOR) -> String {
     let mut sddl = PWSTR::null();
     // SAFETY: `descriptor` is the descriptor returned above. On success `sddl`
     // is a LocalAlloc string this function owns.
@@ -86,10 +125,6 @@ pub fn dacl_sddl(object: &str) -> String {
         if !sddl.is_null() {
             _ = LocalFree(Some(HLOCAL(sddl.0.cast())));
         }
-    }
-    // SAFETY: `descriptor` is the unique LocalAlloc pointer obtained above.
-    unsafe {
-        _ = LocalFree(Some(HLOCAL(descriptor.0.cast())));
     }
     text.expect("a security descriptor converts to SDDL")
 }

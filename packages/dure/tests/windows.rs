@@ -356,27 +356,19 @@ fn a_session_pipe_admits_nobody_but_the_user_who_made_it() {
         let pipe = published_pipe_name(dir.path());
         let dacl = dure::test_support::dacl_sddl(&pipe);
         let sid = dure::test_support::current_user_sid();
+        let expected = dure::test_support::current_user_file_dacl_sddl();
 
         release(&client);
         _ = watching.rest();
         _ = client.wait();
 
         // Protected, so nothing is inherited in from the containing object,
-        // and every entry names this user. Another account has no entry to
-        // reach the session through. Ref: docs/design.md, "Isolation".
-        assert!(
-            dacl.starts_with("D:P"),
-            "the session pipe must not inherit permissions, got {dacl:?}"
-        );
-        let entries = dacl.matches('(').count();
-        let ours = dacl.matches(sid.as_str()).count();
+        // and its only full-access entry names this user. Another account has
+        // no entry to reach the session through.
+        // Ref: docs/design.md, "Isolation".
         assert_eq!(
-            entries, ours,
-            "every entry on the session pipe must name {sid}, got {dacl:?}"
-        );
-        assert_ne!(
-            entries, 0,
-            "an empty list would permit nobody, got {dacl:?}"
+            dacl, expected,
+            "the session pipe DACL must permit only {sid}"
         );
     });
 }
