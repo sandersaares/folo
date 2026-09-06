@@ -321,8 +321,10 @@ impl ReportOperation {
 
     /// Returns the per-iteration peak outstanding bytes for this operation.
     ///
-    /// This is the most bytes the operation held allocated at any one moment during an
-    /// iteration.
+    /// This is the most bytes a single iteration held allocated at any one moment. Spans
+    /// are averaged rather than summed, so an operation measured concurrently on several
+    /// threads reports what a typical one of them held, not the total held across all of
+    /// them at once.
     ///
     /// The figure assumes every iteration in a measured batch reaches the same peak, which
     /// lets spans covering different iteration counts be combined and lets low-iteration
