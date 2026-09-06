@@ -158,6 +158,7 @@ test FILTER="":
     $env:CBH_FAKER = just _faker-path | Select-Object -Last 1
     if ($IsWindows) {
         $env:DURE_TEST_HELPER = just _dure-test-helper-path | Select-Object -Last 1
+        $env:RUSTFLAGS = (@($env:RUSTFLAGS, "--cfg dure_integration_test") | Where-Object { $_ }) -join " "
     }
     cargo +$env:RUST_MSRV nextest run {{ target_package }} --all-features {{ FILTER }} --locked --no-fail-fast
 

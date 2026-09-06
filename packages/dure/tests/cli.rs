@@ -15,12 +15,21 @@ use std::process::{Command, Output};
 use dure::SessionId;
 use tempfile::TempDir;
 
+#[cfg(dure_integration_test)]
+fn require_integration_binary() {}
+
+#[cfg(not(dure_integration_test))]
+fn require_integration_binary() {
+    panic!("run this suite via `just test`; its binary needs --cfg dure_integration_test");
+}
+
 /// Runs the built binary to completion under the workspace watchdog.
 fn run_dure<I, S>(args: I) -> Output
 where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
+    require_integration_binary();
     let args: Vec<OsString> = args
         .into_iter()
         .map(|arg| arg.as_ref().to_os_string())

@@ -28,10 +28,9 @@ pub struct Cli {
 
     /// Override the session store root.
     ///
-    /// Compiled only into test builds, so the released tool always uses the
-    /// per-user store that gives sessions their isolation
-    /// (design.md, "Isolation").
-    #[cfg(any(test, feature = "private-test-util"))]
+    /// Compiled only into repository test binaries, so published features
+    /// cannot add it to the released tool (design.md, "Isolation").
+    #[cfg(any(test, dure_integration_test))]
     #[arg(long, global = true, hide = true)]
     store_root: Option<PathBuf>,
 
@@ -174,7 +173,7 @@ impl Cli {
         };
         Ok(Invocation {
             verbose: self.verbose,
-            #[cfg(any(test, feature = "private-test-util"))]
+            #[cfg(any(test, dure_integration_test))]
             store_root: self.store_root,
             command,
         })

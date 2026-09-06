@@ -34,7 +34,16 @@ pub(crate) const HELPER_STEM: &str = "dure-test-helper";
 /// delivered to a `read` until a newline arrives.
 pub(crate) const WAKEUP: &[u8] = b"x\r\n";
 
+#[cfg(dure_integration_test)]
+fn require_integration_binary() {}
+
+#[cfg(not(dure_integration_test))]
+fn require_integration_binary() {
+    panic!("run this suite via `just test`; its binary needs --cfg dure_integration_test");
+}
+
 pub(crate) fn dure_exe() -> PathBuf {
+    require_integration_binary();
     PathBuf::from(env!("CARGO_BIN_EXE_dure"))
 }
 

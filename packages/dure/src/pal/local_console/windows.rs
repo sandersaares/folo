@@ -1,29 +1,31 @@
 //! Windows local console PAL.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Mutex, OnceLock};
-use std::{io, slice};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
+use std::{io, thread};
 
-use windows::Win32::Foundation::{HANDLE, WAIT_OBJECT_0};
+use windows::Win32::Foundation::{CloseHandle, ERROR_NOT_FOUND, HANDLE, WAIT_EVENT, WAIT_OBJECT_0};
 use windows::Win32::Globalization::CP_UTF8;
 use windows::Win32::Storage::FileSystem::{ReadFile, WriteFile};
 use windows::Win32::System::Console::{
     CONSOLE_MODE, CONSOLE_SCREEN_BUFFER_INFO, CTRL_BREAK_EVENT, CTRL_C_EVENT, ENABLE_ECHO_INPUT,
     ENABLE_LINE_INPUT, ENABLE_PROCESSED_INPUT, ENABLE_PROCESSED_OUTPUT,
     ENABLE_VIRTUAL_TERMINAL_INPUT, ENABLE_VIRTUAL_TERMINAL_PROCESSING, ENABLE_WINDOW_INPUT,
-    ENABLE_WRAP_AT_EOL_OUTPUT, FOCUS_EVENT, FOCUS_EVENT_RECORD, GetConsoleCP, GetConsoleMode,
-    GetConsoleOutputCP, GetConsoleScreenBufferInfo, GetStdHandle, INPUT_RECORD, INPUT_RECORD_0,
-    KEY_EVENT, PeekConsoleInputW, ReadConsoleInputW, STD_HANDLE, STD_INPUT_HANDLE,
-    STD_OUTPUT_HANDLE, SetConsoleCP, SetConsoleCtrlHandler, SetConsoleMode, SetConsoleOutputCP,
-    WINDOW_BUFFER_SIZE_EVENT, WriteConsoleInputW,
+    ENABLE_WRAP_AT_EOL_OUTPUT, GetConsoleCP, GetConsoleMode, GetConsoleOutputCP,
+    GetConsoleScreenBufferInfo, GetStdHandle, INPUT_RECORD, KEY_EVENT, PeekConsoleInputW,
+    ReadConsoleInputW, STD_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, SetConsoleCP,
+    SetConsoleCtrlHandler, SetConsoleMode, SetConsoleOutputCP, WINDOW_BUFFER_SIZE_EVENT,
 };
-use windows::Win32::System::Threading::{INFINITE, WaitForSingleObject};
-use windows::core::BOOL;
+use windows::Win32::System::IO::CancelIoEx;
+use windows::Win32::System::Threading::{CreateEventW, INFINITE, SetEvent, WaitForMultipleObjects};
+use windows::core::{BOOL, HRESULT};
 
 use crate::pal::error::{PalError, PalErrorKind};
 use crate::pal::ids::RelayLeaseId;
 use crate::pal::local_console::{ConsoleInput, LocalConsole};
 use crate::pal::pseudoconsole::WindowSize;
+use crate::pal::raw_handle::RawHandle;
 
 /// Real Windows console attached to this process.
 #[derive(Debug, Default)]
@@ -41,17 +43,127 @@ const INPUT_READ_BUF: usize = 4096;
 /// path reads into, which is why the discard path allocates nothing.
 const PEEK_INPUT_RECORDS: usize = 16;
 
+/// Wait result for the input handle, which follows cancellation in the wait set.
+const WAIT_INPUT: WAIT_EVENT = WAIT_EVENT(WAIT_OBJECT_0.0 + 1);
+
+/// Maximum time allowed for the reader to cross into `ReadFile`.
+///
+/// The ordinary handoff needs only one scheduler turn. A larger bound absorbs
+/// machine contention while ensuring a host that cannot cancel console reads
+/// reports failure instead of spinning indefinitely.
+const CANCEL_READ_HANDOFF_TIMEOUT: Duration = Duration::from_secs(1);
+
 /// Console state one relay takeover replaced, kept so the console can be handed
 /// back the way it was found. Ref: docs/console.md, "Modes".
 ///
 /// Each field records a change that succeeded, so restoring undoes exactly what
 /// was done rather than assuming the whole takeover completed.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Debug, Default)]
 struct TakenConsole {
     in_mode: Option<CONSOLE_MODE>,
     out_mode: Option<CONSOLE_MODE>,
     code_pages: Option<(u32, u32)>,
     ctrl_handler_installed: bool,
+    cancel_event: Option<Arc<CancelEvent>>,
+}
+
+/// Cancellation state shared by the relay and its console-input reader.
+#[derive(Debug)]
+struct CancelEvent {
+    handle: RawHandle,
+    cancelled: AtomicBool,
+    read_active: AtomicBool,
+}
+
+impl CancelEvent {
+    fn new() -> Result<Arc<Self>, PalError> {
+        // SAFETY: creates an unnamed, initially unset manual-reset event.
+        let handle = unsafe { CreateEventW(None, true, false, None) }
+            .map_err(|error| PalError::with_source(PalErrorKind::Other, error))?;
+        Ok(Arc::new(Self {
+            handle: RawHandle::from_handle(handle),
+            cancelled: AtomicBool::new(false),
+            read_active: AtomicBool::new(false),
+        }))
+    }
+
+    fn as_handle(&self) -> HANDLE {
+        self.handle.as_handle()
+    }
+
+    /// Registers the transition into a potentially blocking `ReadFile`.
+    ///
+    /// The reader publishes this before checking cancellation. A concurrent
+    /// canceller therefore either makes this return false or observes an active
+    /// read and keeps retrying `CancelIoEx` until the operation exists.
+    fn begin_read(&self) -> bool {
+        self.read_active.store(true, Ordering::SeqCst);
+        if self.cancelled.load(Ordering::SeqCst) {
+            self.read_active.store(false, Ordering::SeqCst);
+            return false;
+        }
+        true
+    }
+
+    fn end_read(&self) {
+        self.read_active.store(false, Ordering::SeqCst);
+    }
+
+    fn await_read_end(&self, deadline: Instant) -> Result<(), PalError> {
+        while self.read_active.load(Ordering::SeqCst) {
+            if Instant::now() >= deadline {
+                return Err(PalError::new(PalErrorKind::Other));
+            }
+            thread::yield_now();
+        }
+        Ok(())
+    }
+
+    fn cancel(&self, input: HANDLE) -> Result<(), PalError> {
+        self.cancelled.store(true, Ordering::SeqCst);
+        // SAFETY: this value owns the live event handle for its whole call.
+        unsafe { SetEvent(self.as_handle()) }
+            .map_err(|error| PalError::with_source(PalErrorKind::Other, error))?;
+
+        let deadline = Instant::now()
+            .checked_add(CANCEL_READ_HANDOFF_TIMEOUT)
+            .expect("the cancellation handoff timeout fits in Instant");
+        while self.read_active.load(Ordering::SeqCst) {
+            // SAFETY: `input` is the live console input handle. A null
+            // OVERLAPPED cancels the synchronous read issued on it by this
+            // process without changing the handle itself.
+            match unsafe { CancelIoEx(input, None) } {
+                Ok(()) => {
+                    // Cancellation is asynchronous. Success means the request
+                    // was accepted; wait until the reader confirms that the
+                    // operation actually retired before promising it is safe
+                    // for the caller to join.
+                    return self.await_read_end(deadline);
+                }
+                Err(error) if error.code() == HRESULT::from_win32(ERROR_NOT_FOUND.0) => {
+                    if Instant::now() >= deadline {
+                        return Err(PalError::with_source(PalErrorKind::Other, error));
+                    }
+                    // No matching request may mean the reader published
+                    // `read_active` just before entering ReadFile. Yield and
+                    // retry until the call is pending or the reader retires.
+                    thread::yield_now();
+                }
+                Err(error) => {
+                    return Err(PalError::with_source(PalErrorKind::Other, error));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Drop for CancelEvent {
+    fn drop(&mut self) {
+        // SAFETY: this is the last reference to the event handle, so no later
+        // operation can wait on or signal it.
+        _ = unsafe { CloseHandle(self.as_handle()) };
+    }
 }
 
 /// The outstanding console takeover, if any.
@@ -64,17 +176,19 @@ fn relay_lease() -> &'static Mutex<Option<(RelayLeaseId, TakenConsole)>> {
     LEASE.get_or_init(|| Mutex::new(None))
 }
 
+fn active_cancel_event() -> Result<Arc<CancelEvent>, PalError> {
+    relay_lease()
+        .lock()
+        .expect("the relay lease is only replaced, never held across a panic")
+        .as_ref()
+        .and_then(|(_id, taken)| taken.cancel_event.as_ref())
+        .cloned()
+        .ok_or_else(|| PalError::new(PalErrorKind::Other))
+}
+
 fn next_lease_id() -> RelayLeaseId {
     static NEXT: AtomicU64 = AtomicU64::new(1);
     RelayLeaseId(NEXT.fetch_add(1, Ordering::Relaxed))
-}
-
-/// Whether the current relay's console reader has been asked to stop.
-///
-/// Cleared by each takeover, so a later relay reads the console normally.
-fn input_cancelled() -> &'static AtomicBool {
-    static CANCELLED: AtomicBool = AtomicBool::new(false);
-    &CANCELLED
 }
 
 /// Consumes Ctrl+C and Ctrl+Break so the client does not act on a key that
@@ -242,6 +356,15 @@ fn discard_leading_noise(handle: HANDLE) -> Result<bool, PalError> {
     Ok(true)
 }
 
+/// Whether a queued record exists and, if so, whether it is a key.
+fn leading_record_is_key(handle: HANDLE) -> Result<Option<bool>, PalError> {
+    let (peek, count) = peek_input(handle)?;
+    Ok(peek
+        .first()
+        .filter(|_record| count != 0)
+        .map(|record| event_kind(record) == KEY_EVENT))
+}
+
 /// Puts both console directions into the relay's modes, recording each success.
 ///
 /// Ref: docs/console.md, "Modes".
@@ -287,7 +410,7 @@ fn take_over_console(
 /// Stopping at the first failure would leave the console partly raw, which is
 /// worse for the user than the error being reported one step later.
 #[cfg_attr(coverage_nightly, coverage(off))]
-fn hand_back_console(taken: TakenConsole) -> Result<(), PalError> {
+fn hand_back_console(taken: &TakenConsole) -> Result<(), PalError> {
     let input = taken
         .in_mode
         .map_or(Ok(()), |mode| restore_mode(STD_INPUT_HANDLE, mode));
@@ -346,7 +469,10 @@ impl LocalConsole for BuildTargetConsole {
         // SAFETY: reads process-wide console state and takes no arguments.
         let out_code_page = unsafe { GetConsoleOutputCP() };
 
-        let mut taken = TakenConsole::default();
+        let mut taken = TakenConsole {
+            cancel_event: Some(CancelEvent::new()?),
+            ..TakenConsole::default()
+        };
         // Each step records itself before the next is attempted, so a takeover
         // that fails halfway is handed back exactly as far as it got.
         let result = take_over_console(&mut taken, input, output, in_mode, out_mode)
@@ -362,11 +488,10 @@ impl LocalConsole for BuildTargetConsole {
             })
             .inspect(|()| taken.ctrl_handler_installed = true);
         if let Err(error) = result {
-            _ = hand_back_console(taken);
+            _ = hand_back_console(&taken);
             return Err(error);
         }
         let id = next_lease_id();
-        input_cancelled().store(false, Ordering::SeqCst);
         *lease = Some((id, taken));
         Ok(id)
     }
@@ -376,17 +501,17 @@ impl LocalConsole for BuildTargetConsole {
             let mut held = relay_lease()
                 .lock()
                 .expect("the relay lease is only replaced, never held across a panic");
-            match *held {
-                Some((id, taken)) if id == lease => {
-                    *held = None;
-                    taken
-                }
+            match held.as_ref() {
+                Some((id, _taken)) if *id == lease => held
+                    .take()
+                    .map(|(_id, taken)| taken)
+                    .ok_or_else(|| PalError::new(PalErrorKind::Other))?,
                 // A lease this console never issued, or one already handed
                 // back, must not restore state a live relay owns.
                 _ => return Err(PalError::new(PalErrorKind::Other)),
             }
         };
-        hand_back_console(taken)
+        hand_back_console(&taken)
     }
 
     fn window_size(&self) -> Result<WindowSize, PalError> {
@@ -395,20 +520,20 @@ impl LocalConsole for BuildTargetConsole {
 
     fn read_input(&self) -> Result<ConsoleInput, PalError> {
         let handle = std_handle(STD_INPUT_HANDLE)?;
+        let cancel_event = active_cancel_event()?;
         loop {
-            if input_cancelled().load(Ordering::SeqCst) {
+            // Cancellation is a separate kernel event rather than a console
+            // input record, so it cannot land between queue inspection and
+            // `ReadFile` and become a record that blocks that read.
+            // SAFETY: both handles remain live across this wait. The lease owns
+            // the input handle, and `cancel_event` keeps the event alive.
+            let wait = unsafe {
+                WaitForMultipleObjects(&[cancel_event.as_handle(), handle], false, INFINITE)
+            };
+            if wait == WAIT_OBJECT_0 {
                 return Err(PalError::new(PalErrorKind::Disconnected));
             }
-            if let Some(size) = take_leading_resize(handle)? {
-                return Ok(ConsoleInput::Resize(size));
-            }
-            if discard_leading_noise(handle)? {
-                continue;
-            }
-            // SAFETY: `handle` is the console input handle; the wait returns
-            // when any input record (keys or window size) is available.
-            let wait = unsafe { WaitForSingleObject(handle, INFINITE) };
-            if wait != WAIT_OBJECT_0 {
+            if wait != WAIT_INPUT {
                 return Err(PalError::new(PalErrorKind::Other));
             }
             if let Some(size) = take_leading_resize(handle)? {
@@ -417,18 +542,26 @@ impl LocalConsole for BuildTargetConsole {
             if discard_leading_noise(handle)? {
                 continue;
             }
+            match leading_record_is_key(handle)? {
+                Some(true) | None => {}
+                Some(false) => continue,
+            }
+            if !cancel_event.begin_read() {
+                return Err(PalError::new(PalErrorKind::Disconnected));
+            }
             let mut buf = vec![0_u8; INPUT_READ_BUF];
             let mut transferred = 0_u32;
             // SAFETY: `handle` is stdin; `buf` is exclusive for this call.
-            unsafe {
+            let read = unsafe {
                 ReadFile(
                     handle,
                     Some(buf.as_mut_slice()),
                     Some(&raw mut transferred),
                     None,
                 )
-            }
-            .map_err(|error| PalError::with_source(PalErrorKind::Disconnected, error))?;
+            };
+            cancel_event.end_read();
+            read.map_err(|error| PalError::with_source(PalErrorKind::Disconnected, error))?;
             if transferred == 0 {
                 return Err(PalError::new(PalErrorKind::Disconnected));
             }
@@ -438,33 +571,8 @@ impl LocalConsole for BuildTargetConsole {
     }
 
     fn cancel_input(&self) -> Result<(), PalError> {
-        input_cancelled().store(true, Ordering::SeqCst);
-        // The reader may be waiting on the input handle, which only signals
-        // when a record arrives, so one is written to wake it. A focus record
-        // is what the relay already discards, so a reader that has not been
-        // cancelled loses nothing by receiving it.
-        let handle = std_handle(STD_INPUT_HANDLE)?;
-        let mut wake = INPUT_RECORD {
-            // The record type is a `u32` constant stored in a `u16` field, and
-            // every defined event type fits.
-            EventType: u16::try_from(FOCUS_EVENT)
-                .map_err(|error| PalError::with_source(PalErrorKind::Other, error))?,
-            Event: INPUT_RECORD_0 {
-                FocusEvent: FOCUS_EVENT_RECORD {
-                    bSetFocus: BOOL::from(false),
-                },
-            },
-        };
-        let mut written = 0_u32;
-        let wake = slice::from_mut(&mut wake);
-        // SAFETY: `handle` is stdin; `wake` is a stack record exclusive to this
-        // call and outlives it.
-        unsafe { WriteConsoleInputW(handle, wake, &raw mut written) }
-            .map_err(|error| PalError::with_source(PalErrorKind::Other, error))?;
-        if written as usize != wake.len() {
-            return Err(PalError::new(PalErrorKind::Other));
-        }
-        Ok(())
+        let input = std_handle(STD_INPUT_HANDLE)?;
+        active_cancel_event()?.cancel(input)
     }
 
     fn write_output(&self, data: &[u8]) -> Result<(), PalError> {

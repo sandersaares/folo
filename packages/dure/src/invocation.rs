@@ -67,12 +67,12 @@ pub struct Invocation {
     pub verbose: bool,
     /// Where the session store lives, when it is not the per-user default.
     ///
-    /// Compiled only into test builds. Session isolation is a property of the
-    /// per-user store root: a directory chosen by a caller carries whatever
-    /// access control it happens to have, and records under it are trusted by
-    /// `list`, `resume`, and `kill`. The released tool therefore has no way to
-    /// point at one (design.md, "Isolation").
-    #[cfg(any(test, feature = "private-test-util"))]
+    /// Compiled only into repository test binaries. Session isolation is a
+    /// property of the per-user store root: a directory chosen by a caller
+    /// carries whatever access control it happens to have, and records under it
+    /// are trusted by `list`, `resume`, and `kill`. Published features therefore
+    /// cannot point the released tool at another store (design.md, "Isolation").
+    #[cfg(any(test, dure_integration_test))]
     #[doc(hidden)]
     pub store_root: Option<PathBuf>,
     /// Subcommand to execute.
@@ -82,12 +82,19 @@ pub struct Invocation {
 impl Invocation {
     /// Where the session store lives, when it is not the per-user default.
     #[must_use]
+    #[cfg_attr(
+        not(any(test, dure_integration_test)),
+        expect(
+            clippy::unused_self,
+            reason = "the release build returns no override while preserving one invocation call site"
+        )
+    )]
     pub(crate) fn session_store_root(&self) -> Option<PathBuf> {
-        #[cfg(any(test, feature = "private-test-util"))]
+        #[cfg(any(test, dure_integration_test))]
         {
             self.store_root.clone()
         }
-        #[cfg(not(any(test, feature = "private-test-util")))]
+        #[cfg(not(any(test, dure_integration_test)))]
         {
             None
         }

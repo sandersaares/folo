@@ -156,11 +156,17 @@ uses fixed stack storage and allocates nothing.
 A blocking read outlives the relay unless something ends it, and a console
 handed back while a read is still outstanding would take the next thing the user
 types. The relay therefore cancels the read and joins its thread before handing
-the console back. Cancelling writes a record the reader already discards, so it
-both wakes the reader and costs a reader that was not cancelled nothing.
-Cancellation success means the wake record was accepted. If cancellation fails,
-the relay reports that failure without joining a reader it cannot prove was
-woken; the command can then leave instead of waiting indefinitely.
+the console back. The reader waits on the console input handle and a dedicated
+cancellation event together. Cancellation signals that event instead of adding
+a console input record, so it cannot race with queue inspection and leave a
+discardable record in front of a blocking byte read. Some key records produce no
+bytes and leave that read waiting; cancellation also cancels any such read. A
+sticky cancellation flag and a published read-active flag close the handoff
+between those two paths: a read starts only after checking the sticky flag, and
+the canceller retries for a bounded scheduler handoff and waits for an accepted
+cancellation to retire the read. If either step fails, the relay reports that
+failure without joining a reader it cannot prove was woken; the command can then
+leave instead of waiting indefinitely.
 
 ### Window size
 
