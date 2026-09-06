@@ -67,13 +67,13 @@ It integrates well into Criterion and is natively supported by `par_bench`.
 ```
 Allocation statistics:
 
-| Operation                      | Mean bytes | Mean count |
-|--------------------------------|------------|------------|
-| futures_oneshot_channel        |        128 |          1 |
-| local_once_event_managed       |         48 |          1 |
-| pooled_local_once_event_ptr    |          0 |          0 |
-| pooled_local_once_event_rc     |          0 |          0 |
-| pooled_local_once_event_ref    |          0 |          0 |
+| Operation                      | Bytes/iter | Allocations/iter | Peak bytes/iter |
+|--------------------------------|------------|------------------|-----------------|
+| futures_oneshot_channel        |        128 |                1 |             128 |
+| local_once_event_managed       |         48 |                1 |              48 |
+| pooled_local_once_event_ptr    |          0 |                0 |               0 |
+| pooled_local_once_event_rc     |          0 |                0 |               0 |
+| pooled_local_once_event_ref    |          0 |                0 |               0 |
 ```
 
 Memory allocation is the root of all evil. The simplest and most effective way to make a typical

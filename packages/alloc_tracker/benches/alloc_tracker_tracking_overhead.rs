@@ -140,14 +140,14 @@ fn allocator_overhead(c: &mut Criterion) {
     group.bench_function("untracked_realloc_grow", |b| {
         b.iter_batched(
             || allocate(&std::alloc::System, small),
-            |block| realloc_dealloc(&std::alloc::System, block, grown),
+            |block| realloc_grow(&std::alloc::System, block, grown),
             BatchSize::SmallInput,
         );
     });
     group.bench_function("tracked_realloc_grow", |b| {
         b.iter_batched(
             || allocate(&ALLOCATOR, small),
-            |block| realloc_dealloc(&ALLOCATOR, block, grown),
+            |block| realloc_grow(&ALLOCATOR, block, grown),
             BatchSize::SmallInput,
         );
     });
@@ -193,7 +193,33 @@ fn dealloc<A: GlobalAlloc>(allocator: &A, block: (*mut u8, Layout)) {
     }
 }
 
-fn realloc_dealloc<A: GlobalAlloc>(allocator: &A, block: (*mut u8, Layout), grown_layout: Layout) {
+/// Owns a block until dropped.
+///
+/// A scenario that must not measure the release hands the block back to Criterion, which
+/// drops routine outputs only after stopping the timer. That keeps the deallocation out of
+/// the measured region without leaking across the benchmark's many iterations.
+struct Block<'a, A: GlobalAlloc> {
+    allocator: &'a A,
+    ptr: *mut u8,
+    layout: Layout,
+}
+
+impl<A: GlobalAlloc> Drop for Block<'_, A> {
+    fn drop(&mut self) {
+        // SAFETY: `ptr` was returned by `allocator` for `layout`, this type owns it, and
+        // `Drop` runs exactly once, so it has not already been freed.
+        unsafe {
+            self.allocator.dealloc(self.ptr, self.layout);
+        }
+    }
+}
+
+/// Grows a block, returning it so that only the reallocation lands in the measured region.
+fn realloc_grow<A: GlobalAlloc>(
+    allocator: &A,
+    block: (*mut u8, Layout),
+    grown_layout: Layout,
+) -> Block<'_, A> {
     let (ptr, layout) = block;
 
     // SAFETY: `ptr` was returned by `alloc` for `layout`, and `grown_layout` was built at
@@ -207,10 +233,9 @@ fn realloc_dealloc<A: GlobalAlloc>(allocator: &A, block: (*mut u8, Layout), grow
         handle_alloc_error(grown_layout);
     }
 
-    black_box(grown);
-
-    // SAFETY: `grown` was returned by `realloc` for `grown_layout`'s size and alignment.
-    unsafe {
-        allocator.dealloc(grown, grown_layout);
+    Block {
+        allocator,
+        ptr: grown,
+        layout: grown_layout,
     }
 }

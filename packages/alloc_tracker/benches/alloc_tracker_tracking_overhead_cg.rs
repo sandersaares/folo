@@ -157,11 +157,14 @@ mod linux {
         }
     }
 
-    fn realloc_dealloc<A: GlobalAlloc>(
-        allocator: &A,
-        block: (*mut u8, Layout),
-        grown_layout: Layout,
-    ) {
+    /// Grows a block and leaves it allocated, so the collected region covers only the
+    /// reallocation the scenario is named for.
+    ///
+    /// Gungraun runs each benchmark in its own process and collects a single invocation, so
+    /// the block is reclaimed at process exit. Releasing it here would put a deallocation
+    /// inside the measured region, and the tracked-minus-untracked difference would then
+    /// include deallocation tracking rather than isolating the reallocation.
+    fn realloc_grow<A: GlobalAlloc>(allocator: &A, block: (*mut u8, Layout), grown_layout: Layout) {
         let (ptr, layout) = block;
 
         // SAFETY: `ptr` was returned by `alloc` for `layout`, and `grown_layout` was built
@@ -175,10 +178,7 @@ mod linux {
             handle_alloc_error(grown_layout);
         }
 
-        // SAFETY: `grown` was returned by `realloc` for `grown_layout`'s size and alignment.
-        unsafe {
-            allocator.dealloc(grown, grown_layout);
-        }
+        black_box(grown);
     }
 
     fn dealloc<A: GlobalAlloc>(allocator: &A, block: (*mut u8, Layout)) {
@@ -231,14 +231,14 @@ mod linux {
     #[bench::run(growable(&std::alloc::System))]
     fn allocator_untracked_realloc_grow(prepared: ((*mut u8, Layout), Layout)) {
         let (block, grown_layout) = black_box(prepared);
-        realloc_dealloc(&std::alloc::System, block, grown_layout);
+        realloc_grow(&std::alloc::System, block, grown_layout);
     }
 
     #[library_benchmark]
     #[bench::run(growable(&ALLOCATOR))]
     fn allocator_tracked_realloc_grow(prepared: ((*mut u8, Layout), Layout)) {
         let (block, grown_layout) = black_box(prepared);
-        realloc_dealloc(&ALLOCATOR, block, grown_layout);
+        realloc_grow(&ALLOCATOR, block, grown_layout);
     }
 
     library_benchmark_group!(
