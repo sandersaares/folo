@@ -159,9 +159,11 @@ A change level rests on released evidence rather than on the version a manifest 
 A package's own released-content diff, the workspace values it inherits, the locked dependencies
 an executable releases, and the decisions taken for its dependencies all participate, and any
 package-metadata change establishes at least `patch`. A version group whose members disagree is
-realigned mechanically onto the highest version its members declare, so it needs no change level
-of its own. A package the release baseline has never published takes the first-publication path
-rather than an increment. The [`increment-versions`
+realigned mechanically and needs no change level of its own: normally onto the highest version its
+members declare, so nothing is published for a change it did not make, but by a patch increment of
+the whole group where that alignment would rewrite a requirement inside a member that otherwise
+kept an already-published version. A package the release baseline has never published takes the
+first-publication path rather than an increment. The [`increment-versions`
 skill](../skills/increment-versions/SKILL.md) carries out this policy and owns the procedure.
 
 ## Required checks fan-in

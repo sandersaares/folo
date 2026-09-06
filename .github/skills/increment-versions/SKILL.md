@@ -219,9 +219,12 @@ Write the proposed plan, then expand it:
 
 Stop and report if either command exits non-zero. `create-release-plan` retains sufficient
 existing pending-release increments, raises insufficient ones, and realigns any inconsistent
-group the decisions leave unnamed, targeting the highest version its members already declare.
-`expand-release-plan` names every member of a group the plan reaches, at the single version that
-group resolves to.
+group the decisions leave unnamed. Realignment usually targets the highest version the group's
+members already declare, so no member is published for a change it did not make. It instead
+patch-increments the whole group when a member that would keep its version pins one that
+alignment moves, because applying the plan rewrites that requirement and would otherwise change
+released content under a version already published. `expand-release-plan` names every member of a
+group the plan reaches, at the single version that group resolves to.
 
 `expanded.json` carries an explicit `version` on every entry, and an `expanded` stamp recording
 which stage it is:
@@ -257,10 +260,13 @@ than in this table.
 
 A group's row lists every member and the level that governs the group, which is the highest level
 decided for any of its members. A group present only because it was realigned has no change
-level, so write `none` in that column and give the reason in the row's explanation: its members
-disagreed on a version and are moving onto the highest version one of them already declared. Name
-the members that realignment moves, because each of them receives a new version and becomes
-pending release; only the member already at that version keeps the version it has.
+level, so write `none` in that column and give the reason in the row's explanation. Read the
+versions from `expanded.json` rather than assuming which form realignment took: a group usually
+moves onto the highest version one of its members already declared, in which case name the
+members that move, because each receives a new version and becomes pending release while the
+member already there keeps the version it has. A group whose members all move to a version none
+of them declared was patch-incremented instead, because a member that would have kept its version
+pins one the alignment moves; say so, since every member is then published.
 
 Follow each row with its supporting explanation. The explanation may span multiple paragraphs and
 must cite the `report.json` entry, diff path, or `semver-checks.log` summary it rests on. Name any

@@ -339,7 +339,7 @@ complete set of affected packages before approving a plan that omits packages
 
 An inconsistent group is a check failure in its own right, independent of any
 content change. A plan entry naming any member resolves it, and expansion is
-plan-driven, so a group no entry names is left alone. An entry that carries a
+plan-driven, so a group no entry names is left alone. An entry that carries an
 increment level raises the group's highest declared version. An entry that
 carries that highest version as an exact target instead moves lagging members up
 to it and leaves the leading member unchanged. The lagging members then become

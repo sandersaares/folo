@@ -937,11 +937,15 @@ function Get-PackageMovedByIncrement {
         [System.StringComparer]::Ordinal
     )
     foreach ($entry in $Increment) {
-        $entryName = [string] $entry['name']
+        # An entry names whatever the decision named, which for a grouped package is usually the
+        # package rather than its group. Resolution folds that onto the group and moves every
+        # member, so the entry name is normalized before the group is looked up; reading it
+        # directly would see only the named member and miss the rest of the group.
+        $key = Get-DecisionKey -ByName $ByName -Name ([string] $entry['name'])
         $reached = [System.Collections.Generic.List[string]]::new()
-        $group = $Report.groups.PSObject.Properties[$entryName]
+        $group = $Report.groups.PSObject.Properties[$key]
         if ($null -eq $group) {
-            $reached.Add($entryName)
+            $reached.Add($key)
         } else {
             foreach ($member in $group.Value.members) {
                 $reached.Add([string] $member)
@@ -1039,33 +1043,11 @@ function Get-GroupAlignmentIncrement {
         }
     }
 
-    # Realigning this group does not move a package outside it, so such a dependent has to be
-    # shipping an unpublished version already for the rewritten requirement to reach consumers.
+    # Choosing between exact alignment and an increment is the only decision here. Whether the
+    # resulting plan is safe is settled once for the whole plan by
+    # Assert-PlanMovesEveryRewrittenPublishedPackage, because a package can be endangered by an
+    # entry belonging to some other group and no per-group view can see that.
     $movedByPlan = Get-PackageMovedByIncrement -Report $Report -ByName $ByName -Increment $Increment
-    $stranded = [System.Collections.Generic.List[string]]::new()
-    foreach ($packageName in $ByName.Keys) {
-        if ($member.Contains($packageName)) {
-            continue
-        }
-        $dependsOnMover = $false
-        foreach ($dependency in $ByName[$packageName].dependencies) {
-            if ($moving.Contains([string] $dependency.name)) {
-                $dependsOnMover = $true
-                break
-            }
-        }
-        if (-not $dependsOnMover) {
-            continue
-        }
-        if (Test-PackageShipsPublishedVersion -Package $ByName[$packageName] `
-                -Moves $movedByPlan.Contains($packageName)) {
-            $stranded.Add($packageName)
-        }
-    }
-    if ($stranded.Count -gt 0) {
-        $noun = if ($stranded.Count -eq 1) { 'package' } else { 'packages' }
-        throw "Realigning group '$Name' on version '$target' rewrites the requirement it is pinned at inside published $($noun): $($stranded -join ', '). Decide a change level for $(if ($stranded.Count -eq 1) { 'it' } else { 'them' }) as well, so the rewritten requirement ships under a new version."
-    }
 
     foreach ($memberName in $staying) {
         if (-not (Test-PackageShipsPublishedVersion -Package $ByName[$memberName] -Moves $false)) {
@@ -1073,14 +1055,18 @@ function Get-GroupAlignmentIncrement {
         }
         foreach ($dependency in $ByName[$memberName].dependencies) {
             $dependencyName = [string] $dependency.name
-            if (-not $moving.Contains($dependencyName)) {
+            # Both this group's own laggards and anything the rest of the plan already moves: a
+            # member that keeps its version is endangered by either, and incrementing the group
+            # moves it clear of both.
+            if (-not $moving.Contains($dependencyName) -and
+                -not $movedByPlan.Contains($dependencyName)) {
                 continue
             }
             Write-Verbose (
                 "Group '$Name' cannot align on version '$target' because member " +
-                "'$memberName' already declares it and depends on member '$dependencyName', " +
-                'which the alignment moves; the rewritten requirement would change released ' +
-                "content under '$memberName' version '$target'. Incrementing the group instead."
+                "'$memberName' already declares it and depends on '$dependencyName', which the " +
+                'plan moves; the rewritten requirement would change released content under ' +
+                "'$memberName' version '$target'. Incrementing the group instead."
             ) -Verbose
             return Get-PlanIncrement -Name $Name -Level 'patch'
         }
@@ -1088,9 +1074,53 @@ function Get-GroupAlignmentIncrement {
 
     Write-Verbose (
         "Group '$Name' aligns on version '$target', which its members already declare at the " +
-        'highest, because no package that keeps its version depends on one the alignment moves.'
+        'highest, because no member that keeps its version depends on a package the plan moves.'
     ) -Verbose
     return Get-PlanIncrement -Name $Name -Version $target
+}
+
+function Assert-PlanMovesEveryRewrittenPublishedPackage {
+    # Fails when the finished plan would rewrite an intra-workspace requirement inside a package
+    # that keeps a version crates.io already carries.
+    #
+    # Applying a plan rewrites the requirement of every path dependency on a package it moves, so
+    # such a package would publish changed content under a version already published. This is
+    # checked once over the whole plan rather than while each group is decided, because the
+    # endangering entry frequently belongs to a different group and no per-group view can see it.
+    # The realignment choices above avoid reaching this for packages they can move; whatever is
+    # left needs a change level of its own, which is a decision rather than mechanics.
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] $Report,
+        [Parameter(Mandatory)] $ByName,
+        [Parameter(Mandatory)][AllowEmptyCollection()][System.Collections.IDictionary[]] $Increment
+    )
+
+    $moved = Get-PackageMovedByIncrement -Report $Report -ByName $ByName -Increment $Increment
+    $stranded = [System.Collections.Generic.List[string]]::new()
+    foreach ($packageName in $ByName.Keys) {
+        if (-not (Test-PackageShipsPublishedVersion -Package $ByName[$packageName] `
+                    -Moves $moved.Contains($packageName))) {
+            continue
+        }
+        foreach ($dependency in $ByName[$packageName].dependencies) {
+            if ($moved.Contains([string] $dependency.name)) {
+                $stranded.Add($packageName)
+                break
+            }
+        }
+    }
+
+    if ($stranded.Count -eq 0) {
+        return
+    }
+    $subject = if ($stranded.Count -eq 1) {
+        'a published package that keeps its current version'
+    } else {
+        'published packages that keep their current version'
+    }
+    $pronoun = if ($stranded.Count -eq 1) { 'it' } else { 'them' }
+    throw "The plan rewrites a workspace requirement inside $($subject): $($stranded -join ', '). Decide a change level for $pronoun as well, so the rewritten requirement ships under a new version."
 }
 
 function New-ReleasePlanFile {
@@ -1172,15 +1202,56 @@ function New-ReleasePlanFile {
     foreach ($entry in $increment) {
         [void] $planned.Add((Get-DecisionKey -ByName $byName -Name ([string] $entry.name)))
     }
-    foreach ($group in @($report.groups.PSObject.Properties | Sort-Object -Property Name)) {
-        if ($group.Value.PSObject.Properties.Name -notcontains 'consistent' -or
-            $group.Value.consistent -or
-            $planned.Contains($group.Name)) {
-            continue
+    $unaligned = @($report.groups.PSObject.Properties |
+            Sort-Object -Property Name |
+            Where-Object {
+                $_.Value.PSObject.Properties.Name -contains 'consistent' -and
+                -not $_.Value.consistent -and
+                -not $planned.Contains($_.Name)
+            })
+
+    # Each group's alignment is decided against everything else the plan does, and deciding one
+    # group can move packages that change another group's answer. Deciding them in one pass would
+    # make the outcome depend on the order groups happen to be visited, so the answers are
+    # recomputed until they stop changing. A group only ever moves from exact alignment to an
+    # increment and never back, so this settles within one pass per realigned group; the bound is
+    # asserted rather than assumed so a future change cannot spin here forever.
+    $alignment = [ordered]@{}
+    $remainingPass = $unaligned.Count + 1
+    $settled = $false
+    while (-not $settled) {
+        if ($remainingPass -le 0) {
+            throw 'Version-group realignment did not settle; this is a defect in the plan generator.'
         }
-        $increment.Add((Get-GroupAlignmentIncrement -Name $group.Name -Group $group.Value `
-                    -ByName $byName -Report $report -Increment $increment))
+        $remainingPass--
+        $settled = $true
+        foreach ($group in $unaligned) {
+            # Every other entry, so a group's own answer is never an input to itself.
+            $context = [System.Collections.Generic.List[object]]::new()
+            $context.AddRange([object[]] @($increment))
+            foreach ($decided in $alignment.GetEnumerator()) {
+                if ($decided.Key -cne $group.Name) {
+                    $context.Add($decided.Value)
+                }
+            }
+
+            $fresh = Get-GroupAlignmentIncrement -Name $group.Name -Group $group.Value `
+                -ByName $byName -Report $report -Increment ([System.Collections.IDictionary[]] $context.ToArray())
+            $current = $alignment[$group.Name]
+            if ($null -eq $current -or
+                [string] $current['level'] -cne [string] $fresh['level'] -or
+                [string] $current['version'] -cne [string] $fresh['version']) {
+                $alignment[$group.Name] = $fresh
+                $settled = $false
+            }
+        }
     }
+    foreach ($decided in $alignment.GetEnumerator()) {
+        $increment.Add($decided.Value)
+    }
+
+    Assert-PlanMovesEveryRewrittenPublishedPackage -Report $report -ByName $byName `
+        -Increment $increment
 
     if ($PSCmdlet.ShouldProcess($PlanPath, 'write generated cargo-release-plan input')) {
         # The proposed plan contract contains top-level metadata and increment entries.

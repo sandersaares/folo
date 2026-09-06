@@ -922,12 +922,13 @@ Describe 'New-ReleasePlanFile' {
         $plan.increments[0].name | Should -Be 'nm'
     }
 
-    It 'refuses to realign when a decision names a group whose leader does not move' {
-        # The entry names group `other`, but its leader already declares the target version, so
-        # being named tells nothing about whether it ships a new version. It does not, and it
-        # pins a moving member.
+    It 'increments a grouped dependent rather than stranding it on a published version' {
+        # `events` keeps the version its group aligns on, and pins a member the other group's
+        # alignment moves. It belongs to a group, so incrementing that group moves it clear
+        # instead of failing: only a package no realignment can move needs a decision.
         $reportPath = Join-Path $TestDrive 'named-leader-report.json'
         $decisionPath = Join-Path $TestDrive 'named-leader-decision.json'
+        $planPath = Join-Path $TestDrive 'named-leader-plan.json'
         Write-TestReport -Path $reportPath -Package @(
             Get-TestPackage -Name 'nm' -Group 'nm' -DeclaredVersion '1.1.0' -AnchorVersion '1.1.0'
             Get-TestPackage -Name 'nm_impl' -Group 'nm' -DeclaredVersion '1.0.0' `
@@ -942,10 +943,12 @@ Describe 'New-ReleasePlanFile' {
         }
         Write-TestDecision -Path $decisionPath -Change @()
 
-        {
-            New-ReleasePlanFile -ReportPath $reportPath -DecisionPath $decisionPath `
-                -PlanPath (Join-Path $TestDrive 'named-leader-plan.json')
-        } | Should -Throw '*published package: events*'
+        New-ReleasePlanFile -ReportPath $reportPath -DecisionPath $decisionPath `
+            -PlanPath $planPath
+        $plan = Get-Content -LiteralPath $planPath -Raw | ConvertFrom-Json
+
+        ($plan.increments | Where-Object name -EQ 'nm').version | Should -Be '1.1.0'
+        ($plan.increments | Where-Object name -EQ 'other').level | Should -Be 'patch'
     }
 
     It 'refuses to realign a group that strands an outside published dependent' {
@@ -969,7 +972,7 @@ Describe 'New-ReleasePlanFile' {
         {
             New-ReleasePlanFile -ReportPath $reportPath -DecisionPath $decisionPath `
                 -PlanPath (Join-Path $TestDrive 'stranded-plan.json')
-        } | Should -Throw '*published package: events*'
+        } | Should -Throw '*events*'
     }
 
     It 'realigns a group whose outside dependent already has a decision' {
@@ -1542,7 +1545,7 @@ Describe 'Generated plan invariants' {
             }
             @{
                 Name     = 'two drifted groups where one pins the other'
-                Throws   = $true
+                Throws   = $false
                 Package  = @(
                     @{ Name = 'nm'; Group = 'nm'; Declared = '1.1.0'; Anchor = '1.1.0' }
                     @{ Name = 'nm_impl'; Group = 'nm'; Declared = '1.0.0'; Anchor = '1.0.0' }
@@ -1561,6 +1564,18 @@ Describe 'Generated plan invariants' {
                 )
                 Group    = @{ nm = @('nm', 'nm_impl') }
                 Change   = @(@{ name = 'nm'; level = 'breaking' })
+            }
+            @{
+                Name     = 'group keyed apart from its members, decision naming a member'
+                Throws   = $false
+                Package  = @(
+                    @{ Name = 'nm'; Group = 'family'; Declared = '1.0.0'; Anchor = '1.0.0' }
+                    @{ Name = 'nm_impl'; Group = 'family'; Declared = '1.0.0'; Anchor = '1.0.0'; Status = 'needs-increment' }
+                    @{ Name = 'other'; Group = 'other-family'; Declared = '3.0.0'; Anchor = '3.0.0'; Deps = @('nm') }
+                    @{ Name = 'other_impl'; Group = 'other-family'; Declared = '2.0.0'; Anchor = '2.0.0' }
+                )
+                Group    = @{ family = @('nm', 'nm_impl'); 'other-family' = @('other', 'other_impl') }
+                Change   = @(@{ name = 'nm_impl'; level = 'patch' })
             }
             @{
                 Name     = 'ungrouped package pinning a decided package'

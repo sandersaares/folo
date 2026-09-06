@@ -86,9 +86,11 @@ fields, the locked dependency changes, and the decisions recorded for its depend
 this by omitting the package from `decisions.json`.
 
 Membership of a group the report marks `"consistent": false` does not change this. A group whose
-members disagree on a version is realigned mechanically when the plan is generated, onto the
-highest version any member already declares. Judge each member on its own released changes and
-choose no increment when it has none.
+members disagree on a version is realigned mechanically when the plan is generated, normally onto
+the highest version any member already declares, and by a patch increment of the whole group when
+that alignment would rewrite a dependency inside a member that otherwise kept a published
+version. Either way the realignment is chosen for you. Judge each member on its own released
+changes and choose no increment when it has none.
 
 A package that the report gives no anchor has never been released, so it has no version to
 increment. It follows the first-publication path in
