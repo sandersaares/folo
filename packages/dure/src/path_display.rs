@@ -2,14 +2,18 @@
 
 use std::path::Path;
 
-/// Renders a stored path the way the user typed it rather than the way it is
-/// compared.
+/// Renders a canonical stored path so a person can read and retype it.
 ///
 /// Launch directories are stored canonicalized, which on Windows means the
 /// extended-length form (`\\?\C:\work`). That prefix exists to lift path-length
-/// and parsing limits, carries no meaning for a reader, and is not what anyone
-/// typed. Auto-detect still compares the stored canonical paths; only the
-/// rendering drops the prefix. Ref: docs/design.md, "Listing sessions".
+/// and parsing limits, carries no meaning for a reader, and cannot be pasted
+/// back into a shell, so it is dropped here.
+///
+/// This is the canonical path made readable, not the path as the user reached
+/// it: canonicalization has already resolved junctions, links, and relative
+/// spellings, and none of that is recoverable afterwards. Auto-detect compares
+/// the stored canonical paths, so what is shown never decides which session
+/// `resume` finds. Ref: docs/design.md, "Listing sessions".
 pub(crate) fn display_path(path: &Path) -> String {
     let text = path.to_string_lossy();
     if let Some(share) = text.strip_prefix(r"\\?\UNC\") {

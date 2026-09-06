@@ -9,7 +9,7 @@ use windows::Win32::Foundation::{CloseHandle, GetLastError, HANDLE};
 use windows::Win32::Storage::FileSystem::{
     CreateFileW, DELETE, FILE_DISPOSITION_INFO, FILE_FLAGS_AND_ATTRIBUTES, FILE_GENERIC_READ,
     FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_STANDARD_INFO, FileDispositionInfo,
-    FileStandardInfo, GetFileInformationByHandleEx, MOVEFILE_REPLACE_EXISTING,
+    FileStandardInfo, GetFileInformationByHandleEx, MOVE_FILE_FLAGS, MOVEFILE_REPLACE_EXISTING,
     MOVEFILE_WRITE_THROUGH, MoveFileExW, OPEN_EXISTING, ReadFile, SetFileInformationByHandle,
 };
 use windows::core::PCWSTR;
@@ -25,20 +25,36 @@ fn last_error() -> io::Error {
 }
 
 /// Replace `dest` with `tmp`, committing the rename to disk before returning.
-pub(crate) fn move_file_replace(tmp: &Path, dest: &Path) -> io::Result<()> {
+pub(super) fn move_file_replace(tmp: &Path, dest: &Path) -> io::Result<()> {
+    move_file(
+        tmp,
+        dest,
+        MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+    )
+}
+
+/// Install `tmp` at `dest`, failing if `dest` already exists.
+///
+/// This is what makes claiming an id one step. A claim written straight to its
+/// final name is visible as an empty file before its owner has been written,
+/// and a supervisor that died in that window would leave a file naming nobody:
+/// it could never be proved abandoned, so the id would stay taken. Building the
+/// claim elsewhere and installing it here means the name appears only once the
+/// content behind it is complete.
+///
+/// Ref: docs/session-store.md, "Claimed and published".
+pub(super) fn move_file_no_replace(tmp: &Path, dest: &Path) -> io::Result<()> {
+    move_file(tmp, dest, MOVEFILE_WRITE_THROUGH)
+}
+
+fn move_file(tmp: &Path, dest: &Path, flags: MOVE_FILE_FLAGS) -> io::Result<()> {
     let src: Vec<u16> = tmp.as_os_str().encode_wide().chain([0]).collect();
     let dst: Vec<u16> = dest.as_os_str().encode_wide().chain([0]).collect();
     // SAFETY: `src` and `dst` are NUL-terminated paths in the same directory.
-    unsafe {
-        MoveFileExW(
-            PCWSTR(src.as_ptr()),
-            PCWSTR(dst.as_ptr()),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-        )
-    }
-    // Carries the Win32 error as the source rather than folding its rendering
-    // into a string. Ref: docs/error-handling.md.
-    .map_err(io::Error::other)
+    unsafe { MoveFileExW(PCWSTR(src.as_ptr()), PCWSTR(dst.as_ptr()), flags) }
+        // Carries the Win32 error code rather than a rendered message, because
+        // callers separate "the name is taken" from a real fault.
+        .map_err(|_error| last_error())
 }
 
 /// A record file held open for reading and for deletion of that exact file.
@@ -46,8 +62,8 @@ pub(crate) fn move_file_replace(tmp: &Path, dest: &Path) -> io::Result<()> {
 /// The point of holding it is that a name can be reused while a caller is deciding what to do
 /// with what it read. Reading and deleting through one handle addresses the file the decision
 /// was made about, so a record that replaced it under the same name is never the one removed.
-/// Ref: docs/implementation.md, "Session store".
-pub(crate) struct RecordFile {
+/// Ref: docs/session-store.md.
+pub(super) struct RecordFile {
     handle: HANDLE,
 }
 
@@ -57,7 +73,7 @@ impl RecordFile {
     /// Sharing stays fully permissive so holding the file open blocks nobody: concurrent
     /// readers, publishers, and deleters all proceed, and a deletion by someone else merely
     /// unlinks the name while this handle keeps addressing the file it opened.
-    pub(crate) fn open(path: &Path) -> io::Result<Self> {
+    pub(super) fn open(path: &Path) -> io::Result<Self> {
         let wide: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
         // SAFETY: `wide` is a NUL-terminated path. The returned handle is owned by `Self`.
         let handle = unsafe {
@@ -81,7 +97,7 @@ impl RecordFile {
     /// as the user made them — so the file's own length decides how much is read. Reading
     /// short would hand the caller unparseable content, which it would read as a record
     /// belonging to nobody and decline to delete, stranding the id forever.
-    pub(crate) fn read(&self) -> io::Result<Vec<u8>> {
+    pub(super) fn read(&self) -> io::Result<Vec<u8>> {
         let len = usize::try_from(self.standard_info()?.EndOfFile)
             .map_err(|_error| io::Error::from(io::ErrorKind::InvalidData))?;
         let mut buf = vec![0_u8; len];
@@ -111,7 +127,7 @@ impl RecordFile {
     /// A file somebody else already unlinked counts as deleted: the outcome asked for has
     /// happened, and the file is distinguishable from one this process may not delete, so the
     /// two are not conflated.
-    pub(crate) fn delete(&self) -> io::Result<()> {
+    pub(super) fn delete(&self) -> io::Result<()> {
         let disposition = FILE_DISPOSITION_INFO { DeleteFile: true };
         let size = u32::try_from(size_of::<FILE_DISPOSITION_INFO>())
             .expect("FILE_DISPOSITION_INFO fits in u32");

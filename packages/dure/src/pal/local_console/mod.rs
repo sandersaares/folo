@@ -11,4 +11,3 @@ mod windows;
 
 pub(crate) use abstractions::*;
 pub(crate) use facade::*;
-pub(crate) use windows::BuildTargetConsole;

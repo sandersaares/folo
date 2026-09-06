@@ -3,9 +3,10 @@
 //! Each condition reaches the application boundary through `ohno::AppError`.
 
 use std::panic::{RefUnwindSafe, UnwindSafe};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use crate::session_id::SessionId;
+use crate::SessionId;
+use crate::protocol::StartupStep;
 
 // `ohno::error` leaves hold no shared mutable state. Empty impls match the
 // workspace unwind-safety contract (docs/unwind-safety.md).
@@ -25,7 +26,7 @@ pub(crate) struct NoConsoleError;
 
 /// `dure run` was given no command to execute.
 #[ohno::error]
-#[display("dure run requires a command after --")]
+#[display("dure run requires a command to execute")]
 pub(crate) struct EmptyCommandError;
 
 /// There is no live session to resume.
@@ -99,6 +100,19 @@ pub(crate) struct BreakawayDeniedError;
 #[display("Failed to start the session")]
 pub(crate) struct StartupFailedError;
 
+/// Supervisor initialization failed, and said which step it stopped at.
+#[ohno::error]
+#[display("Failed to start the session while {step}")]
+pub(crate) struct StartupStepFailedError {
+    step: &'static str,
+}
+
+impl StartupStepFailedError {
+    pub(crate) fn at(step: StartupStep) -> Self {
+        Self::new(step.describe())
+    }
+}
+
 /// The process working directory could not be determined.
 #[ohno::error]
 #[display("Failed to determine the current directory")]
@@ -109,6 +123,19 @@ pub(crate) struct CurrentDirectoryError;
 #[display("Could not canonicalize '{}'", path.display())]
 pub(crate) struct CanonicalizeError {
     path: PathBuf,
+}
+
+/// A path Windows can name but `dure` cannot carry as text.
+#[ohno::error]
+#[display("'{}' is not a path dure can use; it is not valid Unicode", path.display())]
+pub(crate) struct UnsupportedPathError {
+    path: PathBuf,
+}
+
+impl UnsupportedPathError {
+    pub(crate) fn for_path(path: &Path) -> Self {
+        Self::new(path.to_path_buf())
+    }
 }
 
 /// Session store I/O failed.
@@ -143,6 +170,41 @@ pub(crate) struct PalFailedError;
 #[display("Console relay failed")]
 pub(crate) struct RelayFailedError;
 
+/// The supervisor went away without reporting the app's exit status.
+///
+/// A supervisor ends a relay by saying why — the app exited, or another client
+/// took the session. A connection that simply closes means the supervisor is
+/// gone, so the app's outcome is unknown and cannot be reported as success.
+#[ohno::error]
+#[display("Lost the session before the app reported an exit status")]
+pub(crate) struct SupervisorLostError;
+
+/// The console could not be handed back the way it was found.
+#[ohno::error]
+#[display("Failed to restore the console; run `cmd /c cls` or open a new terminal")]
+pub(crate) struct ConsoleRestoreError;
+
+/// The session was started by a different build of `dure`.
+#[ohno::error]
+#[display(
+    "Session {id} was started by a different version of dure and cannot be resumed by this one; \
+     use `dure kill {id}` to end it"
+)]
+pub(crate) struct ProtocolMismatchError {
+    id: u32,
+}
+
+impl ProtocolMismatchError {
+    pub(crate) fn for_id(id: SessionId) -> Self {
+        Self::new(id.get())
+    }
+}
+
+/// Output the command was asked to produce could not be written.
+#[ohno::error]
+#[display("Failed to write command output")]
+pub(crate) struct OutputFailedError;
+
 /// The user entered a session id that is not a positive integer.
 #[ohno::error]
 #[display("Invalid session id")]
@@ -166,6 +228,12 @@ unwind_safe!(
     InspectProcessError,
     PalFailedError,
     RelayFailedError,
+    SupervisorLostError,
+    ConsoleRestoreError,
+    OutputFailedError,
+    ProtocolMismatchError,
+    StartupStepFailedError,
+    UnsupportedPathError,
     InvalidSessionIdError,
 );
 
@@ -173,15 +241,6 @@ impl InspectProcessError {
     pub(crate) fn for_pid(pid: u32) -> Self {
         Self::new(pid)
     }
-}
-
-/// Parses a decimal session id from a prompt line.
-pub(crate) fn parse_prompted_id(line: &str) -> Result<SessionId, InvalidSessionIdError> {
-    let line = line.trim();
-    let id: u32 = line
-        .parse()
-        .map_err(|_error| InvalidSessionIdError::new())?;
-    SessionId::from_u32(id).ok_or_else(InvalidSessionIdError::new)
 }
 
 #[cfg(test)]
@@ -194,11 +253,4 @@ mod tests {
     use super::*;
 
     assert_impl_all!(NoConsoleError: Send, Sync, Debug, UnwindSafe, RefUnwindSafe);
-
-    #[test]
-    fn parse_prompted_id_rejects_zero_and_garbage() {
-        parse_prompted_id("0").unwrap_err();
-        parse_prompted_id("nope").unwrap_err();
-        assert_eq!(parse_prompted_id("  3\n").unwrap().get(), 3);
-    }
 }

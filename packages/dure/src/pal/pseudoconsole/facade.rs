@@ -6,7 +6,8 @@ use crate::pal::error::PalError;
 use crate::pal::ids::PtyId;
 #[cfg(test)]
 use crate::pal::pseudoconsole::MemoryPseudoconsole;
-use crate::pal::pseudoconsole::{BuildTargetPseudoconsole, Pseudoconsole, WindowSize};
+use crate::pal::pseudoconsole::windows::BuildTargetPseudoconsole;
+use crate::pal::pseudoconsole::{Pseudoconsole, WindowSize};
 
 /// Dispatches pseudoconsole calls to the real PAL or an in-memory test host.
 #[derive(Clone)]
@@ -72,7 +73,7 @@ impl Pseudoconsole for PseudoconsoleFacade {
         }
     }
 
-    fn read_output(&self, pty: PtyId) -> Result<Vec<u8>, PalError> {
+    fn read_output(&self, pty: PtyId) -> Result<Option<Vec<u8>>, PalError> {
         match self {
             Self::Target(inner) => inner.read_output(pty),
             #[cfg(test)]
@@ -106,7 +107,9 @@ mod tests {
     fn from_memory_creates_pty() {
         let pty = MemoryPseudoconsole::new();
         let facade = PseudoconsoleFacade::from_memory(pty);
-        let id = facade.create(WindowSize { cols: 80, rows: 24 }).unwrap();
+        let id = facade
+            .create(WindowSize::new(80, 24).expect("a fixture size is not empty"))
+            .unwrap();
         facade.close(id);
         _ = format!("{facade:?}");
     }

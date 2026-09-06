@@ -1,31 +1,32 @@
-//! Library entry point that dispatches a parsed [`crate::RunInput`].
+//! Library entry point that dispatches a parsed [`crate::Invocation`].
 
 use ohno::AppError;
 
 use crate::pal::Pal;
 use crate::path_display::display_path;
+use crate::supervisor::SessionSpec;
 use crate::trace::{Trace, trace};
-use crate::types::{Command, Outcome, RunInput};
-use crate::{PalFailedError, commands};
+use crate::wall_clock::unix_now_ms;
+use crate::{Command, Invocation, Outcome, PalFailedError, commands};
 
 /// Executes a parsed `dure` invocation.
 ///
 /// # Errors
 ///
 /// Returns an error when a session cannot be started, resumed, listed, or
-/// killed, or when attach is displaced.
-pub fn run(input: &RunInput) -> Result<Outcome, AppError> {
-    let pal = Pal::target(input.store_root.clone()).map_err(|_error| PalFailedError::new())?;
+/// killed, and when an attached client is displaced by a newer attach.
+pub fn run(input: &Invocation) -> Result<Outcome, AppError> {
+    let pal = Pal::target(input.session_store_root()).map_err(PalFailedError::caused_by)?;
     dispatch(input, &pal)
 }
 
-pub(crate) fn dispatch(input: &RunInput, pal: &Pal) -> Result<Outcome, AppError> {
+pub(crate) fn dispatch(input: &Invocation, pal: &Pal) -> Result<Outcome, AppError> {
     let trace = Trace::new(input.verbose);
     trace!(
         trace,
         "store root: {}",
         input
-            .store_root
+            .session_store_root()
             .as_deref()
             .map_or_else(|| "per-user default".to_string(), display_path)
     );
@@ -35,8 +36,8 @@ pub(crate) fn dispatch(input: &RunInput, pal: &Pal) -> Result<Outcome, AppError>
             &pal.processes,
             &pal.transport,
             &pal.console,
-            command.clone(),
-            input.store_root.clone(),
+            command,
+            input.session_store_root(),
             trace,
         ),
         Command::Resume { id } => commands::resume::execute(
@@ -45,10 +46,11 @@ pub(crate) fn dispatch(input: &RunInput, pal: &Pal) -> Result<Outcome, AppError>
             &pal.transport,
             &pal.console,
             *id,
+            unix_now_ms(),
             trace,
         ),
         Command::List => {
-            commands::list::execute(&pal.store, &pal.processes, trace)?;
+            commands::list::execute(&pal.store, &pal.processes, unix_now_ms(), trace)?;
             Ok(Outcome::Success)
         }
         Command::Kill { id } => {
@@ -59,14 +61,17 @@ pub(crate) fn dispatch(input: &RunInput, pal: &Pal) -> Result<Outcome, AppError>
             startup_pipe,
             launch_directory,
             command,
-        } => commands::supervisor::execute(
+        } => commands::supervise::execute(
             &pal.store,
             &pal.processes,
             &pal.transport,
             &pal.pty,
             startup_pipe,
-            launch_directory.clone(),
-            command.clone(),
+            SessionSpec {
+                launch_directory: launch_directory.clone(),
+                command: command.clone(),
+                started_at_unix_ms: unix_now_ms(),
+            },
         ),
     }
 }
@@ -77,27 +82,31 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
-    use crate::SessionNotFoundError;
     use crate::pal::local_console::{LocalConsoleFacade, MockLocalConsole};
     use crate::pal::processes::{MockProcesses, ProcessLiveness, ProcessesFacade};
     use crate::pal::pseudoconsole::{MemoryPseudoconsole, PseudoconsoleFacade};
     use crate::pal::session_store::{MockSessionStore, SessionStoreFacade};
     use crate::pal::transport::{MemoryTransport, TransportFacade};
-    use crate::session_id::SessionId;
-    use crate::session_record::SessionRecord;
+    use crate::protocol::PROTOCOL_VERSION;
+    use crate::session_record::{ProcessIdentity, SessionRecord};
+    use crate::{AppCommand, SessionId, SessionNotFoundError};
 
     fn pal_with(store: MockSessionStore, processes: MockProcesses) -> Pal {
         Pal {
             store: SessionStoreFacade::from_mock(store),
             processes: ProcessesFacade::from_mock(processes),
             transport: TransportFacade::from_memory(MemoryTransport::new()),
-            console: LocalConsoleFacade::from_mock(MockLocalConsole::new()),
+            console: LocalConsoleFacade::from_mock({
+                let mut console = MockLocalConsole::new();
+                console.expect_has_console().return_const(true);
+                console
+            }),
             pty: PseudoconsoleFacade::from_memory(MemoryPseudoconsole::new()),
         }
     }
 
-    fn input(command: Command) -> RunInput {
-        RunInput {
+    fn input(command: Command) -> Invocation {
+        Invocation {
             verbose: false,
             store_root: None,
             command,
@@ -105,6 +114,9 @@ mod tests {
     }
 
     #[test]
+    // The dispatcher reads the wall clock for the commands that render an age,
+    // which Miri's isolation refuses. What this test checks is routing.
+    #[cfg_attr(miri, ignore)]
     fn resume_reaches_the_resume_command() {
         let mut store = MockSessionStore::new();
         store.expect_read().returning(|_| Ok(None));
@@ -127,14 +139,17 @@ mod tests {
         let mut store = MockSessionStore::new();
         store.expect_read().returning(|id| {
             Ok(Some(SessionRecord {
-                id: id.get(),
-                supervisor_pid: 10,
-                supervisor_creation_time: 100,
+                id,
+                supervisor: ProcessIdentity {
+                    pid: 10,
+                    creation_time: 100,
+                },
                 pipe_name: "pipe".to_string(),
                 launch_directory: PathBuf::from("/work"),
-                command: vec!["app.exe".to_string()],
+                command: AppCommand::for_test(&["app.exe"]),
                 started_at_unix_ms: 1,
                 attached: false,
+                protocol_version: PROTOCOL_VERSION,
             }))
         });
         store.expect_delete_owned_by().returning(|_, _| Ok(()));

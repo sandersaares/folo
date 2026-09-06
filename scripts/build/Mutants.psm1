@@ -101,9 +101,10 @@ function Get-MutantsExcludeArgument {
         # exercised through integration tests rather than unit tests. `memory.rs` is a test
         # fake. `raw_handle.rs` is the same kind of Win32 binding without the `windows.rs`
         # suffix: a handle wrapper whose whole behaviour is `CancelIoEx` and `CloseHandle`.
+        # The globs reach any depth because a PAL slice may nest its own submodules.
         # The portable PAL logic above them stays in scope.
-        '-e', (protect 'packages/dure/src/pal/*/windows.rs'),
-        '-e', (protect 'packages/dure/src/pal/*/memory.rs'),
+        '-e', (protect 'packages/dure/src/pal/**/windows.rs'),
+        '-e', (protect 'packages/dure/src/pal/**/memory.rs'),
         '-e', (protect 'packages/dure/src/pal/raw_handle.rs'),
 
         # The `dure` outbox is a queue guarded by a mutex and a condvar with a writer thread

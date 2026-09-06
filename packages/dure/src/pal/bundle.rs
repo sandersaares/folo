@@ -14,7 +14,7 @@ use crate::pal::transport::TransportFacade;
 ///
 /// Command dispatch holds this bundle so each command receives the store,
 /// process, transport, console, and pseudoconsole facades without constructing
-/// them itself. Ref: docs/implementation.md, PAL slicing.
+/// them itself. Ref: docs/implementation.md, "PAL slicing".
 #[derive(Clone, Debug)]
 pub(crate) struct Pal {
     pub(crate) store: SessionStoreFacade,

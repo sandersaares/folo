@@ -1,14 +1,14 @@
 //! Windows process, job, and spawn implementation.
 
 use std::collections::HashMap;
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fmt::Write;
 use std::mem::size_of;
-use std::os::windows::ffi::{OsStrExt, OsStringExt};
+use std::os::windows::ffi::{OsStrExt, OsStringExt as _};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
-use std::{env, iter, ptr};
+use std::{env, ptr};
 
 use rand::RngExt;
 use windows::Win32::Foundation::{
@@ -35,20 +35,41 @@ use windows::Win32::System::Threading::{
 use windows::core::{BOOL, PCWSTR, PWSTR};
 
 use crate::constants::TERMINATE_TIMEOUT;
-use crate::durability::Durability;
+use crate::durability::LauncherTie;
 use crate::pal::error::{PalError, PalErrorKind};
 use crate::pal::ids::{AppId, JobId};
+use crate::pal::processes::command_line::windows_command_line;
+use crate::pal::processes::resolve::resolve_executable;
 use crate::pal::processes::{
-    AppSpawn, Breakaway, ProcessLiveness, Processes, SupervisorSpawn, resolve_command_path,
-    windows_command_line,
+    AppSpawn, HowResolved, ProcessLiveness, Processes, ResolvedCommand, SupervisorSpawn,
 };
-use crate::pal::pseudoconsole::hpcon_for;
+use crate::pal::pseudoconsole::windows::hpcon_for;
 use crate::pal::raw_handle::RawHandle;
 use crate::session_record::ProcessIdentity;
 
 /// Real Windows process control.
 #[derive(Debug, Default)]
 pub(crate) struct BuildTargetProcesses;
+
+/// Whether a job object lets its members create processes that escape it.
+///
+/// Job topology is a Windows concept that the `Processes` contract does not
+/// express: production logic only ever asks for the standard lifetime job. The
+/// policy is therefore named here, alongside the job helpers that consume it,
+/// rather than in the slice-wide abstraction.
+///
+/// Ref: docs/job-breakaway.md.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Breakaway {
+    /// A member may escape the job by asking for breakaway at creation time.
+    Permitted,
+    /// Members and everything they spawn stay confined to the job.
+    ///
+    /// `dure` never confines a session this way. Only the integration harness
+    /// builds such a job, to model the launchers `dure run` must refuse.
+    #[cfg(any(test, feature = "private-test-util"))]
+    Forbidden,
+}
 
 struct HandleTable {
     jobs: HashMap<u64, Vec<RawHandle>>,
@@ -103,7 +124,7 @@ fn identity_of(handle: HANDLE) -> Result<ProcessIdentity, PalError> {
             &raw mut user,
         )
     }
-    .map_err(|_error| PalError::new(PalErrorKind::InspectFailed))?;
+    .map_err(|error| PalError::with_source(PalErrorKind::InspectFailed, error))?;
     Ok(ProcessIdentity {
         pid,
         creation_time: filetime_u64(creation),
@@ -145,55 +166,42 @@ fn close(handle: HANDLE) {
     _ = unsafe { CloseHandle(handle) };
 }
 
-/// Resolves a bare command name through the standard executable search order.
-///
-/// `CreateProcessW` performs no search when `lpApplicationName` is supplied, so
-/// a bare `copilot.exe` would otherwise only be found in the launch directory.
-/// Anything that already names a directory, and anything the search cannot
-/// find, is returned unchanged so `CreateProcessW` reports the failure.
-fn search_executable(exe: &Path) -> PathBuf {
-    if exe.components().count() != 1 {
-        return exe.to_path_buf();
-    }
-    let name = wide(&exe.to_string_lossy());
-    // Applied only when the name carries no extension of its own, which is what
-    // makes `dure run -- copilot` behave like typing it in the shell.
-    let extension = wide(".exe");
-    // Long enough for a traditional path; a longer result is retried at the
-    // size the first call reports.
-    let mut buf = vec![0_u16; 260];
-    for _attempt in 0..2_u8 {
-        // SAFETY: `name` and `extension` are NUL-terminated and are not retained
-        // after the call. `buf` is exclusive for the call and its own length is
-        // what bounds the write.
-        let len = unsafe {
-            SearchPathW(
-                PCWSTR::null(),
-                PCWSTR(name.as_ptr()),
-                PCWSTR(extension.as_ptr()),
-                Some(&mut buf),
-                None,
-            )
-        } as usize;
-        if len == 0 {
-            break;
-        }
-        if len < buf.len() {
-            return buf.get(..len).map_or_else(
-                || exe.to_path_buf(),
-                |found| PathBuf::from(OsString::from_wide(found)),
-            );
-        }
-        buf = vec![0_u16; len];
-    }
-    exe.to_path_buf()
+pub(super) fn wide(s: &str) -> Vec<u16> {
+    wide_os(OsStr::new(s))
 }
 
-fn wide(s: &str) -> Vec<u16> {
-    OsString::from(s)
-        .encode_wide()
-        .chain(iter::once(0))
-        .collect()
+/// Encodes a path for Win32 without narrowing it to Rust text.
+///
+/// Ref: `command_line`, on why paths are never narrowed.
+fn wide_path(path: &Path) -> Vec<u16> {
+    wide_os(path.as_os_str())
+}
+
+/// Encodes an operating-system string for Win32 without narrowing it to Rust text.
+fn wide_os(value: &OsStr) -> Vec<u16> {
+    nul_terminated(value.encode_wide().collect())
+}
+
+fn nul_terminated(mut units: Vec<u16>) -> Vec<u16> {
+    units.push(0);
+    units
+}
+
+/// Waits for a process to exit and reports the status it exited with.
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn exit_status_of(handle: HANDLE) -> Result<i32, PalError> {
+    // SAFETY: `handle` is a process handle this call keeps alive throughout.
+    let wait = unsafe { WaitForSingleObject(handle, INFINITE) };
+    if wait != WAIT_OBJECT_0 {
+        return Err(PalError::new(PalErrorKind::Other));
+    }
+    let mut code = 0_u32;
+    // SAFETY: the process has exited; `code` is a stack u32.
+    unsafe { GetExitCodeProcess(handle, &raw mut code) }
+        .map_err(|error| PalError::with_source(PalErrorKind::Other, error))?;
+    // Windows process statuses are `u32`; NTSTATUS-style failure codes use
+    // the high bit and do not fit in a non-negative `i32`.
+    Ok(code.cast_signed())
 }
 
 /// Whether `process` belongs to any job object.
@@ -202,7 +210,7 @@ fn process_in_a_job(process: HANDLE) -> Result<bool, PalError> {
     // SAFETY: `process` is a valid process handle, a null job asks about any
     // job, and `in_job` outlives the call.
     unsafe { IsProcessInJob(process, None, &raw mut in_job) }
-        .map_err(|_error| PalError::new(PalErrorKind::InspectFailed))?;
+        .map_err(|error| PalError::with_source(PalErrorKind::InspectFailed, error))?;
     Ok(in_job.as_bool())
 }
 
@@ -223,7 +231,7 @@ enum JobLimits {
 ///
 /// Windows reports only the immediate job, and only to the process itself, so
 /// this says nothing about any ancestor job.
-/// Ref: docs/implementation.md, "Job breakaway".
+/// Ref: docs/job-breakaway.md.
 #[cfg_attr(coverage_nightly, coverage(off))]
 fn immediate_job_limits() -> JobLimits {
     // SAFETY: the pseudo-handle this returns needs no state and is always valid.
@@ -273,7 +281,7 @@ fn breakaway_forbidden() -> bool {
 impl BuildTargetProcesses {
     /// Create an unnamed kill-on-close job with the requested breakaway policy.
     ///
-    /// Ref: docs/implementation.md, "Job breakaway".
+    /// Ref: docs/job-breakaway.md.
     pub(crate) fn create_job(breakaway: Breakaway) -> Result<JobId, PalError> {
         Self::create_job_chain(&[breakaway])
     }
@@ -284,7 +292,7 @@ impl BuildTargetProcesses {
     /// policy is the one its breakaway is evaluated against and the earlier ones
     /// stay behind as ancestors.
     ///
-    /// Ref: docs/implementation.md, "Job breakaway".
+    /// Ref: docs/job-breakaway.md.
     pub(crate) fn create_job_chain(policies: &[Breakaway]) -> Result<JobId, PalError> {
         let mut handles = Vec::with_capacity(policies.len());
         for breakaway in policies {
@@ -303,7 +311,9 @@ impl BuildTargetProcesses {
         let id = next_id();
         table()
             .lock()
-            .expect("handle table")
+            .expect(
+                "the handle table is only inserted into and looked up, never held across a panic",
+            )
             .jobs
             .insert(id, handles);
         Ok(JobId(id))
@@ -314,11 +324,11 @@ impl BuildTargetProcesses {
 fn create_job_handle(breakaway: Breakaway) -> Result<HANDLE, PalError> {
     // SAFETY: a null name creates an unnamed job object.
     let handle = unsafe { CreateJobObjectW(None, PCWSTR::null()) }
-        .map_err(|_error| PalError::new(PalErrorKind::Other))?;
+        .map_err(|error| PalError::with_source(PalErrorKind::Other, error))?;
     let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
     info.BasicLimitInformation.LimitFlags = match breakaway {
         Breakaway::Permitted => JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_BREAKAWAY_OK,
-        #[cfg(feature = "private-test-util")]
+        #[cfg(any(test, feature = "private-test-util"))]
         Breakaway::Forbidden => JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     };
     // SAFETY: `info` is a stack structure of the size SetInformationJobObject
@@ -352,11 +362,9 @@ impl Processes for BuildTargetProcesses {
     }
 
     fn spawn_supervisor(&self, request: &SupervisorSpawn) -> Result<ProcessIdentity, PalError> {
-        let mut cmd_wide = wide(&windows_command_line(
-            &request.exe.to_string_lossy(),
-            &request.args,
-        ));
-        let mut exe_wide = wide(&request.exe.to_string_lossy());
+        let mut cmd_wide =
+            nul_terminated(windows_command_line(request.exe.as_os_str(), &request.args));
+        let mut exe_wide = wide_path(&request.exe);
         let si = STARTUPINFOW {
             cb: u32::try_from(size_of::<STARTUPINFOW>()).expect("STARTUPINFOW fits in u32"),
             ..Default::default()
@@ -399,22 +407,21 @@ impl Processes for BuildTargetProcesses {
         identity
     }
 
-    fn durability(&self) -> Durability {
+    fn launcher_tie(&self) -> LauncherTie {
         match immediate_job_limits() {
-            JobLimits::None => Durability::Durable,
-            // An unanswerable query is reported as the cautious answer: a
-            // spurious warning costs the user a line of text, a missed one
-            // costs a session.
-            JobLimits::Unknown => Durability::TiedToLauncher,
+            JobLimits::None => LauncherTie::NoneDetected,
+            // Nothing was established, so nothing is claimed: the client warns
+            // about the uncertainty rather than naming a cause.
+            JobLimits::Unknown => LauncherTie::Unknown,
             // Only kill-on-close ties this process's lifetime to the launcher's
             // job. Membership in a job without it is harmless, and terminals and
             // remote session hosts routinely impose such a job on everything
             // they start.
             JobLimits::Known(flags) => {
                 if (flags & JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE).0 == 0 {
-                    Durability::Durable
+                    LauncherTie::NoneDetected
                 } else {
-                    Durability::TiedToLauncher
+                    LauncherTie::Confirmed
                 }
             }
         }
@@ -472,7 +479,7 @@ impl Processes for BuildTargetProcesses {
             false
         };
         close(handle);
-        result.map_err(|_error| PalError::new(PalErrorKind::Other))?;
+        result.map_err(|error| PalError::with_source(PalErrorKind::Other, error))?;
         if settled {
             Ok(())
         } else {
@@ -483,12 +490,19 @@ impl Processes for BuildTargetProcesses {
     fn create_lifetime_job(&self) -> Result<JobId, PalError> {
         // The session job permits breakaway so a nested `dure run` inside the
         // app can still create an independent inner supervisor.
-        // Ref: docs/implementation.md, "Job breakaway".
+        // Ref: docs/job-breakaway.md.
         Self::create_job(Breakaway::Permitted)
     }
 
     fn close_job(&self, job: JobId) {
-        if let Some(handles) = table().lock().expect("handle table").jobs.remove(&job.0) {
+        if let Some(handles) = table()
+            .lock()
+            .expect(
+                "the handle table is only inserted into and looked up, never held across a panic",
+            )
+            .jobs
+            .remove(&job.0)
+        {
             // Innermost first, so a kill-on-close ancestor never tears down a
             // job this still holds a handle to.
             for handle in handles.into_iter().rev() {
@@ -499,23 +513,31 @@ impl Processes for BuildTargetProcesses {
 
     fn spawn_app(&self, request: &AppSpawn) -> Result<AppId, PalError> {
         let hpcon = hpcon_for(request.pty).ok_or_else(|| PalError::new(PalErrorKind::NotFound))?;
-        let exe = search_executable(&resolve_command_path(
-            request
-                .command
-                .first()
-                .ok_or_else(|| PalError::new(PalErrorKind::Other))?,
-            &request.launch_directory,
+        let resolved = self.resolve_executable(request.command.exe(), &request.launch_directory);
+        // `CreateProcessW` completes a partial application name from the current
+        // drive and directory, which is exactly the ambient resolution this
+        // module resolves ahead of time to avoid. A bare name the search path
+        // does not have is therefore a spawn failure rather than a path to try,
+        // so a planted executable beside the supervisor cannot stand in for the
+        // one the user named. Ref: docs/design.md, "Commands".
+        if resolved.how == HowResolved::NotFound {
+            return Err(PalError::new(PalErrorKind::NotFound));
+        }
+        let exe = resolved.path;
+        let mut cmd_wide = nul_terminated(windows_command_line(
+            exe.as_os_str(),
+            request.command.args(),
         ));
-        let rest = request.command.get(1..).unwrap_or(&[]);
-        let mut cmd_wide = wide(&windows_command_line(&exe.to_string_lossy(), rest));
-        let mut exe_wide = wide(&exe.to_string_lossy());
-        let mut dir_wide = wide(&request.launch_directory.to_string_lossy());
+        let mut exe_wide = wide_path(&exe);
+        let mut dir_wide = wide_path(&request.launch_directory);
 
         // Outermost first: a process is assigned to the jobs in the order the
         // attribute lists them, which is what nests them.
         let mut job_list = table()
             .lock()
-            .expect("handle table")
+            .expect(
+                "the handle table is only inserted into and looked up, never held across a panic",
+            )
             .jobs
             .get(&request.job.0)
             .ok_or_else(|| PalError::new(PalErrorKind::NotFound))?
@@ -546,7 +568,7 @@ impl Processes for BuildTargetProcesses {
                 &raw mut attr_size,
             )
         }
-        .map_err(|_error| PalError::new(PalErrorKind::Other))?;
+        .map_err(|error| PalError::with_source(PalErrorKind::Other, error))?;
 
         // PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE stores `lpValue` as the HPCON
         // itself. The Microsoft sample passes `hPC`, not `&hPC`.
@@ -566,7 +588,7 @@ impl Processes for BuildTargetProcesses {
                 None,
             )
         }
-        .map_err(|_error| PalError::new(PalErrorKind::Other))?;
+        .map_err(|error| PalError::with_source(PalErrorKind::Other, error))?;
 
         // SAFETY: the list still has a free slot. `job_list` holds the lifetime
         // job handles and lives until CreateProcessW returns.
@@ -584,7 +606,7 @@ impl Processes for BuildTargetProcesses {
                 None,
             )
         }
-        .map_err(|_error| PalError::new(PalErrorKind::Other))?;
+        .map_err(|error| PalError::with_source(PalErrorKind::Other, error))?;
 
         let mut si = STARTUPINFOEXW::default();
         si.StartupInfo.cb =
@@ -625,39 +647,35 @@ impl Processes for BuildTargetProcesses {
         unsafe {
             DeleteProcThreadAttributeList(attr_list);
         }
-        created.map_err(|_error| PalError::new(PalErrorKind::Other))?;
+        created.map_err(|error| PalError::with_source(PalErrorKind::Other, error))?;
 
         close(pi.hThread);
         let id = next_id();
         table()
             .lock()
-            .expect("handle table")
+            .expect(
+                "the handle table is only inserted into and looked up, never held across a panic",
+            )
             .apps
             .insert(id, RawHandle::from_handle(pi.hProcess));
         Ok(AppId(id))
     }
 
     fn wait_app(&self, app: AppId) -> Result<i32, PalError> {
+        // Taken out of the table rather than borrowed: this call consumes the
+        // app, so the handle is this call's to close whatever the wait says.
         let handle = table()
             .lock()
-            .expect("handle table")
+            .expect(
+                "the handle table is only inserted into and looked up, never held across a panic",
+            )
             .apps
-            .get(&app.0)
-            .copied()
+            .remove(&app.0)
             .ok_or_else(|| PalError::new(PalErrorKind::NotFound))?
             .as_handle();
-        // SAFETY: `handle` is a process handle stored in the table.
-        let wait = unsafe { WaitForSingleObject(handle, INFINITE) };
-        if wait != WAIT_OBJECT_0 {
-            return Err(PalError::new(PalErrorKind::Other));
-        }
-        let mut code = 0_u32;
-        // SAFETY: the process has exited; `code` is a stack u32.
-        unsafe { GetExitCodeProcess(handle, &raw mut code) }
-            .map_err(|_error| PalError::new(PalErrorKind::Other))?;
-        // Windows process statuses are `u32`; NTSTATUS-style failure codes use
-        // the high bit and do not fit in a non-negative `i32`.
-        Ok(code.cast_signed())
+        let status = exit_status_of(handle);
+        close(handle);
+        status
     }
 
     fn current_identity(&self) -> Result<ProcessIdentity, PalError> {
@@ -672,6 +690,10 @@ impl Processes for BuildTargetProcesses {
         Ok(identity)
     }
 
+    fn resolve_executable(&self, command: &str, launch_directory: &Path) -> ResolvedCommand {
+        resolve_executable(command, launch_directory)
+    }
+
     fn random_nonce(&self) -> String {
         // 128 bits of CSPRNG output, encoded as hex. This only has to be unique
         // among concurrent sessions for this user, not unguessable to other
@@ -682,5 +704,65 @@ impl Processes for BuildTargetProcesses {
             write!(nonce, "{byte:02x}").expect("writing to String cannot fail");
         }
         nonce
+    }
+}
+
+/// Finds a bare command name on the executable search path.
+///
+/// The search path is passed explicitly rather than letting Windows use its
+/// default order, because that order includes the current directory: a bare
+/// `git` would then be satisfied by an executable that happens to sit in the
+/// directory the session was launched from. A path a user spells out still
+/// reaches the launch directory; a bare name is a search-path lookup only.
+pub(super) fn search_path(command: &str, extension: &str) -> Option<PathBuf> {
+    let search_path = env::var_os("PATH")?;
+    let search_path = wide_os(search_path.as_os_str());
+    let name = wide(command);
+    // The extension is applied only when the name carries no extension of its
+    // own, which is what makes `dure run -- copilot` behave like typing it in a shell.
+    let extension = wide(extension);
+    // Long enough for a traditional path; a longer result is retried at the
+    // size the first call reports.
+    let mut buf = vec![0_u16; 260];
+    for _attempt in 0..2_u8 {
+        // SAFETY: every wide string is NUL-terminated and none is retained
+        // after the call. `buf` is exclusive for the call and its own length is
+        // what bounds the write.
+        let len = unsafe {
+            SearchPathW(
+                PCWSTR(search_path.as_ptr()),
+                PCWSTR(name.as_ptr()),
+                PCWSTR(extension.as_ptr()),
+                Some(&mut buf),
+                None,
+            )
+        } as usize;
+        if len == 0 {
+            return None;
+        }
+        if len < buf.len() {
+            return buf
+                .get(..len)
+                .map(|found| PathBuf::from(OsString::from_wide(found)));
+        }
+        buf = vec![0_u16; len];
+    }
+    None
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use std::os::windows::ffi::OsStringExt;
+
+    use super::*;
+
+    #[test]
+    fn os_strings_reach_win32_without_replacing_unpaired_surrogates() {
+        // An unpaired high surrogate is a legal Windows path code unit but
+        // cannot be represented by a Rust string.
+        let value = OsString::from_wide(&[0xd800]);
+
+        assert_eq!(wide_os(&value), [0xd800, 0]);
     }
 }

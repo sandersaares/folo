@@ -10,19 +10,16 @@ use clap::error::ErrorKind;
 use clap::{Parser, Subcommand};
 
 use crate::constants::SUPERVISOR_COMMAND;
-use crate::session_id::SessionId;
-use crate::types::{Command, RunInput};
+use crate::{AppCommand, Command, Invocation, SessionId};
 
 /// Clap-facing parser for the `dure` binary.
 ///
-/// Translates argv into [`RunInput`] so [`crate::run`] does not depend on clap.
-/// Version is omitted because this crate is unpublished; `--version` would
-/// report a workspace placeholder rather than a released artifact.
+/// Translates argv into [`Invocation`] so [`crate::run`] does not depend on clap.
 #[derive(Debug, Parser)]
 #[command(
     name = "dure",
     about = "Detachable Windows console sessions that outlive the terminal.",
-    disable_version_flag = true
+    version
 )]
 pub struct Cli {
     /// Explain on stderr what each command inspects and decides.
@@ -31,7 +28,8 @@ pub struct Cli {
 
     /// Override the session store root.
     ///
-    /// Hidden; integration tests use this so they never touch `LocalAppData`.
+    /// Available only through the private test surface.
+    #[cfg(any(test, feature = "private-test-util"))]
     #[arg(long, global = true, hide = true)]
     store_root: Option<PathBuf>,
 
@@ -42,19 +40,36 @@ pub struct Cli {
 #[derive(Debug, Subcommand)]
 enum CliCommand {
     /// Start a new session and attach immediately.
+    ///
+    /// Always creates a new session, never reconnecting to an existing one. The
+    /// command runs directly rather than through a shell, in the current
+    /// directory, which also becomes the launch directory `resume` matches on.
     Run {
         /// Command to execute directly, not through a shell.
+        ///
+        /// A leading `--` is optional and only needed to keep an argument that
+        /// starts with a hyphen away from `dure`'s own options.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
         command: Vec<String>,
     },
     /// Attach to a live session.
+    ///
+    /// Without an id, attaches to the single live session launched from the
+    /// current directory; if that match is not unique, the live sessions are
+    /// listed and an id is read from the terminal. Attaching displaces whatever
+    /// client held the session before.
     Resume {
         /// Session id to attach to, skipping auto-detect.
         id: Option<NonZero<u32>>,
     },
     /// Print live sessions.
+    ///
+    /// The ids, attachment state, and launch directories shown here are what an
+    /// explicit `resume <id>` or `kill <id>` is chosen from.
     List,
     /// Abruptly terminate the supervisor for a session.
+    ///
+    /// The app and its ordinary descendants die with the supervisor.
     Kill {
         /// Session id to kill. Required; kill does not auto-detect.
         id: NonZero<u32>,
@@ -83,25 +98,30 @@ enum CliCommand {
 pub struct EarlyExit {
     /// The rendered message (help text or error) to print.
     pub output: String,
-    /// `Ok` for help or usage text, `Err` for a parse error.
-    ///
-    /// Missing subcommand or argument is success because clap's implicit help
-    /// for that case is the usage text the user asked to see, not a failed
-    /// command.
+    /// `Ok` for help or version text the user asked for, `Err` otherwise.
     pub status: Result<(), ()>,
 }
 
 impl EarlyExit {
     fn from_clap(error: &clap::Error) -> Self {
+        // Only an explicit request for help or version is work the invocation
+        // asked for and got. An invocation that named no command performed no
+        // session operation, so a wrapper must not read its usage screen as
+        // success.
         let success = matches!(
             error.kind(),
-            ErrorKind::DisplayHelp
-                | ErrorKind::DisplayVersion
-                | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+            ErrorKind::DisplayHelp | ErrorKind::DisplayVersion
         );
         Self {
             output: error.to_string(),
             status: if success { Ok(()) } else { Err(()) },
+        }
+    }
+
+    fn failure(message: &str) -> Self {
+        Self {
+            output: format!("error: {message}"),
+            status: Err(()),
         }
     }
 }
@@ -118,11 +138,21 @@ impl Cli {
         Self::try_parse_from(argv).map_err(|error| EarlyExit::from_clap(&error))
     }
 
-    /// Translates the parsed arguments into the [`RunInput`] the core logic consumes.
-    #[must_use]
-    pub fn into_input(self) -> RunInput {
+    /// Translates the parsed arguments into the [`Invocation`] the core logic consumes.
+    ///
+    /// This is where the argv shape becomes the values the rest of the crate
+    /// relies on, so a command that names nothing to run is refused here rather
+    /// than travelling as an argv that every later layer has to re-check.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`EarlyExit`] when a subcommand's arguments do not describe
+    /// something the tool can act on.
+    pub fn into_invocation(self) -> Result<Invocation, EarlyExit> {
         let command = match self.command {
-            CliCommand::Run { command } => Command::Run { command },
+            CliCommand::Run { command } => Command::Run {
+                command: app_command(command)?,
+            },
             CliCommand::Resume { id } => Command::Resume {
                 id: id.map(SessionId::new),
             },
@@ -137,15 +167,21 @@ impl Cli {
             } => Command::Supervisor {
                 startup_pipe,
                 launch_directory,
-                command,
+                command: app_command(command)?,
             },
         };
-        RunInput {
+        Ok(Invocation {
             verbose: self.verbose,
+            #[cfg(any(test, feature = "private-test-util"))]
             store_root: self.store_root,
             command,
-        }
+        })
     }
+}
+
+fn app_command(argv: Vec<String>) -> Result<AppCommand, EarlyExit> {
+    AppCommand::from_argv(argv)
+        .ok_or_else(|| EarlyExit::failure("dure run requires a command to execute"))
 }
 
 #[cfg(test)]
@@ -153,8 +189,15 @@ impl Cli {
 mod tests {
     use super::*;
 
-    fn parse(args: &[&str]) -> RunInput {
-        Cli::from_args(&["dure"], args).unwrap().into_input()
+    fn parse(args: &[&str]) -> Invocation {
+        Cli::from_args(&["dure"], args)
+            .unwrap()
+            .into_invocation()
+            .unwrap()
+    }
+
+    fn command(argv: &[&str]) -> AppCommand {
+        AppCommand::from_argv(argv.iter().map(|arg| (*arg).to_string()).collect()).unwrap()
     }
 
     #[test]
@@ -163,7 +206,7 @@ mod tests {
         assert_eq!(
             input.command,
             Command::Run {
-                command: vec!["copilot.exe".to_string(), "--foo".to_string()],
+                command: command(&["copilot.exe", "--foo"]),
             }
         );
     }
@@ -243,5 +286,42 @@ mod tests {
         let err = Cli::from_args(&["dure"], &["--help"]).unwrap_err();
         assert!(err.status.is_ok());
         assert!(err.output.contains("dure"));
+    }
+
+    #[test]
+    fn version_reports_the_package_release() {
+        let err = Cli::from_args(&["dure"], &["--version"]).unwrap_err();
+        assert!(err.status.is_ok());
+        assert!(err.output.contains(env!("CARGO_PKG_VERSION")));
+    }
+
+    #[test]
+    fn naming_no_command_is_a_failure() {
+        let err = Cli::from_args(&["dure"], &[]).unwrap_err();
+        assert!(err.status.is_err());
+    }
+
+    #[test]
+    fn run_refuses_an_argv_that_names_nothing_to_run() {
+        let exit = Cli::from_args(&["dure"], &["run", ""])
+            .unwrap()
+            .into_invocation()
+            .unwrap_err();
+        assert!(exit.status.is_err());
+    }
+
+    #[test]
+    fn run_accepts_a_command_with_or_without_the_separator() {
+        let with = parse(&["run", "--", "copilot.exe", "--foo"]);
+        let without = parse(&["run", "copilot.exe", "--foo"]);
+        assert_eq!(with.command, without.command);
+    }
+
+    #[test]
+    fn subcommand_help_explains_how_a_session_is_chosen() {
+        let err = Cli::from_args(&["dure"], &["resume", "--help"]).unwrap_err();
+        assert!(err.output.contains("launched from the current directory"));
+        let err = Cli::from_args(&["dure"], &["run", "--help"]).unwrap_err();
+        assert!(err.output.contains("Always creates a new session"));
     }
 }

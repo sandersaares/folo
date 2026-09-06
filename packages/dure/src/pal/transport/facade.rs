@@ -7,7 +7,8 @@ use crate::pal::error::PalError;
 use crate::pal::ids::{ConnId, ListenerId};
 #[cfg(test)]
 use crate::pal::transport::MemoryTransport;
-use crate::pal::transport::{BuildTargetTransport, Transport};
+use crate::pal::transport::Transport;
+use crate::pal::transport::windows::BuildTargetTransport;
 use crate::protocol::Message;
 
 /// Dispatches transport calls to the real PAL or an in-memory test transport.
@@ -27,9 +28,9 @@ static TARGET: BuildTargetTransport = BuildTargetTransport;
 impl fmt::Debug for TransportFacade {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Target(_) => f.debug_struct("TransportFacade::Target").finish(),
+            Self::Target(_) => f.debug_struct(stringify!(Target)).finish(),
             #[cfg(test)]
-            Self::Memory(_) => f.debug_struct("TransportFacade::Memory").finish(),
+            Self::Memory(_) => f.debug_struct(stringify!(Memory)).finish(),
         }
     }
 }
