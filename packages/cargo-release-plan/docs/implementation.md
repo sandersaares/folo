@@ -193,6 +193,27 @@ rules. `check` renders failing package and group verdicts in text and optionally
 as escaped GitHub workflow commands. Its packaging probe compares Cargo's list
 with the exact work-tree selection produced by classification.
 
+`check`'s verdict is read back from the rendered diagnostics rather than
+recomputed from the classification, because every gating rule already appends a
+line. A rule added to the rendering therefore cannot be reported without also
+failing the check, which a second condition kept in step by hand would allow.
+
+Two of those rules are properties of the manifests rather than of the
+released-content comparison. An intra-workspace requirement must name the exact
+version its target declares, which is checked against the normalized requirement
+`cargo metadata` reports, so a bare requirement arrives as a caret one and both
+spellings that name the version are accepted. A package whose public API exposes
+another package must move incompatibly whenever that package does, compared
+against each package's own anchor so an increment that landed in an earlier pull
+request still counts.
+
+Which dependencies are public is read in `metadata` from each package's
+`allowed_external_types` allow-list, whose leading path segments name crates.
+Matching is by library target name, taken from the target rather than derived
+from the package name so a `[lib] name` override cannot silently break it, and a
+matched crate expands to its version group so a package that exposes an
+implementation crate marks the public crate it actually depends on.
+
 `report` serializes the full package and group assessment, then writes patches
 only where file differences exist. It removes any earlier `report.json` marker
 before replacing the patch tree and writes the new marker through a same-directory

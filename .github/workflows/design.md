@@ -166,6 +166,17 @@ kept an already-published version. A package the release baseline has never publ
 first-publication path rather than an increment. The [`increment-versions`
 skill](../skills/increment-versions/SKILL.md) carries out this policy and owns the procedure.
 
+Two consequences of a package's manifest are checked directly rather than left to that review.
+Every requirement on another workspace package names the exact version its target declares, so a
+released manifest describes the combination the workspace built rather than a range it never
+resolved; incrementing a package therefore also increments its in-workspace dependents, whose
+manifests the rewrite changes. And a package whose public API exposes another workspace package
+must release a breaking change whenever that package does, because an incompatible release
+changes the identity of the exposed types for consumers. Which dependencies are public is read
+from the `allowed_external_types` allow-list that the external-types check already verifies, so
+this rests on a declaration the repository maintains rather than on a second inference of the
+public API.
+
 ## Required checks fan-in
 
 Validation posts a fan-in job whose GitHub check name is the ruleset string. GitHub's

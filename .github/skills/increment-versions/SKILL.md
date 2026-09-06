@@ -159,7 +159,8 @@ its entries change.
 
 Decide each package from these inputs:
 
-* its entry in `report.json`, including `status` and the `changed` array;
+* its entry in `report.json`, including `status`, the `changed` array, and the `dependencies`
+  entries marked `"public": true`;
 * the diff at `{{WORK_DIR}}/{{DIFF_PATH}}` when the entry has a `diff_path`;
 * the package's `Cargo.toml` and the workspace `Cargo.toml` fields it inherits;
 * the entries already recorded in `decisions.json` for the packages it depends on; and
@@ -218,7 +219,8 @@ Write the proposed plan, then expand it:
 > just expand-release-plan "{{WORK_DIR}}/plan.json" "{{WORK_DIR}}/expanded.json"
 
 Stop and report if either command exits non-zero. `create-release-plan` retains sufficient
-existing pending-release increments, raises insufficient ones, and realigns any inconsistent
+existing pending-release increments, raises insufficient ones, raises any package whose public
+API exposes a dependency that releases a breaking change, and realigns any inconsistent
 group the decisions leave unnamed. Realignment usually targets the highest version the group's
 members already declare, so no member is published for a change it did not make. It instead
 patch-increments the whole group when a member that would keep its version pins one that

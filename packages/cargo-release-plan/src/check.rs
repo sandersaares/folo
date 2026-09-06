@@ -239,11 +239,10 @@ fn render_diagnostics(
                 quote_path(&package.name),
                 quote_path(&dependency.name),
                 quote_path(&dependency.name),
-                broken
-                    .anchor()
-                    .map_or_else(|| "its last release".to_string(), |anchor| anchor
-                        .version
-                        .to_string()),
+                broken.anchor().map_or_else(
+                    || "its last release".to_string(),
+                    |anchor| anchor.version.to_string()
+                ),
                 broken.declared_version,
                 remedy(base)
             );
@@ -607,7 +606,8 @@ mod tests {
     /// A requirement that does not name the version its target declares is rejected.
     #[test]
     fn a_requirement_that_does_not_name_the_declared_version_is_reported() {
-        let library = with_dependencies("lib", Version::new(1, 1, 0), Version::new(1, 1, 0), vec![]);
+        let library =
+            with_dependencies("lib", Version::new(1, 1, 0), Version::new(1, 1, 0), vec![]);
         let dependent = with_dependencies(
             "app",
             Version::new(0, 1, 0),
@@ -622,14 +622,18 @@ mod tests {
             CheckFormat::Text,
         );
 
-        assert!(text.contains("does not name the version it declares"), "{text}");
+        assert!(
+            text.contains("does not name the version it declares"),
+            "{text}"
+        );
         assert!(text.contains("1.1.0"), "{text}");
     }
 
     /// A requirement naming the declared version passes in either accepted spelling.
     #[test]
     fn a_requirement_naming_the_declared_version_is_accepted() {
-        let library = with_dependencies("lib", Version::new(1, 1, 0), Version::new(1, 1, 0), vec![]);
+        let library =
+            with_dependencies("lib", Version::new(1, 1, 0), Version::new(1, 1, 0), vec![]);
         for req in ["^1.1.0", "=1.1.0"] {
             let dependent = with_dependencies(
                 "app",
@@ -657,7 +661,8 @@ mod tests {
     #[test]
     fn a_public_dependency_releasing_a_breaking_change_forces_one_on_its_dependent() {
         // `lib` moves 1.1.0 -> 2.0.0, which is incompatible.
-        let library = with_dependencies("lib", Version::new(2, 0, 0), Version::new(1, 1, 0), vec![]);
+        let library =
+            with_dependencies("lib", Version::new(2, 0, 0), Version::new(1, 1, 0), vec![]);
         let dependent = with_dependencies(
             "app",
             Version::new(0, 1, 1),
@@ -672,13 +677,17 @@ mod tests {
             CheckFormat::Text,
         );
 
-        assert!(text.contains("must release a breaking change of its own"), "{text}");
+        assert!(
+            text.contains("must release a breaking change of its own"),
+            "{text}"
+        );
     }
 
     /// The same dependency does not force anything when it is not publicly exposed.
     #[test]
     fn a_private_dependency_releasing_a_breaking_change_forces_nothing() {
-        let library = with_dependencies("lib", Version::new(2, 0, 0), Version::new(1, 1, 0), vec![]);
+        let library =
+            with_dependencies("lib", Version::new(2, 0, 0), Version::new(1, 1, 0), vec![]);
         let dependent = with_dependencies(
             "app",
             Version::new(0, 1, 1),
@@ -699,7 +708,8 @@ mod tests {
     /// A dependent that already releases a breaking change of its own satisfies the rule.
     #[test]
     fn a_dependent_already_releasing_a_breaking_change_is_accepted() {
-        let library = with_dependencies("lib", Version::new(2, 0, 0), Version::new(1, 1, 0), vec![]);
+        let library =
+            with_dependencies("lib", Version::new(2, 0, 0), Version::new(1, 1, 0), vec![]);
         // 0.1.0 -> 0.2.0 is incompatible on a 0.x line.
         let dependent = with_dependencies(
             "app",

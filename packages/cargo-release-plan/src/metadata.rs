@@ -303,9 +303,7 @@ fn work_tree_from_metadata(
         .packages
         .iter()
         .filter(|package| cargo_member_ids.contains(package.id.as_str()))
-        .filter_map(|package| {
-            library_crate_name(package).map(|lib| (package.name.as_str(), lib))
-        })
+        .filter_map(|package| library_crate_name(package).map(|lib| (package.name.as_str(), lib)))
         .collect();
     let root_manifest_path = workspace_root.join("Cargo.toml");
     let root_manifest = fs::read_to_string(&root_manifest_path)
@@ -390,7 +388,12 @@ fn work_tree_from_metadata(
         .collect();
     let groups = groups_from_metadata(&metadata.metadata, &workspace_names, &publishable_names)?;
 
-    mark_public_dependencies(&mut packages, &exposed_crates_by_package, &library_crate_names, &groups);
+    mark_public_dependencies(
+        &mut packages,
+        &exposed_crates_by_package,
+        &library_crate_names,
+        &groups,
+    );
 
     Ok(WorkTree {
         workspace_root,
@@ -475,14 +478,8 @@ fn library_crate_name(package: &MetadataPackage) -> Option<String> {
 }
 
 /// Target kinds that produce a library another crate can name in a path.
-const LIBRARY_TARGET_KINDS: &[&str] = &[
-    "lib",
-    "rlib",
-    "dylib",
-    "cdylib",
-    "staticlib",
-    "proc-macro",
-];
+const LIBRARY_TARGET_KINDS: &[&str] =
+    &["lib", "rlib", "dylib", "cdylib", "staticlib", "proc-macro"];
 
 /// Leading path segments of a package's `allowed_external_types` allow-list.
 ///
