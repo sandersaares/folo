@@ -2,7 +2,7 @@
 name = "dure"
 description = "Detachable Windows console sessions that outlive the terminal"
 publish = true
-version = "0.2.1"
+version = "0.2.2"
 
 authors.workspace = true
 edition.workspace = true
