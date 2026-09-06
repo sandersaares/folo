@@ -52,6 +52,38 @@ The tool determines whether an increment is required and records the evidence.
 It does not infer API compatibility or choose an increment level. A maintainer or
 automation with knowledge of the package's promises makes that judgement.
 
+### Public dependencies
+
+A dependency is **public** when the dependent's own public API exposes types
+from it, whether by re-exporting them or by naming them in a signature. The
+distinction matters because a public dependency's compatibility is part of the
+dependent's own contract.
+
+Which dependencies are public is read from the dependent's
+`allowed_external_types` allow-list rather than inferred from source. That
+allow-list names every type outside the crate that its public API may expose,
+and `check-external-types` fails the build when the API exposes one the list
+omits, so in a passing workspace the list is a superset of what is genuinely
+exposed. Reading a declaration the repository already verifies keeps this
+offline and avoids a second, weaker inference of the public API.
+
+Exposure resolves through version groups. A package usually reaches an
+implementation crate's types re-exported through the public crate in front of
+it, so it names a crate it does not directly depend on. Group members release
+as one version, so the group sibling it does depend on carries that crate's
+compatibility with it.
+
+Two consequences follow, and the tool enforces both:
+
+* An intra-workspace requirement names the exact version its target declares.
+  A requirement that merely admits the target's version lets a consumer resolve
+  a combination the workspace never built.
+* A package whose public dependency releases a semver-incompatible version
+  must release one as well. Such a release changes the identity of the exposed
+  types, so a consumer holding the older dependency can no longer hand its
+  types to the dependent. This follows from the version move alone, however
+  unrelated the dependency's breaking change was to the items actually exposed.
+
 ### The release decision is offline and reproducible
 
 The normal assessment path uses only repository history, the work tree, and
@@ -83,8 +115,11 @@ it does not propagate a release decision.
 ### Protect a release with `check`
 
 `check` is intended for a merge gate. It fails while any package needs an
-increment or a version group disagrees with itself, and points the maintainer to
-the `increment-versions` skill that prepares a plan.
+increment, a version group disagrees with itself, an intra-workspace
+requirement does not name the version its target declares, or a package that
+exposes a public dependency stays compatible while that dependency releases a
+breaking change. It points the maintainer to the `increment-versions` skill
+that prepares a plan.
 
 `--format github` additionally emits GitHub Actions error annotations. These are
 structured log records that attach each failure to the affected package

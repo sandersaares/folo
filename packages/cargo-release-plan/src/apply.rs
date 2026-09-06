@@ -6,7 +6,7 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 use ohno::AppError;
-use semver::{Version, VersionReq};
+use semver::Version;
 use toml_edit::{DocumentMut, Formatted, Item, TableLike, Value};
 
 use crate::command::run_capture;
@@ -437,28 +437,21 @@ fn set_formatted(formatted: &mut Formatted<String>, rewritten: String) -> bool {
 
 /// The requirement a dependent must declare once its target is incremented.
 ///
-/// Whether the requirement still admits the new version is asked first, so a
-/// requirement that is already correct is left exactly as the author wrote it,
-/// down to its spelling. That question is not the same as whether the
-/// requirement is exact: `=1.2` is an exact comparator that nonetheless admits
-/// every 1.2.x, so narrowing it to the new version would rewrite a dependent
-/// that needed no change.
+/// Every intra-workspace requirement names the version its target declares, so
+/// a requirement that merely still *admits* the new version is not good enough
+/// and is rewritten too. Keeping a wider requirement would let a consumer
+/// resolve a combination this workspace never built, and `check` rejects the
+/// drift on the next run.
+/// Ref: docs/dependencies.md, "Version groups and exact-pin cross-references".
 ///
-/// A requirement that no longer admits the new version is replaced. An exact
-/// comparator is replaced by an exact pin on the new version, keeping the
-/// lockstep the author asked for; anything else becomes the bare new version,
-/// which is also what an unparsable requirement gets: Cargo would reject that
-/// anyway, so the apply leaves behind a manifest Cargo can read rather than one
-/// it cannot.
+/// An exact comparator is replaced by an exact pin on the new version, keeping
+/// the lockstep the author asked for; anything else becomes the bare new
+/// version, which is also what an unparsable requirement gets: Cargo would
+/// reject that anyway, so the apply leaves behind a manifest Cargo can read
+/// rather than one it cannot.
 /// Ref: docs/implementation.md, "Plan resolution and application".
 fn rewrite_req(old: &str, new_version: &Version) -> String {
-    let trimmed = old.trim();
-    if let Ok(req) = VersionReq::parse(trimmed)
-        && req.matches(new_version)
-    {
-        return old.to_string();
-    }
-    if trimmed.starts_with('=') {
+    if old.trim().starts_with('=') {
         return format!("={new_version}");
     }
     new_version.to_string()
@@ -616,25 +609,29 @@ mod tests {
         assert!(lockfile_refresh_skip_reason(dir.path(), &resolved).is_none());
     }
 
+    /// Every requirement is rewritten to name the new version, whether or not it still admits it.
+    ///
+    /// A requirement that merely admits the new version would let a consumer resolve a
+    /// combination the workspace never built, so admitting it is not the question.
     #[test]
-    fn rewrite_req_keeps_matching_caret_and_rewrites_equals() {
+    fn rewrite_req_names_the_new_version_and_keeps_the_exact_comparator() {
         let new = v("0.1.1");
-        assert_eq!(rewrite_req("0.1.0", &new), "0.1.0");
-        assert_eq!(rewrite_req("^0.1", &new), "^0.1");
+        assert_eq!(rewrite_req("0.1.0", &new), "0.1.1");
+        assert_eq!(rewrite_req("^0.1", &new), "0.1.1");
         assert_eq!(rewrite_req("=0.1.0", &new), "=0.1.1");
         assert_eq!(rewrite_req("0.1.0", &v("0.2.0")), "0.2.0");
     }
 
-    /// An exact comparator that omits the patch still admits every patch release
-    /// under it, so incrementing the patch leaves it correct and it must survive
-    /// untouched rather than being narrowed to the new version.
+    /// A partial comparator that still admits the new version is narrowed to name it.
+    ///
+    /// `=0.1` admits every 0.1.x, so it survived the older rewrite untouched. It no longer
+    /// does: naming the declared version is what the invariant requires, and a partial
+    /// comparator names a range instead.
     #[test]
-    fn rewrite_req_leaves_a_partial_exact_comparator_that_still_matches() {
-        assert_eq!(rewrite_req("=0.1", &v("0.1.1")), "=0.1");
-        assert_eq!(rewrite_req(" =0.1 ", &v("0.1.1")), " =0.1 ");
-        assert_eq!(rewrite_req("=1", &v("1.5.0")), "=1");
-
-        // The same comparator no longer admits a minor bump, so it is pinned to it.
+    fn rewrite_req_narrows_a_partial_comparator_to_the_new_version() {
+        assert_eq!(rewrite_req("=0.1", &v("0.1.1")), "=0.1.1");
+        assert_eq!(rewrite_req(" =0.1 ", &v("0.1.1")), "=0.1.1");
+        assert_eq!(rewrite_req("=1", &v("1.5.0")), "=1.5.0");
         assert_eq!(rewrite_req("=0.1", &v("0.2.0")), "=0.2.0");
     }
 
