@@ -75,6 +75,7 @@ struct TestConsole {
     end_raw_relay: Result<(), PalErrorKind>,
     window_size: Result<(), PalErrorKind>,
     write_output: Result<(), PalErrorKind>,
+    cancel_input: Result<(), PalErrorKind>,
     input: Vec<Result<ConsoleInput, PalErrorKind>>,
     hand_backs: Arc<AtomicUsize>,
 }
@@ -87,6 +88,7 @@ impl TestConsole {
             end_raw_relay: Ok(()),
             window_size: Ok(()),
             write_output: Ok(()),
+            cancel_input: Ok(()),
             input: Vec::new(),
             hand_backs: Arc::new(AtomicUsize::new(0)),
         }
@@ -99,6 +101,7 @@ impl TestConsole {
             end_raw_relay,
             window_size,
             write_output,
+            cancel_input,
             input,
             hand_backs,
         } = self;
@@ -130,7 +133,7 @@ impl TestConsole {
             let script = Arc::clone(&script);
             move || {
                 script.cancel();
-                Ok(())
+                cancel_input.map_err(PalError::new)
             }
         });
 
@@ -561,6 +564,19 @@ fn console_input_failure_makes_the_relay_fail() {
     // without an `AppExited` and must not report success.
     let error = attach_to_scripted_supervisor(console, |_transport, _conn| {}).unwrap_err();
     assert!(error.find_source::<RelayFailedError>().is_some());
+}
+
+#[test]
+fn console_input_cancellation_failure_does_not_replace_the_app_status() {
+    let console = TestConsole {
+        cancel_input: Err(PalErrorKind::Other),
+        ..TestConsole::new()
+    };
+    let outcome = attach_to_scripted_supervisor(console, |transport, conn| {
+        _ = transport.send(conn, &Message::AppExited { status: 7 });
+    })
+    .unwrap();
+    assert!(matches!(outcome, Outcome::AppExit(7)));
 }
 
 #[test]

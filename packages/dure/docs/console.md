@@ -158,6 +158,9 @@ handed back while a read is still outstanding would take the next thing the user
 types. The relay therefore cancels the read and joins its thread before handing
 the console back. Cancelling writes a record the reader already discards, so it
 both wakes the reader and costs a reader that was not cancelled nothing.
+Cancellation success means the wake record was accepted. If cancellation fails,
+the relay reports that failure without joining a reader it cannot prove was
+woken; the command can then leave instead of waiting indefinitely.
 
 ### Window size
 

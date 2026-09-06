@@ -7,6 +7,16 @@ leak-timeout = "10s"
 [profile.default.junit]
 path = "junit.xml"
 
+# These end-to-end tests each nest child processes inside pseudoconsoles. Running
+# several at once under coverage can starve console-host progress long enough to
+# hit the last-chance watchdog, so they share one execution slot.
+[test-groups]
+dure-windows-conpty = { max-threads = 1 }
+
+[[profile.default.overrides]]
+filter = 'package(dure) & binary(windows)'
+test-group = 'dure-windows-conpty'
+
 # The one true end-to-end test (packages/cargo-bench-history/tests/cbh_real_engine.rs) runs a
 # real `cargo bench` in an isolated throwaway fixture that must resolve `criterion` from
 # crates.io, so a transient crates.io DNS/network blip on the runner fails it through no fault

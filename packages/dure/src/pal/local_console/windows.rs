@@ -456,10 +456,15 @@ impl LocalConsole for BuildTargetConsole {
             },
         };
         let mut written = 0_u32;
+        let wake = slice::from_mut(&mut wake);
         // SAFETY: `handle` is stdin; `wake` is a stack record exclusive to this
         // call and outlives it.
-        unsafe { WriteConsoleInputW(handle, slice::from_mut(&mut wake), &raw mut written) }
-            .map_err(|error| PalError::with_source(PalErrorKind::Other, error))
+        unsafe { WriteConsoleInputW(handle, wake, &raw mut written) }
+            .map_err(|error| PalError::with_source(PalErrorKind::Other, error))?;
+        if written as usize != wake.len() {
+            return Err(PalError::new(PalErrorKind::Other));
+        }
+        Ok(())
     }
 
     fn write_output(&self, data: &[u8]) -> Result<(), PalError> {

@@ -52,28 +52,28 @@ where
     // restoration failure is a fact the caller learns about rather than one the
     // guard swallows on the way out.
     let restored = lease.release();
-    finish(outcome, restored)
+    finish_with_cleanup(outcome, restored)
 }
 
-/// Combines the relay's outcome with the console hand-back.
+/// Combines the relay's outcome with cleanup that followed it.
 ///
 /// An app that ran is entitled to have its exit status forwarded, so a failed
-/// hand-back is reported as a diagnostic beside that status rather than
+/// cleanup is reported as a diagnostic beside that status rather than
 /// replacing it; a command that has nothing else to report fails outright.
 /// Ref: docs/design.md, "Console I/O".
-fn finish(
+fn finish_with_cleanup(
     outcome: Result<Outcome, AppError>,
-    restored: Result<(), AppError>,
+    cleaned_up: Result<(), AppError>,
 ) -> Result<Outcome, AppError> {
-    match (outcome, restored) {
+    match (outcome, cleaned_up) {
         (outcome, Ok(())) => outcome,
         (Ok(Outcome::AppExit(status)), Err(error)) => {
             note_line(format_args!("Warning: {error}"));
             Ok(Outcome::AppExit(status))
         }
         (Ok(Outcome::Success), Err(error)) => Err(error),
-        // The relay already failed; that is the cause, and a console left raw
-        // is the consequence of the same lost session.
+        // The relay already failed; that is the cause, and failed console
+        // cleanup is a consequence of the same lost session.
         (Err(error), Err(_restore_error)) => Err(error),
     }
 }
@@ -177,10 +177,17 @@ where
 
     // The reader owns the console until it stops, so the console is not handed
     // back while a blocked read could still take the caller's next keystroke.
-    _ = console.cancel_input();
-    _ = reader.join();
+    // A failed cancellation does not prove the blocked reader was woken, so it
+    // cannot be joined without risking an indefinitely stuck client.
+    let cancelled = console
+        .cancel_input()
+        .map_err(PalFailedError::caused_by)
+        .map_err(AppError::from);
+    if cancelled.is_ok() {
+        _ = reader.join();
+    }
 
-    match outcome {
+    let outcome = match outcome {
         RelayEnd::AppExited(status) => Ok(Outcome::AppExit(status)),
         RelayEnd::Displaced => Err(DisplacedError::new().into()),
         RelayEnd::Failed => Err(RelayFailedError::new().into()),
@@ -191,7 +198,8 @@ where
                 Err(SupervisorLostError::new().into())
             }
         }
-    }
+    };
+    finish_with_cleanup(outcome, cancelled)
 }
 
 /// Forwards console input until the relay ends or the console stops reading.

@@ -64,7 +64,8 @@ pub(crate) trait LocalConsole: Send + Sync + fmt::Debug + 'static {
     /// A relay reads the console from its own thread, and that read outlives
     /// the relay unless something ends it: a console that is handed back while
     /// a read is still outstanding would take the next thing the user types.
-    /// Reading becomes possible again with the next takeover.
+    /// Reading becomes possible again with the next takeover. A successful
+    /// return guarantees that the blocked reader has been made runnable.
     fn cancel_input(&self) -> Result<(), PalError>;
 
     /// Write console output bytes.
