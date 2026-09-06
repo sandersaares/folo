@@ -254,7 +254,11 @@ fn render_diagnostics(
     }
 
     for package in packages {
-        if releases_breaking_change(package) {
+        // A package the baseline has never published has no consumer contract to break, so it
+        // cannot owe a breaking release. It also has no anchor to move away from, which means
+        // this rule could never be satisfied by changing its version: reporting it would demand
+        // an increment that does not exist. It takes the first-publication path instead.
+        if package.anchor().is_none() || releases_breaking_change(package) {
             continue;
         }
         for dependency in &package.dependencies {
@@ -963,6 +967,32 @@ mod tests {
                 Version::new(0, 1, 0),
                 vec![dependency("absent", "^1.0.0", true)],
             )],
+            &BTreeMap::new(),
+            BASE,
+            CheckFormat::Text,
+        );
+
+        assert_eq!(text, "");
+    }
+
+    /// A never-published dependent owes no breaking release.
+    ///
+    /// It has no consumer contract to break, and no anchor to move away from, so demanding one
+    /// would be a diagnostic it could never satisfy: no version it declares would clear the
+    /// rule. It takes the first-publication path instead.
+    #[test]
+    fn a_never_published_dependent_exposing_a_breaking_dependency_is_accepted() {
+        let library =
+            with_dependencies("lib", Version::new(2, 0, 0), Version::new(1, 1, 0), vec![]);
+        let mut newcomer = PackageClass::new_package(
+            "app",
+            Version::new(0, 1, 0),
+            PathBuf::from("packages/app/Cargo.toml"),
+        );
+        newcomer.dependencies = vec![dependency("lib", "=2.0.0", true)];
+
+        let text = render_diagnostics(
+            &[newcomer, library],
             &BTreeMap::new(),
             BASE,
             CheckFormat::Text,

@@ -75,9 +75,11 @@ Resolves a plan's version groups and increment levels into one explicit entry
 per package, written to `--out`.
 
 An input plan may omit version-group members that `apply` will update. `expand`
-writes the complete explicit package/version set for review, naming every
-package the plan reaches, including group members the input plan did not mention,
-at the version each will carry.
+writes the explicit package/version set for review, naming every package whose
+version the plan sets, including group members the input plan did not mention,
+at the version each will carry. Applying it also rewrites requirements inside
+those packages' dependents, which take no version from the plan and so are not
+named.
 
 The output is itself a plan, so the expanded document is the one passed to
 `apply` after review. Every entry carries an explicit `version`.
@@ -133,12 +135,14 @@ An optional top-level `expanded` records which planning stage a document belongs
 plan** leaves it absent: its entries may name a version group and let resolution reach the
 members, and may carry an increment level resolved when the plan is applied, so what it names is
 a starting point rather than the full set it moves. An **expanded plan**, written by `expand`,
-sets it, names every package the plan reaches, and gives each an explicit `version`. Both are
+sets it, names every package whose version the plan sets, and gives each an explicit `version`.
+Both are
 required of it: an entry left at a level would be resolved against the manifests as they stand
 when it is applied, so the same document could apply a version other than the reviewed one.
 Resolving an expanded plan must reproduce exactly the set it names; reaching any other package
 means the workspace's version groups changed after the document was written, and is rejected
-rather than applied.
+rather than applied. Requirement rewrites inside those packages' dependents are not part of that
+set, because the plan gives a dependent no version of its own.
 
 ### Plan and report schema
 

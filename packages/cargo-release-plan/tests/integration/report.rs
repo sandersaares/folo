@@ -148,10 +148,10 @@ fn check_accepts_a_public_dependency_breaking_together_with_its_dependent() {
     // 0.1.0 -> 0.2.0 is incompatible on a 0.x line, so `demo` breaks as well.
     write_public_dependency_packages(&fixture, "2.0.0", "0.2.0");
 
-    let (_, message) = check(&fixture, &base);
+    let (passed, message) = check(&fixture, &base);
 
     assert!(
-        !message.contains("must release a breaking change"),
+        passed,
         "a dependent breaking alongside its public dependency is accepted: {message}"
     );
 }

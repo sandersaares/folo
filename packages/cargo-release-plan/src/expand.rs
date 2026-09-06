@@ -1,8 +1,8 @@
 // `expand` command: turn a proposed plan into an expanded plan.
 //
 // A proposed plan may name a version group, or one member of it, instead of
-// every package the release decision reaches. This command resolves it and
-// writes the complete explicit package/version set, so a caller reviews the same
+// every package whose version the release decision sets. This command resolves
+// it and writes the explicit package/version set, so a caller reviews the same
 // document `apply` consumes.
 
 use std::fs;

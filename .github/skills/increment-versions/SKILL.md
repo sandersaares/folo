@@ -194,9 +194,12 @@ or no increment.
 Append each batch's outcome to `decisions.json` before starting the next batch, so the next
 batch reads its dependency decisions from the file. Omit a package that needs no increment.
 
+`decisions.json` carries its own schema revision, which is independent of the plan and report
+revision used below and does not move with it:
+
 ```json
 {
-  "schema_version": 2,
+  "schema_version": 1,
   "changes": [
     { "name": "nm", "level": "breaking" },
     { "name": "events", "level": "patch" }
@@ -208,9 +211,14 @@ batch reads its dependency decisions from the file. Omit a package that needs no
 
 A plan exists in two stages, and only the second is safe to present. A **proposed plan** records
 one entry per decision, so a decision about a grouped package names that package or its group and
-leaves the rest of the group implied. An **expanded plan** names every package the plan reaches
-at the version each will carry. Present the expanded plan, so the caller sees the whole set rather
-than one that widens during apply.
+leaves the rest of the group implied. An **expanded plan** names every package whose version the
+plan sets, at the version each will carry. Present the expanded plan, so the caller sees the whole
+set of releases rather than one that widens during apply.
+
+Applying the plan also rewrites requirements inside the dependents of the packages it moves. Those
+dependents take no version from the plan, so they are not named here; Stage 4 gives each of them a
+change level of its own, which is what puts any that would otherwise keep a published version into
+the table.
 
 Write the proposed plan, then expand it:
 

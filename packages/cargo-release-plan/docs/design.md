@@ -154,12 +154,19 @@ A **proposed plan** is what a planner writes. Its entries may name a version
 group, or a single member of one, and leave resolution to reach the rest, so what
 it names is a starting point rather than the full set it moves.
 
-An **expanded plan** is what `expand` writes. It names every package the plan
-reaches and records the version each will carry. Both halves matter: the first
-makes the reviewed set complete, and the second makes it stable, since an
-increment level would be resolved again against whatever the manifests say when
-the document is applied. Resolving an expanded plan must therefore reproduce it
-exactly.
+An **expanded plan** is what `expand` writes. It names every package whose
+version the plan sets and records the version each will carry. Both halves
+matter: the first makes the reviewed set complete with respect to the release
+decision, and the second makes it stable, since an increment level would be
+resolved again against whatever the manifests say when the document is applied.
+Resolving an expanded plan must therefore reproduce it exactly.
+
+Applying a plan also rewrites the requirements that dependents declare on the
+packages it moves, which edits manifests the document does not name. Those
+dependents take no version from the plan, so naming them would claim a release
+they are not making. Their safety is a separate rule: a dependent that would
+keep an already-published version while its manifest is rewritten needs a
+change level of its own, and `check` rejects the result if one is missed.
 
 Approval is not a third stage. The expanded plan a caller approves is applied
 unchanged, so the reviewed document and the applied document are the same bytes,
@@ -170,7 +177,11 @@ rather than one being a rendering of the other.
 `expand --plan <plan.json> --out <expanded.json>` resolves a proposed plan's
 version groups and increment levels into one explicit entry per package. A
 proposed plan may omit version-group members that `apply` will update; `expand`
-writes the complete explicit package/version set for review.
+writes the explicit package/version set for review.
+
+That set is the packages whose versions move. Applying it also rewrites
+requirements inside their dependents, which the document does not name because
+the plan gives them no version.
 
 An expanded plan records its stage, which binds it to the package set it names:
 applying it after a version group gained a member fails rather than quietly

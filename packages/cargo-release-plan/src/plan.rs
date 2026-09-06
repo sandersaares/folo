@@ -94,11 +94,18 @@ pub(crate) enum PlanStage {
     /// starting point rather than the full set of packages it moves, and an
     /// entry may carry an increment level to be resolved when it is applied.
     Proposed,
-    /// The document `expand` writes, which names every package the plan reaches
-    /// and records the version each will carry. Both halves matter: the first
-    /// makes the reviewed set complete, and the second makes it stable, since a
+    /// The document `expand` writes, which names every package whose version
+    /// the plan sets and records the version each will carry. Both halves
+    /// matter: the first makes the reviewed set complete with respect to the
+    /// release decision, and the second makes it stable, since a
     /// level would be re-resolved against whatever the manifests say when the
     /// document is applied. Resolving one must therefore reproduce it exactly.
+    ///
+    /// Applying it also rewrites requirements inside the dependents of the
+    /// packages it moves. Those take no version from the plan, so they are not
+    /// named here; a dependent that would keep an already-published version
+    /// while its manifest changes needs a decision of its own, which `check`
+    /// demands.
     Expanded,
 }
 

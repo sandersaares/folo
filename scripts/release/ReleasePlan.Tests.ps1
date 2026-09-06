@@ -782,6 +782,35 @@ Describe 'Assert-IncrementPackagePublished' {
 }
 
 Describe 'New-ReleasePlanFile' {
+    It 'raises a package exposing the leader of a drifted group that a laggard breaks' {
+        # `lib` leads its group at 2.0.0; `lib_impl` lags at 1.0.0 and carries the breaking
+        # decision. Resolution applies that level to the group's highest declared version, so the
+        # group lands on 3.0.0 and `lib` moves incompatibly away from its own 2.0.0 anchor.
+        # Reading the outcome off the laggard's anchor instead predicts 2.0.0 and leaves `app`
+        # compatible while the contract it exposes has changed.
+        $reportPath = Join-Path $TestDrive 'drift-report.json'
+        $decisionPath = Join-Path $TestDrive 'drift-decision.json'
+        $planPath = Join-Path $TestDrive 'drift-plan.json'
+        Write-TestReport -Path $reportPath -Package @(
+            Get-TestPackage -Name 'lib' -Group 'lib' -DeclaredVersion '2.0.0' -AnchorVersion '2.0.0'
+            Get-TestPackage -Name 'lib_impl' -Group 'lib' -DeclaredVersion '1.0.0' `
+                -AnchorVersion '1.0.0'
+            Get-TestPackage -Name 'app' -DeclaredVersion '5.0.0' -AnchorVersion '5.0.0' `
+                -Dependencies @(@{ name = 'lib'; req = '^2.0.0'; exact_pin = $false; public = $true })
+        ) -Group @{
+            lib = @{ members = @('lib', 'lib_impl'); consistent = $false; version = '2.0.0' }
+        }
+        Write-TestDecision -Path $decisionPath -Change @(
+            @{ name = 'lib_impl'; level = 'breaking' }
+        )
+
+        New-ReleasePlanFile -ReportPath $reportPath -DecisionPath $decisionPath `
+            -PlanPath $planPath
+        $plan = Get-Content -LiteralPath $planPath -Raw | ConvertFrom-Json
+
+        ($plan.increments | Where-Object name -EQ 'app').level | Should -Be 'major'
+    }
+
     It 'raises a package whose public dependency is moved by a group sibling' {
         # `lib` carries no decision of its own; its group sibling `lib_impl` does. Resolution
         # moves the whole group, so `lib` releases a breaking change and `app`, which exposes it,

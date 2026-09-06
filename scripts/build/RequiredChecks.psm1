@@ -93,9 +93,12 @@ function Get-RequiredCheckFailure {
             $result = 'missing'
         }
 
-        $resultIsAllowed = $result -eq 'success'
+        # GitHub writes these results in lower case, and this fan-in is the only thing standing
+        # between a broken dependency and a merge, so the comparison is case-sensitive: an
+        # unexpected spelling is an unknown result and must fail rather than be read as a pass.
+        $resultIsAllowed = $result -ceq 'success'
         if (-not $resultIsAllowed -and
-            $result -eq 'skipped' -and
+            $result -ceq 'skipped' -and
             -not $mustSucceed.Contains($job.Name)) {
             $resultIsAllowed = $true
         }

@@ -89,6 +89,18 @@ Describe 'Get-RequiredCheckFailure' {
         }
     }
 
+    It 'rejects a result whose spelling is not the exact GitHub value' {
+        # GitHub writes these results in lower case. Any other casing is an unknown value, and
+        # this fan-in is the last gate before a merge, so it has to fail closed rather than read
+        # a look-alike as a pass.
+        InModuleScope RequiredChecks {
+            $json = '{"delta":{"result":"Success"},"clippy-dev":{"result":"SKIPPED"}}'
+            $result = @(Get-RequiredCheckFailure -NeedsJson $json -MustSucceedJob @('delta'))
+            $result | Should -Contain 'delta=Success'
+            $result | Should -Contain 'clippy-dev=SKIPPED'
+        }
+    }
+
     It 'treats a missing result property as a failure' {
         InModuleScope RequiredChecks {
             $json = '{"delta":{"outputs":{}}}'

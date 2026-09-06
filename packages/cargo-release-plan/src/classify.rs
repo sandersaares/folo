@@ -188,6 +188,15 @@ impl PackageClass {
         )
     }
 
+    /// A package created on this branch, with no anchor to compare against.
+    pub(crate) fn new_package(
+        name: &str,
+        declared_version: Version,
+        manifest_path: PathBuf,
+    ) -> Self {
+        Self::with_verdict(name, declared_version, Verdict::New, manifest_path)
+    }
+
     fn with_verdict(
         name: &str,
         declared_version: Version,

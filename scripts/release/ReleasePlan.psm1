@@ -886,6 +886,115 @@ function Get-VersionCompatibilityKey {
     return "0.0.$($Version.Patch)"
 }
 
+function Get-IncrementedVersion {
+    # A Cargo increment level applied to a version, mirroring the tool's `increment_version`.
+    #
+    # This is a plain component bump of the version it is given, with no reference to any
+    # anchor: the tool resolves a group by applying the level to the group's highest declared
+    # version, so predicting the outcome requires the same operation rather than a repeat of the
+    # anchor arithmetic that chose the level.
+    param(
+        [Parameter(Mandatory)][semver] $Version,
+        [Parameter(Mandatory)][string] $Level
+    )
+
+    switch -CaseSensitive ($Level) {
+        'major' { return [semver]::new($Version.Major + 1, 0, 0) }
+        'minor' { return [semver]::new($Version.Major, $Version.Minor + 1, 0) }
+        'patch' { return [semver]::new($Version.Major, $Version.Minor, $Version.Patch + 1) }
+        default { throw "Unsupported Cargo increment level '$Level'." }
+    }
+}
+
+function Get-CargoIncrementLevelRank {
+    # Orders Cargo increment levels so the highest among a group's decisions can be selected,
+    # which is how the tool combines them.
+    param(
+        [Parameter(Mandatory)][string] $Level
+    )
+
+    switch -CaseSensitive ($Level) {
+        'major' { return 3 }
+        'minor' { return 2 }
+        'patch' { return 1 }
+        default { throw "Unsupported Cargo increment level '$Level'." }
+    }
+}
+
+function Get-ResolvedVersionForPackage {
+    # The version this package ends the plan declaring.
+    #
+    # Mirrors the tool's resolution rather than re-deriving it from anchors: a group's target
+    # starts from the highest version any member declares and applies the highest level any
+    # member's decision contributes. Those are different numbers whenever a member lags behind
+    # the group, and reading the target off a lagging member's own anchor would under-predict
+    # the result for every other member.
+    # Ref: packages/cargo-release-plan/docs/design.md, "Version groups".
+    [OutputType([semver])]
+    param(
+        [Parameter(Mandatory)] $Package,
+        [Parameter(Mandatory)] $Report,
+        [Parameter(Mandatory)] $ByName,
+        [Parameter(Mandatory)] $LevelByName
+    )
+
+    try {
+        $base = [semver] [string] $Package.declared_version
+    } catch {
+        throw "Package '$($Package.name)' has an invalid semantic version in the release-plan report."
+    }
+    $rank = 0
+    $level = ''
+
+    foreach ($member in (Get-VersionGroupMemberName -Report $Report -ByName $ByName `
+                -Name ([string] $Package.name))) {
+        if (-not $ByName.Contains($member)) {
+            continue
+        }
+        $memberPackage = $ByName[$member]
+        try {
+            $declared = [semver] [string] $memberPackage.declared_version
+        } catch {
+            throw "Package '$member' has an invalid semantic version in the release-plan report."
+        }
+        if ($declared -gt $base) {
+            $base = $declared
+        }
+
+        $semanticLevel = if ($LevelByName.Contains($member)) {
+            [string] $LevelByName[$member]
+        } else {
+            ''
+        }
+        if ([string]::IsNullOrWhiteSpace($semanticLevel)) {
+            continue
+        }
+        if ($memberPackage.PSObject.Properties.Name -notcontains 'anchor' -or
+            $null -eq $memberPackage.anchor -or
+            [string]::IsNullOrWhiteSpace([string] $memberPackage.anchor.version)) {
+            continue
+        }
+        $minimum = Get-MinimumVersionForChange `
+            -Anchor ([semver] [string] $memberPackage.anchor.version) -Level $semanticLevel
+        # The generator drops a decision the declared version already satisfies, so it
+        # contributes no level to the group.
+        if ($declared -ge $minimum) {
+            continue
+        }
+        $memberLevel = Get-CargoIncrementLevel -Current $declared -Minimum $minimum
+        $memberRank = Get-CargoIncrementLevelRank -Level $memberLevel
+        if ($memberRank -gt $rank) {
+            $rank = $memberRank
+            $level = $memberLevel
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($level)) {
+        return $base
+    }
+    return Get-IncrementedVersion -Version $base -Level $level
+}
+
 function Test-PackageReleasesBreakingChange {
     # Whether the package ends the plan declaring a version incompatible with its last release.
     #
@@ -911,45 +1020,12 @@ function Test-PackageReleasesBreakingChange {
     }
     try {
         $anchor = [semver] [string] $Package.anchor.version
-        $resolved = [semver] [string] $Package.declared_version
     } catch {
         throw "Package '$($Package.name)' has an invalid semantic version in the release-plan report."
     }
 
-    foreach ($sibling in (Get-VersionGroupMemberName -Report $Report -ByName $ByName `
-                -Name ([string] $Package.name))) {
-        if (-not $ByName.Contains($sibling)) {
-            continue
-        }
-        $siblingPackage = $ByName[$sibling]
-        try {
-            $siblingDeclared = [semver] [string] $siblingPackage.declared_version
-        } catch {
-            throw "Package '$sibling' has an invalid semantic version in the release-plan report."
-        }
-        # Resolution puts every member on the highest version any of them reaches.
-        if ($siblingDeclared -gt $resolved) {
-            $resolved = $siblingDeclared
-        }
-        $siblingLevel = if ($LevelByName.Contains($sibling)) {
-            [string] $LevelByName[$sibling]
-        } else {
-            ''
-        }
-        if ([string]::IsNullOrWhiteSpace($siblingLevel)) {
-            continue
-        }
-        if ($siblingPackage.PSObject.Properties.Name -notcontains 'anchor' -or
-            $null -eq $siblingPackage.anchor -or
-            [string]::IsNullOrWhiteSpace([string] $siblingPackage.anchor.version)) {
-            continue
-        }
-        $minimum = Get-MinimumVersionForChange `
-            -Anchor ([semver] [string] $siblingPackage.anchor.version) -Level $siblingLevel
-        if ($minimum -gt $resolved) {
-            $resolved = $minimum
-        }
-    }
+    $resolved = Get-ResolvedVersionForPackage -Package $Package -Report $Report `
+        -ByName $ByName -LevelByName $LevelByName
 
     return (Get-VersionCompatibilityKey -Version $anchor) -cne
         (Get-VersionCompatibilityKey -Version $resolved)

@@ -8,6 +8,78 @@ use serde_json::Value;
 use crate::fixture::{Fixture, write_package};
 use crate::harness::check;
 
+/// Expansion names the packages whose versions move, not every manifest apply edits.
+///
+/// A dependent's requirement is rewritten whenever its target moves, because every
+/// intra-workspace requirement names the version its target declares. That rewrite does not give
+/// the dependent a version of its own, so expansion does not name it: the document records
+/// version decisions, and inventing an entry for a package the plan does not move would claim a
+/// release it is not making.
+///
+/// What keeps that safe is a separate rule. A dependent that would keep an already-published
+/// version while its manifest is rewritten needs a change level of its own, which the plan
+/// generator refuses to omit, and `check` rejects the result afterwards if one is ever missed.
+/// Deciding that here is not possible: `expand` reads the work tree without classification, so it
+/// has no anchors and cannot tell a published dependent from a pending or unpublished one.
+/// Ref: docs/design.md, "Planning stages".
+#[cfg_attr(miri, ignore)] // Spawns git and cargo, which Miri cannot emulate.
+#[test]
+fn expand_names_moved_packages_while_apply_also_rewrites_their_dependents() {
+    let fixture = Fixture::new("");
+    write_package(&fixture, "helper", "1.0.0", "");
+    write_package(
+        &fixture,
+        "app",
+        "0.1.0",
+        r#"
+[dependencies]
+helper = { path = "../helper", version = "1.0.0" }
+"#,
+    );
+    fixture.commit("seed");
+
+    let plan_path = fixture.path().join("plan.json");
+    fs::write(
+        &plan_path,
+        r#"{ "schema_version": 2, "increments": [{ "name": "helper", "level": "patch" }] }"#,
+    )
+    .unwrap();
+    let expanded_path = fixture.path().join("expanded.json");
+
+    run(&RunInput::Expand {
+        plan: plan_path,
+        out: expanded_path.clone(),
+        manifest_path: fixture.manifest(),
+        verbose: false,
+    })
+    .unwrap();
+
+    // Only the package whose version moves is named.
+    let expanded: Value =
+        serde_json::from_str(&fs::read_to_string(&expanded_path).unwrap()).unwrap();
+    let named: Vec<&str> = expanded
+        .get("increments")
+        .and_then(Value::as_array)
+        .unwrap()
+        .iter()
+        .map(|entry| entry.get("name").and_then(Value::as_str).unwrap())
+        .collect();
+    assert_eq!(named, vec!["helper"]);
+
+    run(&RunInput::Apply {
+        plan: expanded_path,
+        manifest_path: fixture.manifest(),
+        dry_run: false,
+        verbose: false,
+    })
+    .unwrap();
+
+    // `app` was not named, yet its requirement followed `helper` so it keeps naming the version
+    // `helper` declares.
+    let manifest = fixture.read("packages/app/Cargo.toml");
+    assert!(manifest.contains("version = \"1.0.1\""), "{manifest}");
+}
+
 /// Expansion names every group member and produces an applicable result.
 ///
 /// An expanded plan and the apply operation that consumes it cannot disagree
