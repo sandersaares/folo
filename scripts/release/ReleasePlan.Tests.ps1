@@ -782,6 +782,43 @@ Describe 'Assert-IncrementPackagePublished' {
 }
 
 Describe 'New-ReleasePlanFile' {
+    It 'raises a package exposing a group that realignment patch-increments' {
+        # `lib` leads a drifted 0.0.z group and `lib_impl` lags. Exact alignment would leave
+        # `lib` where it is, but `keeper` keeps an already-published version while pinning
+        # `lib_impl`, so alignment patch-increments the whole group instead. On a 0.0.z line that
+        # patch is itself breaking, so `app`, which exposes `lib`, must break too. Deciding levels
+        # before realignment sees `lib` standing still and leaves `app` at patch.
+        $reportPath = Join-Path $TestDrive 'align-report.json'
+        $decisionPath = Join-Path $TestDrive 'align-decision.json'
+        $planPath = Join-Path $TestDrive 'align-plan.json'
+        Write-TestReport -Path $reportPath -Package @(
+            Get-TestPackage -Name 'lib' -Group 'lib' -DeclaredVersion '0.0.5' -AnchorVersion '0.0.5'
+            Get-TestPackage -Name 'lib_impl' -Group 'lib' -DeclaredVersion '0.0.4' `
+                -AnchorVersion '0.0.4'
+            Get-TestPackage -Name 'keeper' -Group 'lib' -DeclaredVersion '0.0.5' `
+                -AnchorVersion '0.0.5' `
+                -Dependencies @(@{ name = 'lib_impl'; req = '=0.0.4'; exact_pin = $true; public = $false })
+            Get-TestPackage -Name 'app' -DeclaredVersion '3.0.0' -AnchorVersion '3.0.0' `
+                -Dependencies @(@{ name = 'lib'; req = '^0.0.5'; exact_pin = $false; public = $true })
+        ) -Group @{
+            lib = @{
+                members    = @('lib', 'lib_impl', 'keeper')
+                consistent = $false
+                version    = '0.0.5'
+            }
+        }
+        Write-TestDecision -Path $decisionPath -Change @()
+
+        New-ReleasePlanFile -ReportPath $reportPath -DecisionPath $decisionPath `
+            -PlanPath $planPath
+        $plan = Get-Content -LiteralPath $planPath -Raw | ConvertFrom-Json
+
+        # The group was patch-incremented rather than aligned exactly.
+        ($plan.increments | Where-Object name -EQ 'lib').level | Should -Be 'patch'
+        # And the dependent exposing it follows, because 0.0.5 -> 0.0.6 is incompatible.
+        ($plan.increments | Where-Object name -EQ 'app').level | Should -Be 'major'
+    }
+
     It 'raises a package exposing the leader of a drifted group that a laggard breaks' {
         # `lib` leads its group at 2.0.0; `lib_impl` lags at 1.0.0 and carries the breaking
         # decision. Resolution applies that level to the group's highest declared version, so the

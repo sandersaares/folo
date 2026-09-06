@@ -929,13 +929,18 @@ function Get-ResolvedVersionForPackage {
     # member's decision contributes. Those are different numbers whenever a member lags behind
     # the group, and reading the target off a lagging member's own anchor would under-predict
     # the result for every other member.
+    #
+    # A realignment entry is one of those contributions. Aligning a drifted group exactly leaves
+    # the leading member where it is, but realignment can instead patch-increment the whole
+    # group, which moves the leader as well; on a 0.0.z line that increment is itself breaking.
     # Ref: packages/cargo-release-plan/docs/design.md, "Version groups".
     [OutputType([semver])]
     param(
         [Parameter(Mandatory)] $Package,
         [Parameter(Mandatory)] $Report,
         [Parameter(Mandatory)] $ByName,
-        [Parameter(Mandatory)] $LevelByName
+        [Parameter(Mandatory)] $LevelByName,
+        [Parameter(Mandatory)] $Alignment
     )
 
     try {
@@ -989,6 +994,22 @@ function Get-ResolvedVersionForPackage {
         }
     }
 
+    $alignmentEntry = $Alignment[(Get-DecisionKey -ByName $ByName -Name ([string] $Package.name))]
+    if ($null -ne $alignmentEntry) {
+        if ($alignmentEntry.Contains('version')) {
+            $aligned = [semver] [string] $alignmentEntry['version']
+            if ($aligned -gt $base) {
+                $base = $aligned
+            }
+        } else {
+            $alignmentRank = Get-CargoIncrementLevelRank -Level ([string] $alignmentEntry['level'])
+            if ($alignmentRank -gt $rank) {
+                $rank = $alignmentRank
+                $level = [string] $alignmentEntry['level']
+            }
+        }
+    }
+
     if ([string]::IsNullOrWhiteSpace($level)) {
         return $base
     }
@@ -1009,7 +1030,8 @@ function Test-PackageReleasesBreakingChange {
         [Parameter(Mandatory)] $Package,
         [Parameter(Mandatory)] $Report,
         [Parameter(Mandatory)] $ByName,
-        [Parameter(Mandatory)] $LevelByName
+        [Parameter(Mandatory)] $LevelByName,
+        [Parameter(Mandatory)] $Alignment
     )
 
     if ($Package.PSObject.Properties.Name -notcontains 'anchor' -or
@@ -1025,7 +1047,7 @@ function Test-PackageReleasesBreakingChange {
     }
 
     $resolved = Get-ResolvedVersionForPackage -Package $Package -Report $Report `
-        -ByName $ByName -LevelByName $LevelByName
+        -ByName $ByName -LevelByName $LevelByName -Alignment $Alignment
 
     return (Get-VersionCompatibilityKey -Version $anchor) -cne
         (Get-VersionCompatibilityKey -Version $resolved)
@@ -1063,7 +1085,8 @@ function Get-ChangeLevelWithPublicDependency {
     param(
         [Parameter(Mandatory)] $Report,
         [Parameter(Mandatory)] $ByName,
-        [Parameter(Mandatory)] $Decision
+        [Parameter(Mandatory)] $Decision,
+        [Parameter(Mandatory)] $Alignment
     )
 
     $level = [ordered]@{}
@@ -1093,7 +1116,7 @@ function Get-ChangeLevelWithPublicDependency {
                 continue
             }
             if (Test-PackageReleasesBreakingChange -Package $package -Report $Report `
-                    -ByName $ByName -LevelByName $level) {
+                    -ByName $ByName -LevelByName $level -Alignment $Alignment) {
                 continue
             }
             if ($package.PSObject.Properties.Name -notcontains 'dependencies') {
@@ -1109,7 +1132,8 @@ function Get-ChangeLevelWithPublicDependency {
                     continue
                 }
                 if (-not (Test-PackageReleasesBreakingChange -Package $ByName[$dependencyName] `
-                            -Report $Report -ByName $ByName -LevelByName $level)) {
+                            -Report $Report -ByName $ByName -LevelByName $level `
+                            -Alignment $Alignment)) {
                     continue
                 }
                 Write-Verbose (
@@ -1128,6 +1152,179 @@ function Get-ChangeLevelWithPublicDependency {
     return $level
 }
 
+function Get-DecisionIncrement {
+    # The plan entries the change levels produce, before any group realignment.
+    #
+    # A decision the declared version already satisfies is dropped rather than emitted, because
+    # the existing increment already covers it.
+    [OutputType([System.Collections.Generic.List[object]])]
+    param(
+        [Parameter(Mandatory)] $ByName,
+        [Parameter(Mandatory)] $LevelByName,
+        [switch] $Explain
+    )
+
+    $increment = [System.Collections.Generic.List[object]]::new()
+    foreach ($entry in $LevelByName.GetEnumerator()) {
+        $name = [string] $entry.Key
+        if (-not $ByName.Contains($name)) {
+            throw "Change decision names unknown package '$name'."
+        }
+        $package = $ByName[$name]
+        $level = [string] $entry.Value
+        if ($package.PSObject.Properties.Name -notcontains 'anchor' -or
+            $null -eq $package.anchor -or
+            [string]::IsNullOrWhiteSpace([string] $package.anchor.version)) {
+            throw (
+                "Package '$name' has no published version anchor. " +
+                'Publish the package manually first; follow ' +
+                'RELEASING.md#first-publish-of-a-new-crate and complete the full procedure, ' +
+                'including Trusted Publishing and any binary-release follow-up, before retrying.'
+            )
+        }
+        try {
+            $anchor = [semver] [string] $package.anchor.version
+            $current = [semver] [string] $package.declared_version
+        } catch {
+            throw "Package '$name' has an invalid semantic version in the release-plan report."
+        }
+        # A prerelease version orders below the release it precedes, so the component comparison
+        # that derives a Cargo increment level from a minimum version cannot express "drop the
+        # prerelease suffix". Rejecting the input keeps a wrong level from being generated
+        # silently; every published package in this workspace declares a release version.
+        if (-not [string]::IsNullOrEmpty($anchor.PreReleaseLabel) -or
+            -not [string]::IsNullOrEmpty($current.PreReleaseLabel)) {
+            throw "Package '$name' declares a prerelease version, which this plan generator does not support."
+        }
+        $minimum = Get-MinimumVersionForChange -Anchor $anchor -Level $level
+        if ($current -ge $minimum) {
+            if ($Explain) {
+                Write-Verbose (
+                    "Decision for package '$name' at semantic level '$level' is not emitted " +
+                    "because declared version '$current' already satisfies the minimum version " +
+                    "'$minimum' derived from anchor '$anchor'."
+                ) -Verbose
+            }
+            continue
+        }
+        $cargoLevel = Get-CargoIncrementLevel -Current $current -Minimum $minimum
+        if ($Explain) {
+            Write-Verbose (
+                "Decision for package '$name' at semantic level '$level' is emitted as " +
+                "cargo-release-plan '$cargoLevel' because declared version '$current' is below " +
+                "the minimum version '$minimum' derived from anchor '$anchor'."
+            ) -Verbose
+        }
+        $increment.Add((Get-PlanIncrement -Name $name -Level $cargoLevel))
+    }
+    return , $increment
+}
+
+function Get-GroupAlignment {
+    # The realignment entry for every inconsistent group no plan entry already reaches.
+    #
+    # Every version group has to end up on one version, and expansion is plan-driven: a group
+    # moves only when an entry names one of its members. The decisions can easily leave a drifted
+    # group unnamed, because no member's content changed or because the decided level was already
+    # covered by a pending increment, so the groups no entry reaches are realigned here. Leaving
+    # this to a decision instead would make an inconsistent group unrecoverable exactly when its
+    # decision is skipped as already sufficient.
+    # Ref: packages/cargo-release-plan/docs/design.md, "Version groups".
+    [OutputType([System.Collections.IDictionary])]
+    param(
+        [Parameter(Mandatory)] $Report,
+        [Parameter(Mandatory)] $ByName,
+        [Parameter(Mandatory)][AllowEmptyCollection()][System.Collections.IDictionary[]] $Increment
+    )
+
+    $planned = [System.Collections.Generic.HashSet[string]]::new(
+        [System.StringComparer]::Ordinal
+    )
+    foreach ($entry in $Increment) {
+        [void] $planned.Add((Get-DecisionKey -ByName $ByName -Name ([string] $entry['name'])))
+    }
+    $unaligned = @($Report.groups.PSObject.Properties |
+            Sort-Object -Property Name |
+            Where-Object {
+                $_.Value.PSObject.Properties.Name -contains 'consistent' -and
+                -not $_.Value.consistent -and
+                -not $planned.Contains($_.Name)
+            })
+
+    # Each group's alignment is decided against everything else the plan does, and deciding one
+    # group can move packages that change another group's answer. Deciding them in one pass would
+    # make the outcome depend on the order groups happen to be visited, so the answers are
+    # recomputed until they stop changing. A group only ever moves from exact alignment to an
+    # increment and never back, so this settles within one pass per realigned group; the bound is
+    # asserted rather than assumed so a future change cannot spin here forever.
+    $alignment = [ordered]@{}
+    $remainingPass = $unaligned.Count + 1
+    $settled = $false
+    while (-not $settled) {
+        if ($remainingPass -le 0) {
+            throw 'Version-group realignment did not settle; this is a defect in the plan generator.'
+        }
+        $remainingPass--
+        $settled = $true
+        foreach ($group in $unaligned) {
+            # Every other entry, so a group's own answer is never an input to itself.
+            $context = [System.Collections.Generic.List[object]]::new()
+            $context.AddRange([object[]] @($Increment))
+            foreach ($decided in $alignment.GetEnumerator()) {
+                if ($decided.Key -cne $group.Name) {
+                    $context.Add($decided.Value)
+                }
+            }
+
+            $fresh = Get-GroupAlignmentIncrement -Name $group.Name -Group $group.Value `
+                -ByName $ByName -Report $Report -Increment ([System.Collections.IDictionary[]] $context.ToArray())
+            $current = $alignment[$group.Name]
+            if ($null -eq $current -or
+                [string] $current['level'] -cne [string] $fresh['level'] -or
+                [string] $current['version'] -cne [string] $fresh['version']) {
+                $alignment[$group.Name] = $fresh
+                $settled = $false
+            }
+        }
+    }
+    return $alignment
+}
+
+function Get-AlignmentSignature {
+    # A comparable form of the realignment decisions, for detecting a settled state.
+    [OutputType([System.Collections.IDictionary])]
+    param(
+        [Parameter(Mandatory)] $Alignment
+    )
+
+    $signature = [ordered]@{}
+    foreach ($entry in $Alignment.GetEnumerator()) {
+        $signature[[string] $entry.Key] =
+            "$($entry.Value['level'])|$($entry.Value['version'])"
+    }
+    return $signature
+}
+
+function Test-PlanStateSettled {
+    # Whether two rounds of level and alignment decisions agree.
+    param(
+        [Parameter(Mandatory)] $Left,
+        [Parameter(Mandatory)] $Right
+    )
+
+    if ($Left.Keys.Count -ne $Right.Keys.Count) {
+        return $false
+    }
+    foreach ($key in $Left.Keys) {
+        if (-not $Right.Contains($key)) {
+            return $false
+        }
+        if ([string] $Left[$key] -cne [string] $Right[$key]) {
+            return $false
+        }
+    }
+    return $true
+}
 function Get-DecisionKey {
     # The key a plan entry folds onto: the package's version group when it has one, otherwise the
     # package itself. Mirrors the tool's own decision keys, so a group counts as already planned
@@ -1434,118 +1631,40 @@ function New-ReleasePlanFile {
     $report = Read-ReleasePlanReport -ReportPath $ReportPath
     $decision = Read-ChangeDecision -DecisionPath $DecisionPath
     $byName = Get-PackageByName -Report $report
-    # Exposing a dependency that breaks is itself a breaking change, and which packages do so is
-    # read from the report rather than decided, so the levels are completed before they are
-    # mapped onto versions.
-    $levelByName = Get-ChangeLevelWithPublicDependency -Report $report -ByName $byName `
-        -Decision $decision
-    $increment = [System.Collections.Generic.List[object]]::new()
-    foreach ($entry in $levelByName.GetEnumerator()) {
-        $name = [string] $entry.Key
-        if (-not $byName.Contains($name)) {
-            throw "Change decision names unknown package '$name'."
-        }
-        $package = $byName[$name]
-        $level = [string] $entry.Value
-        if ($package.PSObject.Properties.Name -notcontains 'anchor' -or
-            $null -eq $package.anchor -or
-            [string]::IsNullOrWhiteSpace([string] $package.anchor.version)) {
-            throw (
-                "Package '$name' has no published version anchor. " +
-                'Publish the package manually first; follow ' +
-                'RELEASING.md#first-publish-of-a-new-crate and complete the full procedure, ' +
-                'including Trusted Publishing and any binary-release follow-up, before retrying.'
-            )
-        }
-        try {
-            $anchor = [semver] [string] $package.anchor.version
-            $current = [semver] [string] $package.declared_version
-        } catch {
-            throw "Package '$name' has an invalid semantic version in the release-plan report."
-        }
-        # A prerelease version orders below the release it precedes, so the component comparison
-        # that derives a Cargo increment level from a minimum version cannot express "drop the
-        # prerelease suffix". Rejecting the input keeps a wrong level from being generated
-        # silently; every published package in this workspace declares a release version.
-        if (-not [string]::IsNullOrEmpty($anchor.PreReleaseLabel) -or
-            -not [string]::IsNullOrEmpty($current.PreReleaseLabel)) {
-            throw "Package '$name' declares a prerelease version, which this plan generator does not support."
-        }
-        $minimum = Get-MinimumVersionForChange -Anchor $anchor -Level $level
-        if ($current -ge $minimum) {
-            Write-Verbose (
-                "Decision for package '$name' at semantic level '$level' is not emitted " +
-                "because declared version '$current' already satisfies the minimum version " +
-                "'$minimum' derived from anchor '$anchor'."
-            ) -Verbose
-            continue
-        }
-        $cargoLevel = Get-CargoIncrementLevel -Current $current -Minimum $minimum
-        Write-Verbose (
-            "Decision for package '$name' at semantic level '$level' is emitted as " +
-            "cargo-release-plan '$cargoLevel' because declared version '$current' is below " +
-            "the minimum version '$minimum' derived from anchor '$anchor'."
-        ) -Verbose
-        $increment.Add((Get-PlanIncrement -Name $name -Level $cargoLevel))
-    }
 
-    # Every version group has to end up on one version, and expansion is plan-driven: a group
-    # moves only when an entry names one of its members. The decisions above can easily leave a
-    # drifted group unnamed, because no member's content changed or because the decided level was
-    # already covered by a pending increment, so the groups no entry reaches are realigned here.
-    # Leaving this to a decision instead would make an inconsistent group unrecoverable exactly
-    # when its decision is skipped as already sufficient.
-    # Ref: packages/cargo-release-plan/docs/design.md, "Version groups".
-    $planned = [System.Collections.Generic.HashSet[string]]::new(
-        [System.StringComparer]::Ordinal
-    )
-    foreach ($entry in $increment) {
-        [void] $planned.Add((Get-DecisionKey -ByName $byName -Name ([string] $entry.name)))
-    }
-    $unaligned = @($report.groups.PSObject.Properties |
-            Sort-Object -Property Name |
-            Where-Object {
-                $_.Value.PSObject.Properties.Name -contains 'consistent' -and
-                -not $_.Value.consistent -and
-                -not $planned.Contains($_.Name)
-            })
-
-    # Each group's alignment is decided against everything else the plan does, and deciding one
-    # group can move packages that change another group's answer. Deciding them in one pass would
-    # make the outcome depend on the order groups happen to be visited, so the answers are
-    # recomputed until they stop changing. A group only ever moves from exact alignment to an
-    # increment and never back, so this settles within one pass per realigned group; the bound is
-    # asserted rather than assumed so a future change cannot spin here forever.
+    # Levels and realignment each depend on the other's outcome, so neither can be decided first.
+    # Exposing a dependency that breaks is itself a breaking change, which needs the versions the
+    # plan lands on; realigning a drifted group needs the entries the levels produce, and can
+    # patch-increment a whole group, which moves a leading member that exact alignment would have
+    # left alone. Deciding levels once before realignment would miss exactly that, so both are
+    # recomputed until they agree. A level only ever rises and a group only ever moves from exact
+    # alignment to an increment, so this settles; the bound is asserted rather than assumed.
     $alignment = [ordered]@{}
-    $remainingPass = $unaligned.Count + 1
+    $levelByName = [ordered]@{}
+    $remainingPass = @($report.packages).Count + @($report.groups.PSObject.Properties).Count + 2
     $settled = $false
     while (-not $settled) {
         if ($remainingPass -le 0) {
-            throw 'Version-group realignment did not settle; this is a defect in the plan generator.'
+            throw 'Change levels and version-group realignment did not settle; this is a defect in the plan generator.'
         }
         $remainingPass--
-        $settled = $true
-        foreach ($group in $unaligned) {
-            # Every other entry, so a group's own answer is never an input to itself.
-            $context = [System.Collections.Generic.List[object]]::new()
-            $context.AddRange([object[]] @($increment))
-            foreach ($decided in $alignment.GetEnumerator()) {
-                if ($decided.Key -cne $group.Name) {
-                    $context.Add($decided.Value)
-                }
-            }
 
-            $fresh = Get-GroupAlignmentIncrement -Name $group.Name -Group $group.Value `
-                -ByName $byName -Report $report -Increment ([System.Collections.IDictionary[]] $context.ToArray())
-            $current = $alignment[$group.Name]
-            if ($null -eq $current -or
-                [string] $current['level'] -cne [string] $fresh['level'] -or
-                [string] $current['version'] -cne [string] $fresh['version']) {
-                $alignment[$group.Name] = $fresh
-                $settled = $false
-            }
-        }
+        $freshLevel = Get-ChangeLevelWithPublicDependency -Report $report -ByName $byName `
+            -Decision $decision -Alignment $alignment
+        $freshIncrement = Get-DecisionIncrement -ByName $byName -LevelByName $freshLevel
+        $freshAlignment = Get-GroupAlignment -Report $report -ByName $byName `
+            -Increment ([System.Collections.IDictionary[]] $freshIncrement.ToArray())
+
+        $settled = (Test-PlanStateSettled -Left $levelByName -Right $freshLevel) -and
+            (Test-PlanStateSettled `
+                -Left (Get-AlignmentSignature -Alignment $alignment) `
+                -Right (Get-AlignmentSignature -Alignment $freshAlignment))
+        $levelByName = $freshLevel
+        $alignment = $freshAlignment
     }
+
+    # Rebuilt once the inputs have settled so each decision is explained exactly once.
+    $increment = Get-DecisionIncrement -ByName $byName -LevelByName $levelByName -Explain
     foreach ($decided in $alignment.GetEnumerator()) {
         $increment.Add($decided.Value)
     }
