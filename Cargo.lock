@@ -34,16 +34,18 @@ dependencies = [
 
 [[package]]
 name = "alloc_tracker"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "all_the_time",
  "criterion",
  "folo_utils",
+ "gungraun",
  "mutants",
  "serde",
  "serde_json",
  "static_assertions",
  "tempfile",
+ "testing",
 ]
 
 [[package]]
@@ -1382,7 +1384,7 @@ dependencies = [
 
 [[package]]
 name = "folo_utils"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "mutants",
  "serde",

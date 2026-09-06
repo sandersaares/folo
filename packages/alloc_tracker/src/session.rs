@@ -32,7 +32,7 @@ use crate::{ERR_POISONED_LOCK, Operation, OperationMetrics, Report};
 /// let string_op = session.operation("do_stuff_with_strings");
 ///
 /// {
-///     let _span = string_op.measure_process().iterations(3);
+///     let _span = string_op.measure_thread().iterations(3);
 ///     for _ in 0..3 {
 ///         let _data = String::from("example string allocation");
 ///     }
@@ -123,7 +123,7 @@ impl Session {
     /// let string_op = session.operation("string_operations");
     ///
     /// {
-    ///     let _span = string_op.measure_process().iterations(3);
+    ///     let _span = string_op.measure_thread().iterations(3);
     ///     for _ in 0..3 {
     ///         let _s = String::from("test"); // This allocation will be tracked
     ///     }
@@ -161,7 +161,7 @@ impl Session {
     /// # let session = session.no_stdout().no_file();
     /// let operation = session.operation("test_work");
     /// {
-    ///     let _span = operation.measure_process().iterations(1);
+    ///     let _span = operation.measure_thread().iterations(1);
     ///     let _data = vec![1, 2, 3]; // This allocates memory
     /// }
     ///

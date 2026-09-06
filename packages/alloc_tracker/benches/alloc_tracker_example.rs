@@ -28,7 +28,7 @@ fn entrypoint(c: &mut Criterion) {
             let start = Instant::now();
 
             {
-                let _span = string_op.measure_process().iterations(iters);
+                let _span = string_op.measure_thread().iterations(iters);
 
                 for _ in 0..iters {
                     let part1 = black_box("Hello, ");
@@ -48,7 +48,7 @@ fn entrypoint(c: &mut Criterion) {
             let start = Instant::now();
 
             {
-                let _span = vector_op.measure_process().iterations(iters);
+                let _span = vector_op.measure_thread().iterations(iters);
 
                 for _ in 0..iters {
                     let data = (1..=100).collect::<Vec<_>>();
