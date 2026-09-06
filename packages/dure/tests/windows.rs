@@ -491,6 +491,37 @@ fn run_refuses_a_launcher_that_forbids_breakaway() {
 
 #[cfg_attr(miri, ignore)]
 #[test]
+fn run_refuses_a_bare_name_the_search_path_does_not_have() {
+    with_watchdog(|| {
+        // A name no search path has, so the only way to reach an image is the
+        // ambient completion this must refuse.
+        const PLANTED: &str = "dure-planted-not-on-path.exe";
+
+        let store = TempDir::new().unwrap();
+        let work = TempDir::new().unwrap();
+        // The supervisor inherits the client's directory, and `CreateProcessW`
+        // completes a partial application name from it. Planting a runnable
+        // image under that name is what a search-path-only lookup exists to
+        // defeat, so a run that starts it would be the failure.
+        // Ref: docs/design.md, "Commands".
+        fs::copy(helper_exe(), work.path().join(PLANTED)).unwrap();
+
+        let client = DureCommand::run_bare(store.path(), PLANTED).spawn(work.path());
+        let output = collect_all(&client);
+        let status = client.wait();
+
+        assert_ne!(status, 0, "client output: {output:?}");
+        assert!(
+            !banner_names_session(&output, FIRST_SESSION_ID),
+            "a refused launch must not report a session, got {output:?}"
+        );
+        let records = store_entries(store.path());
+        assert!(records.is_empty(), "store must stay empty, got {records:?}");
+    });
+}
+
+#[cfg_attr(miri, ignore)]
+#[test]
 fn run_warns_when_an_ancestor_job_would_end_the_session() {
     with_watchdog(|| {
         let dir = TempDir::new().unwrap();

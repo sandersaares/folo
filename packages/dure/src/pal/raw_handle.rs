@@ -155,35 +155,37 @@ mod tests {
         const WORKERS: usize = 8;
         const ATTEMPTS: usize = 200;
 
-        let pipe = detached_pipe();
-        let start = Arc::new(Barrier::new(WORKERS.saturating_add(1)));
-        let mut workers = Vec::with_capacity(WORKERS);
-        for _ in 0..WORKERS {
-            let pipe = Arc::clone(&pipe);
-            let start = Arc::clone(&start);
-            workers.push(thread::spawn(move || {
-                start.wait();
-                let mut refused_then_started = false;
-                let mut refused = false;
-                for _ in 0..ATTEMPTS {
-                    match pipe.issue(|_handle| ()) {
-                        Some(()) => refused_then_started |= refused,
-                        None => refused = true,
+        testing::with_watchdog(|| {
+            let pipe = detached_pipe();
+            let start = Arc::new(Barrier::new(WORKERS.saturating_add(1)));
+            let mut workers = Vec::with_capacity(WORKERS);
+            for _ in 0..WORKERS {
+                let pipe = Arc::clone(&pipe);
+                let start = Arc::clone(&start);
+                workers.push(thread::spawn(move || {
+                    start.wait();
+                    let mut refused_then_started = false;
+                    let mut refused = false;
+                    for _ in 0..ATTEMPTS {
+                        match pipe.issue(|_handle| ()) {
+                            Some(()) => refused_then_started |= refused,
+                            None => refused = true,
+                        }
                     }
-                }
-                refused_then_started
-            }));
-        }
+                    refused_then_started
+                }));
+            }
 
-        start.wait();
-        pipe.cancel();
+            start.wait();
+            pipe.cancel();
 
-        for worker in workers {
-            assert!(
-                !worker.join().unwrap(),
-                "an operation started after this thread had seen the handle cancelled"
-            );
-        }
-        assert_eq!(pipe.issue(|_handle| 7), None);
+            for worker in workers {
+                assert!(
+                    !worker.join().unwrap(),
+                    "an operation started after this thread had seen the handle cancelled"
+                );
+            }
+            assert_eq!(pipe.issue(|_handle| 7), None);
+        });
     }
 }

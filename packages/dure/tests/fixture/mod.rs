@@ -93,6 +93,16 @@ impl DureCommand {
         Self { args }
     }
 
+    /// `dure run -- <command>`, for a command named exactly as written rather
+    /// than resolved to a fixture path.
+    pub(crate) fn run_bare(store_root: &Path, command: &str) -> Self {
+        let mut args = store_root_args(store_root);
+        args.push("run".to_string());
+        args.push("--".to_string());
+        args.push(command.to_string());
+        Self { args }
+    }
+
     /// Bare `dure resume`, which finds the session by launch directory.
     pub(crate) fn resume(store_root: &Path) -> Self {
         let mut args = store_root_args(store_root);

@@ -277,10 +277,12 @@ fn read_window_size(output: HANDLE) -> Result<WindowSize, PalError> {
         .unwrap_or(1);
     // A console host that reports an empty window is describing something no
     // app can paint into. One cell is the smallest thing that is still a
-    // console, and is what the relay carries on with.
+    // console, and is what the relay carries on with. The upper bound needs no
+    // handling here: the host reports `i16` edges, so a width or height derived
+    // from them cannot exceed what `WindowSize` accepts.
     WindowSize::new(
-        u16::try_from(width.max(1)).unwrap_or(u16::MAX),
-        u16::try_from(height.max(1)).unwrap_or(u16::MAX),
+        u16::try_from(width.max(1)).unwrap_or(1),
+        u16::try_from(height.max(1)).unwrap_or(1),
     )
     .ok_or_else(|| PalError::new(PalErrorKind::Other))
 }

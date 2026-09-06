@@ -41,7 +41,7 @@ use crate::pal::ids::{AppId, JobId};
 use crate::pal::processes::command_line::windows_command_line;
 use crate::pal::processes::resolve::resolve_executable;
 use crate::pal::processes::{
-    AppSpawn, ProcessLiveness, Processes, ResolvedCommand, SupervisorSpawn,
+    AppSpawn, HowResolved, ProcessLiveness, Processes, ResolvedCommand, SupervisorSpawn,
 };
 use crate::pal::pseudoconsole::windows::hpcon_for;
 use crate::pal::raw_handle::RawHandle;
@@ -513,9 +513,17 @@ impl Processes for BuildTargetProcesses {
 
     fn spawn_app(&self, request: &AppSpawn) -> Result<AppId, PalError> {
         let hpcon = hpcon_for(request.pty).ok_or_else(|| PalError::new(PalErrorKind::NotFound))?;
-        let exe = self
-            .resolve_executable(request.command.exe(), &request.launch_directory)
-            .path;
+        let resolved = self.resolve_executable(request.command.exe(), &request.launch_directory);
+        // `CreateProcessW` completes a partial application name from the current
+        // drive and directory, which is exactly the ambient resolution this
+        // module resolves ahead of time to avoid. A bare name the search path
+        // does not have is therefore a spawn failure rather than a path to try,
+        // so a planted executable beside the supervisor cannot stand in for the
+        // one the user named. Ref: docs/design.md, "Commands".
+        if resolved.how == HowResolved::NotFound {
+            return Err(PalError::new(PalErrorKind::NotFound));
+        }
+        let exe = resolved.path;
         let mut cmd_wide = nul_terminated(windows_command_line(
             exe.as_os_str(),
             request.command.args(),

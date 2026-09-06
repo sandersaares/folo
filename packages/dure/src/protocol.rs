@@ -352,6 +352,7 @@ fn decode_i32(rest: &[u8]) -> Result<i32, DecodeError> {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
+    use crate::pal::pseudoconsole::MAX_DIMENSION;
 
     /// Decodes a whole payload, kind byte and all.
     ///
@@ -544,9 +545,17 @@ mod tests {
     #[test]
     fn a_size_no_console_could_have_is_refused() {
         // The invariant is established here so nothing below has to decide what
-        // a zero means: a peer that sends one is told its frame is invalid
-        // rather than quietly getting a different size than it asked for.
-        for (cols, rows) in [(0_u16, 24_u16), (80, 0), (0, 0)] {
+        // a zero or an oversized dimension means: a peer that sends one is told
+        // its frame is invalid rather than quietly getting a different size than
+        // it asked for, or a size the pseudoconsole would later refuse.
+        let too_large = MAX_DIMENSION.saturating_add(1);
+        for (cols, rows) in [
+            (0_u16, 24_u16),
+            (80, 0),
+            (0, 0),
+            (too_large, 24),
+            (80, too_large),
+        ] {
             let mut attach = vec![KIND_ATTACH];
             attach.extend_from_slice(&cols.to_le_bytes());
             attach.extend_from_slice(&rows.to_le_bytes());
