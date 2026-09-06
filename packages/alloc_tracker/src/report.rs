@@ -484,12 +484,7 @@ impl fmt::Display for Report {
         writeln!(f, "Allocation statistics:")?;
         writeln!(f)?;
 
-        let headers = [
-            "Operation",
-            "Bytes/iter",
-            "Allocations/iter",
-            "Peak bytes/iter",
-        ];
+        let headers = ["Operation", "Bytes/iter", "Allocations/iter", "Peak bytes"];
 
         // The confidence interval is kept out of this summary for readability; it remains in
         // the JSON output and the `statistics()` API.

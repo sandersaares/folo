@@ -147,10 +147,10 @@
 //! ```text
 //! Allocation statistics:
 //!
-//! | Operation       | Bytes/iter | Allocations/iter | Peak bytes/iter |
-//! |-----------------|------------|------------------|-----------------|
-//! | allocate_buffer |       1024 |                3 |            1024 |
-//! | build_map       |         64 |                1 |             n/a |
+//! | Operation       | Bytes/iter | Allocations/iter | Peak bytes |
+//! |-----------------|------------|------------------|------------|
+//! | allocate_buffer |       1024 |                3 |       1024 |
+//! | build_map       |         64 |                1 |        n/a |
 //! ```
 //!
 //! # Machine-readable output

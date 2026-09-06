@@ -34,11 +34,11 @@ struct OperationOutput<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     interval_high_allocations_per_iteration: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    slope_peak_bytes_per_iteration: Option<f64>,
+    slope_peak_bytes: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    interval_low_peak_bytes_per_iteration: Option<f64>,
+    interval_low_peak_bytes: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    interval_high_peak_bytes_per_iteration: Option<f64>,
+    interval_high_peak_bytes: Option<f64>,
 }
 
 impl Report {
@@ -87,8 +87,11 @@ impl Report {
     /// | `span_count` | How many spans the estimates were fitted from |
     /// | `slope_bytes_per_iteration` | Bytes allocated per iteration |
     /// | `slope_allocations_per_iteration` | Allocations per iteration |
-    /// | `slope_peak_bytes_per_iteration` | Peak outstanding bytes per iteration |
+    /// | `slope_peak_bytes` | The peak outstanding bytes a single iteration holds |
     /// | `interval_low_*`, `interval_high_*` | Bounds for the matching slope |
+    ///
+    /// The peak keys carry no `per_iteration` suffix because the peak is a level a single
+    /// iteration reaches rather than a quantity accumulated across iterations.
     ///
     /// The two omission rules are independent. An interval pair is absent whenever that
     /// metric's dispersion cannot be estimated, which a single span never supplies. All
@@ -173,14 +176,12 @@ impl Report {
                     .allocations
                     .interval
                     .map(|(_, high)| high),
-                slope_peak_bytes_per_iteration: statistics
-                    .peak_outstanding_bytes
-                    .map(|peak| peak.slope),
-                interval_low_peak_bytes_per_iteration: statistics
+                slope_peak_bytes: statistics.peak_outstanding_bytes.map(|peak| peak.slope),
+                interval_low_peak_bytes: statistics
                     .peak_outstanding_bytes
                     .and_then(|peak| peak.interval)
                     .map(|(low, _)| low),
-                interval_high_peak_bytes_per_iteration: statistics
+                interval_high_peak_bytes: statistics
                     .peak_outstanding_bytes
                     .and_then(|peak| peak.interval)
                     .map(|(_, high)| high),
@@ -281,7 +282,7 @@ mod tests {
 
     #[test]
     #[cfg_attr(miri, ignore)] // Writes files, which is not supported under Miri isolation.
-    fn writes_peak_bytes_per_iteration() {
+    fn writes_peak_bytes() {
         let session = session_with_recorded_work("allocate_vec");
         let directory = tempdir().unwrap();
 
@@ -292,24 +293,18 @@ mod tests {
         // span's high-water mark. A single span pins the estimate on its own peak, and
         // carries no dispersion, so no interval is formed.
         assert_eq!(
-            value
-                .get("slope_peak_bytes_per_iteration")
-                .and_then(Value::as_f64),
+            value.get("slope_peak_bytes").and_then(Value::as_f64),
             Some(800.0)
         );
         // One span supplies no dispersion, so both bounds are withheld while the point
         // estimate remains. This is the omission rule that differs from an absent peak.
-        assert!(value.get("interval_low_peak_bytes_per_iteration").is_none());
-        assert!(
-            value
-                .get("interval_high_peak_bytes_per_iteration")
-                .is_none()
-        );
+        assert!(value.get("interval_low_peak_bytes").is_none());
+        assert!(value.get("interval_high_peak_bytes").is_none());
     }
 
     #[test]
     #[cfg_attr(miri, ignore)] // Writes files, which is not supported under Miri isolation.
-    fn omits_peak_bytes_per_iteration_when_unavailable() {
+    fn omits_peak_bytes_when_unavailable() {
         let session = Session::new().no_stdout().no_file();
         {
             let operation = session.operation("allocate_vec");
@@ -324,13 +319,9 @@ mod tests {
 
         let value = read_json(&directory.path().join("allocate_vec.json"));
         // No peak at all means all three keys go, not just the point estimate.
-        assert!(value.get("slope_peak_bytes_per_iteration").is_none());
-        assert!(value.get("interval_low_peak_bytes_per_iteration").is_none());
-        assert!(
-            value
-                .get("interval_high_peak_bytes_per_iteration")
-                .is_none()
-        );
+        assert!(value.get("slope_peak_bytes").is_none());
+        assert!(value.get("interval_low_peak_bytes").is_none());
+        assert!(value.get("interval_high_peak_bytes").is_none());
     }
 
     #[test]
@@ -365,20 +356,16 @@ mod tests {
         // The peak rides the same estimator, so once there is dispersion evidence its
         // point estimate and both bounds are all emitted.
         assert_eq!(
-            value
-                .get("slope_peak_bytes_per_iteration")
-                .and_then(Value::as_f64),
+            value.get("slope_peak_bytes").and_then(Value::as_f64),
+            Some(800.0)
+        );
+        assert_eq!(
+            value.get("interval_low_peak_bytes").and_then(Value::as_f64),
             Some(800.0)
         );
         assert_eq!(
             value
-                .get("interval_low_peak_bytes_per_iteration")
-                .and_then(Value::as_f64),
-            Some(800.0)
-        );
-        assert_eq!(
-            value
-                .get("interval_high_peak_bytes_per_iteration")
+                .get("interval_high_peak_bytes")
                 .and_then(Value::as_f64),
             Some(800.0)
         );
@@ -416,7 +403,7 @@ mod tests {
                 .is_null(),
             "a zero-iteration allocations slope must serialize as null"
         );
-        assert!(value.get("slope_peak_bytes_per_iteration").is_none());
+        assert!(value.get("slope_peak_bytes").is_none());
         assert_eq!(
             value.get("total_iterations").and_then(Value::as_u64),
             Some(0)
