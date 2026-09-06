@@ -48,8 +48,11 @@ needs an increment.
 
 ### `check`
 
-Exits non-zero when any publishable package needs an increment or any version
-group declares inconsistent versions. Failure text describes the
+Exits non-zero when any publishable package needs an increment, any version
+group declares inconsistent versions, any intra-workspace requirement does not
+name the version its target declares, or any package that exposes a public
+dependency stays compatible while that dependency releases a breaking change.
+Failure text describes the
 self-contained recovery workflow: run `report`, prepare a plan, and run `apply`.
 It additionally reserves the `increment-versions` agent-skill name for the
 automated workflow supplied by the release-versioning stack's separate skill
@@ -145,6 +148,11 @@ rather than applied.
 when empty: `group`, `anchor`, `diff_path`, `untracked`. A change is one of
 `{"path","change","source":"package"}`, `{"field","source":"inherited"}`, or
 `{"dependency","change","source":"lockfile"}`.
+A dependency is `{"name","req","exact_pin","public"}`. `public` marks a
+dependency whose types the dependent's own public API exposes, read from the
+dependent's `allowed_external_types` allow-list and resolved through version
+groups, so an implementation crate reached through the public crate in front of
+it marks that public crate.
 `diff_path` is relative to the report directory. Plan and report formats
 advance this revision together: an incompatible field, enum, or path-layout
 change increments it.

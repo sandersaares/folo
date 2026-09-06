@@ -782,6 +782,100 @@ Describe 'Assert-IncrementPackagePublished' {
 }
 
 Describe 'New-ReleasePlanFile' {
+    It 'raises a package whose public dependency releases a breaking change' {
+        # `app` exposes `lib` in its public API, so `lib` moving to an incompatible version makes
+        # `app`'s own contract incompatible even though `app` recorded only a patch.
+        $reportPath = Join-Path $TestDrive 'public-report.json'
+        $decisionPath = Join-Path $TestDrive 'public-decision.json'
+        $planPath = Join-Path $TestDrive 'public-plan.json'
+        Write-TestReport -Path $reportPath -Package @(
+            Get-TestPackage -Name 'lib' -DeclaredVersion '1.0.0' -AnchorVersion '1.0.0'
+            Get-TestPackage -Name 'app' -DeclaredVersion '2.0.0' -AnchorVersion '2.0.0' `
+                -Dependencies @(@{ name = 'lib'; req = '^1.0.0'; exact_pin = $false; public = $true })
+        )
+        Write-TestDecision -Path $decisionPath -Change @(
+            @{ name = 'lib'; level = 'breaking' }
+            @{ name = 'app'; level = 'patch' }
+        )
+
+        $messages = New-ReleasePlanFile -ReportPath $reportPath -DecisionPath $decisionPath `
+            -PlanPath $planPath -Verbose 4>&1 |
+            Where-Object { $_ -is [System.Management.Automation.VerboseRecord] } |
+            ForEach-Object { $_.Message }
+        $plan = Get-Content -LiteralPath $planPath -Raw | ConvertFrom-Json
+
+        ($messages -join "`n") | Should -Match "Package 'app' is raised to change level 'breaking'"
+        ($plan.increments | Where-Object name -EQ 'app').level | Should -Be 'major'
+    }
+
+    It 'leaves a package whose breaking dependency is not publicly exposed' {
+        $reportPath = Join-Path $TestDrive 'private-report.json'
+        $decisionPath = Join-Path $TestDrive 'private-decision.json'
+        $planPath = Join-Path $TestDrive 'private-plan.json'
+        Write-TestReport -Path $reportPath -Package @(
+            Get-TestPackage -Name 'lib' -DeclaredVersion '1.0.0' -AnchorVersion '1.0.0'
+            Get-TestPackage -Name 'app' -DeclaredVersion '2.0.0' -AnchorVersion '2.0.0' `
+                -Dependencies @(@{ name = 'lib'; req = '^1.0.0'; exact_pin = $false; public = $false })
+        )
+        Write-TestDecision -Path $decisionPath -Change @(
+            @{ name = 'lib'; level = 'breaking' }
+            @{ name = 'app'; level = 'patch' }
+        )
+
+        New-ReleasePlanFile -ReportPath $reportPath -DecisionPath $decisionPath `
+            -PlanPath $planPath
+        $plan = Get-Content -LiteralPath $planPath -Raw | ConvertFrom-Json
+
+        ($plan.increments | Where-Object name -EQ 'app').level | Should -Be 'patch'
+    }
+
+    It 'propagates a breaking change along a chain of public dependencies' {
+        # Raising the middle package makes the outer one incompatible in turn, which only a
+        # repeated pass finds.
+        $reportPath = Join-Path $TestDrive 'chain-report.json'
+        $decisionPath = Join-Path $TestDrive 'chain-decision.json'
+        $planPath = Join-Path $TestDrive 'chain-plan.json'
+        Write-TestReport -Path $reportPath -Package @(
+            # Ordered so the outer package is visited before the middle one is raised.
+            Get-TestPackage -Name 'outer' -DeclaredVersion '3.0.0' -AnchorVersion '3.0.0' `
+                -Dependencies @(@{ name = 'middle'; req = '^2.0.0'; exact_pin = $false; public = $true })
+            Get-TestPackage -Name 'middle' -DeclaredVersion '2.0.0' -AnchorVersion '2.0.0' `
+                -Dependencies @(@{ name = 'inner'; req = '^1.0.0'; exact_pin = $false; public = $true })
+            Get-TestPackage -Name 'inner' -DeclaredVersion '1.0.0' -AnchorVersion '1.0.0'
+        )
+        Write-TestDecision -Path $decisionPath -Change @(
+            @{ name = 'inner'; level = 'breaking' }
+        )
+
+        New-ReleasePlanFile -ReportPath $reportPath -DecisionPath $decisionPath `
+            -PlanPath $planPath
+        $plan = Get-Content -LiteralPath $planPath -Raw | ConvertFrom-Json
+
+        ($plan.increments | Where-Object name -EQ 'middle').level | Should -Be 'major'
+        ($plan.increments | Where-Object name -EQ 'outer').level | Should -Be 'major'
+    }
+
+    It 'leaves a package whose public dependency is already pending a breaking release' {
+        # The dependency carries no decision because an earlier pull request already moved it, but
+        # it still releases a breaking change, so the exposure is still incompatible.
+        $reportPath = Join-Path $TestDrive 'pending-report.json'
+        $decisionPath = Join-Path $TestDrive 'pending-decision.json'
+        $planPath = Join-Path $TestDrive 'pending-plan.json'
+        Write-TestReport -Path $reportPath -Package @(
+            Get-TestPackage -Name 'lib' -Status 'pending-release' -DeclaredVersion '2.0.0' `
+                -AnchorVersion '1.0.0'
+            Get-TestPackage -Name 'app' -DeclaredVersion '2.0.0' -AnchorVersion '2.0.0' `
+                -Dependencies @(@{ name = 'lib'; req = '^2.0.0'; exact_pin = $false; public = $true })
+        )
+        Write-TestDecision -Path $decisionPath -Change @()
+
+        New-ReleasePlanFile -ReportPath $reportPath -DecisionPath $decisionPath `
+            -PlanPath $planPath
+        $plan = Get-Content -LiteralPath $planPath -Raw | ConvertFrom-Json
+
+        ($plan.increments | Where-Object name -EQ 'app').level | Should -Be 'major'
+    }
+
     It 'translates semantic change levels into mechanical Cargo levels' {
         $reportPath = Join-Path $TestDrive 'levels-report.json'
         $decisionPath = Join-Path $TestDrive 'levels-decision.json'

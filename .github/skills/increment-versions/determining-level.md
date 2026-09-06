@@ -48,6 +48,23 @@ features disabled loses the item. Removing a feature is breaking when it withdra
 or public items a consumer could reach. Adding a new opt-in feature is not breaking; it is a
 compatible capability.
 
+A package also takes `breaking` when one of its **public dependencies** does, whatever its own
+diff shows. The report marks such a dependency `"public": true`, meaning this package's public
+API exposes types from it. An incompatible release of that dependency changes the identity of
+those types for consumers: code holding the older dependency can no longer hand its values
+across, so the exposure itself becomes incompatible even when the dependency's breaking change
+touched nothing this package re-exports. Read the flag rather than judging the exposure from
+source; it is derived from the `allowed_external_types` allow-list that `check-external-types`
+verifies, and `just validate-versions` rejects a tree where a public dependency breaks alone.
+
+The flag resolves through version groups, so a package exposing an implementation crate's types
+carries the flag on the public crate it actually depends on. That is the package whose version
+moves with the implementation crate's.
+
+Only a `breaking` dependency propagates this way. A dependency that adds API compatibly leaves
+the exposure intact, so it establishes no more than the `patch` its requirement rewrite already
+does.
+
 ## Nonbreaking
 
 Choose `nonbreaking` for a meaningful compatible capability: a new API, supported input,
@@ -72,11 +89,13 @@ resulting dependency or feature behavior rather than assuming every `Cargo.toml`
 metadata-only.
 
 A package also takes at least `patch` when applying the plan will rewrite an intra-workspace
-requirement inside its own published manifest, which happens when it pins a workspace dependency
-that another decision moves. Such a package has no released-content change of its own yet, so the
-report shows nothing for it; the rewrite arrives with the increment that moves the dependency.
-Deciding it in the same pass keeps that package from being left behind at an already-published
-version with a changed manifest.
+requirement inside its own published manifest, which happens whenever it declares a version
+requirement on a workspace package another decision moves. Every such requirement names the
+version its target declares, so moving the target rewrites the requirement even though it would
+still have admitted the new version. Such a package has no released-content change of its own
+yet, so the report shows nothing for it; the rewrite arrives with the increment that moves the
+dependency. Deciding it in the same pass keeps that package from being left behind at an
+already-published version with a changed manifest.
 
 ## No increment
 

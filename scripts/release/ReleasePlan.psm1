@@ -868,6 +868,142 @@ function Get-CargoIncrementLevel {
     return 'patch'
 }
 
+function Get-VersionCompatibilityKey {
+    # The part of a version that must agree for two versions to be semver-compatible.
+    #
+    # Cargo treats the leftmost non-zero component as the major component, so a 0.y.z release
+    # breaks on its minor component and a 0.0.z release breaks on every increment.
+    param(
+        [Parameter(Mandatory)][semver] $Version
+    )
+
+    if ($Version.Major -gt 0) {
+        return "$($Version.Major).x.x"
+    }
+    if ($Version.Minor -gt 0) {
+        return "0.$($Version.Minor).x"
+    }
+    return "0.0.$($Version.Patch)"
+}
+
+function Test-PackageReleasesBreakingChange {
+    # Whether the package ends the plan declaring a version incompatible with its last release.
+    #
+    # Asked of the resolved outcome rather than of the decided level, because a package whose
+    # version was already raised in an earlier pull request releases a breaking change while
+    # carrying no decision now, and a decision already covered by a pending increment still does.
+    param(
+        [Parameter(Mandatory)] $Package,
+        [string] $Level
+    )
+
+    if ($Package.PSObject.Properties.Name -notcontains 'anchor' -or
+        $null -eq $Package.anchor -or
+        [string]::IsNullOrWhiteSpace([string] $Package.anchor.version)) {
+        # Never released, so there is no consumer contract to break.
+        return $false
+    }
+    try {
+        $anchor = [semver] [string] $Package.anchor.version
+        $resolved = [semver] [string] $Package.declared_version
+    } catch {
+        throw "Package '$($Package.name)' has an invalid semantic version in the release-plan report."
+    }
+    if (-not [string]::IsNullOrWhiteSpace($Level)) {
+        $minimum = Get-MinimumVersionForChange -Anchor $anchor -Level $Level
+        if ($minimum -gt $resolved) {
+            $resolved = $minimum
+        }
+    }
+    return (Get-VersionCompatibilityKey -Version $anchor) -cne
+        (Get-VersionCompatibilityKey -Version $resolved)
+}
+
+function Get-ChangeLevelWithPublicDependency {
+    # The decided change levels, plus `breaking` for every package whose public API exposes a
+    # dependency that releases a breaking change.
+    #
+    # An incompatible release changes the identity of the exposed types, so a consumer holding
+    # the older dependency can no longer hand its values across. That makes the dependent's own
+    # contract incompatible however unrelated the dependency's breaking change was to the items
+    # it exposes, which is mechanics rather than judgement and so is decided here.
+    # `validate-versions` rejects a tree that violates this, so a plan skipping it would be
+    # generated only to fail verification.
+    # Ref: packages/cargo-release-plan/docs/design.md, "Public dependencies".
+    [OutputType([System.Collections.IDictionary])]
+    param(
+        [Parameter(Mandatory)] $Report,
+        [Parameter(Mandatory)] $ByName,
+        [Parameter(Mandatory)] $Decision
+    )
+
+    $level = [ordered]@{}
+    foreach ($change in $Decision.changes) {
+        $level[[string] $change.name] = [string] $change.level
+    }
+
+    # Raising one package can make its own dependents incompatible in turn, so the answers are
+    # recomputed until they stop changing. A package only ever moves to `breaking` and never
+    # back, so this settles within one pass per package; the bound is asserted rather than
+    # assumed so a future change cannot spin here forever.
+    $remainingPass = @($Report.packages).Count + 1
+    $settled = $false
+    while (-not $settled) {
+        if ($remainingPass -le 0) {
+            throw 'Public-dependency breaking-change propagation did not settle; this is a defect in the plan generator.'
+        }
+        $remainingPass--
+        $settled = $true
+        foreach ($package in $Report.packages) {
+            $name = [string] $package.name
+            if ($package.PSObject.Properties.Name -notcontains 'anchor' -or
+                $null -eq $package.anchor -or
+                [string]::IsNullOrWhiteSpace([string] $package.anchor.version)) {
+                # A package with no release cannot take an increment and has no contract to
+                # break. It follows the first-publication path instead.
+                continue
+            }
+            $current = if ($level.Contains($name)) { [string] $level[$name] } else { '' }
+            if (Test-PackageReleasesBreakingChange -Package $package -Level $current) {
+                continue
+            }
+            if ($package.PSObject.Properties.Name -notcontains 'dependencies') {
+                continue
+            }
+            foreach ($dependency in $package.dependencies) {
+                if ($dependency.PSObject.Properties.Name -notcontains 'public' -or
+                    -not $dependency.public) {
+                    continue
+                }
+                $dependencyName = [string] $dependency.name
+                if (-not $ByName.Contains($dependencyName)) {
+                    continue
+                }
+                $dependencyLevel = if ($level.Contains($dependencyName)) {
+                    [string] $level[$dependencyName]
+                } else {
+                    ''
+                }
+                if (-not (Test-PackageReleasesBreakingChange -Package $ByName[$dependencyName] `
+                            -Level $dependencyLevel)) {
+                    continue
+                }
+                Write-Verbose (
+                    "Package '$name' is raised to change level 'breaking' because its public API " +
+                    "exposes '$dependencyName', which releases a version incompatible with its " +
+                    "anchor '$($ByName[$dependencyName].anchor.version)'. A consumer holding the " +
+                    'older dependency can no longer hand its types across.'
+                ) -Verbose
+                $level[$name] = 'breaking'
+                $settled = $false
+                break
+            }
+        }
+    }
+
+    return $level
+}
+
 function Get-DecisionKey {
     # The key a plan entry folds onto: the package's version group when it has one, otherwise the
     # package itself. Mirrors the tool's own decision keys, so a group counts as already planned
@@ -1174,14 +1310,19 @@ function New-ReleasePlanFile {
     $report = Read-ReleasePlanReport -ReportPath $ReportPath
     $decision = Read-ChangeDecision -DecisionPath $DecisionPath
     $byName = Get-PackageByName -Report $report
+    # Exposing a dependency that breaks is itself a breaking change, and which packages do so is
+    # read from the report rather than decided, so the levels are completed before they are
+    # mapped onto versions.
+    $levelByName = Get-ChangeLevelWithPublicDependency -Report $report -ByName $byName `
+        -Decision $decision
     $increment = [System.Collections.Generic.List[object]]::new()
-    foreach ($change in $decision.changes) {
-        $name = [string] $change.name
+    foreach ($entry in $levelByName.GetEnumerator()) {
+        $name = [string] $entry.Key
         if (-not $byName.Contains($name)) {
             throw "Change decision names unknown package '$name'."
         }
         $package = $byName[$name]
-        $level = [string] $change.level
+        $level = [string] $entry.Value
         if ($package.PSObject.Properties.Name -notcontains 'anchor' -or
             $null -eq $package.anchor -or
             [string]::IsNullOrWhiteSpace([string] $package.anchor.version)) {
