@@ -300,7 +300,8 @@ fn relayed_input_keeps_non_ascii_text_intact() {
 fn the_app_is_given_the_attaching_terminal_size_and_told_when_it_changes() {
     with_watchdog(|| {
         let dir = TempDir::new().unwrap();
-        let client = DureCommand::run(dir.path(), Scenario::ReportSizeTwice).spawn(dir.path());
+        let client =
+            DureCommand::run(dir.path(), Scenario::ReportSizeAfterResize).spawn(dir.path());
         let mut watching = Console::watching(&client);
         // The app's first report proves the attach carried a size at all; the
         // session starts on a default geometry that the first attach replaces.
@@ -313,9 +314,8 @@ fn the_app_is_given_the_attaching_terminal_size_and_told_when_it_changes() {
         // so a report that swapped them would not match either.
         let resized = (attach_size.0.saturating_add(11), 17_u16);
         client.resize(resized.0, resized.1);
-        // Read after the resize, so what the app reports is what it was told
-        // rather than what it started with.
-        release(&client);
+        // The helper waits for the app console's resize event, so its second
+        // report cannot race a separately injected input record.
         let output = watching.rest();
         let status = client.wait();
 

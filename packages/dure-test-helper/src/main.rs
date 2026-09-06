@@ -33,9 +33,9 @@ fn main() {
             io::stdout().flush().expect("flush stdout");
             wait_for_byte();
         }
-        Some("report-size-twice") => {
+        Some("report-size-after-resize") => {
             print_console_size();
-            wait_for_byte();
+            wait_for_resize();
             print_console_size();
         }
         Some("exit") => {
@@ -59,7 +59,7 @@ fn main() {
         _ => {
             eprintln!(
                 "usage: dure-test-helper echo-line | print-and-wait | exit [code] | \
-                 has-console | print-non-ascii | report-size-twice | wait-has-console | \
+                 has-console | print-non-ascii | report-size-after-resize | wait-has-console | \
                  wait-exit [code]"
             );
             process::exit(2);
@@ -80,6 +80,39 @@ fn exit_code(args: &[String]) -> i32 {
 fn wait_for_byte() {
     let mut buf = [0_u8; 1];
     _ = io::stdin().read(&mut buf);
+}
+
+/// Blocks until the app's console reports a resize.
+#[cfg(windows)]
+fn wait_for_resize() {
+    use windows::Win32::System::Console::{
+        CONSOLE_MODE, ENABLE_WINDOW_INPUT, GetConsoleMode, GetStdHandle, INPUT_RECORD,
+        ReadConsoleInputW, STD_INPUT_HANDLE, SetConsoleMode, WINDOW_BUFFER_SIZE_EVENT,
+    };
+
+    // SAFETY: asks for this process's own standard input handle.
+    let handle = unsafe { GetStdHandle(STD_INPUT_HANDLE) }.expect("std input handle");
+    let mut mode = CONSOLE_MODE::default();
+    // SAFETY: `handle` is this process's console input and `mode` outlives the call.
+    unsafe { GetConsoleMode(handle, &raw mut mode) }.expect("console input mode");
+    // SAFETY: `handle` is this process's console input; the new mode preserves
+    // every existing bit and adds resize notifications.
+    unsafe { SetConsoleMode(handle, CONSOLE_MODE(mode.0 | ENABLE_WINDOW_INPUT.0)) }
+        .expect("enable window input");
+
+    loop {
+        let mut records = [INPUT_RECORD::default()];
+        let mut read = 0_u32;
+        // SAFETY: `records` is exclusive and outlives the call.
+        unsafe { ReadConsoleInputW(handle, &mut records, &raw mut read) }
+            .expect("read console input");
+        let record = records
+            .first()
+            .expect("the fixed input-record buffer has one element");
+        if read != 0 && u32::from(record.EventType) == WINDOW_BUFFER_SIZE_EVENT {
+            return;
+        }
+    }
 }
 
 /// Reports the console geometry the app currently sees.

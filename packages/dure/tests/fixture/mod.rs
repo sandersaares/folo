@@ -63,8 +63,8 @@ pub(crate) enum Scenario {
     PrintAndWait,
     /// Prints text no ASCII-only path can carry, then exits.
     PrintNonAscii,
-    /// Reports its console size, waits for input, then reports it again.
-    ReportSizeTwice,
+    /// Reports its console size, waits for a resize, then reports it again.
+    ReportSizeAfterResize,
     /// Waits for input, then reports whether it has a console.
     WaitThenReportConsole,
     /// Waits for input, then exits with `SAMPLE_NONZERO_EXIT`.
@@ -77,7 +77,7 @@ impl Scenario {
             Self::EchoLine => vec!["echo-line".to_string()],
             Self::PrintAndWait => vec!["print-and-wait".to_string()],
             Self::PrintNonAscii => vec!["print-non-ascii".to_string()],
-            Self::ReportSizeTwice => vec!["report-size-twice".to_string()],
+            Self::ReportSizeAfterResize => vec!["report-size-after-resize".to_string()],
             Self::WaitThenReportConsole => vec!["wait-has-console".to_string()],
             Self::WaitThenExit => {
                 vec!["wait-exit".to_string(), SAMPLE_NONZERO_EXIT.to_string()]
