@@ -28,7 +28,7 @@ use crate::supervisor::record_writer::RecordWriter;
 use crate::supervisor::relay::{client_loop, pty_output_loop};
 use crate::supervisor::shared::{Client, FirstAttach, Shared, preamble_messages};
 use crate::supervisor::startup::{DEFAULT_PTY_SIZE, map_startup};
-use crate::{BreakawayDeniedError, SessionId, StoreError};
+use crate::{BreakawayDeniedError, PalFailedError, SessionId, StoreError};
 
 /// A publication time with no structure of its own; the age column has its
 /// own tests in `list_fmt`.

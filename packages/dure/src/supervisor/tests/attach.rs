@@ -371,7 +371,7 @@ fn output_is_relayed_to_the_installed_client() {
     // Ends the loop once the output has been drained.
     pty_host.finish(shared.pty);
 
-    pty_output_loop(&shared);
+    pty_output_loop(&shared).unwrap();
     outbox.finish();
     outbox.wait_for_writer();
 
@@ -400,6 +400,6 @@ fn output_for_a_client_that_is_gone_is_discarded() {
 
     // The pump must not be the thread that notices, so it completes even
     // though nothing can be delivered.
-    pty_output_loop(&shared);
+    pty_output_loop(&shared).unwrap();
     outbox.wait_for_writer();
 }

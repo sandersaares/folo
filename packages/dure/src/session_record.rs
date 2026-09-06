@@ -78,15 +78,16 @@ struct StoredRecord {
     started_at_unix_ms: u64,
     #[serde(default)]
     attached: bool,
-    /// Absent in records written before versioning existed. Those describe the
-    /// format as it stands, so they read as the version that introduced the
-    /// field rather than as a mismatch.
-    #[serde(default = "first_protocol_version")]
+    /// Absent in records written before versioning existed. Such records cannot
+    /// prove that they speak this build's wire format, so they read as a
+    /// deliberately incompatible version.
+    #[serde(default = "unversioned_protocol")]
     protocol_version: u32,
 }
 
-const fn first_protocol_version() -> u32 {
-    1
+/// Outside the versioned protocol sequence so an unversioned record is refused.
+const fn unversioned_protocol() -> u32 {
+    0
 }
 
 /// Why a stored record could not become a [`SessionRecord`].
@@ -198,16 +199,16 @@ mod tests {
     }
 
     #[test]
-    fn a_record_written_before_versioning_reads_as_the_first_version() {
-        // Such a record describes the format as it stands, so treating it as a
-        // mismatch would refuse sessions that work.
+    fn a_record_written_before_versioning_is_not_assumed_compatible() {
+        // No version means no evidence that the session speaks the current
+        // protocol, so resuming it would risk interpreting incompatible frames.
         let without_version = concat!(
             r#"{"id":1,"supervisor_pid":42,"supervisor_creation_time":99,"#,
             r#""pipe_name":"p","launch_directory":"C:\\work","#,
             r#""command":["copilot.exe"],"started_at_unix_ms":1,"attached":false}"#,
         );
         let record = serde_json::from_str::<SessionRecord>(without_version).unwrap();
-        assert_eq!(record.protocol_version, 1);
+        assert_ne!(record.protocol_version, PROTOCOL_VERSION);
     }
 
     #[test]

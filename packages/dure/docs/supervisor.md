@@ -103,10 +103,13 @@ makes the delete final, including over a session id that is later reused.
 
 ## Teardown
 
-Session teardown closes the pseudoconsole and joins the output pump before
-queueing the app's exit status, which is what orders the app's final output
-ahead of it. Nothing is torn down until the initiator has attached or given up,
-so a session whose app exits immediately still reports.
+Session teardown closes the app-lifetime job, finishes the pseudoconsole, and
+joins the output pump before queueing the app's exit status, which is what orders
+the app's final output ahead of it. A failed pseudoconsole read ends the job so
+an app that keeps writing cannot block forever behind an undrained pipe; the
+incomplete output is reported as a supervisor failure rather than a successful
+app exit. Nothing is torn down until the initiator has attached or given up, so
+a session whose app exits immediately still reports.
 
 Teardown then claims the client slot under the attach lock, marking the session
 as stopping in the same critical section. An attach is therefore either complete
@@ -121,8 +124,10 @@ owed rather than conditional: the wait on the app is run for its result, the
 result is set aside, and the listener, job, pseudoconsole and record are released
 whatever it says. Only then is a failed wait reported, ahead of a failed delete,
 because the wait is the cause and a record that outlives its session is only the
-consequence. A wait that failed yields no exit status, so nothing is sent to the
-attached client and the session does not linger waiting for one to arrive.
+consequence. A failed wait or output pump yields no complete exit outcome, so
+nothing is sent to the attached client and the session does not linger waiting
+for one to arrive. A client exit outcome that was already queued is delivered
+before a separate record-deletion failure is reported.
 
 ## Opening output
 

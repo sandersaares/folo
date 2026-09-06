@@ -22,6 +22,8 @@ struct PtyState {
     /// reads lets a test put output beyond a reader's reach and then require
     /// that shutdown still delivers it.
     withheld: bool,
+    /// Makes the output stream fail instead of reaching clean EOF.
+    read_failed: bool,
 }
 
 /// Told about every close, for tests that care when one happened relative to
@@ -95,6 +97,18 @@ impl MemoryPseudoconsole {
         state.withheld = true;
     }
 
+    /// Fail the output stream as if its host pipe could no longer be read.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `pty` is not live, for the same reason as `push_output`.
+    pub(crate) fn fail_output(&self, pty: PtyId) {
+        let mut ptys = self.inner.ptys.lock().expect("pty map lock");
+        let state = ptys.get_mut(&pty).expect("failing output from a live pty");
+        state.read_failed = true;
+        self.inner.cond.notify_all();
+    }
+
     /// Take input the supervisor wrote to the app.
     ///
     /// # Panics
@@ -148,6 +162,7 @@ impl Pseudoconsole for MemoryPseudoconsole {
                 output: VecDeque::new(),
                 closed: false,
                 withheld: false,
+                read_failed: false,
             },
         );
         Ok(id)
@@ -184,6 +199,9 @@ impl Pseudoconsole for MemoryPseudoconsole {
             let Some(state) = ptys.get_mut(&pty) else {
                 return Err(PalError::new(PalErrorKind::NotFound));
             };
+            if state.read_failed {
+                return Err(PalError::new(PalErrorKind::Other));
+            }
             // Withheld output becomes readable once the pty is finished, which
             // is what makes shutdown the only path that can deliver it.
             if !state.output.is_empty() && (state.closed || !state.withheld) {

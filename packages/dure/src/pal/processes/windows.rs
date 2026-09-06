@@ -167,14 +167,19 @@ fn close(handle: HANDLE) {
 }
 
 pub(super) fn wide(s: &str) -> Vec<u16> {
-    nul_terminated(OsStr::new(s).encode_wide().collect())
+    wide_os(OsStr::new(s))
 }
 
 /// Encodes a path for Win32 without narrowing it to Rust text.
 ///
 /// Ref: `command_line`, on why paths are never narrowed.
 fn wide_path(path: &Path) -> Vec<u16> {
-    nul_terminated(path.as_os_str().encode_wide().collect())
+    wide_os(path.as_os_str())
+}
+
+/// Encodes an operating-system string for Win32 without narrowing it to Rust text.
+fn wide_os(value: &OsStr) -> Vec<u16> {
+    nul_terminated(value.encode_wide().collect())
 }
 
 fn nul_terminated(mut units: Vec<u16>) -> Vec<u16> {
@@ -703,7 +708,7 @@ impl Processes for BuildTargetProcesses {
 /// reaches the launch directory; a bare name is a search-path lookup only.
 pub(super) fn search_path(command: &str, extension: &str) -> Option<PathBuf> {
     let search_path = env::var_os("PATH")?;
-    let search_path = wide(&search_path.to_string_lossy());
+    let search_path = wide_os(search_path.as_os_str());
     let name = wide(command);
     // The extension is applied only when the name carries no extension of its
     // own, which is what makes `dure run -- copilot` behave like typing it in a shell.
@@ -735,4 +740,21 @@ pub(super) fn search_path(command: &str, extension: &str) -> Option<PathBuf> {
         buf = vec![0_u16; len];
     }
     None
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use std::os::windows::ffi::OsStringExt;
+
+    use super::*;
+
+    #[test]
+    fn os_strings_reach_win32_without_replacing_unpaired_surrogates() {
+        // An unpaired high surrogate is a legal Windows path code unit but
+        // cannot be represented by a Rust string.
+        let value = OsString::from_wide(&[0xd800]);
+
+        assert_eq!(wide_os(&value), [0xd800, 0]);
+    }
 }

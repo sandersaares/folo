@@ -1,5 +1,3 @@
-#![cfg_attr(coverage_nightly, coverage(off))]
-
 //! In-memory session store for supervisor unit tests.
 
 use std::collections::BTreeMap;
@@ -30,6 +28,8 @@ struct MemorySessionStoreInner {
     records: Mutex<BTreeMap<SessionId, StoredSession>>,
     /// Injects a publication failure after id allocation.
     fail_next_publish: AtomicBool,
+    /// Injects a deletion failure during supervisor teardown.
+    fail_next_delete: AtomicBool,
     publish_stall: Mutex<PublishStall>,
     publish_stall_changed: Condvar,
 }
@@ -58,6 +58,10 @@ impl MemorySessionStore {
 
     pub(crate) fn fail_next_publish(&self) {
         self.inner.fail_next_publish.store(true, Ordering::SeqCst);
+    }
+
+    pub(crate) fn fail_next_delete(&self) {
+        self.inner.fail_next_delete.store(true, Ordering::SeqCst);
     }
 
     pub(crate) fn wait_for_stalled_publish(&self) {
@@ -160,6 +164,9 @@ impl SessionStore for MemorySessionStore {
     }
 
     fn delete_owned_by(&self, id: SessionId, owner: &ProcessIdentity) -> Result<(), PalError> {
+        if self.inner.fail_next_delete.swap(false, Ordering::SeqCst) {
+            return Err(PalError::new(PalErrorKind::Other));
+        }
         let mut records = self.inner.records.lock().unwrap();
         let owned = match records.get(&id) {
             Some(StoredSession::Reserved { owner: current }) => current == owner,

@@ -10,7 +10,8 @@ use ohno::AppError;
 
 use crate::constants::CONNECT_TIMEOUT;
 use crate::outbox::Outbox;
-use crate::pal::ids::{ConnId, ListenerId};
+use crate::pal::error::PalError;
+use crate::pal::ids::{ConnId, JobId, ListenerId};
 use crate::pal::processes::Processes;
 use crate::pal::pseudoconsole::Pseudoconsole;
 use crate::pal::session_store::SessionStore;
@@ -84,79 +85,113 @@ where
         move || accept_loop(&shared, &transport, listener, store_flag)
     });
 
-    let pty_pump = thread::spawn({
-        let shared = Arc::clone(&shared);
-        move || pty_output_loop(&shared)
-    });
+    let output_failed = AtomicBool::new(false);
+    let job_closed = AtomicBool::new(false);
 
-    // Everything below this point is teardown the session owes the host whether
-    // or not the wait succeeded: the listener, the job holding the app and its
-    // descendants, the pseudoconsole, and the published record all outlive this
-    // function otherwise. The wait failure is reported only once that is done.
-    let waited = processes.wait_app(app);
+    thread::scope(|scope| {
+        let pty_pump = scope.spawn({
+            let shared = Arc::clone(&shared);
+            let output_failed = &output_failed;
+            let job_closed = &job_closed;
+            move || {
+                let result = pty_output_loop(&shared);
+                if result.is_err() {
+                    // A stopped pump can no longer drain an app that keeps
+                    // writing. End the job so wait_app cannot block behind a
+                    // full pseudoconsole pipe.
+                    output_failed.store(true, Ordering::SeqCst);
+                    close_job_once(processes, job, job_closed);
+                }
+                result
+            }
+        });
 
-    // An app can outlive neither its output nor its exit status: both are only
-    // deliverable while the session is still up, so a session nobody has
-    // attached to yet stays up until its initiator arrives or gives up. A wait
-    // that failed has no status to deliver, so there is nothing to wait for.
-    if waited.is_ok() {
-        shared.await_first_attach();
-    }
+        // Everything below this point is teardown the session owes the host
+        // whether or not the wait succeeded: the listener, the job holding the
+        // app and its descendants, the pseudoconsole, and the published record
+        // all outlive this function otherwise. Failures are reported only once
+        // that is done.
+        let waited = processes.wait_app(app);
 
-    transport.close_listener(listener);
-    // Descendants of the app stay attached to the pseudoconsole until this job
-    // ends them, and closing a pseudoconsole waits for its attached clients.
-    processes.close_job(job);
-    // The app has exited, so ending the pseudoconsole flushes what it still
-    // holds and lets the output loop finish those bytes before the read fails.
-    // Joining the pump before announcing the exit is what orders the app's final
-    // output ahead of `AppExited` instead of racing it.
-    pty_host.finish(pty);
-    _ = pty_pump.join();
-    pty_host.close(pty);
-
-    // Both under the attach lock, which `client_loop` also takes for the whole
-    // attach transaction. An attach therefore either completes before the slot
-    // is claimed here and receives the exit status, or observes the stop and is
-    // refused. Reading the slot outside the lock would let a client install
-    // itself between the two and never learn that the app exited.
-    let client = {
-        let _attach = shared
-            .attach
-            .lock()
-            .expect("the attach lock guards no data, so it is never poisoned by its guard");
-        shared.stopping.store(true, Ordering::SeqCst);
-        shared.client().take()
-    };
-    if let Some(client) = &client {
-        if let Ok(status) = &waited {
-            // Attach treats a disconnect without `AppExited` as a relay failure
-            // when the input thread has already stopped, so the status must be
-            // queued behind the output rather than racing it.
-            client.outbox.send(Message::AppExited { status: *status });
+        // An app can outlive neither its output nor its exit status: both are
+        // only deliverable while the session is still up, so a session nobody
+        // has attached to yet stays up until its initiator arrives or gives up.
+        // A failed wait or pump has no complete outcome to deliver.
+        if waited.is_ok() && !output_failed.load(Ordering::SeqCst) {
+            shared.await_first_attach();
         }
-        client.outbox.finish();
+
+        transport.close_listener(listener);
+        // Descendants of the app stay attached to the pseudoconsole until this
+        // job ends them, and closing a pseudoconsole waits for its attached
+        // clients. The pump may already have ended it after a failed read.
+        close_job_once(processes, job, &job_closed);
+        // The app has exited, so ending the pseudoconsole flushes what it still
+        // holds and lets the output loop finish those bytes before clean EOF.
+        // Joining the pump before announcing the exit orders the app's final
+        // output ahead of `AppExited` instead of racing it.
+        pty_host.finish(pty);
+        let pumped = pty_pump
+            .join()
+            .expect("the output pump contains no panic-capable callbacks");
+        pty_host.close(pty);
+
+        // Both under the attach lock, which `client_loop` also takes for the
+        // whole attach transaction. An attach therefore either completes
+        // before the slot is claimed here and receives the outcome, or observes
+        // the stop and is refused.
+        let client = {
+            let _attach = shared
+                .attach
+                .lock()
+                .expect("the attach lock guards no data, so it is never poisoned by its guard");
+            shared.stopping.store(true, Ordering::SeqCst);
+            shared.client().take()
+        };
+        if let Some(client) = &client {
+            if pumped.is_ok()
+                && let Ok(status) = &waited
+            {
+                // Attach treats a disconnect without `AppExited` as a relay
+                // failure, so a complete status is queued behind all output.
+                client.outbox.send(Message::AppExited { status: *status });
+            }
+            client.outbox.finish();
+        }
+
+        // Nothing can publish the record after this, so the delete below is
+        // final — including over a session id that is later reused.
+        record_writer.finish();
+        // Ids are reused, so an unconditional delete could reap whichever
+        // session claimed this id after this supervisor published.
+        let deleted = store.delete_owned_by(session_id, &identity);
+
+        if let Some(client) = client {
+            // Delivery finishes before cleanup errors are reported. Record
+            // deletion is independent of the outcome already owed to a client.
+            client.outbox.wait_for_writer();
+        }
+
+        // A wait that failed is the cause and a record that outlives it is only
+        // a consequence, so the wait failure is the one worth reporting.
+        let status = waited.map_err(PalFailedError::caused_by)?;
+        pumped.map_err(PalFailedError::caused_by)?;
+        deleted.map_err(StoreError::caused_by)?;
+        Ok(status)
+    })
+}
+
+/// Closes the app-lifetime job once across normal teardown and pump failure.
+// Replacing this with a no-op strands wait_app after an output failure. Proving
+// non-termination would require the real-time timeout mutation tests forbid.
+#[cfg_attr(test, mutants::skip)]
+fn close_job_once<P: Processes>(processes: &P, job: JobId, closed: &AtomicBool) {
+    if closed
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_ok()
+    {
+        processes.close_job(job);
     }
-
-    // Nothing can publish the record after this, so the delete below is final
-    // — including over a session id that is later reused.
-    record_writer.finish();
-    // Ids are reused, so an unconditional delete could reap whichever session
-    // claimed this id after this supervisor published.
-    let deleted = store.delete_owned_by(session_id, &identity);
-
-    // A wait that failed is the cause and a record that outlives it is only a
-    // consequence, so the wait failure is the one worth reporting.
-    let status = waited.map_err(PalFailedError::caused_by)?;
-    deleted.map_err(StoreError::caused_by)?;
-
-    if let Some(client) = client {
-        // The session already owns nothing, so waiting here for the exit status
-        // to land costs a client that is still reading nothing and a client
-        // that has stopped reading only this process outliving it.
-        client.outbox.wait_for_writer();
-    }
-    Ok(status)
 }
 
 // Blocking accept. A mutation that drops the stop check or the accept error
@@ -335,18 +370,14 @@ pub(super) fn client_loop<T, C>(
 // Blocking read of pty output. A mutation that drops the stop check hangs
 // unit tests because watchdogs are disabled under cargo-mutants.
 #[cfg_attr(test, mutants::skip)]
-pub(super) fn pty_output_loop<T, C>(shared: &Shared<T, C>)
+pub(super) fn pty_output_loop<T, C>(shared: &Shared<T, C>) -> Result<(), PalError>
 where
     T: Transport + Clone,
     C: Pseudoconsole,
 {
     while !shared.stopping.load(Ordering::SeqCst) {
-        // A failed read leaves the app's output incomplete, but there is
-        // nothing further to relay either way, so both end the pump; the
-        // difference is that a clean end means everything the app wrote has
-        // been delivered.
-        let Ok(Some(bytes)) = shared.pty_host.read_output(shared.pty) else {
-            break;
+        let Some(bytes) = shared.pty_host.read_output(shared.pty)? else {
+            return Ok(());
         };
         // Queued, never written here: a client that stopped reading must not be
         // able to hold the pump, which the exit teardown joins. A write failure
@@ -366,4 +397,5 @@ where
             client.outbox.send(Message::Output(bytes));
         }
     }
+    Ok(())
 }

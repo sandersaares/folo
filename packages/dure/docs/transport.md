@@ -14,7 +14,8 @@ differs rather than connecting and negotiating. Two `dure` builds therefore
 never have to agree on a wire format between them: an upgrade leaves the
 sessions started by the previous build resumable only by that build, and the
 mismatch is reported instead of appearing as a decode failure mid-relay.
-Records written before the version existed are read as the first version.
+Records written before the version existed are assigned an incompatible
+sentinel version, because they carry no evidence that their wire format matches.
 
 Pipe names contain a random nonce. First-instance creation prevents a
 pre-existing pipe from silently impersonating the supervisor; the pipe rejects

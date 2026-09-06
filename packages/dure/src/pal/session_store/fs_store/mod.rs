@@ -63,14 +63,17 @@ impl FsSessionStore {
 
     /// Where a claim is assembled before it is given an id's name.
     ///
-    /// The name carries the process building it and a counter unique within
-    /// that process, so no two allocations share a staging file. The extension
-    /// is one no reader looks at, so a half-written claim is never mistaken for
-    /// a session.
+    /// The name carries the process identity and a counter unique within that
+    /// process, so no two allocations share a staging file and a reused pid
+    /// cannot collide with a file left by its predecessor. The extension is one
+    /// no reader looks at, so a half-written claim is never mistaken for a session.
     fn staging_path(&self, owner: &ProcessIdentity) -> PathBuf {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let attempt = NEXT.fetch_add(1, Ordering::Relaxed);
-        self.root.join(format!("{}-{attempt}.claim", owner.pid))
+        self.root.join(format!(
+            "{}-{}-{attempt}.claim",
+            owner.pid, owner.creation_time
+        ))
     }
 
     /// Gives the staged claim the name of the smallest id it can take.
@@ -524,6 +527,23 @@ mod tests {
             .filter(|name| !name.to_string_lossy().ends_with(".json"))
             .collect();
         assert!(leftovers.is_empty(), "left behind {leftovers:?}");
+    }
+
+    #[test]
+    fn a_staging_name_carries_the_complete_process_identity() {
+        let store = FsSessionStore::new(PathBuf::from("store"));
+        let owner = ProcessIdentity {
+            pid: 73,
+            creation_time: 987_654_321,
+        };
+        let name = store
+            .staging_path(&owner)
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+
+        assert!(name.starts_with(&format!("{}-{}-", owner.pid, owner.creation_time)));
     }
 
     #[test]

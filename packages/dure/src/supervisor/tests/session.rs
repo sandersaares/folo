@@ -114,6 +114,107 @@ fn final_output_arrives_before_the_exit_status() {
 }
 
 #[test]
+fn an_output_read_failure_ends_the_session_without_reporting_success() {
+    with_watchdog_phases("setting up the supervisor", |phase_reporter| {
+        let transport = MemoryTransport::new();
+        let pty = MemoryPseudoconsole::new();
+        let store = MemorySessionStore::new();
+        let exit = Arc::new((Mutex::new(false), Condvar::new()));
+        let close_count = Arc::new(AtomicU64::new(0));
+        let processes = mock_processes_with_close_job(
+            Arc::clone(&exit),
+            LauncherTie::NoneDetected,
+            AppWait::Reports,
+            {
+                let close_count = Arc::clone(&close_count);
+                let exit = Arc::clone(&exit);
+                move |_| {
+                    close_count.fetch_add(1, Ordering::SeqCst);
+                    let (lock, cvar) = &*exit;
+                    *lock.lock().expect("exit lock") = true;
+                    cvar.notify_all();
+                }
+            },
+        );
+
+        let startup = transport.listen("startup").unwrap();
+        let spec = sample_spec();
+        let supervisor = thread::spawn({
+            let transport = transport.clone();
+            let pty = pty.clone();
+            let store = store.clone();
+            move || run_supervisor(&processes, &store, &transport, &pty, "startup", spec)
+        });
+
+        let started = commit_startup(&transport, startup, &phase_reporter);
+        transport.disconnect(started.startup_conn);
+        let client = transport
+            .connect(&started.pipe_name, CONNECT_TIMEOUT)
+            .unwrap();
+        transport.send(client, &ORDINARY_ATTACH).unwrap();
+        phase_reporter.report("waiting for the attach acknowledgement");
+        assert!(matches!(
+            transport.recv(client).unwrap(),
+            Message::Attached { .. }
+        ));
+
+        pty.fail_output(pty.only_pty());
+        phase_reporter.report("waiting for the failed session to disconnect");
+        assert_eq!(
+            transport.recv(client).unwrap_err().kind(),
+            PalErrorKind::Disconnected
+        );
+        phase_reporter.report("waiting for supervisor shutdown");
+        let error = supervisor.join().unwrap().unwrap_err();
+        assert!(error.find_source::<PalFailedError>().is_some());
+        assert_eq!(close_count.load(Ordering::SeqCst), 1);
+        assert!(store.list().unwrap().is_empty());
+    });
+}
+
+#[test]
+fn a_record_delete_failure_does_not_preempt_the_exit_status() {
+    with_watchdog_phases("setting up the supervisor", |phase_reporter| {
+        let transport = MemoryTransport::new();
+        let pty = MemoryPseudoconsole::new();
+        let store = MemorySessionStore::new();
+        let exit = Arc::new((Mutex::new(true), Condvar::new()));
+        let processes = mock_processes(exit);
+
+        let startup = transport.listen("startup").unwrap();
+        let spec = sample_spec();
+        let supervisor = thread::spawn({
+            let transport = transport.clone();
+            let store = store.clone();
+            move || run_supervisor(&processes, &store, &transport, &pty, "startup", spec)
+        });
+
+        let started = commit_startup(&transport, startup, &phase_reporter);
+        store.fail_next_delete();
+        let client = transport
+            .connect(&started.pipe_name, CONNECT_TIMEOUT)
+            .unwrap();
+        transport.send(client, &ORDINARY_ATTACH).unwrap();
+        phase_reporter.report("waiting for the attach acknowledgement");
+        assert!(matches!(
+            transport.recv(client).unwrap(),
+            Message::Attached { .. }
+        ));
+        phase_reporter.report("waiting for the app exit status");
+        assert_eq!(
+            transport.recv(client).unwrap(),
+            Message::AppExited {
+                status: SAMPLE_APP_EXIT
+            }
+        );
+        phase_reporter.report("waiting for supervisor shutdown");
+        let error = supervisor.join().unwrap().unwrap_err();
+        assert!(error.find_source::<StoreError>().is_some());
+        transport.disconnect(started.startup_conn);
+    });
+}
+
+#[test]
 fn teardown_ends_the_job_before_it_closes_the_console() {
     with_watchdog_phases("setting up the supervisor", |phase_reporter| {
         let transport = MemoryTransport::new();

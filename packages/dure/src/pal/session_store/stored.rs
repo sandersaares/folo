@@ -82,4 +82,22 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn a_published_record_from_an_unversioned_release_remains_visible() {
+        // Released record files already carried this tag. Keeping the literal
+        // guards the upgrade path all the way through the store's outer shape,
+        // while SessionRecord assigns its missing protocol an incompatible value.
+        let json = concat!(
+            r#"{"kind":"published","id":1,"supervisor_pid":42,"#,
+            r#""supervisor_creation_time":99,"pipe_name":"p","#,
+            r#""launch_directory":"C:\\work","command":["copilot.exe"],"#,
+            r#""started_at_unix_ms":1,"attached":false}"#,
+        );
+        let StoredSession::Published(record) = serde_json::from_str::<StoredSession>(json).unwrap()
+        else {
+            panic!("expected a published session");
+        };
+        assert_ne!(record.protocol_version, PROTOCOL_VERSION);
+    }
 }
