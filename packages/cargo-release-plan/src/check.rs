@@ -273,15 +273,15 @@ fn render_diagnostics(
             // holds however unrelated the dependency's own breaking change was to the exposed
             // items, so it is decided from the version move rather than from the diff.
             // Ref: docs/design.md, "Public dependencies".
+            let anchor = broken.anchor().expect(
+                "only a package that releases a breaking change reaches here, which requires an anchor to compare against",
+            );
             let text = format!(
                 "{}: exposes {} in its public API and must release a breaking change of its own, because {} moves from {} to an incompatible {}. {}",
                 quote_path(&package.name),
                 quote_path(&dependency.name),
                 quote_path(&dependency.name),
-                broken.anchor().map_or_else(
-                    || "its last release".to_string(),
-                    |anchor| anchor.version.to_string()
-                ),
+                anchor.version,
                 broken.declared_version,
                 remedy(base)
             );
@@ -845,6 +845,124 @@ mod tests {
 
         let text = render_diagnostics(
             &[dependent, library],
+            &BTreeMap::new(),
+            BASE,
+            CheckFormat::Text,
+        );
+
+        assert_eq!(text, "");
+    }
+
+    /// Each manifest-level diagnostic carries a workflow annotation naming its manifest.
+    ///
+    /// The annotation is what attaches a failure to the offending file in the pull-request
+    /// view, so a wrong title or an unescaped body would leave CI reporting into the void
+    /// while the text form still looked correct.
+    #[test]
+    fn github_format_annotates_each_manifest_diagnostic() {
+        // A drifted requirement, from a package in no group.
+        let stale = render_diagnostics(
+            &[
+                with_dependencies(
+                    "app",
+                    Version::new(0, 1, 0),
+                    Version::new(0, 1, 0),
+                    vec![dependency("lib", "^1.0.0", false)],
+                ),
+                with_dependencies("lib", Version::new(1, 1, 0), Version::new(1, 1, 0), vec![]),
+            ],
+            &BTreeMap::new(),
+            BASE,
+            CheckFormat::Github,
+        );
+        assert!(
+            stale.contains(
+                "::error file=packages/app/Cargo.toml,title=stale-workspace-requirement::"
+            ),
+            "{stale}"
+        );
+
+        // A compatible requirement between two members of one group.
+        let inexact = render_diagnostics(
+            &[
+                grouped(
+                    "lib",
+                    "lib",
+                    Version::new(1, 1, 0),
+                    vec![dependency("lib_impl", "^1.1.0", true)],
+                ),
+                grouped("lib_impl", "lib", Version::new(1, 1, 0), vec![]),
+            ],
+            &BTreeMap::new(),
+            BASE,
+            CheckFormat::Github,
+        );
+        assert!(
+            inexact
+                .contains("::error file=packages/lib/Cargo.toml,title=inexact-group-requirement::"),
+            "{inexact}"
+        );
+
+        // A public dependency that breaks while its dependent stays compatible.
+        let unpropagated = render_diagnostics(
+            &[
+                with_dependencies(
+                    "app",
+                    Version::new(0, 1, 1),
+                    Version::new(0, 1, 0),
+                    vec![dependency("lib", "=2.0.0", true)],
+                ),
+                with_dependencies("lib", Version::new(2, 0, 0), Version::new(1, 1, 0), vec![]),
+            ],
+            &BTreeMap::new(),
+            BASE,
+            CheckFormat::Github,
+        );
+        assert!(
+            unpropagated.contains(
+                "::error file=packages/app/Cargo.toml,title=unpropagated-breaking-change::"
+            ),
+            "{unpropagated}"
+        );
+    }
+
+    /// A drifted exact pin is corrected to an exact pin, not to a bare version.
+    ///
+    /// The suggested spelling has to keep the lockstep the author asked for, otherwise
+    /// following the diagnostic would silently widen the requirement.
+    #[test]
+    fn a_drifted_exact_pin_is_corrected_to_an_exact_pin() {
+        let text = render_diagnostics(
+            &[
+                with_dependencies(
+                    "app",
+                    Version::new(0, 1, 0),
+                    Version::new(0, 1, 0),
+                    vec![dependency("lib", "=1.0.0", false)],
+                ),
+                with_dependencies("lib", Version::new(1, 1, 0), Version::new(1, 1, 0), vec![]),
+            ],
+            &BTreeMap::new(),
+            BASE,
+            CheckFormat::Text,
+        );
+
+        assert!(text.contains("Change the requirement to =1.1.0"), "{text}");
+    }
+
+    /// A dependency on a package outside the assessed set is not judged.
+    ///
+    /// Only publishable, Git-tracked packages carry a declared version here, so an edge whose
+    /// target is absent has nothing to compare against.
+    #[test]
+    fn a_dependency_on_an_unassessed_package_is_skipped() {
+        let text = render_diagnostics(
+            &[with_dependencies(
+                "app",
+                Version::new(0, 1, 0),
+                Version::new(0, 1, 0),
+                vec![dependency("absent", "^1.0.0", true)],
+            )],
             &BTreeMap::new(),
             BASE,
             CheckFormat::Text,
