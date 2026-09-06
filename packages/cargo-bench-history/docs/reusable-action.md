@@ -432,8 +432,14 @@ notable pipeline as `analyze-history`, retuned for the PR branch view and a diff
   transport binary (§5.1). The
   comment is strictly advisory (findings never affect the check's exit code), reports
   improvements alongside regressions or a plain "no regressions" state, and **states its
-  collection scope** — which packages were benchmarked — so a clean result is never mistaken
-  for the whole suite being clean. It records **which commit it measured** (a bare full SHA
+  collection scope on both axes** — which packages were benchmarked *and*, when the collect
+  matrix came back partial, which platforms are missing (§4.2) — so a clean result is never
+  mistaken for the whole suite, or the whole runner pool, being clean. The PR flow runs the
+  same `fail-fast: false` matrix as the history flow (§4.1), so it is exposed to exactly the
+  same partial-coverage hazard, and this is the more widely read of the two sinks: a reviewer
+  deciding whether a change is safe to merge must be able to see that a platform went
+  unmeasured. A partial run therefore says so in the comment and reports `outcome: partial`.
+  It records **which commit it measured** (a bare full SHA
   that GitHub autolinks, plus a hidden full-SHA marker) so staleness can be judged later
   (§4.4). A run *failure* surfaces only as the red check — no comment — because a PR failure
   is transient, not the persistent condition the issue lifecycle tracks. The caller grants
@@ -859,6 +865,16 @@ report. That is the default and it requires no configuration. A consumer who set
 gets the full standard set — the in-progress placeholder, the results comment, the staleness
 banner, the terminal failure notice, the no-findings state, the coverage verdict, and the
 failure-alert issue — all worded identically to every other consumer's.
+
+**One rule binds the whole catalogue: a report never claims more coverage than it measured.**
+Every message that reports a result states what it covered — the packages benchmarked, and the
+platforms that contributed when they fall short of those intended (§4.2). This is not a
+per-sink courtesy but a property of the catalogue, because the states that most need it are
+the quiet ones: "no regressions" after a platform silently dropped out, or after a series had
+too little history to judge, reads as reassurance nobody computed. Since the messages are
+selected by the named `outcome` (§4.2), a sink cannot accidentally present a `partial` run in
+the words of a `clean` one, and a sink added later inherits the rule rather than having to
+remember it.
 
 Standardisation is the goal, so the override surface is deliberately **narrow and
 declarative** rather than a general templating system. Only the things that genuinely differ
