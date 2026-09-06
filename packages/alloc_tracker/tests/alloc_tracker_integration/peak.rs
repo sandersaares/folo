@@ -57,14 +57,8 @@ fn peak_measures_one_iteration_regardless_of_batch_size() {
     // Every buffer is released before the next is taken, so only one is ever live — and the
     // reported peak says so whichever batch size the harness happened to choose.
     for peak in [short_peak, long_peak] {
-        assert!(
-            peak >= as_reported(BUFFER_SIZE),
-            "peak {peak} covers one buffer"
-        );
-        assert!(
-            peak < as_reported(BUFFER_SIZE + HEADROOM),
-            "peak {peak} does not grow with the batch size"
-        );
+        assert!(peak >= as_reported(BUFFER_SIZE));
+        assert!(peak < as_reported(BUFFER_SIZE + HEADROOM));
     }
 
     // Meanwhile the cumulative total does scale with the batch size, which is what makes the
@@ -72,10 +66,7 @@ fn peak_measures_one_iteration_regardless_of_batch_size() {
     // test's own incidental allocations.
     let short_total = report_total_bytes(&session, "short_batch");
     let long_total = report_total_bytes(&session, "long_batch");
-    assert!(
-        long_total * 2 > short_total * BATCH_RATIO as u64,
-        "cumulative total {long_total} scales with the batch size, unlike the peak"
-    );
+    assert!(long_total * 2 > short_total * BATCH_RATIO as u64);
 }
 
 #[test]
@@ -110,14 +101,8 @@ fn a_warmup_span_does_not_dominate_the_peak() {
 
     let peak = report_peak(&session, "warmup_then_steady").unwrap();
 
-    assert!(
-        peak >= as_reported(BUFFER_SIZE),
-        "peak {peak} covers the steady-state buffer"
-    );
-    assert!(
-        peak < as_reported(BUFFER_SIZE + HEADROOM),
-        "peak {peak} reflects the steady state, not the warmup batch"
-    );
+    assert!(peak >= as_reported(BUFFER_SIZE));
+    assert!(peak < as_reported(BUFFER_SIZE + HEADROOM));
 }
 
 #[test]
@@ -138,10 +123,7 @@ fn peak_covers_buffers_held_simultaneously() {
 
     let peak = report_peak(&session, "held_simultaneously").unwrap();
 
-    assert!(
-        peak >= as_reported(BUFFER_SIZE * BUFFER_COUNT),
-        "peak {peak} covers all {BUFFER_COUNT} buffers held at once"
-    );
+    assert!(peak >= as_reported(BUFFER_SIZE * BUFFER_COUNT));
 }
 
 #[test]

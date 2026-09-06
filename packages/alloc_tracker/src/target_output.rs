@@ -416,10 +416,7 @@ mod tests {
                 .is_null(),
             "a zero-iteration allocations slope must serialize as null"
         );
-        assert!(
-            value.get("slope_peak_bytes_per_iteration").is_none(),
-            "a zero-iteration peak must be omitted rather than serialized as null"
-        );
+        assert!(value.get("slope_peak_bytes_per_iteration").is_none());
         assert_eq!(
             value.get("total_iterations").and_then(Value::as_u64),
             Some(0)

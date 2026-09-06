@@ -287,10 +287,7 @@ mod tests {
         let accumulator = accumulate_levels(&[(ITERATIONS, LEVEL)]);
         let slope = accumulator.slope().unwrap();
 
-        assert!(
-            (slope - LEVEL as f64).abs() < LEVEL as f64 * TOLERANCE,
-            "expected about {LEVEL}, got {slope}"
-        );
+        assert!((slope - LEVEL as f64).abs() < LEVEL as f64 * TOLERANCE);
     }
 
     #[test]

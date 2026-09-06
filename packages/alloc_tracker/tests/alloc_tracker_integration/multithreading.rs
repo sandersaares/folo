@@ -72,10 +72,7 @@ fn multithreaded_allocations_show_span_differences() {
     assert!(thread_total > 0);
 
     // Process span should capture significantly more than thread span
-    assert!(
-        process_total > thread_total * 2,
-        "Process span should capture much more allocation than thread span in multithreaded context. Process: {process_total}, Thread: {thread_total}"
-    );
+    assert!(process_total > thread_total * 2);
 }
 
 #[test]
@@ -164,20 +161,13 @@ fn process_report_includes_allocations_from_multiple_threads() {
 
     let report = session.to_report();
     let operations: Vec<_> = report.operations().collect();
-    assert_eq!(
-        operations.len(),
-        1,
-        "expected exactly one operation in report"
-    );
+    assert_eq!(operations.len(), 1);
     let (_name, op) = operations.first().unwrap();
     let total = op.total_bytes_allocated();
 
     // Expect at least the sum of the two thread totals (plus main thread allocation overhead)
     let min_expected = (THREAD_A_ALLOCS * SIZE_A + THREAD_B_ALLOCS * SIZE_B) as u64;
-    assert!(
-        total >= min_expected,
-        "total {total} < expected minimum {min_expected}"
-    );
+    assert!(total >= min_expected);
 
     // Ensure neither thread's contribution is trivially missing: total should exceed each individual component
     assert!(total >= (THREAD_A_ALLOCS * SIZE_A) as u64);

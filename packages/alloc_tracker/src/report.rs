@@ -994,7 +994,7 @@ mod tests {
                 .find(|line| line.contains(name))
                 .unwrap_or_else(|| panic!("the table has a row for {name}, got {display_output}"));
             let cells: Vec<&str> = row.trim_matches('|').split('|').map(str::trim).collect();
-            assert_eq!(cells.len(), TABLE_COLUMNS, "got {row}");
+            assert_eq!(cells.len(), TABLE_COLUMNS);
             cells.last().copied().unwrap().to_owned()
         };
 

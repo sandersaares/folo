@@ -22,10 +22,7 @@ fn span_with_no_allocation_is_not_empty_session() {
         drop(op.measure_process().iterations(1));
     } // op is dropped here, merging data to session
 
-    assert!(
-        !session.is_empty(),
-        "Session should not be empty after creating a span"
-    );
+    assert!(!session.is_empty());
 }
 
 #[test]

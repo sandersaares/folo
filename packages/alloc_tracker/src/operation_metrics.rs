@@ -355,8 +355,8 @@ mod tests {
         });
 
         let peak = metrics.peak_outstanding_bytes().unwrap();
-        assert!(peak > 100.0, "warmup span pulls the estimate up a little");
-        assert!(peak < 101.0, "but by less than one percent: {peak}");
+        assert!(peak > 100.0);
+        assert!(peak < 101.0);
     }
 
     #[test]

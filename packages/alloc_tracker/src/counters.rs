@@ -215,7 +215,8 @@ pub(crate) fn get_or_init_thread_counters() -> ThreadCounters {
 
         // Leaked deliberately: the registry retains every thread's counters for the process
         // lifetime so that process-scoped spans can sum threads that have already exited.
-        // One block per thread that ever allocates is the whole cost.
+        // One block per thread that ever allocates or opens a thread span is the whole cost,
+        // since `ThreadSpan::new` reads its entry level through this same path.
         let counters: &'static PerThreadCounters = Box::leak(Box::new(PerThreadCounters::new()));
         REGISTRY.lock().expect(ERR_POISONED_LOCK).push(counters);
 
@@ -550,10 +551,7 @@ mod tests {
             let mut previous = baseline;
             for _ in 0..READS {
                 let totals = allocation_totals();
-                assert!(
-                    totals.bytes >= previous.bytes && totals.count >= previous.count,
-                    "totals went backwards: {previous:?} then {totals:?}"
-                );
+                assert!(totals.bytes >= previous.bytes && totals.count >= previous.count);
                 previous = totals;
             }
 
@@ -564,10 +562,7 @@ mod tests {
             let final_totals = allocation_totals();
             let bytes_delta = final_totals.bytes.wrapping_sub(baseline.bytes);
             assert!(bytes_delta >= WRITER_THREADS * ALLOCS_PER_WRITER * BYTES_PER_ALLOC);
-            assert!(
-                final_totals.bytes >= previous.bytes,
-                "the final total must include everything the concurrent reads saw"
-            );
+            assert!(final_totals.bytes >= previous.bytes);
         });
     }
 }

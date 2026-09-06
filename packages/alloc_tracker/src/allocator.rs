@@ -327,10 +327,7 @@ mod tests {
         // SAFETY: The allocator just returned this block for a layout of SIZE bytes, so
         // that many bytes are initialized and readable.
         let contents = unsafe { std::slice::from_raw_parts(block, SIZE) };
-        assert!(
-            contents.iter().all(|&byte| byte == 0),
-            "alloc_zeroed must hand back zeroed memory"
-        );
+        assert!(contents.iter().all(|&byte| byte == 0));
 
         let size = i64::try_from(SIZE).unwrap();
         assert_eq!(counters.bytes(), before_bytes.wrapping_add(SIZE as u64));
@@ -339,11 +336,7 @@ mod tests {
             counters.outstanding().wrapping_sub(before_outstanding),
             size
         );
-        assert_eq!(
-            counters.watermark().wrapping_sub(before_outstanding),
-            size,
-            "the watermark must follow the outstanding level up"
-        );
+        assert_eq!(counters.watermark().wrapping_sub(before_outstanding), size);
 
         // SAFETY: The block was just obtained from this allocator with this exact layout.
         unsafe {
