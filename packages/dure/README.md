@@ -73,8 +73,8 @@ The app keeps running. From a new terminal:
 
 ```text
 > dure list
-ID  ATTACHED  SUPERVISOR  AGE   LAUNCH DIRECTORY  COMMAND
-1   no        12345       4m    C:\work           pwsh.exe
+ID  ATTACHED  SUPERVISOR PID  AGE  LAUNCH DIRECTORY  COMMAND
+1   no        12345           4m   C:\work           pwsh.exe
 
 > dure resume
 ```

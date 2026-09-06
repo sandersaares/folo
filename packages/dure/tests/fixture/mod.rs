@@ -39,7 +39,7 @@ pub(crate) fn dure_exe() -> PathBuf {
 }
 
 pub(crate) fn helper_exe() -> PathBuf {
-    PathBuf::from(binary_path())
+    binary_path().to_path_buf()
 }
 
 /// A state the helper can be asked to park in or run through.

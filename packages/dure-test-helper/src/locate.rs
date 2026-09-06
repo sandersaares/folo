@@ -19,13 +19,13 @@ use std::{env, str};
 /// built, or when Cargo reports no executable for it. Each means the integration
 /// tests have nothing to drive, so failing loudly beats spawning something else.
 #[must_use]
-pub fn binary_path() -> &'static str {
-    static PATH: LazyLock<String> = LazyLock::new(locate_or_build);
-    PATH.as_str()
+pub fn binary_path() -> &'static Path {
+    static PATH: LazyLock<PathBuf> = LazyLock::new(locate_or_build);
+    PATH.as_path()
 }
 
 /// Selects a prebuilt helper when available, otherwise builds it on demand.
-fn locate_or_build() -> String {
+fn locate_or_build() -> PathBuf {
     resolve(
         env::var_os("DURE_TEST_HELPER"),
         Path::is_file,
@@ -38,7 +38,7 @@ fn resolve(
     prebuilt: Option<OsString>,
     is_file: impl FnOnce(&Path) -> bool,
     build: impl FnOnce() -> BuildOutput,
-) -> String {
+) -> PathBuf {
     if let Some(path) = prebuilt {
         let path = PathBuf::from(path);
         assert!(
@@ -51,7 +51,10 @@ fn resolve(
             "DURE_TEST_HELPER does not name an existing file: {}",
             path.display()
         );
-        return path.to_string_lossy().into_owned();
+        // Kept as a path rather than narrowed to a `String`: a Windows path may
+        // hold an unpaired surrogate, and the lossy form names a different file
+        // than the one just validated.
+        return path;
     }
     interpret_build(&build())
 }
@@ -138,7 +141,7 @@ fn helper_target_dir(ambient_target_dir: Option<OsString>) -> PathBuf {
 /// Reads the built binary's path from Cargo's JSON build output, panicking with
 /// the captured diagnostics (exit code, stdout, and stderr) when the build
 /// failed or reported no executable.
-fn interpret_build(output: &BuildOutput) -> String {
+fn interpret_build(output: &BuildOutput) -> PathBuf {
     assert!(
         output.success,
         "building dure-test-helper failed (exit code: {}):\nstdout:\n{}\nstderr:\n{}",
@@ -168,7 +171,7 @@ fn interpret_build(output: &BuildOutput) -> String {
                 .get("executable")
                 .and_then(serde_json::Value::as_str)
         {
-            return executable.to_owned();
+            return PathBuf::from(executable);
         }
     }
     panic!("cargo build did not report an executable path for dure-test-helper");
@@ -216,7 +219,7 @@ mod tests {
             "dure-test-helper",
             "/tmp/dure-test-helper",
         )));
-        assert_eq!(resolved, "/tmp/dure-test-helper");
+        assert_eq!(resolved, Path::new("/tmp/dure-test-helper"));
     }
 
     #[test]
@@ -235,7 +238,10 @@ mod tests {
             artifact_line("dure-test-helper", "/tmp/dure-test-helper"),
         );
 
-        assert_eq!(interpret_build(&ok_build(stdout)), "/tmp/dure-test-helper");
+        assert_eq!(
+            interpret_build(&ok_build(stdout)),
+            Path::new("/tmp/dure-test-helper")
+        );
     }
 
     #[test]
@@ -330,7 +336,7 @@ mod tests {
             || panic!("a prebuilt helper must skip the build"),
         );
 
-        assert_eq!(Path::new(&resolved), helper);
+        assert_eq!(resolved, helper);
     }
 
     #[test]

@@ -16,9 +16,10 @@ rust-version.workspace = true
 include = ["Cargo.toml", "README.md", "src/**/*"]
 
 # `dure` is a command-line tool; its Rust API exists only so the in-package binary and the
-# integration tests can reach the crate, and every exported item is therefore `#[doc(hidden)]`
-# (see `src/lib.rs`). Documenting the Windows targets is what keeps the rendered page the tool's
-# own introduction rather than an empty Linux build, where `#![cfg(windows)]` removes the crate.
+# integration tests can reach the crate, so the crate root carries
+# `#![cfg_attr(docsrs, doc(hidden))]` (see `src/lib.rs`). Documenting the Windows targets is what
+# keeps the rendered page the tool's own introduction rather than an empty Linux build, where
+# `#![cfg(windows)]` removes the crate.
 [package.metadata.docs.rs]
 default-target = "x86_64-pc-windows-msvc"
 targets = ["x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"]
@@ -41,15 +42,23 @@ release-targets = ["x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"]
 [package.metadata.cargo-udeps.ignore]
 development = ["dure-test-helper"]
 
-# External types intentionally exposed in the public API. The check fails when a public external
-# type matches no entry, so an accidental exposure is caught by being absent from this list.
+# External types intentionally exposed in the handoff surface. The check fails when a public
+# external type matches no entry, so a new exposure is a deliberate, reviewed act rather than an
+# oversight. Each is listed individually rather than globbed, so exposing a further type from an
+# already-referenced crate still trips the check. Ref: docs/external-types.md.
 #
-# The list is empty because the package has no supported API: every exported item is
-# `#[doc(hidden)]` (see `src/lib.rs`), so nothing is advertised for anyone to depend on. An entry
-# here would mean a decision to expose something, which is a decision this package does not make.
-# Ref: docs/external-types.md.
+# The `clap` traits arrive with the `Parser` derive on `Cli`, the `serde` traits with the record
+# encoding on `AppCommand`, and `AppError` is what `run` hands back for the binary to report.
 [package.metadata.cargo_check_external_types]
-allowed_external_types = []
+allowed_external_types = [
+    "clap_builder::derive::Args",
+    "clap_builder::derive::CommandFactory",
+    "clap_builder::derive::FromArgMatches",
+    "clap_builder::derive::Parser",
+    "ohno::app::error::AppError",
+    "serde_core::de::Deserialize",
+    "serde_core::ser::Serialize",
+]
 
 [features]
 # Exposes the in-crate test support and isolated-store override that the Windows
