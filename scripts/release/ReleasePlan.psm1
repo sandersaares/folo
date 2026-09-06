@@ -1079,6 +1079,41 @@ function Get-GroupAlignmentIncrement {
     return Get-PlanIncrement -Name $Name -Version $target
 }
 
+function Assert-PlanMovesEveryPackageNeedingIncrement {
+    # Fails when the finished plan leaves a package that the report says needs an increment
+    # still declaring the version it declares today.
+    #
+    # `check` fails for exactly those packages, so a plan that does not move one cannot clear the
+    # version check and the run would present an approval artifact that is already known not to
+    # work. This asks whether the plan moves the package rather than whether a decision named it,
+    # because a grouped package is moved by any decision naming one of its members and recording
+    # no decision of its own is correct for it.
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] $Report,
+        [Parameter(Mandatory)] $ByName,
+        [Parameter(Mandatory)][AllowEmptyCollection()][System.Collections.IDictionary[]] $Increment
+    )
+
+    $moved = Get-PackageMovedByIncrement -Report $Report -ByName $ByName -Increment $Increment
+    $missing = [System.Collections.Generic.List[string]]::new()
+    foreach ($package in $Report.packages) {
+        $packageName = [string] $package.name
+        if ([string] $package.status -cne 'needs-increment') {
+            continue
+        }
+        if (-not $moved.Contains($packageName)) {
+            $missing.Add($packageName)
+        }
+    }
+
+    if ($missing.Count -eq 0) {
+        return
+    }
+    $noun = if ($missing.Count -eq 1) { 'package needs' } else { 'packages need' }
+    throw "The plan leaves $($missing.Count) $($noun) an increment without one: $($missing -join ', '). Decide a change level for each, because the version check fails until their versions move."
+}
+
 function Assert-PlanMovesEveryRewrittenPublishedPackage {
     # Fails when the finished plan would rewrite an intra-workspace requirement inside a package
     # that keeps a version crates.io already carries.
@@ -1250,6 +1285,8 @@ function New-ReleasePlanFile {
         $increment.Add($decided.Value)
     }
 
+    Assert-PlanMovesEveryPackageNeedingIncrement -Report $report -ByName $byName `
+        -Increment $increment
     Assert-PlanMovesEveryRewrittenPublishedPackage -Report $report -ByName $byName `
         -Increment $increment
 

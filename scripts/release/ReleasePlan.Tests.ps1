@@ -1445,6 +1445,15 @@ Describe 'Generated plan invariants' {
                     Should -Be 1 -Because "group '$name' must end on a single version"
             }
 
+            # A package the report says needs an increment must end the plan on a new version,
+            # because the version check fails for exactly those packages until they move.
+            foreach ($package in $Report.packages) {
+                $name = [string] $package.name
+                if ([string] $package.status -cne 'needs-increment') { continue }
+                $resolved[$name] | Should -BeGreaterThan ([semver] [string] $package.declared_version) `
+                    -Because "package '$name' needs an increment, so the plan must move it"
+            }
+
             # The property four review comments were each one instance of: applying the plan
             # rewrites the requirement of every path dependency on a moving package, so a package
             # that keeps an already-published version would publish changed content under it.
@@ -1576,6 +1585,25 @@ Describe 'Generated plan invariants' {
                 )
                 Group    = @{ family = @('nm', 'nm_impl'); 'other-family' = @('other', 'other_impl') }
                 Change   = @(@{ name = 'nm_impl'; level = 'patch' })
+            }
+            @{
+                Name     = 'package needing an increment with no decision recorded'
+                Throws   = $true
+                Package  = @(
+                    @{ Name = 'nm'; Declared = '1.0.0'; Anchor = '1.0.0'; Status = 'needs-increment' }
+                )
+                Group    = @{}
+                Change   = @()
+            }
+            @{
+                Name     = 'grouped package needing an increment covered by a sibling decision'
+                Throws   = $false
+                Package  = @(
+                    @{ Name = 'nm'; Group = 'family'; Declared = '1.0.0'; Anchor = '1.0.0'; Status = 'needs-increment' }
+                    @{ Name = 'nm_impl'; Group = 'family'; Declared = '1.0.0'; Anchor = '1.0.0'; Status = 'needs-increment' }
+                )
+                Group    = @{ family = @('nm', 'nm_impl') }
+                Change   = @(@{ name = 'nm'; level = 'patch' })
             }
             @{
                 Name     = 'ungrouped package pinning a decided package'
