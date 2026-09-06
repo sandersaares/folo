@@ -32,6 +32,15 @@ publication eligibility, change-level validation, version-group realignment, and
 conversion to `cargo-release-plan apply` input. The just recipes remain thin command-line entry
 points. Pester tests in `scripts/release/ReleasePlan.Tests.ps1` lock these boundaries.
 
+Plan generation is verified by asserting properties of the generated plan over a matrix of report
+states, not only by testing individual guards. The properties are that every entry is well formed
+and names a known target, that no target receives two decision kinds, that no version moves
+backwards, that every version group ends on one version, and that no package keeps an
+already-published version while a requirement inside it is rewritten. That last one had been
+analyzed incompletely several times in review — once per release state that reached it — so it is
+checked as an outcome, where an incomplete analysis fails whatever form it takes. A scenario
+passes either by refusing to generate a plan or by generating one that holds every property.
+
 ## Merge-blocking result
 
 The `required-checks` job is the intended single ruleset target. Its `needs` graph contains

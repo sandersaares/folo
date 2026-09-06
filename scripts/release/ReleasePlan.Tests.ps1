@@ -1291,3 +1291,341 @@ Describe 'New-ReleasePlanFile' {
         } | Should -Throw "*unsupported level 'Breaking'*"
     }
 }
+
+Describe 'Get-PlanIncrement' {
+    # The tool rejects an entry carrying both an increment level and a version, or neither, so
+    # this constructor is the one place that shape is decided. No current call site can pass
+    # both, so these assert the guard directly rather than relying on a caller to reach it.
+    It 'builds a level entry' {
+        $entry = InModuleScope ReleasePlan { Get-PlanIncrement -Name 'nm' -Level 'patch' }
+        $entry['name'] | Should -Be 'nm'
+        $entry['level'] | Should -Be 'patch'
+        $entry.Contains('version') | Should -BeFalse
+    }
+
+    It 'builds a version entry' {
+        $entry = InModuleScope ReleasePlan { Get-PlanIncrement -Name 'nm' -Version '1.2.0' }
+        $entry['version'] | Should -Be '1.2.0'
+        $entry.Contains('level') | Should -BeFalse
+    }
+
+    It 'rejects an entry carrying both a level and a version' {
+        {
+            InModuleScope ReleasePlan {
+                Get-PlanIncrement -Name 'nm' -Level 'patch' -Version '1.2.0'
+            }
+        } | Should -Throw '*exactly one*'
+    }
+
+    It 'rejects an entry carrying neither a level nor a version' {
+        { InModuleScope ReleasePlan { Get-PlanIncrement -Name 'nm' } } | Should -Throw '*exactly one*'
+    }
+}
+
+Describe 'Generated plan invariants' {
+    # The pin-rewrite safety property was reported four separate times in review - once for
+    # realignment direction, once for dependents outside the group, once for using plan-entry
+    # names as a proxy for a moving package, and once for packages that have never published.
+    # Each report was one instance of the same property being analyzed incompletely, and each was
+    # found by a reader rather than by the suite.
+    #
+    # These cases assert the properties of the generator's output over a matrix of report states
+    # instead of testing any single guard's internals, so an incomplete analysis fails here
+    # whatever form it takes. A scenario is satisfied either by refusing to generate a plan or by
+    # generating one that holds every property; silently emitting an unsafe plan is the failure.
+
+    BeforeAll {
+        function Get-ScenarioDecisionKey {
+            # A package folds onto its group, and any other name stands for itself. Deliberately
+            # recomputed here rather than reusing the module's helper, so a wrong answer there
+            # cannot make these assertions agree with it.
+            param($Report, [string] $Name)
+
+            if (@($Report.groups.PSObject.Properties | ForEach-Object { $_.Name }) -contains $Name) {
+                return $Name
+            }
+            foreach ($package in $Report.packages) {
+                if ([string] $package.name -cne $Name) { continue }
+                if ($package.PSObject.Properties.Name -contains 'group' -and
+                    -not [string]::IsNullOrWhiteSpace([string] $package.group)) {
+                    return [string] $package.group
+                }
+            }
+            return $Name
+        }
+
+        function Get-ScenarioResolvedVersion {
+            # The version each package ends the plan declaring. Mirrors the tool's documented
+            # rule - a group takes the highest version any member declares, raised by the highest
+            # level named for it - over the small hand-written scenarios below.
+            param($Report, $Plan)
+
+            $resolved = @{}
+            foreach ($package in $Report.packages) {
+                $resolved[[string] $package.name] = [semver] [string] $package.declared_version
+            }
+
+            foreach ($entry in $Plan.increments) {
+                $key = Get-ScenarioDecisionKey -Report $Report -Name ([string] $entry.name)
+                $members = if (@($Report.groups.PSObject.Properties | ForEach-Object { $_.Name }) -contains $key) {
+                    @($Report.groups.$key.members | ForEach-Object { [string] $_ })
+                } else {
+                    @($key)
+                }
+                $members = @($members | Where-Object { $resolved.ContainsKey($_) })
+                if ($members.Count -eq 0) { continue }
+
+                $highest = ($members | ForEach-Object { $resolved[$_] } | Sort-Object)[-1]
+                $target = if ($entry.PSObject.Properties.Name -contains 'version') {
+                    [semver] [string] $entry.version
+                } else {
+                    switch -CaseSensitive ([string] $entry.level) {
+                        'major' { [semver]::new($highest.Major + 1, 0, 0) }
+                        'minor' { [semver]::new($highest.Major, $highest.Minor + 1, 0) }
+                        'patch' { [semver]::new($highest.Major, $highest.Minor, $highest.Patch + 1) }
+                        default { throw "Scenario saw unsupported increment level '$($entry.level)'." }
+                    }
+                }
+                foreach ($member in $members) { $resolved[$member] = $target }
+            }
+            return $resolved
+        }
+
+        function Assert-PlanInvariant {
+            param($Report, $Plan)
+
+            $byName = @{}
+            foreach ($package in $Report.packages) { $byName[[string] $package.name] = $package }
+            $groupName = @($Report.groups.PSObject.Properties | ForEach-Object { $_.Name })
+
+            $kindByKey = @{}
+            foreach ($entry in $Plan.increments) {
+                $field = @($entry.PSObject.Properties.Name)
+                $name = [string] $entry.name
+
+                # Well-formed: the tool requires exactly one of level or version per entry.
+                $name | Should -Not -BeNullOrEmpty
+                (($field -contains 'level') -bxor ($field -contains 'version')) |
+                    Should -BeTrue -Because "entry '$name' must carry exactly one of level or version"
+
+                # Known target: the tool rejects a name that is neither package nor group.
+                ($byName.ContainsKey($name) -or $groupName -contains $name) |
+                    Should -BeTrue -Because "entry '$name' must name a package or version group"
+
+                # One decision kind per key: the tool rejects a group given both a level and an
+                # exact version, so a generator that emits both produces an unapplyable plan.
+                $key = Get-ScenarioDecisionKey -Report $Report -Name $name
+                $kind = if ($field -contains 'level') { 'level' } else { 'version' }
+                if ($kindByKey.ContainsKey($key)) {
+                    $kindByKey[$key] | Should -Be $kind -Because "target '$key' must not mix decision kinds"
+                }
+                $kindByKey[$key] = $kind
+            }
+
+            $resolved = Get-ScenarioResolvedVersion -Report $Report -Plan $Plan
+
+            foreach ($package in $Report.packages) {
+                $name = [string] $package.name
+                # No regression: a resolved version below the declared one would republish an
+                # existing version with different content.
+                $resolved[$name] | Should -BeGreaterOrEqual ([semver] [string] $package.declared_version) `
+                    -Because "package '$name' must not move backwards"
+            }
+
+            # Every version group ends on one version, which is the reason realignment exists.
+            foreach ($name in $groupName) {
+                $member = @($Report.groups.$name.members |
+                        ForEach-Object { [string] $_ } |
+                        Where-Object { $resolved.ContainsKey($_) })
+                if ($member.Count -lt 2) { continue }
+                @($member | ForEach-Object { $resolved[$_].ToString() } | Sort-Object -Unique).Count |
+                    Should -Be 1 -Because "group '$name' must end on a single version"
+            }
+
+            # The property four review comments were each one instance of: applying the plan
+            # rewrites the requirement of every path dependency on a moving package, so a package
+            # that keeps an already-published version would publish changed content under it.
+            foreach ($package in $Report.packages) {
+                $name = [string] $package.name
+                if ($resolved[$name] -ne [semver] [string] $package.declared_version) { continue }
+                if ($package.PSObject.Properties.Name -notcontains 'anchor' -or
+                    $null -eq $package.anchor) { continue }
+                if ($resolved[$name] -gt [semver] [string] $package.anchor.version) { continue }
+                foreach ($dependency in $package.dependencies) {
+                    $dependencyName = [string] $dependency.name
+                    if (-not $resolved.ContainsKey($dependencyName)) { continue }
+                    $moves = $resolved[$dependencyName] -ne
+                        [semver] [string] $byName[$dependencyName].declared_version
+                    $moves | Should -BeFalse -Because "package '$name' stays on published version $($resolved[$name]) while its pin to '$dependencyName' is rewritten"
+                }
+            }
+        }
+    }
+
+    # Discovery-time data, because Pester expands -ForEach before BeforeAll runs. Each scenario
+    # names the release state it represents; `Throws` marks the states where refusing is the only
+    # correct answer, because no plan can make them safe.
+    $planScenario = @(
+            @{
+                Name     = 'drifted group, nothing else changed'
+                Throws   = $false
+                Package  = @(
+                    @{ Name = 'nm'; Group = 'nm'; Declared = '1.0.0'; Anchor = '1.0.0' }
+                    @{ Name = 'nm_impl'; Group = 'nm'; Declared = '1.1.0'; Anchor = '1.1.0' }
+                )
+                Group    = @{ nm = @('nm', 'nm_impl') }
+                Change   = @()
+            }
+            @{
+                Name     = 'drifted group whose leader pins the lagging member'
+                Throws   = $false
+                Package  = @(
+                    @{ Name = 'nm'; Group = 'nm'; Declared = '1.1.0'; Anchor = '1.1.0'; Deps = @('nm_impl') }
+                    @{ Name = 'nm_impl'; Group = 'nm'; Declared = '1.0.0'; Anchor = '1.0.0' }
+                )
+                Group    = @{ nm = @('nm', 'nm_impl') }
+                Change   = @()
+            }
+            @{
+                Name     = 'drifted group with a published outside dependent'
+                Throws   = $true
+                Package  = @(
+                    @{ Name = 'nm'; Group = 'nm'; Declared = '1.1.0'; Anchor = '1.1.0' }
+                    @{ Name = 'nm_impl'; Group = 'nm'; Declared = '1.0.0'; Anchor = '1.0.0' }
+                    @{ Name = 'events'; Declared = '2.0.0'; Anchor = '2.0.0'; Deps = @('nm_impl') }
+                )
+                Group    = @{ nm = @('nm', 'nm_impl') }
+                Change   = @()
+            }
+            @{
+                Name     = 'drifted group whose outside dependent is already pending release'
+                Throws   = $false
+                Package  = @(
+                    @{ Name = 'nm'; Group = 'nm'; Declared = '1.1.0'; Anchor = '1.1.0' }
+                    @{ Name = 'nm_impl'; Group = 'nm'; Declared = '1.0.0'; Anchor = '1.0.0' }
+                    @{ Name = 'events'; Declared = '2.1.0'; Anchor = '2.0.0'; Deps = @('nm_impl') }
+                )
+                Group    = @{ nm = @('nm', 'nm_impl') }
+                Change   = @()
+            }
+            @{
+                Name     = 'drifted group whose outside dependent has never published'
+                Throws   = $false
+                Package  = @(
+                    @{ Name = 'nm'; Group = 'nm'; Declared = '1.1.0'; Anchor = '1.1.0' }
+                    @{ Name = 'nm_impl'; Group = 'nm'; Declared = '1.0.0'; Anchor = '1.0.0' }
+                    @{ Name = 'events'; Declared = '0.1.0'; Anchor = $null; Deps = @('nm_impl') }
+                )
+                Group    = @{ nm = @('nm', 'nm_impl') }
+                Change   = @()
+            }
+            @{
+                Name     = 'drifted group whose outside dependent takes its own decision'
+                Throws   = $false
+                Package  = @(
+                    @{ Name = 'nm'; Group = 'nm'; Declared = '1.1.0'; Anchor = '1.1.0' }
+                    @{ Name = 'nm_impl'; Group = 'nm'; Declared = '1.0.0'; Anchor = '1.0.0' }
+                    @{ Name = 'events'; Declared = '2.0.0'; Anchor = '2.0.0'; Deps = @('nm_impl'); Status = 'needs-increment' }
+                )
+                Group    = @{ nm = @('nm', 'nm_impl') }
+                Change   = @(@{ name = 'events'; level = 'patch' })
+            }
+            @{
+                Name     = 'drifted group named by a decision that is already covered'
+                Throws   = $false
+                Package  = @(
+                    @{ Name = 'nm'; Group = 'nm'; Declared = '1.1.0'; Anchor = '1.0.0'; Status = 'pending-release' }
+                    @{ Name = 'nm_impl'; Group = 'nm'; Declared = '1.0.0'; Anchor = '1.0.0' }
+                )
+                Group    = @{ nm = @('nm', 'nm_impl') }
+                Change   = @(@{ name = 'nm'; level = 'patch' })
+            }
+            @{
+                Name     = 'two drifted groups where one pins the other'
+                Throws   = $true
+                Package  = @(
+                    @{ Name = 'nm'; Group = 'nm'; Declared = '1.1.0'; Anchor = '1.1.0' }
+                    @{ Name = 'nm_impl'; Group = 'nm'; Declared = '1.0.0'; Anchor = '1.0.0' }
+                    @{ Name = 'events'; Group = 'events'; Declared = '3.0.0'; Anchor = '3.0.0'; Deps = @('nm_impl') }
+                    @{ Name = 'events_impl'; Group = 'events'; Declared = '2.0.0'; Anchor = '2.0.0' }
+                )
+                Group    = @{ nm = @('nm', 'nm_impl'); events = @('events', 'events_impl') }
+                Change   = @()
+            }
+            @{
+                Name     = 'consistent group with one decided member'
+                Throws   = $false
+                Package  = @(
+                    @{ Name = 'nm'; Group = 'nm'; Declared = '1.0.0'; Anchor = '1.0.0'; Status = 'needs-increment' }
+                    @{ Name = 'nm_impl'; Group = 'nm'; Declared = '1.0.0'; Anchor = '1.0.0' }
+                )
+                Group    = @{ nm = @('nm', 'nm_impl') }
+                Change   = @(@{ name = 'nm'; level = 'breaking' })
+            }
+            @{
+                Name     = 'ungrouped package pinning a decided package'
+                Throws   = $false
+                Package  = @(
+                    @{ Name = 'nm'; Declared = '1.0.0'; Anchor = '1.0.0'; Status = 'needs-increment' }
+                    @{ Name = 'events'; Declared = '2.1.0'; Anchor = '2.0.0'; Deps = @('nm') }
+                )
+                Group    = @{}
+                Change   = @(@{ name = 'nm'; level = 'patch' })
+            }
+        )
+
+    It 'holds every plan property for <Name>' -ForEach $planScenario {
+        $package = @($Package | ForEach-Object {
+                $argument = @{
+                    Name            = $_.Name
+                    DeclaredVersion = $_.Declared
+                    Status          = $(if ($_.ContainsKey('Status')) { $_.Status } else { 'unchanged' })
+                }
+                if ($_.ContainsKey('Group')) { $argument.Group = $_.Group }
+                if ($_.ContainsKey('Deps')) {
+                    $argument.Dependencies = @($_.Deps | ForEach-Object { @{ name = $_ } })
+                }
+                if ($_.ContainsKey('Status') -and $_.Status -ne 'unchanged') {
+                    $argument.Changed = @(@{ path = 'src/lib.rs' })
+                }
+                if ($null -ne $_.Anchor) { $argument.AnchorVersion = $_.Anchor }
+                $built = Get-TestPackage @argument
+                if ($null -eq $_.Anchor) { $built.Remove('anchor') }
+                $built
+            })
+
+        $groupTable = @{}
+        foreach ($entry in $Group.GetEnumerator()) {
+            $member = @($entry.Value)
+            $declared = @($package |
+                    Where-Object { $member -contains [string] $_.name } |
+                    ForEach-Object { [semver] [string] $_.declared_version })
+            $highest = ($declared | Sort-Object)[-1]
+            $groupTable[$entry.Key] = @{
+                members    = $member
+                consistent = @($declared | ForEach-Object { $_.ToString() } | Sort-Object -Unique).Count -eq 1
+                version    = $highest.ToString()
+            }
+        }
+
+        $safeName = $Name -replace '[^A-Za-z0-9]', '-'
+        $reportPath = Join-Path $TestDrive "invariant-$safeName-report.json"
+        $decisionPath = Join-Path $TestDrive "invariant-$safeName-decision.json"
+        $planPath = Join-Path $TestDrive "invariant-$safeName-plan.json"
+        Write-TestReport -Path $reportPath -Package $package -Group $groupTable
+        Write-TestDecision -Path $decisionPath -Change @($Change)
+
+        if ($Throws) {
+            {
+                New-ReleasePlanFile -ReportPath $reportPath -DecisionPath $decisionPath `
+                    -PlanPath $planPath
+            } | Should -Throw
+            return
+        }
+
+        New-ReleasePlanFile -ReportPath $reportPath -DecisionPath $decisionPath -PlanPath $planPath
+        $report = Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json
+        $plan = Get-Content -LiteralPath $planPath -Raw | ConvertFrom-Json
+        Assert-PlanInvariant -Report $report -Plan $plan
+    }
+}

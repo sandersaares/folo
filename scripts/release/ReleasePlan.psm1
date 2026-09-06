@@ -962,6 +962,34 @@ function Get-PackageMovedByIncrement {
     return , $moved
 }
 
+function Get-PlanIncrement {
+    # One entry of a proposed plan. Named for the value it returns, like the alignment helper
+    # below, because it only builds a value and changes nothing.
+    #
+    # The tool requires exactly one of `level` or `version` per entry and rejects a plan carrying
+    # both or neither, so every entry is built here rather than assembled at each site. That
+    # keeps the shape uniform for the code that reads entries back, which is easy to get wrong
+    # because an entry under construction is an ordered dictionary while the same entry parsed
+    # from JSON is a PSCustomObject.
+    [OutputType([System.Collections.IDictionary])]
+    param(
+        [Parameter(Mandatory)][string] $Name,
+        [string] $Level,
+        [string] $Version
+    )
+
+    $hasLevel = -not [string]::IsNullOrWhiteSpace($Level)
+    $hasVersion = -not [string]::IsNullOrWhiteSpace($Version)
+    if ($hasLevel -eq $hasVersion) {
+        throw "Plan increment '$Name' must carry exactly one of an increment level or a version."
+    }
+
+    if ($hasLevel) {
+        return [ordered]@{ name = $Name; level = $Level }
+    }
+    return [ordered]@{ name = $Name; version = $Version }
+}
+
 function Get-GroupAlignmentIncrement {
     # Plan entry that puts a drifted group back on one version.
     #
@@ -1054,10 +1082,7 @@ function Get-GroupAlignmentIncrement {
                 'which the alignment moves; the rewritten requirement would change released ' +
                 "content under '$memberName' version '$target'. Incrementing the group instead."
             ) -Verbose
-            return [ordered]@{
-                name  = $Name
-                level = 'patch'
-            }
+            return Get-PlanIncrement -Name $Name -Level 'patch'
         }
     }
 
@@ -1065,10 +1090,7 @@ function Get-GroupAlignmentIncrement {
         "Group '$Name' aligns on version '$target', which its members already declare at the " +
         'highest, because no package that keeps its version depends on one the alignment moves.'
     ) -Verbose
-    return [ordered]@{
-        name    = $Name
-        version = $target
-    }
+    return Get-PlanIncrement -Name $Name -Version $target
 }
 
 function New-ReleasePlanFile {
@@ -1134,10 +1156,7 @@ function New-ReleasePlanFile {
             "cargo-release-plan '$cargoLevel' because declared version '$current' is below " +
             "the minimum version '$minimum' derived from anchor '$anchor'."
         ) -Verbose
-        $increment.Add([ordered]@{
-            name  = $name
-            level = $cargoLevel
-        })
+        $increment.Add((Get-PlanIncrement -Name $name -Level $cargoLevel))
     }
 
     # Every version group has to end up on one version, and expansion is plan-driven: a group
