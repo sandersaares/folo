@@ -18,16 +18,3 @@ When a feature gate controls a dependency (e.g. `dep:futures-core` behind
 `futures-stream`), ensure the dependency is also listed as a dev-dependency so it
 is available in test builds without requiring the feature to be explicitly
 activated.
-
-## Published features must not weaken product invariants
-
-A Cargo feature declared by a published package is available to downstream
-release builds. It therefore cannot gate test behavior that would weaken a
-product invariant if compiled into the released binary.
-
-When an integration test must alter the binary itself to reach an otherwise
-inaccessible scenario, use a repository-only cfg registered in the workspace
-lint configuration and enabled by the owning `just` test recipes. Keep
-`#[cfg(test)]` as the unit-test branch, make direct Cargo test invocations report
-which recipe supplies the cfg, and verify that release builds with all published
-features retain the product behavior.

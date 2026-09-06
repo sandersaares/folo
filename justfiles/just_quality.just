@@ -23,7 +23,6 @@ coverage-measure:
     $env:CBH_FAKER = just _faker-path | Select-Object -Last 1
     if ($IsWindows) {
         $env:DURE_TEST_HELPER = just _dure-test-helper-path | Select-Object -Last 1
-        $env:RUSTFLAGS = (@($env:RUSTFLAGS, "--cfg dure_integration_test") | Where-Object { $_ }) -join " "
     }
 
     # This will run tests and generate test coverage data files, to be analyzed separately.
@@ -245,7 +244,6 @@ careful FILTER="":
     $env:CBH_FAKER = just _faker-path | Select-Object -Last 1
     if ($IsWindows) {
         $env:DURE_TEST_HELPER = just _dure-test-helper-path | Select-Object -Last 1
-        $env:RUSTFLAGS = (@($env:RUSTFLAGS, "--cfg dure_integration_test") | Where-Object { $_ }) -join " "
     }
 
     cargo +$env:RUST_NIGHTLY careful test {{ target_package }} --no-fail-fast --all-features {{ FILTER }} --locked

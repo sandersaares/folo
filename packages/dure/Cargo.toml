@@ -2,7 +2,7 @@
 name = "dure"
 description = "Detachable Windows console sessions that outlive the terminal"
 publish = true
-version = "0.3.0"
+version = "0.2.2"
 
 authors.workspace = true
 edition.workspace = true
@@ -52,8 +52,8 @@ development = ["dure-test-helper"]
 allowed_external_types = []
 
 [features]
-# Exposes the in-crate test support the Windows integration tests use to drive
-# the real PAL. It does not alter the `dure` command-line interface.
+# Exposes the in-crate test support and isolated-store override that the Windows
+# integration tests use to drive the real PAL. Not part of the product.
 private-test-util = []
 
 # Every dependency is Windows-only because the crate itself is: a non-Windows build compiles to a
@@ -94,11 +94,11 @@ tempfile = { workspace = true }
 testing = { path = "../testing" }
 
 # The end-to-end Windows suite needs the test support above, which is not part of the product and
-# is therefore behind a feature. Both suites execute a repository test binary whose isolated-store
-# argument is compiled with `cfg(dure_integration_test)`, set by the standard `just test`,
-# coverage, careful, and mutation recipes. Their harnesses report that requirement directly if
-# invoked through Cargo without the cfg. The package's own validation enables all features and
-# the cfg, so both suites always run there.
+# is therefore behind a feature. The CLI suite drives `--store-root`, which is behind the same
+# private feature. Declaring the requirement here is what makes that visible: a `cargo test -p
+# dure` without the feature skips those targets and says so, rather than building empty ones and
+# reporting success for coverage it never compiled. The package's own validation
+# (`just package=dure validate-local`) enables all features, so both suites always run there.
 [[test]]
 name = "windows"
 required-features = ["private-test-util"]

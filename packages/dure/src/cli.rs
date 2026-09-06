@@ -28,9 +28,8 @@ pub struct Cli {
 
     /// Override the session store root.
     ///
-    /// Compiled only into repository test binaries, so published features
-    /// cannot add it to the released tool (design.md, "Isolation").
-    #[cfg(any(test, dure_integration_test))]
+    /// Available only through the private test surface.
+    #[cfg(any(test, feature = "private-test-util"))]
     #[arg(long, global = true, hide = true)]
     store_root: Option<PathBuf>,
 
@@ -173,7 +172,7 @@ impl Cli {
         };
         Ok(Invocation {
             verbose: self.verbose,
-            #[cfg(any(test, dure_integration_test))]
+            #[cfg(any(test, feature = "private-test-util"))]
             store_root: self.store_root,
             command,
         })

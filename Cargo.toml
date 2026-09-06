@@ -203,8 +203,6 @@ variant_size_differences = "warn"
 unexpected_cfgs = { level = "warn", check-cfg = [
     'cfg(careful)',
     'cfg(coverage_nightly)',
-    # Set only by repository test recipes so the integration binary can use an isolated store.
-    'cfg(dure_integration_test)',
     # Set by the `just mutants` recipe via RUSTFLAGS; lets tests opt out of mutation runs via `cfg_attr(mutants, ignore)`.
     'cfg(mutants)',
 ] }

@@ -83,15 +83,11 @@ mutants SHARD="" CAREFUL='false':
         $env:DURE_TEST_HELPER = just _dure-test-helper-path | Select-Object -Last 1
     }
 
-    # Enable the mutation-test cfg and, on Windows, the isolated-store argument
-    # used only by dure's repository integration binary. cargo-mutants preserves
-    # RUSTFLAGS, chaining its own `--cap-lints=warn` onto them.
+    # Enable the mutation-test cfg. cargo-mutants preserves RUSTFLAGS,
+    # chaining its own `--cap-lints=warn` onto them.
     $existing_rustflags = if ($env:RUSTFLAGS) { $env:RUSTFLAGS } else { "" }
     if ($existing_rustflags -notlike "*--cfg mutants*") {
         $env:RUSTFLAGS = ($existing_rustflags, "--cfg mutants" | Where-Object { $_ }) -join " "
-    }
-    if ($IsWindows -and $env:RUSTFLAGS -notlike "*--cfg dure_integration_test*") {
-        $env:RUSTFLAGS = ($env:RUSTFLAGS, "--cfg dure_integration_test") -join " "
     }
 
     if ($careful) {
