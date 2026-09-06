@@ -2,7 +2,7 @@
 name = "folo_utils"
 description = "Utilities for internal use in Folo packages; no stable API surface"
 publish = true
-version = "0.1.11"
+version = "0.1.12"
 
 authors.workspace = true
 edition.workspace = true

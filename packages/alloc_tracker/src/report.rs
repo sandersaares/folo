@@ -1,7 +1,7 @@
 //! Memory allocation tracking reports.
 
 use std::collections::HashMap;
-use std::fmt;
+use std::{fmt, iter};
 
 use crate::OperationMetrics;
 
@@ -24,7 +24,7 @@ use crate::OperationMetrics;
 /// # let session = session.no_stdout().no_file();
 /// {
 ///     let operation = session.operation("test_work");
-///     let _span = operation.measure_process().iterations(1);
+///     let _span = operation.measure_thread().iterations(1);
 ///     let _data = vec![1, 2, 3, 4, 5]; // This allocates memory
 /// }
 ///
@@ -57,13 +57,13 @@ use crate::OperationMetrics;
 /// // Record some work in each
 /// {
 ///     let op1 = session1.operation("work");
-///     let _span1 = op1.measure_process().iterations(1);
+///     let _span1 = op1.measure_thread().iterations(1);
 ///     let _data1 = vec![1, 2, 3]; // This allocates memory
 /// }
 ///
 /// {
 ///     let op2 = session2.operation("work");
-///     let _span2 = op2.measure_process().iterations(1);
+///     let _span2 = op2.measure_thread().iterations(1);
 ///     let _data2 = vec![4, 5, 6, 7]; // This allocates more memory
 /// }
 ///
@@ -112,7 +112,7 @@ pub struct MetricStatistics {
     pub interval: Option<(f64, f64)>,
 }
 
-/// Statistics for one operation across both allocation metrics.
+/// Statistics for one operation across the metrics the report exposes.
 ///
 /// Exposed through [`ReportOperation::statistics`] so callers can consume the
 /// same figures that are written to the machine-readable JSON output.
@@ -128,11 +128,18 @@ pub struct OperationStatistics {
 
     /// Per-iteration allocation-count statistics.
     pub allocations: MetricStatistics,
+
+    /// Per-iteration peak-outstanding-byte statistics, or `None` when the operation has no
+    /// peak to report.
+    ///
+    /// See [`ReportOperation::peak_outstanding_bytes`] for when that is the case.
+    pub peak_outstanding_bytes: Option<MetricStatistics>,
 }
 
 impl Report {
     /// Creates an empty report.
     #[cfg(test)]
+    #[cfg_attr(coverage_nightly, coverage(off))] // Test scaffolding, not shipped behavior.
     #[must_use]
     pub(crate) fn new() -> Self {
         Self {
@@ -183,13 +190,13 @@ impl Report {
     /// // Both sessions record the same operation name
     /// {
     ///     let op1 = session1.operation("common_work");
-    ///     let _span1 = op1.measure_process().iterations(1);
+    ///     let _span1 = op1.measure_thread().iterations(1);
     ///     let _data1 = vec![1, 2, 3]; // 3 elements
     /// }
     ///
     /// {
     ///     let op2 = session2.operation("common_work");
-    ///     let _span2 = op2.measure_process().iterations(1);
+    ///     let _span2 = op2.measure_thread().iterations(1);
     ///     let _data2 = vec![4, 5]; // 2 elements
     /// }
     ///
@@ -272,7 +279,7 @@ impl Report {
     /// # let session = session.no_stdout().no_file();
     /// {
     ///     let operation = session.operation("test_work");
-    ///     let _span = operation.measure_process().iterations(1);
+    ///     let _span = operation.measure_thread().iterations(1);
     ///     let _data = vec![1, 2, 3, 4, 5]; // This allocates memory
     /// }
     ///
@@ -312,6 +319,36 @@ impl ReportOperation {
         self.metrics.total_iterations()
     }
 
+    /// Returns the per-iteration peak outstanding bytes for this operation.
+    ///
+    /// This is the most bytes a single iteration held allocated at any one moment. Spans
+    /// are averaged rather than summed, so an operation measured concurrently on several
+    /// threads reports what a typical one of them held, not the total held across all of
+    /// them at once.
+    ///
+    /// The figure assumes every iteration in a measured batch reaches the same peak, which
+    /// lets spans covering different iteration counts be combined and lets low-iteration
+    /// warmup spans be down-weighted. An operation that instead accumulates memory across
+    /// the iterations of a batch has no batch-size-independent peak, and reports a figure
+    /// that grows with the iteration counts the benchmark harness chose.
+    ///
+    /// The figure counts memory requested through the allocator as seen at the boundaries
+    /// of allocator calls, and is measured relative to what was already outstanding when
+    /// each span started. Memory allocated before a span and freed inside it therefore does
+    /// not count against that span, and a span that frees more than it allocates before
+    /// allocating again under-reports what it holds.
+    ///
+    /// Returns `None` when no finite figure is available — when no spans were recorded, when
+    /// the recorded spans covered zero iterations, or when any recorded span was created by
+    /// [`Operation::measure_process`](crate::Operation::measure_process), which has no
+    /// single thread's watermark to read.
+    #[must_use]
+    pub fn peak_outstanding_bytes(&self) -> Option<f64> {
+        self.metrics
+            .peak_outstanding_bytes()
+            .filter(|peak| peak.is_finite())
+    }
+
     /// Returns the per-iteration bytes allocated — the primary allocation metric
     /// for this operation.
     ///
@@ -339,8 +376,8 @@ impl ReportOperation {
     ///
     /// Returns `None` when no spans were recorded. The returned
     /// [`OperationStatistics`] carries the per-iteration value and its confidence
-    /// interval for both the byte and allocation-count metrics — the same figures
-    /// written to the machine-readable JSON output.
+    /// interval for each metric — the same figures that are written to the
+    /// machine-readable JSON output.
     ///
     /// # Examples
     ///
@@ -355,7 +392,7 @@ impl ReportOperation {
     /// # let session = session.no_stdout().no_file();
     /// {
     ///     let operation = session.operation("test_work");
-    ///     let _span = operation.measure_process().iterations(1);
+    ///     let _span = operation.measure_thread().iterations(1);
     ///     let _data = vec![1, 2, 3, 4, 5]; // This allocates memory
     /// }
     ///
@@ -385,6 +422,10 @@ impl ReportOperation {
                 slope: self.metrics.allocations_slope()?,
                 interval: self.metrics.allocations_interval(),
             },
+            peak_outstanding_bytes: self.peak_outstanding_bytes().map(|slope| MetricStatistics {
+                slope,
+                interval: self.metrics.peak_interval(),
+            }),
         })
     }
 }
@@ -403,17 +444,23 @@ pub(crate) fn format_count(value: f64) -> String {
     let rounded = (value.max(0.0) * 100.0).round() / 100.0;
     let mut rendered = format!("{rounded:.2}");
     if rendered.contains('.') {
-        rendered = rendered
-            .trim_end_matches('0')
-            .trim_end_matches('.')
-            .to_string();
+        // Trimming yields a prefix of what is already here, so shortening in place avoids a
+        // second allocation on a path that runs once per cell of the summary table.
+        let trimmed_len = rendered.trim_end_matches('0').trim_end_matches('.').len();
+        rendered.truncate(trimmed_len);
     }
     rendered
 }
 
+// The exact layout carries no API contract and the formatter's error paths are unreachable
+// here. Which figures appear, and the no-measurements case, are contractual and are tested.
+#[cfg_attr(coverage_nightly, coverage(off))]
 impl fmt::Display for ReportOperation {
+    /// Renders the per-iteration byte and allocation figures.
+    ///
+    /// The peak and the confidence intervals are deliberately left out to keep the one-line
+    /// form readable; [`ReportOperation::statistics`] exposes them all.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // The summary shows only the per-iteration slopes, not their intervals.
         match (self.metrics.bytes_slope(), self.metrics.allocations_slope()) {
             (Some(bytes), Some(allocations)) => write!(
                 f,
@@ -426,8 +473,9 @@ impl fmt::Display for ReportOperation {
     }
 }
 
-// No API contract to test - output format is not guaranteed.
-#[cfg_attr(coverage_nightly, coverage(off))] // Too annoying to test every question mark operator.
+// The layout carries no API contract, and the formatter's error paths are unreachable here,
+// so only the figure availability the table promises is worth asserting on. Tests cover that.
+#[cfg_attr(coverage_nightly, coverage(off))]
 impl fmt::Display for Report {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.is_empty() {
@@ -438,78 +486,114 @@ impl fmt::Display for Report {
         writeln!(f, "Allocation statistics:")?;
         writeln!(f)?;
 
-        // Pre-render the per-iteration slope cells so the column widths and the
-        // printed rows are computed from the exact same strings. The confidence
-        // interval is kept out of this summary for readability; it remains in the
-        // JSON output and the `statistics()` API.
-        let rows: Vec<(&str, String, String)> = self
+        let headers = ["Operation", "Bytes/iter", "Allocations/iter", "Peak bytes"];
+
+        // The confidence interval is kept out of this summary for readability; it remains in
+        // the JSON output and the `statistics()` API.
+        let rows: Vec<TableRow<'_>> = self
             .sorted_operations()
             .into_iter()
-            .map(|(name, operation)| match operation.statistics() {
-                Some(statistics) => (
-                    name,
-                    format_count(statistics.bytes.slope),
-                    format_count(statistics.allocations.slope),
-                ),
-                None => (name, "n/a".to_owned(), "n/a".to_owned()),
+            .map(|(name, operation)| {
+                let figures = match operation.statistics() {
+                    Some(statistics) => [
+                        format_count(statistics.bytes.slope),
+                        format_count(statistics.allocations.slope),
+                        statistics.peak_outstanding_bytes.map_or_else(
+                            || NOT_AVAILABLE.to_owned(),
+                            |peak| format_count(peak.slope),
+                        ),
+                    ],
+                    None => [
+                        NOT_AVAILABLE.to_owned(),
+                        NOT_AVAILABLE.to_owned(),
+                        NOT_AVAILABLE.to_owned(),
+                    ],
+                };
+
+                TableRow { name, figures }
             })
             .collect();
 
-        let name_header = "Operation";
-        let bytes_header = "Bytes/iter";
-        let count_header = "Allocations/iter";
+        let mut widths = headers.map(str::len);
+        for row in &rows {
+            for (width, cell) in widths.iter_mut().zip(row.cells()) {
+                *width = (*width).max(cell.len());
+            }
+        }
 
-        let max_name_width = rows
-            .iter()
-            .map(|(name, _, _)| name.len())
-            .max()
-            .unwrap_or(0)
-            .max(name_header.len());
-        let max_bytes_width = rows
-            .iter()
-            .map(|(_, bytes, _)| bytes.len())
-            .max()
-            .unwrap_or(0)
-            .max(bytes_header.len());
-        let max_count_width = rows
-            .iter()
-            .map(|(_, _, count)| count.len())
-            .max()
-            .unwrap_or(0)
-            .max(count_header.len());
+        write_table_row(f, headers.iter().copied(), widths)?;
 
-        // Print table header.
-        writeln!(
-            f,
-            "| {name_header:<max_name_width$} | {bytes_header:>max_bytes_width$} | {count_header:>max_count_width$} |",
-        )?;
+        for width in widths {
+            let dashes = width
+                .checked_add(TABLE_CELL_PADDING)
+                .expect("column width fits in memory, adding the padding cannot overflow");
+            write!(f, "|{:-<dashes$}", "")?;
+        }
+        writeln!(f, "|")?;
 
-        // Print separator.
-        let separator_name_width = max_name_width
-            .checked_add(2)
-            .expect("operation name width fits in memory, adding 2 cannot overflow");
-        let separator_bytes_width = max_bytes_width
-            .checked_add(2)
-            .expect("bytes width fits in memory, adding 2 cannot overflow");
-        let separator_count_width = max_count_width
-            .checked_add(2)
-            .expect("count width fits in memory, adding 2 cannot overflow");
-        writeln!(
-            f,
-            "|{:-<separator_name_width$}|{:-<separator_bytes_width$}|{:-<separator_count_width$}|",
-            "", "", "",
-        )?;
-
-        // Print table rows.
-        for (name, bytes, count) in rows {
-            writeln!(
-                f,
-                "| {name:<max_name_width$} | {bytes:>max_bytes_width$} | {count:>max_count_width$} |",
-            )?;
+        for row in &rows {
+            write_table_row(f, row.cells(), widths)?;
         }
 
         Ok(())
     }
+}
+
+/// Number of columns in the rendered summary table.
+const TABLE_COLUMNS: usize = 4;
+
+/// Number of columns holding a rendered figure: every column but the operation name.
+const TABLE_FIGURE_COLUMNS: usize = TABLE_COLUMNS - 1;
+
+/// Characters framing each cell's contents: one leading and one trailing space.
+///
+/// The separator row must span the same width as the cells, so it derives its dashes from
+/// the same constant that describes the padding `write_table_row` writes.
+const TABLE_CELL_PADDING: usize = 2;
+
+/// Rendered in place of a figure the operation cannot supply.
+const NOT_AVAILABLE: &str = "n/a";
+
+/// One operation's pre-rendered row of the summary table.
+///
+/// Pre-rendering lets the column widths and the printed rows be computed from the exact
+/// same strings. The name is borrowed from the report rather than copied, because a table
+/// is rendered from a report that outlives it.
+struct TableRow<'a> {
+    name: &'a str,
+    figures: [String; TABLE_FIGURE_COLUMNS],
+}
+
+impl TableRow<'_> {
+    /// The row's cells in column order.
+    fn cells(&self) -> impl Iterator<Item = &str> {
+        iter::once(self.name).chain(self.figures.iter().map(String::as_str))
+    }
+}
+
+/// Writes one row of the summary table.
+///
+/// The operation name is left-aligned and the figures are right-aligned, so digits line up
+/// under their headers.
+// The layout carries no API contract and the formatter's error paths are unreachable here.
+// Which figures appear is contractual, and the table tests cover that.
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn write_table_row<'a>(
+    f: &mut fmt::Formatter<'_>,
+    cells: impl Iterator<Item = &'a str>,
+    widths: [usize; TABLE_COLUMNS],
+) -> fmt::Result {
+    let mut cells = cells.zip(widths);
+
+    if let Some((name, width)) = cells.next() {
+        write!(f, "| {name:<width$} |")?;
+    }
+
+    for (cell, width) in cells {
+        write!(f, " {cell:>width$} |")?;
+    }
+
+    writeln!(f)
 }
 
 #[cfg(test)]
@@ -524,7 +608,8 @@ mod tests {
 
     use super::*;
     use crate::Session;
-    use crate::allocator::register_fake_allocation;
+    use crate::counters::register_fake_allocation;
+    use crate::span_measurement::SpanMeasurement;
 
     /// Builds a detached [`ReportOperation`] from per-iteration deltas for tests
     /// that assert directly on the report surface without a live session.
@@ -587,6 +672,25 @@ mod tests {
         let operations = report.sorted_operations();
         let (_name, operation) = operations.first().expect("the report has one operation");
         assert!(operation.statistics().is_some());
+    }
+
+    #[test]
+    fn zero_iteration_spans_withhold_the_peak_from_statistics() {
+        // `statistics().peak_outstanding_bytes` promises the availability semantics of
+        // `peak_outstanding_bytes()`, so an undefined rate must be withheld rather than
+        // surfaced as a `NaN` slope that the JSON and the table would then render.
+        let mut metrics = OperationMetrics::default();
+        metrics.add_iterations(800, 8, 0);
+        let operation = ReportOperation { metrics };
+
+        assert_eq!(operation.peak_outstanding_bytes(), None);
+        assert!(
+            operation
+                .statistics()
+                .unwrap()
+                .peak_outstanding_bytes
+                .is_none()
+        );
     }
 
     #[test]
@@ -741,7 +845,7 @@ mod tests {
     }
 
     #[test]
-    fn statistics_expose_both_metric_estimates() {
+    fn statistics_expose_byte_and_allocation_estimates() {
         // A single recorded span yields a span count of one and a slope equal to
         // the per-iteration mean, but carries no dispersion information, so the
         // interval is withheld.
@@ -783,15 +887,13 @@ mod tests {
 
     #[test]
     fn report_operation_display_shows_robust_per_iteration_estimate() {
-        // 250 bytes/iter over 4 iterations → a single-span slope of 250 with the
-        // interval collapsed onto it.
+        // 250 bytes/iter over 4 iterations yields a single-span slope of 250. Each figure
+        // is asserted against its own label so that rendering one metric in the other's
+        // place would fail.
         let operation = report_operation(250, 3, 4);
         let display_output = operation.to_string();
-        assert!(
-            display_output.contains("bytes/iter"),
-            "got {display_output}"
-        );
-        assert!(display_output.contains("250"), "got {display_output}");
+        assert!(display_output.contains("250 bytes/iter"));
+        assert!(display_output.contains("3 allocations/iter"));
     }
 
     #[test]
@@ -825,5 +927,70 @@ mod tests {
         let report = Report::new();
         let display_output = report.to_string();
         assert!(display_output.contains("No allocation statistics captured."));
+    }
+
+    #[test]
+    fn report_display_renders_each_peak_according_to_its_availability() {
+        // An operation with no peak figure renders as unavailable in the table
+        // (design.md, "Reporting"). Each metric gets a distinct value so that finding one
+        // in the peak column proves the column carries the peak and not a neighbour.
+        const ITERATIONS: u64 = 4;
+        const PEAK_PER_ITERATION: u64 = 700;
+
+        let mut measured = OperationMetrics::default();
+        measured.add_span(SpanMeasurement {
+            iterations: ITERATIONS,
+            bytes: 250 * ITERATIONS,
+            count: 3 * ITERATIONS,
+            peak_outstanding_bytes: Some(PEAK_PER_ITERATION),
+        });
+
+        // A process span withholds the peak, which makes the whole operation unable to
+        // report one even though its byte and allocation rates remain well defined.
+        let mut process_measured = OperationMetrics::default();
+        process_measured.add_span(SpanMeasurement {
+            iterations: ITERATIONS,
+            bytes: 250 * ITERATIONS,
+            count: 3 * ITERATIONS,
+            peak_outstanding_bytes: None,
+        });
+
+        // Zero iterations leave every rate undefined, but only the peak can say so.
+        let mut zero_iterations = OperationMetrics::default();
+        zero_iterations.add_iterations(250, 3, 0);
+
+        let mut operations = HashMap::new();
+        operations.insert("thread".to_owned(), ReportOperation { metrics: measured });
+        operations.insert(
+            "process".to_owned(),
+            ReportOperation {
+                metrics: process_measured,
+            },
+        );
+        operations.insert(
+            "nothing".to_owned(),
+            ReportOperation {
+                metrics: zero_iterations,
+            },
+        );
+        let report = Report { operations };
+
+        let display_output = report.to_string();
+
+        // Splitting on the cell separator addresses the peak by column without pinning the
+        // widths or alignment, neither of which is contractual.
+        let peak_cell = |name: &str| {
+            let row = display_output
+                .lines()
+                .find(|line| line.contains(name))
+                .unwrap_or_else(|| panic!("the table has a row for {name}, got {display_output}"));
+            let cells: Vec<&str> = row.trim_matches('|').split('|').map(str::trim).collect();
+            assert_eq!(cells.len(), TABLE_COLUMNS);
+            cells.last().copied().unwrap().to_owned()
+        };
+
+        assert_eq!(peak_cell("thread"), PEAK_PER_ITERATION.to_string());
+        assert_eq!(peak_cell("process"), NOT_AVAILABLE);
+        assert_eq!(peak_cell("nothing"), NOT_AVAILABLE);
     }
 }

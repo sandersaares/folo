@@ -38,7 +38,7 @@ fn main() {
     criterion.bench_function("my_operation", |b| {
         b.iter_custom(|iters| {
             let start = Instant::now();
-            let _span = operation.measure_process().iterations(iters);
+            let _span = operation.measure_thread().iterations(iters);
             for _ in 0..iters {
                 black_box(vec![1, 2, 3, 4, 5]); // This allocates memory
             }

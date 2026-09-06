@@ -2,122 +2,11 @@
 
 use std::alloc::{GlobalAlloc, Layout};
 use std::any::type_name;
-use std::cell::{Cell, OnceCell};
 use std::fmt;
 #[cfg(feature = "panic_on_next_alloc")]
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::{self, AtomicU64};
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::atomic::{self, AtomicBool};
 
-use crate::ERR_POISONED_LOCK;
-
-/// Only the per-thread counters updated on each allocation. A global registry of all
-/// counters (including those from threads that have since exited) allows summation for
-/// process-wide spans without global contention.
-#[derive(Debug)]
-pub(crate) struct PerThreadCounters {
-    bytes: AtomicU64,
-    count: AtomicU64,
-}
-
-impl PerThreadCounters {
-    #[inline]
-    const fn new() -> Self {
-        Self {
-            bytes: AtomicU64::new(0),
-            count: AtomicU64::new(0),
-        }
-    }
-
-    #[inline]
-    pub(crate) fn register_allocation(&self, bytes: u64) {
-        // Relaxed is sufficient: we only need atomicity, not ordering w.r.t. other memory ops.
-        self.bytes.fetch_add(bytes, atomic::Ordering::Relaxed);
-        self.count.fetch_add(1, atomic::Ordering::Relaxed);
-    }
-
-    #[inline]
-    pub(crate) fn bytes(&self) -> u64 {
-        self.bytes.load(atomic::Ordering::Relaxed)
-    }
-
-    #[inline]
-    pub(crate) fn count(&self) -> u64 {
-        self.count.load(atomic::Ordering::Relaxed)
-    }
-}
-
-// Global registry holding Arc references so counters outlive their threads.
-// LazyLock gives us one-time initialization without a helper function.
-static REGISTRY: LazyLock<Mutex<Vec<Arc<PerThreadCounters>>>> =
-    LazyLock::new(|| Mutex::new(Vec::new()));
-
-thread_local! {
-    // We store a raw pointer to the per-thread counters rather than an Arc directly for two reasons:
-    // 1. TLS destructor constraints with the global allocator: If we kept an Arc in TLS, the Arc's Drop
-    //    could run during thread teardown while the global allocator is still active, potentially
-    //    performing deallocation (and therefore re-entering allocation tracking) at an unsafe point.
-    //    Using only a raw pointer avoids any Drop logic during TLS destruction.
-    // 2. Avoid recursive tracking during initialization: Setting up the Arc (heap allocation + pushing into
-    //    the global registry Vec) itself allocates. If we attempted to track those allocations we would
-    //    recurse into the allocator. A small reentrancy guard below disables tracking for that window.
-    // Lifetime safety: The Arc is stored in the global REGISTRY which is never cleared, so the pointed-to
-    // PerThreadCounters outlive all threads. Hence the raw pointer remains valid for the program lifetime.
-    static TLS_COUNTER_PTR: OnceCell<*const PerThreadCounters> = const { OnceCell::new() };
-    // Reentrancy guard flag; when true we are in the middle of initializing this thread's counters and
-    // must not attempt to record allocations.
-    static TLS_INIT_GUARD: Cell<bool> = const { Cell::new(false) };
-}
-
-#[inline]
-pub(crate) fn get_or_init_thread_counters() -> &'static PerThreadCounters {
-    TLS_COUNTER_PTR.with(|cell| {
-        if let Some(ptr) = cell.get() {
-            // SAFETY: pointer originates from Arc stored in REGISTRY which retains ownership for program lifetime.
-            return unsafe { (*ptr).as_ref_unchecked() };
-        }
-
-        TLS_INIT_GUARD.set(true);
-
-        let arc = Arc::new(PerThreadCounters::new());
-        let ptr = Arc::as_ptr(&arc);
-        // Push Arc to global registry to extend lifetime for program duration.
-        REGISTRY.lock().expect(ERR_POISONED_LOCK).push(arc);
-        _ = cell.set(ptr);
-
-        TLS_INIT_GUARD.set(false);
-
-        // SAFETY: pointer obtained from Arc::as_ptr for Arc stored in REGISTRY; lifetime extends for program duration.
-        unsafe { ptr.as_ref_unchecked() }
-    })
-}
-
-/// Aggregate totals across all registered threads.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct AllocationTotals {
-    pub bytes: u64,
-    pub count: u64,
-}
-
-impl AllocationTotals {
-    #[inline]
-    pub(crate) const fn zero() -> Self {
-        Self { bytes: 0, count: 0 }
-    }
-}
-
-/// Sum all registered counters (process-wide view at a point in time).
-#[inline]
-pub(crate) fn allocation_totals() -> AllocationTotals {
-    let reg = REGISTRY.lock().expect(ERR_POISONED_LOCK);
-
-    let mut totals = AllocationTotals::zero();
-    for c in reg.iter() {
-        totals.bytes = totals.bytes.wrapping_add(c.bytes());
-        totals.count = totals.count.wrapping_add(c.count());
-    }
-    totals
-}
+use crate::counters::{track_allocation, track_deallocation, track_reallocation};
 
 /// Global flag to control whether the next memory allocation should panic.
 /// When set to true, the next allocation attempt will panic and then reset the flag to false.
@@ -179,31 +68,6 @@ fn check_and_panic_if_enabled() {
 #[inline]
 fn check_and_panic_if_enabled() {}
 
-/// Updates allocation tracking counters for the given size.
-/// Only per-thread counters are updated; process-wide views sum them on demand.
-fn track_allocation(size: usize) {
-    let size_u64: u64 = size.try_into().expect("usize always fits into u64");
-    TLS_INIT_GUARD.with(|guard| {
-        if guard.get() {
-            return; // Skip tracking during initialization path (allocations still occur but are intentionally not recorded).
-        }
-        let counters = get_or_init_thread_counters();
-        counters.register_allocation(size_u64);
-    });
-}
-
-// Test helper for unit tests where we do not hook the global allocator.
-#[cfg(test)]
-pub(crate) fn register_fake_allocation(bytes: u64, count: u64) {
-    let counters = get_or_init_thread_counters();
-    if bytes != 0 {
-        counters.bytes.fetch_add(bytes, atomic::Ordering::Relaxed);
-    }
-    if count != 0 {
-        counters.count.fetch_add(count, atomic::Ordering::Relaxed);
-    }
-}
-
 /// A memory allocator that enables tracking of memory allocations and deallocations.
 ///
 /// This allocator wraps any [`GlobalAlloc`] implementation to provide allocation tracking
@@ -261,40 +125,78 @@ impl<A: GlobalAlloc> Allocator<A> {
     }
 }
 
-// SAFETY: We delegate all allocation operations to the underlying allocator,
-// which already implements GlobalAlloc safely, while adding tracking functionality.
+// SAFETY: `GlobalAlloc` requires an implementation to hand out blocks that match the
+// requested layout and to keep them valid until they are released. Every pointer this
+// wrapper returns comes from `self.inner`, which already upholds that; the tracking added
+// around each call is counter arithmetic that neither reads nor writes the blocks
+// themselves, so it cannot affect their validity.
 unsafe impl<A: GlobalAlloc> GlobalAlloc for Allocator<A> {
     #[inline]
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         check_and_panic_if_enabled();
-        track_allocation(layout.size());
 
-        // SAFETY: We forward the call to the underlying allocator which implements GlobalAlloc.
-        unsafe { self.inner.alloc(layout) }
+        // SAFETY: `GlobalAlloc::alloc` requires `layout` to have non-zero size. This method
+        // is itself `GlobalAlloc::alloc`, so its caller already owes that guarantee for this
+        // exact `layout`, which is forwarded unchanged to an allocator posing the identical
+        // requirement.
+        let ptr = unsafe { self.inner.alloc(layout) };
+
+        // A failed allocation reserves nothing, so recording it would permanently inflate the
+        // outstanding total against a block that will never be freed.
+        if !ptr.is_null() {
+            track_allocation(layout.size());
+        }
+
+        ptr
     }
 
     #[inline]
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        // SAFETY: We forward the call to the underlying allocator which implements GlobalAlloc.
-        unsafe { self.inner.dealloc(ptr, layout) }
+        // SAFETY: `GlobalAlloc::dealloc` requires that `ptr` was allocated by this same
+        // allocator under `layout` and has not been freed. This method is itself
+        // `GlobalAlloc::dealloc`, so its caller owes exactly that. Every block this wrapper
+        // hands out is one `self.inner` produced, because all of its allocating methods
+        // return the inner allocator's pointer unchanged, so the obligation carries over.
+        unsafe {
+            self.inner.dealloc(ptr, layout);
+        }
+
+        track_deallocation(layout.size());
     }
 
     #[inline]
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
         check_and_panic_if_enabled();
-        track_allocation(layout.size());
 
-        // SAFETY: We forward the call to the underlying allocator which implements GlobalAlloc.
-        unsafe { self.inner.alloc_zeroed(layout) }
+        // SAFETY: `GlobalAlloc::alloc_zeroed` places the same non-zero-size requirement on
+        // `layout` as `alloc` does. This method is itself `GlobalAlloc::alloc_zeroed`, so its
+        // caller owes that guarantee for this exact `layout`, which is forwarded unchanged.
+        let ptr = unsafe { self.inner.alloc_zeroed(layout) };
+
+        if !ptr.is_null() {
+            track_allocation(layout.size());
+        }
+
+        ptr
     }
 
     #[inline]
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         check_and_panic_if_enabled();
-        track_allocation(new_size);
 
-        // SAFETY: We forward the call to the underlying allocator which implements GlobalAlloc.
-        unsafe { self.inner.realloc(ptr, layout, new_size) }
+        // SAFETY: `GlobalAlloc::realloc` requires that `ptr` was allocated by this same
+        // allocator under `layout`, and that `new_size` is non-zero and does not overflow
+        // `isize::MAX` once rounded up to `layout`'s alignment. This method is itself
+        // `GlobalAlloc::realloc`, so its caller owes all three. Every block this wrapper hands
+        // out is one `self.inner` produced, and the three values reach it unchanged.
+        let new_ptr = unsafe { self.inner.realloc(ptr, layout, new_size) };
+
+        // On failure the original block is still live and unchanged, so no counter moves.
+        if !new_ptr.is_null() {
+            track_reallocation(layout.size(), new_size);
+        }
+
+        new_ptr
     }
 }
 
@@ -302,107 +204,306 @@ unsafe impl<A: GlobalAlloc> GlobalAlloc for Allocator<A> {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use std::panic::{RefUnwindSafe, UnwindSafe};
-    use std::{iter, thread};
+    use std::{ptr, thread};
+
+    use testing::with_watchdog;
 
     use super::*;
+    use crate::counters::{get_or_init_thread_counters, thread_has_counters};
 
     // Static assertions for thread safety.
     static_assertions::assert_impl_all!(Allocator<std::alloc::System>: Send, Sync);
-    static_assertions::assert_impl_all!(PerThreadCounters: Send, Sync);
 
     // Static assertions for unwind safety.
     static_assertions::assert_impl_all!(
         Allocator<std::alloc::System>: UnwindSafe, RefUnwindSafe
     );
 
+    /// A `GlobalAlloc` that fails every allocation request.
+    ///
+    /// It never hands out memory, so it is never asked to release or resize a block and the
+    /// unimplemented operations are unreachable.
+    struct FailingAllocator;
+
+    // SAFETY: Returning null is the documented way to report allocation failure. Because every
+    // request fails, this allocator never owns a block and the remaining operations, whose
+    // contracts require a block obtained from this allocator, cannot be called.
+    unsafe impl GlobalAlloc for FailingAllocator {
+        unsafe fn alloc(&self, _layout: Layout) -> *mut u8 {
+            ptr::null_mut()
+        }
+
+        unsafe fn dealloc(&self, _ptr: *mut u8, _layout: Layout) {
+            unreachable!("this allocator never hands out a block that could be released");
+        }
+    }
+
+    /// A `GlobalAlloc` that serves allocations from the system allocator but fails every
+    /// reallocation request.
+    ///
+    /// Reallocation may only be called on a block obtained from the same allocator, so failing
+    /// only the resize lets a test hold a genuine block from this allocator across a failed
+    /// reallocation.
+    struct FailingReallocator;
+
+    // SAFETY: Allocation and deallocation forward the caller's obligations unchanged to the
+    // system allocator. Returning null is the documented way for `realloc` to report failure,
+    // which by contract leaves the original block allocated and unchanged.
+    unsafe impl GlobalAlloc for FailingReallocator {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            // SAFETY: `System::alloc` requires `layout` to have non-zero size. This method is
+            // itself `GlobalAlloc::alloc`, so its caller owes that for this exact `layout`,
+            // which is forwarded unchanged.
+            unsafe { std::alloc::System.alloc(layout) }
+        }
+
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            // SAFETY: `System::dealloc` requires a block that the system allocator produced
+            // under `layout`. This method is itself `GlobalAlloc::dealloc`, so its caller owes
+            // that the block came from this allocator, and the only method here that hands one
+            // out is `alloc` above, which returns the system allocator's block unchanged.
+            unsafe { std::alloc::System.dealloc(ptr, layout) }
+        }
+
+        unsafe fn realloc(&self, _ptr: *mut u8, _layout: Layout, _new_size: usize) -> *mut u8 {
+            ptr::null_mut()
+        }
+    }
+
+    /// An arbitrary layout, large enough that a real allocation is unlikely to be optimized away.
+    fn test_layout(size: usize) -> Layout {
+        Layout::from_size_align(size, 8).unwrap()
+    }
+
+    #[test]
+    fn allocation_and_deallocation_move_outstanding() {
+        const SIZE: usize = 1024;
+
+        let allocator = Allocator::new(std::alloc::System);
+        let layout = test_layout(SIZE);
+        let counters = get_or_init_thread_counters();
+
+        let before = counters.outstanding();
+
+        // SAFETY: The layout has a non-zero size and a power-of-two alignment.
+        let block = unsafe { allocator.alloc(layout) };
+        assert!(!block.is_null());
+
+        let after_alloc = counters.outstanding();
+
+        // SAFETY: The block was just obtained from this allocator with this exact layout.
+        unsafe {
+            allocator.dealloc(block, layout);
+        }
+        let after_dealloc = counters.outstanding();
+
+        assert_eq!(
+            after_alloc.wrapping_sub(before),
+            i64::try_from(SIZE).unwrap()
+        );
+        assert_eq!(after_dealloc, before);
+    }
+
+    #[test]
+    fn zeroed_allocation_zeroes_memory_and_moves_every_counter() {
+        const SIZE: usize = 1024;
+
+        let allocator = Allocator::new(std::alloc::System);
+        let layout = test_layout(SIZE);
+        let counters = get_or_init_thread_counters();
+
+        let before_bytes = counters.bytes();
+        let before_count = counters.count();
+        let before_outstanding = counters.outstanding();
+
+        // Drop the watermark to the current level so the rise this allocation causes is
+        // attributable to it rather than to whatever ran earlier on this thread.
+        counters.set_watermark(before_outstanding);
+
+        // SAFETY: The layout has a non-zero size and a power-of-two alignment.
+        let block = unsafe { allocator.alloc_zeroed(layout) };
+        assert!(!block.is_null());
+
+        // SAFETY: The allocator just returned this block for a layout of SIZE bytes, so
+        // that many bytes are initialized and readable.
+        let contents = unsafe { std::slice::from_raw_parts(block, SIZE) };
+        assert!(contents.iter().all(|&byte| byte == 0));
+
+        let size = i64::try_from(SIZE).unwrap();
+        assert_eq!(counters.bytes(), before_bytes.wrapping_add(SIZE as u64));
+        assert_eq!(counters.count(), before_count.wrapping_add(1));
+        assert_eq!(
+            counters.outstanding().wrapping_sub(before_outstanding),
+            size
+        );
+        assert_eq!(counters.watermark().wrapping_sub(before_outstanding), size);
+
+        // SAFETY: The block was just obtained from this allocator with this exact layout.
+        unsafe {
+            allocator.dealloc(block, layout);
+        }
+
+        assert_eq!(counters.outstanding(), before_outstanding);
+    }
+
+    #[test]
+    fn failed_allocation_does_not_move_counters() {
+        let allocator = Allocator::new(FailingAllocator);
+        let layout = test_layout(1024);
+        let counters = get_or_init_thread_counters();
+
+        let before_bytes = counters.bytes();
+        let before_outstanding = counters.outstanding();
+
+        // SAFETY: The layout has a non-zero size and a power-of-two alignment.
+        let block = unsafe { allocator.alloc(layout) };
+        assert!(block.is_null());
+
+        assert_eq!(counters.bytes(), before_bytes);
+        assert_eq!(counters.outstanding(), before_outstanding);
+    }
+
+    #[test]
+    fn failed_zeroed_allocation_does_not_move_counters() {
+        let allocator = Allocator::new(FailingAllocator);
+        let layout = test_layout(1024);
+        let counters = get_or_init_thread_counters();
+
+        let before_bytes = counters.bytes();
+        let before_count = counters.count();
+        let before_outstanding = counters.outstanding();
+        let before_watermark = counters.watermark();
+
+        // SAFETY: The layout has a non-zero size and a power-of-two alignment.
+        let block = unsafe { allocator.alloc_zeroed(layout) };
+        assert!(block.is_null());
+
+        assert_eq!(counters.bytes(), before_bytes);
+        assert_eq!(counters.count(), before_count);
+        assert_eq!(counters.outstanding(), before_outstanding);
+        assert_eq!(counters.watermark(), before_watermark);
+    }
+
+    #[test]
+    fn successful_reallocation_moves_counters() {
+        const INITIAL: usize = 64;
+        const GROWN: usize = 256;
+
+        let allocator = Allocator::new(std::alloc::System);
+        let layout = test_layout(INITIAL);
+        let counters = get_or_init_thread_counters();
+
+        // SAFETY: The layout has a non-zero size and a power-of-two alignment.
+        let block = unsafe { allocator.alloc(layout) };
+        assert!(!block.is_null());
+
+        let before_bytes = counters.bytes();
+        let before_count = counters.count();
+        let before_outstanding = counters.outstanding();
+
+        // SAFETY: The block was just obtained from this allocator with this exact layout, and
+        // the new size is non-zero and does not overflow when rounded up to the alignment.
+        let grown = unsafe { allocator.realloc(block, layout, GROWN) };
+        assert!(!grown.is_null());
+
+        let after_bytes = counters.bytes();
+        let after_count = counters.count();
+        let after_outstanding = counters.outstanding();
+
+        // SAFETY: The grown block came from this allocator, whose layout is now the new size.
+        unsafe {
+            allocator.dealloc(grown, test_layout(GROWN));
+        }
+
+        // A reallocation is one allocator request of the new size, so the cumulative totals
+        // grow by the whole new size while outstanding grows only by the difference.
+        assert_eq!(
+            after_bytes.wrapping_sub(before_bytes),
+            u64::try_from(GROWN).unwrap()
+        );
+        assert_eq!(after_count.wrapping_sub(before_count), 1);
+        assert_eq!(
+            after_outstanding.wrapping_sub(before_outstanding),
+            i64::try_from(GROWN - INITIAL).unwrap()
+        );
+    }
+
+    #[test]
+    fn failed_reallocation_does_not_move_counters() {
+        const INITIAL: usize = 64;
+        const GROWN: usize = 256;
+
+        let allocator = Allocator::new(FailingReallocator);
+        let layout = test_layout(INITIAL);
+        let counters = get_or_init_thread_counters();
+
+        // SAFETY: The layout has a non-zero size and a power-of-two alignment.
+        let block = unsafe { allocator.alloc(layout) };
+        assert!(!block.is_null());
+
+        let before_bytes = counters.bytes();
+        let before_outstanding = counters.outstanding();
+
+        // SAFETY: The block was just obtained from this allocator with this exact layout, and
+        // the new size is non-zero and does not overflow when rounded up to the alignment.
+        let grown = unsafe { allocator.realloc(block, layout, GROWN) };
+        assert!(grown.is_null());
+
+        let after_bytes = counters.bytes();
+        let after_outstanding = counters.outstanding();
+
+        // SAFETY: The failed reallocation left the block allocated by this allocator with its
+        // original layout.
+        unsafe {
+            allocator.dealloc(block, layout);
+        }
+
+        assert_eq!(after_bytes, before_bytes);
+        assert_eq!(after_outstanding, before_outstanding);
+    }
+
+    #[test]
+    fn deallocation_on_untracked_thread_creates_no_counters() {
+        with_watchdog(|| {
+            // This needs a thread that has never allocated. The watchdog runs its closure on
+            // the calling thread under mutation testing, and libtest reuses worker threads
+            // across tests, so the freshness has to come from a thread spawned here.
+            thread::scope(|scope| {
+                scope.spawn(|| {
+                    assert!(!thread_has_counters());
+
+                    let layout = test_layout(64);
+
+                    // SAFETY: The layout has a non-zero size and a power-of-two alignment.
+                    let block = unsafe { std::alloc::System.alloc(layout) };
+                    assert!(!block.is_null());
+
+                    let allocator = Allocator::new(std::alloc::System);
+
+                    // SAFETY: The block came from the system allocator with this exact
+                    // layout, and the tracking allocator forwards the release to that same
+                    // allocator.
+                    unsafe {
+                        allocator.dealloc(block, layout);
+                    }
+
+                    // Creating counters allocates and locks the registry, which a free must
+                    // never do.
+                    assert!(!thread_has_counters());
+                });
+            });
+        });
+    }
+
     #[test]
     #[cfg(feature = "panic_on_next_alloc")]
     fn panic_on_next_alloc_can_be_enabled_and_disabled() {
-        // Default state should be disabled
         assert!(!PANIC_ON_NEXT_ALLOCATION.load(atomic::Ordering::Relaxed));
 
-        // Enable panic on next allocation
         panic_on_next_alloc(true);
         assert!(PANIC_ON_NEXT_ALLOCATION.load(atomic::Ordering::Relaxed));
 
-        // Disable panic on next allocation
         panic_on_next_alloc(false);
         assert!(!PANIC_ON_NEXT_ALLOCATION.load(atomic::Ordering::Relaxed));
-    }
-
-    // Multithreaded tests exercising concurrent access to PerThreadCounters and the
-    // global REGISTRY. These are designed to run under Miri to detect data races in the
-    // atomic operations and TLS initialization paths.
-
-    #[test]
-    fn concurrent_threads_register_and_totals_reflect_all() {
-        const THREADS: usize = 4;
-        const BYTES_PER_THREAD: u64 = 100;
-        const COUNT_PER_THREAD: u64 = 10;
-
-        // Record the baseline to account for allocations from other tests,
-        // since the global REGISTRY is shared across all tests.
-        let baseline = allocation_totals();
-
-        let handles: Vec<_> = iter::repeat_with(|| {
-            thread::spawn(move || {
-                register_fake_allocation(BYTES_PER_THREAD, COUNT_PER_THREAD);
-            })
-        })
-        .take(THREADS)
-        .collect();
-
-        for handle in handles {
-            handle.join().unwrap();
-        }
-
-        let final_totals = allocation_totals();
-
-        // The delta must be at least what we added. It may be higher due to
-        // real allocations from the test infrastructure (thread spawning, etc.).
-        let bytes_delta = final_totals.bytes.wrapping_sub(baseline.bytes);
-        let count_delta = final_totals.count.wrapping_sub(baseline.count);
-
-        assert!(bytes_delta >= THREADS as u64 * BYTES_PER_THREAD);
-        assert!(count_delta >= THREADS as u64 * COUNT_PER_THREAD);
-    }
-
-    #[test]
-    fn concurrent_register_and_read_totals() {
-        const WRITER_THREADS: usize = 4;
-        const ALLOCS_PER_WRITER: u64 = 10;
-        const BYTES_PER_ALLOC: u64 = 50;
-
-        // One set of threads registers allocations while another reads
-        // totals concurrently. This exercises concurrent atomic reads of
-        // PerThreadCounters while other threads perform atomic writes.
-        let baseline = allocation_totals();
-
-        // Spawn the reader thread first so it is already running when
-        // the writers start, maximizing concurrent read/write overlap.
-        let reader = thread::spawn(move || {
-            for _ in 0..20 {
-                let _totals = allocation_totals();
-            }
-        });
-
-        let writers: Vec<_> = iter::repeat_with(|| {
-            thread::spawn(move || {
-                for _ in 0..ALLOCS_PER_WRITER {
-                    register_fake_allocation(BYTES_PER_ALLOC, 1);
-                }
-            })
-        })
-        .take(WRITER_THREADS)
-        .collect();
-
-        for handle in writers {
-            handle.join().unwrap();
-        }
-        reader.join().unwrap();
-
-        let final_totals = allocation_totals();
-        let bytes_delta = final_totals.bytes.wrapping_sub(baseline.bytes);
-        assert!(bytes_delta >= WRITER_THREADS as u64 * ALLOCS_PER_WRITER * BYTES_PER_ALLOC);
     }
 }

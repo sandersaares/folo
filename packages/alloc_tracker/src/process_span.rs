@@ -5,8 +5,8 @@ use std::marker::PhantomData;
 use std::panic::RefUnwindSafe;
 use std::sync::{Arc, Mutex};
 
-use crate::allocator::{AllocationTotals, allocation_totals};
-use crate::{ERR_POISONED_LOCK, Operation, OperationMetrics};
+use crate::counters::{AllocationTotals, allocation_totals};
+use crate::{ERR_POISONED_LOCK, Operation, OperationMetrics, SpanMeasurement};
 
 /// A measurement of process-wide allocations over the span's lifetime.
 ///
@@ -21,37 +21,50 @@ use crate::{ERR_POISONED_LOCK, Operation, OperationMetrics};
 /// from a panic when the span drops, it records nothing and does not panic again,
 /// leaving the original panic to propagate.
 ///
+/// Reach for this when the threads doing the work cannot be instrumented themselves, or
+/// when several of them collaborate on every iteration so that no single thread's span
+/// covers a whole one. When each worker can be instrumented and counts iterations of its
+/// own, give each one its own [`ThreadSpan`](crate::ThreadSpan) naming the same operation
+/// instead. The trade-offs a process span accepts are listed under
+/// [`Operation::measure_process`](crate::Operation::measure_process).
+///
 /// # Examples
 ///
-/// The canonical benchmark pattern feeds Criterion's chosen iteration count
-/// straight into [`iterations`](Self::iterations) from within `iter_custom`:
+/// Work that a library fans out over its own threads:
 ///
-/// ```no_run
+/// ```
 /// use std::hint::black_box;
-/// use std::time::Instant;
+/// use std::thread;
 ///
 /// use alloc_tracker::{Allocator, Session};
-/// use criterion::Criterion;
 ///
 /// #[global_allocator]
 /// static ALLOCATOR: Allocator<std::alloc::System> = Allocator::system();
 ///
-/// fn bench(c: &mut Criterion) {
-///     let session = Session::new();
-///     let operation = session.operation("allocate_buffer");
-///     c.bench_function("allocate_buffer", |b| {
-///         b.iter_custom(|iters| {
-///             let start = Instant::now();
-///             let _span = operation.measure_process().iterations(iters);
-///
-///             for _ in 0..iters {
-///                 black_box(vec![1_u8; 64]);
-///             }
-///
-///             start.elapsed()
-///         });
+/// // Stands in for a library that owns its worker threads. You cannot give them thread
+/// // spans because you never see them, which is what leaves process scope as the option.
+/// fn fan_out(items: usize) {
+///     thread::scope(|scope| {
+///         for item in 0..items {
+///             scope.spawn(move || {
+///                 black_box(vec![item as u8; 1024]);
+///             });
+///         }
 ///     });
 /// }
+///
+/// # fn main() {
+/// let session = Session::new();
+/// # let session = session.no_stdout().no_file();
+/// let operation = session.operation("fan_out");
+///
+/// const ITEMS: usize = 4;
+/// let span = operation.measure_process();
+///
+/// fan_out(ITEMS);
+///
+/// drop(span.iterations(1));
+/// # }
 /// ```
 #[derive(Debug)]
 #[must_use = "a span must be held across the measured work and given a count with `.iterations(n)`; it records when dropped and panics if the count is missing"]
@@ -115,7 +128,16 @@ impl Drop for ProcessSpan {
         );
         let (bytes_delta, count_delta) = process_deltas(self.start_bytes, self.start_count);
         let mut data = self.metrics.lock().expect(ERR_POISONED_LOCK);
-        data.add_span(iterations, bytes_delta, count_delta);
+        data.add_span(SpanMeasurement {
+            iterations,
+            bytes: bytes_delta,
+            count: count_delta,
+            // A process-scoped span spans every thread, and the watermark is per-thread, so
+            // there is no single high-water mark for it to read. Reporting nothing keeps the
+            // operation honest rather than substituting the calling thread's figure.
+            // Ref: docs/design.md, "Peak outstanding bytes".
+            peak_outstanding_bytes: None,
+        });
     }
 }
 
@@ -194,6 +216,31 @@ mod tests {
         let operation = session.operation("test");
 
         drop(operation.measure_process());
+    }
+
+    #[test]
+    fn process_span_reports_no_peak() {
+        let session = Session::new().no_stdout().no_file();
+        let operation = session.operation("test");
+
+        drop(operation.measure_process().iterations(1));
+
+        assert_eq!(operation.peak_outstanding_bytes(), None);
+    }
+
+    #[test]
+    fn a_process_span_suppresses_the_peak_of_a_mixed_operation() {
+        // Mixing scopes within one operation makes the peak unknowable rather than merely
+        // understated, so the thread span's figure is withheld too.
+        let session = Session::new().no_stdout().no_file();
+        let operation = session.operation("test");
+
+        drop(operation.measure_thread().iterations(1));
+        assert_eq!(operation.peak_outstanding_bytes(), Some(0.0));
+
+        drop(operation.measure_process().iterations(1));
+
+        assert_eq!(operation.peak_outstanding_bytes(), None);
     }
 
     #[test]
