@@ -276,6 +276,30 @@ action*: cannot express matrix-collect + single-analyze + separate lifecycle job
    `machine-key` **output**, so the caller can hand the exact keys measured this run to the
    later single analyze job (§4.6). A failed leg measured nothing, so it emits no key.
 
+**The collect matrix does not fail fast, and the reason is structural.** Each platform writes
+into **its own machine-key partition**, and analysis never compares across partitions (§4.6).
+A leg that dies therefore does not corrupt or bias what the other legs produced — it simply
+means that one platform has no point at this commit. Partial data is *sound*, not a
+compromise, which is what makes tolerating it defensible rather than merely convenient.
+
+The objection is worth taking seriously: if a benchmark is broken, surely every leg fails, so
+letting them all run just burns runner minutes. That is true of *systematic* failures — and
+they are also the cheap case, because a benchmark that does not build fails early, and a run
+where every leg failed publishes nothing misleading since no new data exists. The asymmetry is
+in the other class. **Platform-specific and environmental failures are real and observed**: a
+runner image change, a toolchain install hitting a transient disk fault, a storage hiccup, or
+a benchmark that only breaks on one OS. There, `fail-fast: true` would *cancel the surviving
+legs mid-flight*, discarding hours of valid measurement and leaving a permanent hole in those
+platforms' series for that commit — recoverable only by a later densification pass (§4.8),
+which costs more than was saved. So the choice trades a bounded waste in the cheap case
+against unrecoverable data loss in the expensive one.
+
+Tolerating partial collection does carry one real hazard, and the design pays for it rather
+than ignoring it: a report drawn from the surviving platforms can look like a broader clean
+bill of health than it earned. That is why coverage is disclosed rather than assumed (§4.2) —
+the two decisions are a package, and tolerating partial failure without the disclosure would
+be the genuinely wrong design.
+
 **Recollect (repair one historical point).** A `recollect-commit` input switches `collect`
 to re-measure a single past commit and *overwrite* its stored point instead of appending the
 pushed tip — the manual repair path for a data point corrupted by a badly degraded runner.
@@ -315,6 +339,16 @@ PR, whose points are transient.
      the machine key is **not** `all`: it is the exact set of fingerprints collected this run,
      threaded from the collect matrix (§4.6), so the survey is scoped to the machines that
      actually measured this commit and never mixes in a stray key from the shared store.
+   * **Coverage is disclosed, not assumed.** Because the matrix tolerates a partially failed
+     collect (§4.1), the set of platforms that *contributed* can be smaller than the set that
+     was *intended* — and the difference is invisible in the findings themselves. The action
+     knows both sides (the intended platform list is an input; the contributing set is the
+     machine-key artifacts that arrived), so when they differ the report says which platforms
+     are missing, and the run's outcome is **partial** rather than clean. On a fully successful
+     run this adds nothing, so the common case stays quiet. Without it, a Windows leg dying
+     would leave "no regressions" standing as an unqualified claim about a platform nobody
+     measured — which is the failure mode that makes silent partial coverage worse than an
+     outright failed run.
    * **Cache.** `--cache <dir>` (a read-through mirror of the cloud history persisted across
      runs via `actions/cache`) turns repeated full-history downloads into a warm-cache read;
      it applies to the **cloud backend only** and **conflicts with `--local`**, so the action
@@ -322,11 +356,19 @@ PR, whose points are transient.
    * A single pass emits all three machine-readable artefacts via the per-format output
      toggles: the full Markdown report, the full JSON report, and the **condensed
      top-findings Markdown summary** (`--markdown-summary`) sized to fit an issue body.
-5. **Surface the notable flag** as a step output, read as a first-class value from the
-   analysis rather than scraped out of a report by shell (§5.1), and written with the report
-   paths and a regression count to `$GITHUB_OUTPUT` (§7). This is the signal the rest of the
-   flow gates on, so it never depends on report prose that is free to change.
-6. **File the rolling issue** when `issue-on-regression: true` *and* `notable == true`. The
+5. **Surface the run's outcome**, not merely a boolean. Analysis ends in one of a small set of
+   named states — findings, clean, insufficient baseline, nothing in scope, partial coverage,
+   failed — and that **`outcome`** is what the flow carries forward, alongside the report paths
+   and a regression count (§7). A single `notable` boolean collapses states that need different
+   handling: "clean" and "we could not judge anything" are both *not notable*, yet only one of
+   them is good news. Naming the state serves two consumers. It is the key the companion
+   selects a message with (§5.2), so the choice is made once and explicitly rather than
+   re-derived from scattered checks; and it lets the test canaries (§9) assert what actually
+   happened, where an assertion on `notable == false` would pass equally for a clean run and
+   for a broken fixture that analyzed nothing. Callers may branch on it too, but that is a
+   side benefit, not the justification.
+6. **File the rolling issue** when `issue-on-regression: true` *and* the outcome is
+   **findings**. The
    full Markdown + JSON reports are uploaded as a single run **artifact** (they can exceed
    GitHub's 65,536-character issue-body limit); the rolling issue is filed by the **companion
    transport binary** (§5.1) — search open issues for the fixed title, then create-or-update —
@@ -1000,7 +1042,10 @@ deliberately no template input. A `sink` input (`standard` (default) | `none`) t
 built-in posting off entirely for a consumer who wants to publish their own report from the
 outputs below; with `sink: none` the analyze commands compute and emit, and post nothing.
 
-**Outputs (from `analyze-history` / `analyze-pr`):** `notable` (`true`/`false`);
+**Outputs (from `analyze-history` / `analyze-pr`):** `outcome` (`findings` | `clean` |
+`insufficient-baseline` | `nothing-in-scope` | `partial` | `failed` — the named end state, §4.2);
+`notable` (`true`/`false`, retained as the convenience boolean for simple gating, and defined
+as `outcome == findings`);
 `regressions` (count); `report-markdown` (full report path); `report-json`; `report-summary`
 (condensed top-findings Markdown); `report-schema` (the JSON report's schema version). The
 reusable workflows re-export these as workflow outputs, so a caller on the default path can
@@ -1300,11 +1345,6 @@ binary** that owns the GitHub-shaped half (§5.1):
   with the claim that a consumer adopts the PR flow with one `uses:` block. Having `pr.yml`
   itself accept the `closed` event and skip straight to cancellation would keep the whole PR
   story in one entry point.
-* **Whether collection scope should name platforms, not just packages.** Analysis proceeds
-  after a partially failed matrix (§4.2), so a report can be honest about *which packages* were
-  measured while still implying more platform coverage than it had. Disclosing the
-  attempted/succeeded platforms would close that gap, at the cost of a noisier report on every
-  clean run.
 * **How far to take real-GitHub testing (§9).** Whether to stand up a dedicated sandbox
   repository (with its own bot token) for Option A's end-to-end issue/PR-comment validation, or
   start with the no-repo Option B (compose-only assertions over a faker→`import` history) and add
