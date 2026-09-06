@@ -892,9 +892,15 @@ function Test-PackageReleasesBreakingChange {
     # Asked of the resolved outcome rather than of the decided level, because a package whose
     # version was already raised in an earlier pull request releases a breaking change while
     # carrying no decision now, and a decision already covered by a pending increment still does.
+    #
+    # A grouped package is asked about its whole group. Members release as one version, so a
+    # decision naming any member moves them all, and asking only about this package's own
+    # declared version and decision would miss a sibling's breaking decision entirely.
     param(
         [Parameter(Mandatory)] $Package,
-        [string] $Level
+        [Parameter(Mandatory)] $Report,
+        [Parameter(Mandatory)] $ByName,
+        [Parameter(Mandatory)] $LevelByName
     )
 
     if ($Package.PSObject.Properties.Name -notcontains 'anchor' -or
@@ -909,14 +915,61 @@ function Test-PackageReleasesBreakingChange {
     } catch {
         throw "Package '$($Package.name)' has an invalid semantic version in the release-plan report."
     }
-    if (-not [string]::IsNullOrWhiteSpace($Level)) {
-        $minimum = Get-MinimumVersionForChange -Anchor $anchor -Level $Level
+
+    foreach ($sibling in (Get-VersionGroupMemberName -Report $Report -ByName $ByName `
+                -Name ([string] $Package.name))) {
+        if (-not $ByName.Contains($sibling)) {
+            continue
+        }
+        $siblingPackage = $ByName[$sibling]
+        try {
+            $siblingDeclared = [semver] [string] $siblingPackage.declared_version
+        } catch {
+            throw "Package '$sibling' has an invalid semantic version in the release-plan report."
+        }
+        # Resolution puts every member on the highest version any of them reaches.
+        if ($siblingDeclared -gt $resolved) {
+            $resolved = $siblingDeclared
+        }
+        $siblingLevel = if ($LevelByName.Contains($sibling)) {
+            [string] $LevelByName[$sibling]
+        } else {
+            ''
+        }
+        if ([string]::IsNullOrWhiteSpace($siblingLevel)) {
+            continue
+        }
+        if ($siblingPackage.PSObject.Properties.Name -notcontains 'anchor' -or
+            $null -eq $siblingPackage.anchor -or
+            [string]::IsNullOrWhiteSpace([string] $siblingPackage.anchor.version)) {
+            continue
+        }
+        $minimum = Get-MinimumVersionForChange `
+            -Anchor ([semver] [string] $siblingPackage.anchor.version) -Level $siblingLevel
         if ($minimum -gt $resolved) {
             $resolved = $minimum
         }
     }
+
     return (Get-VersionCompatibilityKey -Version $anchor) -cne
         (Get-VersionCompatibilityKey -Version $resolved)
+}
+
+function Get-VersionGroupMemberName {
+    # The packages that release at one version with $Name, including $Name itself.
+    [OutputType([string[]])]
+    param(
+        [Parameter(Mandatory)] $Report,
+        [Parameter(Mandatory)] $ByName,
+        [Parameter(Mandatory)][string] $Name
+    )
+
+    $key = Get-DecisionKey -ByName $ByName -Name $Name
+    $group = $Report.groups.PSObject.Properties[$key]
+    if ($null -eq $group) {
+        return , @($Name)
+    }
+    return , @($group.Value.members | ForEach-Object { [string] $_ })
 }
 
 function Get-ChangeLevelWithPublicDependency {
@@ -963,8 +1016,8 @@ function Get-ChangeLevelWithPublicDependency {
                 # break. It follows the first-publication path instead.
                 continue
             }
-            $current = if ($level.Contains($name)) { [string] $level[$name] } else { '' }
-            if (Test-PackageReleasesBreakingChange -Package $package -Level $current) {
+            if (Test-PackageReleasesBreakingChange -Package $package -Report $Report `
+                    -ByName $ByName -LevelByName $level) {
                 continue
             }
             if ($package.PSObject.Properties.Name -notcontains 'dependencies') {
@@ -979,13 +1032,8 @@ function Get-ChangeLevelWithPublicDependency {
                 if (-not $ByName.Contains($dependencyName)) {
                     continue
                 }
-                $dependencyLevel = if ($level.Contains($dependencyName)) {
-                    [string] $level[$dependencyName]
-                } else {
-                    ''
-                }
                 if (-not (Test-PackageReleasesBreakingChange -Package $ByName[$dependencyName] `
-                            -Level $dependencyLevel)) {
+                            -Report $Report -ByName $ByName -LevelByName $level)) {
                     continue
                 }
                 Write-Verbose (

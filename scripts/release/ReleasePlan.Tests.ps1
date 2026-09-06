@@ -782,6 +782,33 @@ Describe 'Assert-IncrementPackagePublished' {
 }
 
 Describe 'New-ReleasePlanFile' {
+    It 'raises a package whose public dependency is moved by a group sibling' {
+        # `lib` carries no decision of its own; its group sibling `lib_impl` does. Resolution
+        # moves the whole group, so `lib` releases a breaking change and `app`, which exposes it,
+        # must break as well. Asking only about `lib`'s own decision would miss this.
+        $reportPath = Join-Path $TestDrive 'sibling-report.json'
+        $decisionPath = Join-Path $TestDrive 'sibling-decision.json'
+        $planPath = Join-Path $TestDrive 'sibling-plan.json'
+        Write-TestReport -Path $reportPath -Package @(
+            Get-TestPackage -Name 'lib' -Group 'lib' -DeclaredVersion '1.0.0' -AnchorVersion '1.0.0'
+            Get-TestPackage -Name 'lib_impl' -Group 'lib' -DeclaredVersion '1.0.0' `
+                -AnchorVersion '1.0.0'
+            Get-TestPackage -Name 'app' -DeclaredVersion '2.0.0' -AnchorVersion '2.0.0' `
+                -Dependencies @(@{ name = 'lib'; req = '^1.0.0'; exact_pin = $false; public = $true })
+        ) -Group @{
+            lib = @{ members = @('lib', 'lib_impl'); consistent = $true; version = '1.0.0' }
+        }
+        Write-TestDecision -Path $decisionPath -Change @(
+            @{ name = 'lib_impl'; level = 'breaking' }
+        )
+
+        New-ReleasePlanFile -ReportPath $reportPath -DecisionPath $decisionPath `
+            -PlanPath $planPath
+        $plan = Get-Content -LiteralPath $planPath -Raw | ConvertFrom-Json
+
+        ($plan.increments | Where-Object name -EQ 'app').level | Should -Be 'major'
+    }
+
     It 'raises a package whose public dependency releases a breaking change' {
         # `app` exposes `lib` in its public API, so `lib` moving to an incompatible version makes
         # `app`'s own contract incompatible even though `app` recorded only a patch.

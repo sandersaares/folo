@@ -149,10 +149,10 @@ when empty: `group`, `anchor`, `diff_path`, `untracked`. A change is one of
 `{"path","change","source":"package"}`, `{"field","source":"inherited"}`, or
 `{"dependency","change","source":"lockfile"}`.
 A dependency is `{"name","req","exact_pin","public"}`. `public` marks a
-dependency whose types the dependent's own public API exposes, read from the
-dependent's `allowed_external_types` allow-list and resolved through version
-groups, so an implementation crate reached through the public crate in front of
-it marks that public crate.
+dependency that supplies types the dependent's own public API exposes, derived
+from the dependent's `allowed_external_types` allow-list and followed
+transitively through re-exports, so a package exposing an implementation crate
+marks the public crate it actually depends on. Only normal dependencies qualify.
 `diff_path` is relative to the report directory. Plan and report formats
 advance this revision together: an incompatible field, enum, or path-layout
 change increments it.

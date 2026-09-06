@@ -92,6 +92,14 @@ pub(crate) struct ReportedDep {
     pub(crate) name: String,
     pub(crate) req: String,
     pub(crate) exact_pin: bool,
+    /// Whether this is a normal dependency rather than a build or development one.
+    ///
+    /// Only a normal dependency can supply types to the library's public API, so
+    /// only one can be public. Both other kinds are still carried because
+    /// `apply` rewrites their requirements too. Not reported: the release
+    /// decision reads `public`, which already accounts for this.
+    #[serde(skip)]
+    pub(crate) normal: bool,
     /// Whether the dependent's public API exposes types from this dependency.
     ///
     /// Read from the dependent's `allowed_external_types` allow-list, which
@@ -356,7 +364,8 @@ fn work_tree_from_metadata(
                 name: dep.name.clone(),
                 req: dep.req.clone(),
                 exact_pin: dep.req.starts_with('='),
-                // Resolved once version groups are known, below.
+                normal: dep.kind.as_deref().unwrap_or("normal") == "normal",
+                // Resolved once every package's allow-list is known, below.
                 public: false,
             })
             .collect();
@@ -392,7 +401,6 @@ fn work_tree_from_metadata(
         &mut packages,
         &exposed_crates_by_package,
         &library_crate_names,
-        &groups,
     );
 
     Ok(WorkTree {
@@ -507,32 +515,49 @@ fn allowed_external_crates(metadata: &Value) -> Vec<String> {
         .collect()
 }
 
-/// Whether `candidate` matches a pattern whose only metacharacter is `*`.
+/// Whether `candidate` matches a `wildmatch` pattern, where `*` spans any run
+/// of characters and `?` matches exactly one.
 ///
-/// `allowed_external_types` patterns are matched by cargo-check-external-types
-/// as globs, so `cbh_*` has to reach every `cbh_` crate here as well.
+/// cargo-check-external-types matches `allowed_external_types` entries with
+/// `wildmatch`, so a pattern it accepts has to reach the same crates here.
+/// Matching walks characters rather than bytes, so a multi-byte character is
+/// one `?`, as `wildmatch` treats it.
 fn glob_matches(pattern: &str, candidate: &str) -> bool {
-    let mut segments = pattern.split('*');
-    // `split` always yields at least one element, so this names the literal prefix.
-    let prefix = segments.next().unwrap_or_default();
-    let Some(mut rest) = candidate.strip_prefix(prefix) else {
-        return false;
-    };
-    let remaining: Vec<&str> = segments.collect();
-    let Some((suffix, infixes)) = remaining.split_last() else {
-        // No `*` at all, so the pattern is a literal and the prefix had to consume everything.
-        return rest.is_empty();
-    };
-    for infix in infixes {
-        let Some(found) = rest.find(infix) else {
-            return false;
-        };
-        rest = rest
-            .get(found.saturating_add(infix.len())..)
-            .unwrap_or_default();
+    let pattern: Vec<char> = pattern.chars().collect();
+    let candidate: Vec<char> = candidate.chars().collect();
+    // Position in each, plus the last `*` seen and where the candidate had reached then, which
+    // is what a failed match backtracks to instead of recursing.
+    let (mut p, mut c) = (0_usize, 0_usize);
+    let mut star: Option<(usize, usize)> = None;
+    while c < candidate.len() {
+        let current = candidate.get(c).copied();
+        match pattern.get(p) {
+            Some('*') => {
+                star = Some((p, c));
+                p = p.saturating_add(1);
+            }
+            Some('?') => {
+                p = p.saturating_add(1);
+                c = c.saturating_add(1);
+            }
+            Some(literal) if Some(*literal) == current => {
+                p = p.saturating_add(1);
+                c = c.saturating_add(1);
+            }
+            _ => {
+                // Let the most recent `*` absorb one more character and try again.
+                let Some((star_p, star_c)) = star else {
+                    return false;
+                };
+                p = star_p.saturating_add(1);
+                c = star_c.saturating_add(1);
+                star = Some((star_p, c));
+            }
+        }
     }
-    // The trailing literal may not overlap an infix already consumed above.
-    rest.len() >= suffix.len() && rest.ends_with(suffix)
+    pattern
+        .get(p..)
+        .is_some_and(|rest| rest.iter().all(|entry| *entry == '*'))
 }
 
 /// Marks the dependency edges through which each package exposes another crate's types.
@@ -540,32 +565,105 @@ fn glob_matches(pattern: &str, candidate: &str) -> bool {
 /// A package names the crates its public API may expose, but it does not
 /// necessarily depend on them directly: an implementation crate's types
 /// normally reach consumers re-exported through the public crate in front of
-/// it, so `region_local` exposes `many_cpus_impl` types while depending on
-/// `many_cpus`. The named crate's version group is what closes that gap. Group
-/// members release as one version, so the group sibling a package does depend
-/// on carries the named crate's compatibility with it.
+/// it, so `region_local` names `many_cpus_impl` while depending on `many_cpus`.
+/// The re-exporting crate closes that gap, because it must itself declare the
+/// crate it re-exports. Following those declarations transitively is what
+/// attributes a named crate to the direct dependency that actually supplies it.
+///
+/// Only a normal dependency can supply types to a library's public API, so a
+/// build or development dependency is never public however the allow-lists read.
 /// Ref: docs/design.md, "Public dependencies".
 fn mark_public_dependencies(
     packages: &mut [WorkPackage],
     exposed_crates_by_package: &BTreeMap<String, Vec<String>>,
     library_crate_names: &BTreeMap<&str, String>,
-    groups: &Groups,
 ) {
-    for package in packages.iter_mut() {
-        let Some(patterns) = exposed_crates_by_package.get(&package.manifest.name) else {
-            continue;
-        };
-        let mut exposed: HashSet<String> = HashSet::new();
-        for (name, library) in library_crate_names {
-            if patterns
-                .iter()
-                .any(|pattern| glob_matches(pattern, library))
-            {
-                exposed.extend(groups.closure(name));
+    // The workspace packages each package's allow-list names outright.
+    let mut named: BTreeMap<String, HashSet<String>> = BTreeMap::new();
+    for (package, patterns) in exposed_crates_by_package {
+        let matched = library_crate_names
+            .iter()
+            .filter(|(_, library)| {
+                patterns
+                    .iter()
+                    .any(|pattern| glob_matches(pattern, library))
+            })
+            .map(|(name, _)| (*name).to_string())
+            .collect();
+        named.insert(package.clone(), matched);
+    }
+
+    let normal_dependencies: BTreeMap<String, Vec<String>> = packages
+        .iter()
+        .map(|package| {
+            (
+                package.manifest.name.clone(),
+                package
+                    .dependencies
+                    .iter()
+                    .filter(|dependency| dependency.normal)
+                    .map(|dependency| dependency.name.clone())
+                    .collect(),
+            )
+        })
+        .collect();
+
+    // What each package publicly exposes, including what it re-exports from further down. A
+    // package exposes itself, so a direct dependency is caught by the same intersection test.
+    let mut exposes: BTreeMap<String, HashSet<String>> = normal_dependencies
+        .keys()
+        .map(|name| {
+            let mut own: HashSet<String> = named.get(name).cloned().unwrap_or_default();
+            own.insert(name.clone());
+            (name.clone(), own)
+        })
+        .collect();
+
+    // An edge admitted in one pass can widen what its dependent exposes, which can admit a
+    // further edge, so the sets are grown until they stop changing. They only ever grow and are
+    // bounded by the workspace, so this settles; the bound is asserted rather than assumed.
+    let mut remaining_passes = normal_dependencies.len().saturating_add(1);
+    let mut settled = false;
+    while !settled {
+        assert!(
+            remaining_passes > 0,
+            "public-dependency closure did not settle; this is a defect in the exposure model"
+        );
+        remaining_passes = remaining_passes.saturating_sub(1);
+        settled = true;
+        for (name, dependencies) in &normal_dependencies {
+            let wanted = named.get(name).cloned().unwrap_or_default();
+            let mut added: HashSet<String> = HashSet::new();
+            for dependency in dependencies {
+                let Some(reachable) = exposes.get(dependency) else {
+                    continue;
+                };
+                if reachable.is_disjoint(&wanted) {
+                    continue;
+                }
+                added.extend(reachable.iter().cloned());
+            }
+            let own = exposes
+                .get_mut(name)
+                .expect("every package was seeded above");
+            let before = own.len();
+            own.extend(added);
+            if own.len() != before {
+                settled = false;
             }
         }
+    }
+
+    for package in packages.iter_mut() {
+        let wanted = named
+            .get(&package.manifest.name)
+            .cloned()
+            .unwrap_or_default();
         for dependency in &mut package.dependencies {
-            dependency.public = exposed.contains(&dependency.name);
+            dependency.public = dependency.normal
+                && exposes
+                    .get(&dependency.name)
+                    .is_some_and(|reachable| !reachable.is_disjoint(&wanted));
         }
     }
 }
@@ -925,20 +1023,40 @@ mod tests {
         ));
     }
 
-    /// A glob pattern matches the crates cargo-check-external-types would allow.
+    /// A pattern matches the crates cargo-check-external-types would allow.
+    ///
+    /// The tool matches these with `wildmatch`, where `*` spans any run of characters and `?`
+    /// matches exactly one, so a pattern it accepts has to reach the same crates here.
     #[test]
     fn a_glob_pattern_matches_the_crates_it_covers() {
         assert!(glob_matches("cbh_*", "cbh_model"));
         assert!(glob_matches("cbh_*", "cbh_"));
         assert!(glob_matches("*", "anything"));
+        assert!(glob_matches("*", ""));
         assert!(glob_matches("nm_impl", "nm_impl"));
         assert!(glob_matches("a*c", "abc"));
         assert!(glob_matches("a*c", "ac"));
+        assert!(glob_matches("", ""));
 
         assert!(!glob_matches("cbh_*", "nm_impl"));
         assert!(!glob_matches("nm_impl", "nm"));
         assert!(!glob_matches("nm", "nm_impl"));
         assert!(!glob_matches("a*c", "abd"));
+        assert!(!glob_matches("", "nm"));
+
+        // A `*` must be able to give characters back to a later literal.
+        assert!(glob_matches("a*bc", "abxbc"));
+        assert!(glob_matches("*a*b*", "xaybz"));
+        assert!(!glob_matches("a*bc", "abxb"));
+
+        // `?` matches exactly one character.
+        assert!(glob_matches("cbh_?", "cbh_a"));
+        assert!(!glob_matches("cbh_?", "cbh_"));
+        assert!(!glob_matches("cbh_?", "cbh_ab"));
+
+        // A multi-byte character is one character, not one byte.
+        assert!(glob_matches("?", "é"));
+        assert!(glob_matches("a*é", "abcé"));
     }
 
     /// An absent allow-list permits no external type, so it exposes no crate.
@@ -1046,6 +1164,7 @@ mod tests {
                 name: "foo".to_string(),
                 req: "0.1.0".to_string(),
                 exact_pin: false,
+                normal: true,
                 public: false,
             }],
         );

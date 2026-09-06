@@ -599,6 +599,7 @@ mod tests {
             name: name.to_string(),
             req: req.to_string(),
             exact_pin: req.starts_with('='),
+            normal: true,
             public,
         }
     }

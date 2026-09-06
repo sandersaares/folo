@@ -67,11 +67,14 @@ omits, so in a passing workspace the list is a superset of what is genuinely
 exposed. Reading a declaration the repository already verifies keeps this
 offline and avoids a second, weaker inference of the public API.
 
-Exposure resolves through version groups. A package usually reaches an
-implementation crate's types re-exported through the public crate in front of
-it, so it names a crate it does not directly depend on. Group members release
-as one version, so the group sibling it does depend on carries that crate's
-compatibility with it.
+The allow-list names the crate that *defines* a type, which is not always the
+dependency that supplies it: a package usually reaches an implementation crate's
+types re-exported through the public crate in front of it. The re-exporting
+crate closes that gap, because it must declare the crate it re-exports in its
+own allow-list. Following those declarations transitively attributes a named
+crate to the direct dependency that actually supplies it. Only a normal
+dependency qualifies, since a build or development dependency cannot supply
+types to a library's public API.
 
 Two consequences follow, and the tool enforces both:
 

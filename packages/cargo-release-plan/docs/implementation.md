@@ -209,10 +209,17 @@ request still counts.
 
 Which dependencies are public is read in `metadata` from each package's
 `allowed_external_types` allow-list, whose leading path segments name crates.
-Matching is by library target name, taken from the target rather than derived
-from the package name so a `[lib] name` override cannot silently break it, and a
-matched crate expands to its version group so a package that exposes an
-implementation crate marks the public crate it actually depends on.
+Matching follows `wildmatch`, the pattern language cargo-check-external-types
+itself uses, against library target names taken from the target rather than
+derived from the package name, so a `[lib] name` override cannot silently break
+it.
+
+An allow-list names the crate defining a type, while the release decision needs
+the direct dependency supplying it. The two are bridged by growing each
+package's exposed set to a fixed point: a dependency edge is public when what
+that dependency exposes intersects what this package names, and its exposed set
+then joins this package's own. The sets only grow and are bounded by the
+workspace, so this settles; the bound is asserted rather than assumed.
 
 `report` serializes the full package and group assessment, then writes patches
 only where file differences exist. It removes any earlier `report.json` marker

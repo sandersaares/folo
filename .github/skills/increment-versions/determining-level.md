@@ -57,9 +57,9 @@ touched nothing this package re-exports. Read the flag rather than judging the e
 source; it is derived from the `allowed_external_types` allow-list that `check-external-types`
 verifies, and `just validate-versions` rejects a tree where a public dependency breaks alone.
 
-The flag resolves through version groups, so a package exposing an implementation crate's types
-carries the flag on the public crate it actually depends on. That is the package whose version
-moves with the implementation crate's.
+The flag follows re-exports, so a package exposing an implementation crate's types carries the
+flag on the public crate it actually depends on — the one whose version moves with the
+implementation crate's.
 
 Only a `breaking` dependency propagates this way. A dependency that adds API compatibly leaves
 the exposure intact, so it establishes no more than the `patch` its requirement rewrite already
