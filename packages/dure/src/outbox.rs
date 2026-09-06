@@ -19,7 +19,7 @@ use crate::protocol::Message;
 ///
 /// Messages are written in the order they were queued, which is what keeps
 /// `Attached` ahead of output and `AppExited` behind it.
-/// Ref: docs/implementation.md, "Transport".
+/// Ref: docs/transport.md.
 pub(crate) struct Outbox<T: Transport> {
     transport: T,
     conn: ConnId,
@@ -111,24 +111,34 @@ impl<T: Transport + Clone> Outbox<T> {
         self.changed.notify_all();
     }
 
-    /// Blocks until the writer has stopped and dropped the connection.
+    /// Waits for the writer to stop and drop the connection.
     ///
-    /// Only the final exit-status delivery waits for this: by then the session
-    /// owns no store record, job, or pseudoconsole, so a client that never
-    /// drains its pipe delays nothing beyond this process outliving it.
+    /// This delivers nothing itself: [`Outbox::finish`] or [`Outbox::abandon`]
+    /// is what tells the writer to stop, and this only waits for that to have
+    /// happened.
     ///
-    /// The caller is responsible for having finished or abandoned the outbox;
-    /// otherwise the writer has no reason to stop.
-    pub(crate) fn flush(&self) {
+    /// Only the final exit-status delivery waits: by then the session owns no
+    /// store record, job, or pseudoconsole, so a client that never drains its
+    /// pipe delays nothing beyond this process outliving it.
+    pub(crate) fn wait_for_writer(&self) {
         let mut writer = self
             .writer
             .lock()
-            .expect("the writer handle is only taken by a flush, never across a panic");
+            .expect("the writer handle is only taken by this wait, never across a panic");
         if let Some(handle) = writer.take() {
             handle
                 .join()
                 .expect("the outbox writer thread cannot panic");
         }
+    }
+
+    /// Whether this outbox has given up on its connection.
+    ///
+    /// Lets a test observe abandonment without waiting for the writer, which
+    /// is the thread abandonment exists to release.
+    #[cfg(test)]
+    pub(crate) fn is_abandoned(&self) -> bool {
+        self.lock().abandoned
     }
 
     fn lock(&self) -> MutexGuard<'_, OutboxState> {
@@ -182,9 +192,9 @@ mod tests {
     use testing::with_watchdog;
 
     use super::*;
+    use crate::SessionId;
     use crate::constants::CONNECT_TIMEOUT;
     use crate::pal::transport::MemoryTransport;
-    use crate::session_id::SessionId;
 
     /// A connected pair on an in-memory pipe, as supervisor and client ends.
     fn pair() -> (MemoryTransport, ConnId, ConnId) {
@@ -208,7 +218,7 @@ mod tests {
             outbox.send(Message::Output(b"hello".to_vec()));
             outbox.send(Message::AppExited { status: 7 });
             outbox.finish();
-            outbox.flush();
+            outbox.wait_for_writer();
 
             assert!(matches!(
                 transport.recv(client).unwrap(),
@@ -231,7 +241,7 @@ mod tests {
             let (transport, server, client) = pair();
             let outbox = Outbox::start(transport.clone(), server);
             outbox.abandon();
-            outbox.flush();
+            outbox.wait_for_writer();
             // Repeat abandonment is how an overflow and an explicit give-up can
             // both land on the same outbox.
             outbox.abandon();
@@ -247,17 +257,34 @@ mod tests {
             // The peer stops draining its pipe, so every write to it blocks.
             transport.stall(server);
             let outbox = Outbox::start(transport.clone(), server);
-            // The backlog cap is the only thing that can end this loop. A
-            // blocking send would never return.
             let chunk = vec![0_u8; 64 * 1024];
+            outbox.send(Message::Output(chunk.clone()));
+            // The writer is now parked on the wedged client, which is the
+            // state abandonment has to get it out of.
+            transport.wait_for_stalled_send(server);
+
             // One extra round covers the message the writer already took off
             // the queue and is blocked on.
             let rounds = MAX_CLIENT_BACKLOG_BYTES.div_euclid(chunk.len()) + 2;
             for _ in 0..rounds {
                 outbox.send(Message::Output(chunk.clone()));
             }
-            outbox.flush();
-            transport.send(server, &Message::Displaced).unwrap_err();
+            // Read before the teardown below, because the teardown would
+            // abandon it too.
+            let abandoned_itself = outbox.is_abandoned();
+
+            // Teardown the harness owns, so the writer is released whether or
+            // not the code under test released it. Without this a mutation of
+            // the backlog check would park this test forever instead of
+            // failing it, and mutation runs have no watchdog.
+            transport.resume(server);
+            outbox.abandon();
+            outbox.wait_for_writer();
+
+            assert!(
+                abandoned_itself,
+                "a backlog past the cap must give up on the client on its own"
+            );
         });
     }
 
@@ -289,7 +316,7 @@ mod tests {
             }
             transport.resume(server);
             outbox.finish();
-            outbox.flush();
+            outbox.wait_for_writer();
 
             for _ in 0..rounds {
                 assert_eq!(
@@ -307,7 +334,7 @@ mod tests {
             let outbox = Outbox::start(transport.clone(), server);
             outbox.finish();
             outbox.send(Message::Output(b"late".to_vec()));
-            outbox.flush();
+            outbox.wait_for_writer();
             transport.recv(client).unwrap_err();
         });
     }

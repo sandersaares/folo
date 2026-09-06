@@ -4,10 +4,9 @@ use ohno::AppError;
 
 use crate::pal::processes::{ProcessLiveness, Processes};
 use crate::pal::session_store::SessionStore;
-use crate::session_id::SessionId;
 use crate::session_record::SessionRecord;
 use crate::trace::{Trace, trace};
-use crate::{InspectProcessError, SessionNotFoundError, StoreError};
+use crate::{InspectProcessError, SessionId, SessionNotFoundError, StoreError};
 
 /// Lists live sessions, deleting records whose supervisor process is gone.
 ///
@@ -20,21 +19,22 @@ pub(crate) fn live_sessions(
     processes: &impl Processes,
     trace: Trace,
 ) -> Result<Vec<SessionRecord>, AppError> {
-    let records = store.list().map_err(|_error| StoreError::new())?;
+    let records = store.list().map_err(StoreError::caused_by)?;
     trace!(
         trace,
-        "read {} session record(s) from the store",
-        records.len()
+        "read {} session {} from the store",
+        records.len(),
+        record_noun(records.len())
     );
     let mut live = Vec::new();
     for record in records {
-        match processes.probe(&record.identity()) {
+        match processes.probe(&record.supervisor) {
             ProcessLiveness::Live => {
                 trace!(
                     trace,
                     "session {}: supervisor pid {} is running, so the session is live",
                     record.id,
-                    record.supervisor_pid
+                    record.supervisor.pid
                 );
                 live.push(record);
             }
@@ -43,28 +43,40 @@ pub(crate) fn live_sessions(
                     trace,
                     "session {}: supervisor pid {} is gone, so the record is dropped",
                     record.id,
-                    record.supervisor_pid
+                    record.supervisor.pid
                 );
                 // Ids are reused, so deleting by id alone can reap a session
                 // that claimed this id since `list` read it.
                 store
-                    .delete_owned_by(record.session_id(), &record.identity())
-                    .map_err(|_error| StoreError::new())?;
+                    .delete_owned_by(record.id, &record.supervisor)
+                    .map_err(StoreError::caused_by)?;
             }
             ProcessLiveness::InspectFailed => {
                 trace!(
                     trace,
                     "session {}: supervisor pid {} could not be inspected, so nothing is assumed about it",
                     record.id,
-                    record.supervisor_pid
+                    record.supervisor.pid
                 );
-                return Err(InspectProcessError::for_pid(record.supervisor_pid).into());
+                return Err(InspectProcessError::for_pid(record.supervisor.pid).into());
             }
         }
     }
     reap_orphan_reservations(store, processes, trace)?;
-    trace!(trace, "{} live session(s)", live.len());
+    trace!(trace, "{} live {}", live.len(), session_noun(live.len()));
     Ok(live)
+}
+
+// English pluralization is not a behavioral contract.
+#[cfg_attr(test, mutants::skip)]
+fn record_noun(count: usize) -> &'static str {
+    if count == 1 { "record" } else { "records" }
+}
+
+// English pluralization is not a behavioral contract.
+#[cfg_attr(test, mutants::skip)]
+fn session_noun(count: usize) -> &'static str {
+    if count == 1 { "session" } else { "sessions" }
 }
 
 /// Deletes id claims whose owner is gone.
@@ -76,9 +88,7 @@ fn reap_orphan_reservations(
     processes: &impl Processes,
     trace: Trace,
 ) -> Result<(), AppError> {
-    let reservations = store
-        .list_reservations()
-        .map_err(|_error| StoreError::new())?;
+    let reservations = store.list_reservations().map_err(StoreError::caused_by)?;
     for (id, owner) in reservations {
         match processes.probe(&owner) {
             ProcessLiveness::Dead => {
@@ -89,7 +99,7 @@ fn reap_orphan_reservations(
                 );
                 store
                     .delete_owned_by(id, &owner)
-                    .map_err(|_error| StoreError::new())?;
+                    .map_err(StoreError::caused_by)?;
             }
             ProcessLiveness::Live => {
                 trace!(
@@ -117,31 +127,31 @@ pub(crate) fn require_live_session(
     id: SessionId,
     trace: Trace,
 ) -> Result<SessionRecord, AppError> {
-    let Some(record) = store.read(id).map_err(|_error| StoreError::new())? else {
+    let Some(record) = store.read(id).map_err(StoreError::caused_by)? else {
         trace!(trace, "no record for session {id} in the store");
         return Err(SessionNotFoundError::for_id(id).into());
     };
     trace!(
         trace,
         "session {id}: recorded supervisor pid {}, pipe {}",
-        record.supervisor_pid,
+        record.supervisor.pid,
         record.pipe_name
     );
-    match processes.probe(&record.identity()) {
+    match processes.probe(&record.supervisor) {
         ProcessLiveness::Live => Ok(record),
         ProcessLiveness::Dead => {
             trace!(
                 trace,
                 "session {id}: supervisor pid {} is gone, so the record is dropped",
-                record.supervisor_pid
+                record.supervisor.pid
             );
             store
-                .delete_owned_by(id, &record.identity())
-                .map_err(|_error| StoreError::new())?;
+                .delete_owned_by(id, &record.supervisor)
+                .map_err(StoreError::caused_by)?;
             Err(SessionNotFoundError::for_id(id).into())
         }
         ProcessLiveness::InspectFailed => {
-            Err(InspectProcessError::for_pid(record.supervisor_pid).into())
+            Err(InspectProcessError::for_pid(record.supervisor.pid).into())
         }
     }
 }
@@ -152,34 +162,35 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
+    use crate::AppCommand;
     use crate::pal::processes::MockProcesses;
-    use crate::pal::session_store::{FsSessionStore, SessionStore};
-    use crate::session_id::SessionId;
+    use crate::pal::session_store::{MemorySessionStore, SessionStore};
+    use crate::protocol::PROTOCOL_VERSION;
     use crate::session_record::{ProcessIdentity, SessionRecord};
 
-    fn record(id: u32, pid: u32, creation: u64) -> SessionRecord {
+    fn record(id: SessionId, pid: u32, creation: u64) -> SessionRecord {
         SessionRecord {
             id,
-            supervisor_pid: pid,
-            supervisor_creation_time: creation,
+            supervisor: ProcessIdentity {
+                pid,
+                creation_time: creation,
+            },
             pipe_name: format!("pipe-{id}"),
             launch_directory: PathBuf::from("/work"),
-            command: vec!["app.exe".to_string()],
+            command: AppCommand::for_test(&["app.exe"]),
             started_at_unix_ms: 1,
             attached: false,
+            protocol_version: PROTOCOL_VERSION,
         }
     }
 
     #[test]
-    // Talks to the real operating system: the session store is a real directory.
-    #[cfg_attr(miri, ignore)]
     fn drops_dead_and_keeps_live() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let store = FsSessionStore::new(dir.path().to_path_buf());
+        let store = MemorySessionStore::new();
         let live_id = store.allocate_id(&ProcessIdentity::for_test(1)).unwrap();
         let dead_id = store.allocate_id(&ProcessIdentity::for_test(1)).unwrap();
-        store.publish(&record(live_id.get(), 10, 100)).unwrap();
-        store.publish(&record(dead_id.get(), 11, 101)).unwrap();
+        store.publish(&record(live_id, 10, 100)).unwrap();
+        store.publish(&record(dead_id, 11, 101)).unwrap();
 
         let mut processes = MockProcesses::new();
         processes
@@ -194,19 +205,16 @@ mod tests {
 
         let live = live_sessions(&store, &processes, Trace::default()).unwrap();
         assert_eq!(live.len(), 1);
-        assert_eq!(live.first().expect("one live session").id, live_id.get());
+        assert_eq!(live.first().expect("one live session").id, live_id);
         assert!(store.read(dead_id).unwrap().is_none());
         assert!(store.read(live_id).unwrap().is_some());
     }
 
     #[test]
-    // Talks to the real operating system: the session store is a real directory.
-    #[cfg_attr(miri, ignore)]
     fn inspect_failure_keeps_record() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let store = FsSessionStore::new(dir.path().to_path_buf());
+        let store = MemorySessionStore::new();
         let id = store.allocate_id(&ProcessIdentity::for_test(1)).unwrap();
-        store.publish(&record(id.get(), 10, 100)).unwrap();
+        store.publish(&record(id, 10, 100)).unwrap();
 
         let mut processes = MockProcesses::new();
         processes
@@ -215,19 +223,33 @@ mod tests {
 
         live_sessions(&store, &processes, Trace::default()).unwrap_err();
         assert!(store.read(id).unwrap().is_some());
-        _ = SessionId::MIN;
     }
 
     #[test]
-    // Talks to the real operating system: the session store is a real directory.
-    #[cfg_attr(miri, ignore)]
+    fn an_explicit_id_whose_process_cannot_be_inspected_keeps_its_record() {
+        let store = MemorySessionStore::new();
+        let id = store.allocate_id(&ProcessIdentity::for_test(1)).unwrap();
+        store.publish(&record(id, 10, 100)).unwrap();
+
+        let mut processes = MockProcesses::new();
+        processes
+            .expect_probe()
+            .returning(|_| ProcessLiveness::InspectFailed);
+
+        // Nothing was learned about the supervisor, so nothing is concluded
+        // about the session: reaping it here would delete a live one.
+        let error = require_live_session(&store, &processes, id, Trace::default()).unwrap_err();
+        assert!(error.find_source::<InspectProcessError>().is_some());
+        assert!(store.read(id).unwrap().is_some());
+    }
+
+    #[test]
     fn require_live_session_does_not_inspect_other_records() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let store = FsSessionStore::new(dir.path().to_path_buf());
+        let store = MemorySessionStore::new();
         let live_id = store.allocate_id(&ProcessIdentity::for_test(1)).unwrap();
         let dead_id = store.allocate_id(&ProcessIdentity::for_test(1)).unwrap();
-        store.publish(&record(live_id.get(), 10, 100)).unwrap();
-        store.publish(&record(dead_id.get(), 11, 101)).unwrap();
+        store.publish(&record(live_id, 10, 100)).unwrap();
+        store.publish(&record(dead_id, 11, 101)).unwrap();
 
         let mut processes = MockProcesses::new();
         processes
@@ -237,18 +259,15 @@ mod tests {
             .returning(|_| ProcessLiveness::Live);
 
         let found = require_live_session(&store, &processes, live_id, Trace::default()).unwrap();
-        assert_eq!(found.id, live_id.get());
+        assert_eq!(found.id, live_id);
         assert!(store.read(dead_id).unwrap().is_some());
     }
 
     #[test]
-    // Talks to the real operating system: the session store is a real directory.
-    #[cfg_attr(miri, ignore)]
     fn require_live_session_reaps_a_dead_record() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let store = FsSessionStore::new(dir.path().to_path_buf());
+        let store = MemorySessionStore::new();
         let id = store.allocate_id(&ProcessIdentity::for_test(1)).unwrap();
-        store.publish(&record(id.get(), 11, 101)).unwrap();
+        store.publish(&record(id, 11, 101)).unwrap();
 
         let mut processes = MockProcesses::new();
         processes
@@ -264,8 +283,7 @@ mod tests {
     // Talks to the real operating system: the session store is a real directory.
     #[cfg_attr(miri, ignore)]
     fn reaps_a_reservation_whose_owner_is_gone() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let store = FsSessionStore::new(dir.path().to_path_buf());
+        let store = MemorySessionStore::new();
         let orphan = store.allocate_id(&ProcessIdentity::for_test(12)).unwrap();
 
         let mut processes = MockProcesses::new();
@@ -290,8 +308,7 @@ mod tests {
     // Talks to the real operating system: the session store is a real directory.
     #[cfg_attr(miri, ignore)]
     fn keeps_a_reservation_whose_owner_is_still_initializing() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let store = FsSessionStore::new(dir.path().to_path_buf());
+        let store = MemorySessionStore::new();
         let owner = ProcessIdentity::for_test(12);
         let claimed = store.allocate_id(&owner).unwrap();
 
@@ -312,8 +329,7 @@ mod tests {
     // Talks to the real operating system: the session store is a real directory.
     #[cfg_attr(miri, ignore)]
     fn an_unreadable_reservation_owner_is_left_alone() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let store = FsSessionStore::new(dir.path().to_path_buf());
+        let store = MemorySessionStore::new();
         let owner = ProcessIdentity::for_test(12);
         store.allocate_id(&owner).unwrap();
 

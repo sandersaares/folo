@@ -5,6 +5,8 @@
 
 use std::fmt::Arguments;
 
+use crate::output::note_line;
+
 /// Whether this invocation explains itself, and how.
 ///
 /// Passed down to every command so a trace can state the inputs behind a
@@ -26,22 +28,32 @@ impl Trace {
         self.enabled
     }
 
+    /// Writes one explanatory note when this trace is enabled.
+    ///
+    /// Callers reach this through [`trace!`], which is what keeps the arguments
+    /// unevaluated on a quiet run; the check here is what makes a direct call
+    /// behave the same way.
     // Trace wording is not a behavioral contract.
     #[cfg_attr(test, mutants::skip)]
     pub(crate) fn note(self, message: Arguments<'_>) {
         if self.enabled {
-            eprintln!("dure: {message}");
+            note_line(format_args!("dure: {message}"));
         }
     }
 }
 
 /// Writes one explanatory note when tracing is on.
 ///
-/// Takes `format!` arguments and assembles them only when they will be printed.
+/// Takes `format!` arguments and evaluates none of them when tracing is off:
+/// several call sites render paths and command lines, and a quiet run must not
+/// pay to build text nobody reads.
 macro_rules! trace {
-    ($trace:expr, $($arg:tt)*) => {
-        $trace.note(::std::format_args!($($arg)*))
-    };
+    ($trace:expr, $($arg:tt)*) => {{
+        let trace = $trace;
+        if trace.is_enabled() {
+            trace.note(::std::format_args!($($arg)*));
+        }
+    }};
 }
 
 pub(crate) use trace;

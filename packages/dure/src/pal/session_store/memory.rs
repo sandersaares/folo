@@ -1,5 +1,3 @@
-#![cfg_attr(coverage_nightly, coverage(off))]
-
 //! In-memory session store for supervisor unit tests.
 
 use std::collections::BTreeMap;
@@ -7,10 +5,11 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 
+use crate::SessionId;
 use crate::pal::error::{PalError, PalErrorKind};
 use crate::pal::session_store::SessionStore;
-use crate::session_id::SessionId;
-use crate::session_record::{ProcessIdentity, SessionRecord, StoredSession};
+use crate::pal::session_store::stored::StoredSession;
+use crate::session_record::{ProcessIdentity, SessionRecord};
 
 /// Shared stateful session store for supervisor unit tests.
 ///
@@ -29,6 +28,8 @@ struct MemorySessionStoreInner {
     records: Mutex<BTreeMap<SessionId, StoredSession>>,
     /// Injects a publication failure after id allocation.
     fail_next_publish: AtomicBool,
+    /// Injects a deletion failure during supervisor teardown.
+    fail_next_delete: AtomicBool,
     publish_stall: Mutex<PublishStall>,
     publish_stall_changed: Condvar,
 }
@@ -57,6 +58,10 @@ impl MemorySessionStore {
 
     pub(crate) fn fail_next_publish(&self) {
         self.inner.fail_next_publish.store(true, Ordering::SeqCst);
+    }
+
+    pub(crate) fn fail_next_delete(&self) {
+        self.inner.fail_next_delete.store(true, Ordering::SeqCst);
     }
 
     pub(crate) fn wait_for_stalled_publish(&self) {
@@ -120,10 +125,11 @@ impl SessionStore for MemorySessionStore {
             return Err(PalError::new(PalErrorKind::Other));
         }
         self.await_publish_permission();
-        self.inner.records.lock().unwrap().insert(
-            record.session_id(),
-            StoredSession::Published(record.clone()),
-        );
+        self.inner
+            .records
+            .lock()
+            .unwrap()
+            .insert(record.id, StoredSession::Published(record.clone()));
         Ok(())
     }
 
@@ -158,10 +164,13 @@ impl SessionStore for MemorySessionStore {
     }
 
     fn delete_owned_by(&self, id: SessionId, owner: &ProcessIdentity) -> Result<(), PalError> {
+        if self.inner.fail_next_delete.swap(false, Ordering::SeqCst) {
+            return Err(PalError::new(PalErrorKind::Other));
+        }
         let mut records = self.inner.records.lock().unwrap();
         let owned = match records.get(&id) {
             Some(StoredSession::Reserved { owner: current }) => current == owner,
-            Some(StoredSession::Published(record)) => record.identity() == *owner,
+            Some(StoredSession::Published(record)) => record.supervisor == *owner,
             None => false,
         };
         if owned {
@@ -188,6 +197,8 @@ mod tests {
     use testing::with_watchdog_phases;
 
     use super::*;
+    use crate::AppCommand;
+    use crate::protocol::PROTOCOL_VERSION;
 
     #[test]
     fn publish_stall_reports_each_rearmed_publisher() {
@@ -198,21 +209,23 @@ mod tests {
             let mut publishers = Vec::new();
 
             for attached in [true, false] {
+                // Built before the thread, so a record a test cannot construct
+                // fails the test rather than stranding it waiting on a
+                // publisher that never ran.
+                let record = SessionRecord {
+                    id,
+                    supervisor: owner,
+                    pipe_name: "pipe".to_string(),
+                    launch_directory: PathBuf::from("/work"),
+                    command: AppCommand::for_test(&["app.exe"]),
+                    started_at_unix_ms: 1,
+                    attached,
+                    protocol_version: PROTOCOL_VERSION,
+                };
                 store.stall_publishes();
                 let publisher = thread::spawn({
                     let store = store.clone();
-                    move || {
-                        store.publish(&SessionRecord {
-                            id: id.get(),
-                            supervisor_pid: owner.pid,
-                            supervisor_creation_time: owner.creation_time,
-                            pipe_name: "pipe".to_string(),
-                            launch_directory: PathBuf::from("/work"),
-                            command: vec!["app.exe".to_string()],
-                            started_at_unix_ms: 1,
-                            attached,
-                        })
-                    }
+                    move || store.publish(&record)
                 });
 
                 phase_reporter.report("waiting for the publisher to stall");

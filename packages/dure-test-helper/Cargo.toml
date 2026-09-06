@@ -15,6 +15,7 @@ rust-version.workspace = true
 # "Platform gate"): a non-Windows build compiles to an empty stub.
 [target.'cfg(windows)'.dependencies]
 serde_json = { workspace = true }
+windows = { workspace = true, features = ["Win32_Foundation", "Win32_System_Console"] }
 
 [lints]
 workspace = true

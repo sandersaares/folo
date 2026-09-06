@@ -3,16 +3,25 @@
 //! Id allocation uses exclusive file creation so two concurrent `run`
 //! invocations cannot take the same id.
 
+// The Win32 record-file mechanics this store is built on: they are meaningful only
+// here, so they live under it rather than beside it.
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod windows;
+
 use std::env;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::SessionId;
 use crate::pal::error::{PalError, PalErrorKind};
 use crate::pal::session_store::SessionStore;
-use crate::pal::session_store::windows::{RecordFile, move_file_replace};
-use crate::session_id::SessionId;
-use crate::session_record::{ProcessIdentity, SessionRecord, StoredSession};
+use crate::pal::session_store::fs_store::windows::{
+    RecordFile, move_file_no_replace, move_file_replace,
+};
+use crate::pal::session_store::stored::StoredSession;
+use crate::session_record::{ProcessIdentity, SessionRecord};
 
 /// Session store rooted at a caller-supplied directory.
 #[derive(Clone, Debug)]
@@ -33,7 +42,7 @@ fn parse_record(bytes: &[u8], expected: SessionId) -> Result<Option<SessionRecor
     let StoredSession::Published(record) = parse_stored(bytes)? else {
         return Ok(None);
     };
-    if SessionId::from_u32(record.id) != Some(expected) {
+    if record.id != expected {
         return Ok(None);
     }
     Ok(Some(record))
@@ -41,6 +50,35 @@ fn parse_record(bytes: &[u8], expected: SessionId) -> Result<Option<SessionRecor
 
 fn replace_file(tmp: &Path, dest: &Path) -> io::Result<()> {
     move_file_replace(tmp, dest)
+}
+
+/// Converts the impossible serialization failure for a fixed stored-record
+/// shape into the store's error type.
+///
+/// A failure here requires a defect in `serde_json`, so no input can exercise it.
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn serialization_error(error: serde_json::Error) -> PalError {
+    PalError::with_source(
+        PalErrorKind::Other,
+        io::Error::new(io::ErrorKind::InvalidData, error),
+    )
+}
+
+/// Advances an occupied session id, or reports that the complete id space is used.
+fn next_session_id(id: SessionId) -> Result<SessionId, PalError> {
+    id.get()
+        .checked_add(1)
+        .and_then(SessionId::from_u32)
+        .ok_or_else(|| PalError::new(PalErrorKind::Other))
+}
+
+/// Removes a staged claim after an install failure.
+fn remove_failed_staging(staging: &Path, installed: &Result<SessionId, PalError>) {
+    if installed.is_err() {
+        // A staging file nobody installs is this call's to remove; leaving it
+        // would litter the store with files no reader understands.
+        _ = fs::remove_file(staging);
+    }
 }
 
 impl FsSessionStore {
@@ -52,10 +90,52 @@ impl FsSessionStore {
         self.root.join(format!("{}.json", id.get()))
     }
 
+    /// Where a claim is assembled before it is given an id's name.
+    ///
+    /// The name carries the process identity and a counter unique within that
+    /// process, so no two allocations share a staging file and a reused pid
+    /// cannot collide with a file left by its predecessor. The extension is one
+    /// no reader looks at, so a half-written claim is never mistaken for a session.
+    fn staging_path(&self, owner: &ProcessIdentity) -> PathBuf {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let attempt = NEXT.fetch_add(1, Ordering::Relaxed);
+        self.root.join(format!(
+            "{}-{}-{attempt}.claim",
+            owner.pid, owner.creation_time
+        ))
+    }
+
+    /// Gives the staged claim the name of the smallest id it can take.
+    ///
+    /// Installing fails rather than replaces when the name is taken, so an id
+    /// another process claimed first is simply the next one tried.
+    // A mutation of the taken-vs-failed guard turns the search for a free id
+    // into one that walks the whole `u32` range against a store that cannot
+    // accept any of them, which no test can outlast and watchdogs are disabled
+    // under cargo-mutants. Ref: docs/testing.md, "Mutation testing".
+    #[cfg_attr(test, mutants::skip)]
+    fn install_claim(&self, staging: &Path) -> Result<SessionId, PalError> {
+        let mut id = SessionId::MIN;
+        loop {
+            match move_file_no_replace(staging, &self.record_path(id)) {
+                Ok(()) => return Ok(id),
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                    id = next_session_id(id)?;
+                }
+                Err(error) => return Err(PalError::from_io(error)),
+            }
+        }
+    }
+
     /// Every readable record file, paired with the id its name encodes.
     ///
     /// Foreign, torn, and unparseable files are skipped: one bad file must not
     /// hide every session in the store from `dure list`.
+    ///
+    /// A file that names a session but cannot be read is different: it is a
+    /// session the store knows about and cannot report. That is an error, so a
+    /// permission or sharing problem shows up as one rather than as an empty
+    /// session list. Ref: docs/session-store.md.
     fn stored(&self) -> Result<Vec<(SessionId, StoredSession)>, PalError> {
         let entries = match fs::read_dir(&self.root) {
             Ok(entries) => entries,
@@ -78,8 +158,12 @@ impl FsSessionStore {
             let Some(id) = SessionId::from_u32(raw) else {
                 continue;
             };
-            let Ok(bytes) = fs::read(entry.path()) else {
-                continue;
+            let bytes = match read_if_present(&entry.path()) {
+                Ok(Some(bytes)) => bytes,
+                // A file that disappeared between the listing and the read is
+                // a session that ended, which is the store working.
+                Ok(None) => continue,
+                Err(error) => return Err(PalError::from_io(error)),
             };
             let Ok(parsed) = parse_stored(&bytes) else {
                 continue;
@@ -99,68 +183,27 @@ impl SessionStore for FsSessionStore {
 
     fn allocate_id(&self, owner: &ProcessIdentity) -> Result<SessionId, PalError> {
         fs::create_dir_all(&self.root).map_err(PalError::from_io)?;
-        let claim = serde_json::to_vec(&StoredSession::Reserved { owner: *owner }).map_err(
-            // A reservation is a fixed struct of integers, so the only way
-            // serialization reports a failure is a defect in `serde_json`
-            // itself. Nothing can drive this arm from a test.
-            #[cfg_attr(coverage_nightly, coverage(off))]
-            |error| {
-                PalError::with_source(
-                    PalErrorKind::Other,
-                    io::Error::new(io::ErrorKind::InvalidData, error),
-                )
-            },
-        )?;
-        let mut n: u32 = 1;
-        loop {
-            let Some(id) = SessionId::from_u32(n) else {
-                return Err(PalError::new(PalErrorKind::Other));
-            };
-            let path = self.record_path(id);
-            // Exclusive create of `{id}.json` is the claim, and the claim names
-            // the process making it. `read` and `list` report a claimed id as
-            // absent, while `gc` reaps one whose owner died before publishing.
-            match OpenOptions::new().write(true).create_new(true).open(&path) {
-                Ok(mut file) => {
-                    return write_claim(&mut file, &claim).map_or_else(
-                        |error| {
-                            // A claim nobody owns would occupy the id forever.
-                            drop(file);
-                            _ = fs::remove_file(&path);
-                            Err(PalError::from_io(error))
-                        },
-                        |()| Ok(id),
-                    );
-                }
-                Err(error) => {
-                    if !is_id_taken(&error) {
-                        return Err(PalError::from_io(error));
-                    }
-                    n = n
-                        .checked_add(1)
-                        .ok_or_else(|| PalError::new(PalErrorKind::Other))?;
-                }
-            }
-        }
+        let claim = serde_json::to_vec(&StoredSession::Reserved { owner: *owner })
+            .map_err(serialization_error)?;
+        // Built under a name nobody looks for, so the claim is complete on disk
+        // before it is given the name that means "this id is taken". A claim
+        // that named nobody could never be proved abandoned, and its id would
+        // stay occupied for the rest of the logon session.
+        // Ref: docs/session-store.md, "Claimed and published".
+        let staging = self.staging_path(owner);
+        write_new_file(&staging, &claim).map_err(PalError::from_io)?;
+        let installed = self.install_claim(&staging);
+        remove_failed_staging(&staging, &installed);
+        installed
     }
 
     fn publish(&self, record: &SessionRecord) -> Result<(), PalError> {
         fs::create_dir_all(&self.root).map_err(PalError::from_io)?;
-        let id = record.session_id();
+        let id = record.id;
         let path = self.record_path(id);
         let tmp = self.root.join(format!("{}.json.tmp", id.get()));
-        let json = serde_json::to_vec_pretty(&StoredSession::Published(record.clone())).map_err(
-            // A record is a fixed struct of strings, integers, and paths, so
-            // the only way serialization reports a failure is a defect in
-            // `serde_json` itself. Nothing can drive this arm from a test.
-            #[cfg_attr(coverage_nightly, coverage(off))]
-            |error| {
-                PalError::with_source(
-                    PalErrorKind::Other,
-                    io::Error::new(io::ErrorKind::InvalidData, error),
-                )
-            },
-        )?;
+        let json = serde_json::to_vec_pretty(&StoredSession::Published(record.clone()))
+            .map_err(serialization_error)?;
         let mut file = File::create(&tmp).map_err(PalError::from_io)?;
         file.write_all(&json).map_err(PalError::from_io)?;
         file.sync_all().map_err(PalError::from_io)?;
@@ -183,7 +226,7 @@ impl SessionStore for FsSessionStore {
             .stored()?
             .into_iter()
             .filter_map(|(id, stored)| match stored {
-                StoredSession::Published(record) if record.session_id() == id => Some(record),
+                StoredSession::Published(record) if record.id == id => Some(record),
                 _ => None,
             })
             .collect())
@@ -215,7 +258,7 @@ impl SessionStore for FsSessionStore {
         // after the caller read it, and a file nothing can parse names nobody.
         let owned = match parse_stored(&bytes) {
             Ok(StoredSession::Reserved { owner: current }) => current == *owner,
-            Ok(StoredSession::Published(record)) => record.identity() == *owner,
+            Ok(StoredSession::Published(record)) => record.supervisor == *owner,
             Err(_error) => false,
         };
         if !owned {
@@ -241,17 +284,26 @@ fn is_absent(error: &io::Error) -> bool {
     matches!(error.kind(), io::ErrorKind::NotFound)
 }
 
-/// Whether an exclusive-create failure means the id is already reserved.
+/// The file's bytes, or nothing if it is already gone.
 ///
-/// Any other failure is a filesystem fault: treating it as a taken id would
-/// retry the same fault against every remaining id in turn.
-fn is_id_taken(error: &io::Error) -> bool {
-    error.kind() == io::ErrorKind::AlreadyExists
+/// A record can be deleted between a directory listing and the read that
+/// follows it, which is a session ending rather than a store this process
+/// cannot read.
+fn read_if_present(path: &Path) -> io::Result<Option<Vec<u8>>> {
+    match fs::read(path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(error) if is_absent(&error) => Ok(None),
+        Err(error) => Err(error),
+    }
 }
 
-/// Writes and flushes a claim so it is durable before the id is handed out.
-fn write_claim(file: &mut File, claim: &[u8]) -> io::Result<()> {
-    file.write_all(claim)?;
+/// Writes `content` to a file that must not already exist, and flushes it.
+///
+/// Flushed before returning so that whatever is given this file's name next is
+/// backed by content that has reached the disk.
+fn write_new_file(path: &Path, content: &[u8]) -> io::Result<()> {
+    let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
+    file.write_all(content)?;
     file.sync_all()
 }
 
@@ -260,12 +312,15 @@ fn write_claim(file: &mut File, claim: &[u8]) -> io::Result<()> {
 mod tests {
     use std::collections::HashSet;
     use std::path::Path;
+    use std::sync::{Arc, Barrier};
     use std::{iter, thread};
 
     use tempfile::TempDir;
     use testing::with_watchdog;
 
     use super::*;
+    use crate::AppCommand;
+    use crate::protocol::PROTOCOL_VERSION;
 
     fn store() -> (TempDir, FsSessionStore) {
         let dir = TempDir::new().unwrap();
@@ -275,15 +330,48 @@ mod tests {
 
     fn record(id: SessionId, dir: &Path) -> SessionRecord {
         SessionRecord {
-            id: id.get(),
-            supervisor_pid: 1,
-            supervisor_creation_time: 1,
+            id,
+            supervisor: ProcessIdentity {
+                pid: 1,
+                creation_time: 1,
+            },
             pipe_name: "pipe".to_string(),
             launch_directory: dir.to_path_buf(),
-            command: vec!["app.exe".to_string()],
+            command: AppCommand::for_test(&["app.exe"]),
             started_at_unix_ms: 1,
             attached: false,
+            protocol_version: PROTOCOL_VERSION,
         }
+    }
+
+    #[test]
+    fn advancing_the_last_session_id_reports_exhaustion() {
+        let last = SessionId::from_u32(u32::MAX).unwrap();
+        next_session_id(last).unwrap_err();
+    }
+
+    #[test]
+    // Talks to the real operating system: the session store is a real directory.
+    #[cfg_attr(miri, ignore)]
+    fn an_install_failure_removes_its_staging_file() {
+        let dir = TempDir::new().unwrap();
+        let staging = dir.path().join("failed.claim");
+        fs::write(&staging, b"claim").unwrap();
+        let installed = Err(PalError::new(PalErrorKind::Other));
+
+        remove_failed_staging(&staging, &installed);
+
+        assert!(!staging.exists());
+    }
+
+    #[test]
+    // Talks to the real operating system: the session store calls a real file move.
+    #[cfg_attr(miri, ignore)]
+    fn installing_a_missing_staging_file_reports_the_filesystem_error() {
+        let (dir, store) = store();
+        store
+            .install_claim(&dir.path().join("missing.claim"))
+            .unwrap_err();
     }
 
     #[test]
@@ -328,8 +416,10 @@ mod tests {
         let (dir, store) = store();
         let id = store.allocate_id(&ProcessIdentity::for_test(1)).unwrap();
         let mut published = record(id, dir.path());
-        published.supervisor_pid = 20;
-        published.supervisor_creation_time = 200;
+        published.supervisor = ProcessIdentity {
+            pid: 20,
+            creation_time: 200,
+        };
         store.publish(&published).unwrap();
 
         // Stands in for a session that took this id after another process read
@@ -341,7 +431,7 @@ mod tests {
         store.delete_owned_by(id, &stale).unwrap();
         assert_eq!(store.read(id).unwrap().unwrap(), published);
 
-        store.delete_owned_by(id, &published.identity()).unwrap();
+        store.delete_owned_by(id, &published.supervisor).unwrap();
         assert!(store.read(id).unwrap().is_none());
     }
 
@@ -391,14 +481,6 @@ mod tests {
     }
 
     #[test]
-    fn only_an_already_exists_failure_means_the_id_is_taken() {
-        assert!(is_id_taken(&io::Error::from(io::ErrorKind::AlreadyExists)));
-        assert!(!is_id_taken(&io::Error::from(
-            io::ErrorKind::PermissionDenied
-        )));
-    }
-
-    #[test]
     // Talks to the real operating system: the session store is a real directory.
     #[cfg_attr(miri, ignore)]
     fn allocates_smallest_unused_and_reuses_after_delete() {
@@ -427,24 +509,86 @@ mod tests {
     #[test]
     // Talks to the real operating system: the session store is a real directory.
     #[cfg_attr(miri, ignore)]
+    fn a_claimed_id_is_readable_as_a_claim_the_moment_it_exists() {
+        // The point of building a claim elsewhere and installing it under the
+        // id's name is that the name never exists without its owner behind it.
+        // A claim that named nobody could not be proved abandoned, so its id
+        // would stay taken for the rest of the logon session.
+        let (dir, store) = store();
+        let owner = ProcessIdentity::for_test(1);
+        let id = store.allocate_id(&owner).unwrap();
+
+        let raw = fs::read(dir.path().join(format!("{}.json", id.get()))).unwrap();
+        assert_eq!(
+            parse_stored(&raw).unwrap(),
+            StoredSession::Reserved { owner }
+        );
+        assert_eq!(store.list_reservations().unwrap(), vec![(id, owner)]);
+    }
+
+    #[test]
+    // Talks to the real operating system: the session store is a real directory.
+    #[cfg_attr(miri, ignore)]
+    fn allocating_leaves_no_staging_file_behind() {
+        let (dir, store) = store();
+        _ = store.allocate_id(&ProcessIdentity::for_test(1)).unwrap();
+
+        // A file with no id for a name is one no reader understands, so none
+        // may be left in the store.
+        let leftovers: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .filter(|name| !name.to_string_lossy().ends_with(".json"))
+            .collect();
+        assert!(leftovers.is_empty(), "left behind {leftovers:?}");
+    }
+
+    #[test]
+    fn a_staging_name_carries_the_complete_process_identity() {
+        let store = FsSessionStore::new(PathBuf::from("store"));
+        let owner = ProcessIdentity {
+            pid: 73,
+            creation_time: 987_654_321,
+        };
+        let name = store
+            .staging_path(&owner)
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+
+        assert!(name.starts_with(&format!("{}-{}-", owner.pid, owner.creation_time)));
+    }
+
+    #[test]
+    // Talks to the real operating system: the session store is a real directory.
+    #[cfg_attr(miri, ignore)]
     fn concurrent_allocations_are_unique() {
         with_watchdog(|| {
+            const WORKERS: usize = 8;
+
             let dir = TempDir::new().unwrap();
             let root = dir.path().to_path_buf();
+            // Released together, so the allocations overlap. Started one at a
+            // time, the first could finish before the last began and the test
+            // would prove only that ids differ in sequence.
+            let start = Arc::new(Barrier::new(WORKERS));
             let threads: Vec<_> = iter::repeat_with(|| {
                 let root = root.clone();
+                let start = Arc::clone(&start);
                 thread::spawn(move || {
                     let store = FsSessionStore::new(root);
+                    start.wait();
                     store.allocate_id(&ProcessIdentity::for_test(1)).unwrap()
                 })
             })
-            .take(8)
+            .take(WORKERS)
             .collect();
             let mut ids = HashSet::new();
             for handle in threads {
                 assert!(ids.insert(handle.join().unwrap().get()));
             }
-            assert_eq!(ids.len(), 8);
+            assert_eq!(ids.len(), WORKERS);
         });
     }
 
@@ -458,8 +602,34 @@ mod tests {
         store.publish(&rec).unwrap();
         assert_eq!(store.read(id).unwrap().unwrap(), rec);
         assert_eq!(store.list().unwrap(), vec![rec.clone()]);
-        store.delete_owned_by(id, &rec.identity()).unwrap();
+        store.delete_owned_by(id, &rec.supervisor).unwrap();
         assert!(store.read(id).unwrap().is_none());
+        assert!(store.list().unwrap().is_empty());
+    }
+
+    #[test]
+    // Talks to the real operating system: the session store is a real directory.
+    #[cfg_attr(miri, ignore)]
+    fn a_record_that_is_already_gone_reads_as_nothing_to_read() {
+        // A session can end between a listing and the read that follows it,
+        // which is the store working rather than a store this process cannot
+        // read.
+        let dir = TempDir::new().unwrap();
+        assert!(
+            read_if_present(&dir.path().join("1.json"))
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    // Talks to the real operating system: the session store is a real directory.
+    #[cfg_attr(miri, ignore)]
+    fn a_store_that_does_not_exist_yet_holds_no_sessions() {
+        // The store root is created when the first session is published, so
+        // `list` before that is an empty list rather than a failure.
+        let dir = TempDir::new().unwrap();
+        let store = FsSessionStore::new(dir.path().join("never-created"));
         assert!(store.list().unwrap().is_empty());
     }
 
@@ -473,13 +643,23 @@ mod tests {
         fs::write(dir.path().join("readme.txt"), b"not a record").unwrap();
         // Names a valid id but holds nothing that parses as a session.
         fs::write(dir.path().join("5.json"), b"nope").unwrap();
-        // Names a valid id but cannot be read at all.
-        fs::create_dir_all(dir.path().join("6.json")).unwrap();
         let id = store.allocate_id(&ProcessIdentity::for_test(1)).unwrap();
         let rec = record(id, dir.path());
         store.publish(&rec).unwrap();
         assert_eq!(store.list().unwrap(), vec![rec]);
         assert!(store.list_reservations().unwrap().is_empty());
+    }
+
+    #[test]
+    // Talks to the real operating system: the session store is a real directory.
+    #[cfg_attr(miri, ignore)]
+    fn a_record_the_store_cannot_read_is_reported_rather_than_omitted() {
+        let (dir, store) = store();
+        // Names a valid session but cannot be read. Omitting it would make an
+        // unreadable store look like an empty one.
+        fs::create_dir_all(dir.path().join("6.json")).unwrap();
+
+        store.list().unwrap_err();
     }
 
     #[test]
@@ -548,11 +728,12 @@ mod tests {
         // A launch directory and a command line are as long as the user made them, and Windows
         // permits command lines far longer than any convenient buffer size.
         let mut record = record(id, &dir.path().join("d".repeat(9_000)));
-        record.command = vec!["app.exe".to_string(), "a".repeat(20_000)];
+        record.command = AppCommand::from_argv(vec!["app.exe".to_string(), "a".repeat(20_000)])
+            .expect("test argv names an executable");
         store.publish(&record).unwrap();
 
         // A record read short would parse as nobody's and be declined, stranding the id.
-        store.delete_owned_by(id, &record.identity()).unwrap();
+        store.delete_owned_by(id, &record.supervisor).unwrap();
         assert!(store.list().unwrap().is_empty());
     }
 
@@ -589,7 +770,7 @@ mod tests {
         // The delete landed on the file it inspected, not on the name it was reached through.
         assert_eq!(store.list().unwrap().len(), 1);
         // And the successor can still be found and removed by the owner it names.
-        store.delete_owned_by(id, &successor.identity()).unwrap();
+        store.delete_owned_by(id, &successor.supervisor).unwrap();
         assert!(store.list().unwrap().is_empty());
     }
 
@@ -620,7 +801,7 @@ mod tests {
         .unwrap();
         assert!(store.read(second).unwrap().is_none());
         assert_eq!(store.list().unwrap(), vec![rec.clone()]);
-        store.delete_owned_by(second, &rec.identity()).unwrap();
+        store.delete_owned_by(second, &rec.supervisor).unwrap();
         assert_eq!(store.read(first).unwrap().unwrap(), rec);
     }
 

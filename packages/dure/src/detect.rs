@@ -4,8 +4,8 @@
 
 use std::path::Path;
 
+use crate::SessionId;
 use crate::path_display::display_path;
-use crate::session_id::SessionId;
 use crate::session_record::SessionRecord;
 use crate::trace::{Trace, trace};
 
@@ -16,8 +16,10 @@ pub(crate) enum DetectOutcome {
     None,
     /// Exactly one live session was launched from the current directory.
     Unique(SessionId),
-    /// Zero or several matches for this directory; the caller lists and prompts.
-    Ambiguous(Vec<SessionRecord>),
+    /// Zero or several matches for this directory, so the caller has to ask which
+    /// session to take. The candidates are the live sessions the caller already
+    /// holds, so none are carried here.
+    NeedsSelection,
 }
 
 /// Chooses a session using the launch-directory rule.
@@ -59,7 +61,7 @@ pub(crate) fn auto_detect(live: &[SessionRecord], cwd: &Path, trace: Trace) -> D
 
     match unique_match(&matches) {
         Some(id) => DetectOutcome::Unique(id),
-        None => DetectOutcome::Ambiguous(live.to_vec()),
+        None => DetectOutcome::NeedsSelection,
     }
 }
 
@@ -70,7 +72,7 @@ fn unique_match(matches: &[&SessionRecord]) -> Option<SessionId> {
     let [only] = matches else {
         return None;
     };
-    Some(only.session_id())
+    Some(only.id)
 }
 
 // Trace wording is not a behavioral contract; the selection it explains is.
@@ -112,17 +114,28 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
+    use crate::AppCommand;
+    use crate::protocol::PROTOCOL_VERSION;
+    use crate::session_record::ProcessIdentity;
 
-    fn record(id: u32, dir: &str) -> SessionRecord {
+    /// An id for a fixture. Positive because every session id is.
+    fn session_id(raw: u32) -> SessionId {
+        SessionId::from_u32(raw).expect("fixture ids are positive")
+    }
+
+    fn record(id: SessionId, dir: &str) -> SessionRecord {
         SessionRecord {
             id,
-            supervisor_pid: 1,
-            supervisor_creation_time: 1,
+            supervisor: ProcessIdentity {
+                pid: 1,
+                creation_time: 1,
+            },
             pipe_name: format!("pipe-{id}"),
             launch_directory: PathBuf::from(dir),
-            command: vec!["app.exe".to_string()],
+            command: AppCommand::for_test(&["app.exe"]),
             started_at_unix_ms: 1,
             attached: false,
+            protocol_version: PROTOCOL_VERSION,
         }
     }
 
@@ -136,7 +149,7 @@ mod tests {
 
     #[test]
     fn unique_launch_directory_match() {
-        let live = [record(1, "/a"), record(2, "/work")];
+        let live = [record(session_id(1), "/a"), record(session_id(2), "/work")];
         assert_eq!(
             auto_detect(&live, Path::new("/work"), Trace::default()),
             DetectOutcome::Unique(SessionId::from_u32(2).unwrap())
@@ -145,7 +158,7 @@ mod tests {
 
     #[test]
     fn verbose_unique_match_is_still_unique() {
-        let live = [record(1, "/work")];
+        let live = [record(session_id(1), "/work")];
         assert_eq!(
             auto_detect(&live, Path::new("/work"), Trace::new(true)),
             DetectOutcome::Unique(SessionId::from_u32(1).unwrap())
@@ -154,7 +167,10 @@ mod tests {
 
     #[test]
     fn verbose_reports_sessions_from_other_directories() {
-        let live = [record(1, "/other"), record(2, "/work")];
+        let live = [
+            record(session_id(1), "/other"),
+            record(session_id(2), "/work"),
+        ];
         assert_eq!(
             auto_detect(&live, Path::new("/work"), Trace::new(true)),
             DetectOutcome::Unique(SessionId::from_u32(2).unwrap())
@@ -170,16 +186,19 @@ mod tests {
     }
 
     #[test]
-    fn several_matches_are_ambiguous() {
-        let live = [record(1, "/work"), record(2, "/work")];
+    fn several_matches_need_selection() {
+        let live = [
+            record(session_id(1), "/work"),
+            record(session_id(2), "/work"),
+        ];
         let outcome = auto_detect(&live, Path::new("/work"), Trace::default());
-        assert!(matches!(outcome, DetectOutcome::Ambiguous(_)));
+        assert_eq!(outcome, DetectOutcome::NeedsSelection);
     }
 
     #[test]
-    fn single_session_in_other_directory_is_ambiguous() {
-        let live = [record(1, "/other")];
+    fn single_session_in_other_directory_needs_selection() {
+        let live = [record(session_id(1), "/other")];
         let outcome = auto_detect(&live, Path::new("/work"), Trace::default());
-        assert!(matches!(outcome, DetectOutcome::Ambiguous(sessions) if sessions.len() == 1));
+        assert_eq!(outcome, DetectOutcome::NeedsSelection);
     }
 }

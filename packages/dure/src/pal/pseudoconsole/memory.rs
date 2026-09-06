@@ -22,12 +22,19 @@ struct PtyState {
     /// reads lets a test put output beyond a reader's reach and then require
     /// that shutdown still delivers it.
     withheld: bool,
+    /// Makes the output stream fail instead of reaching clean EOF.
+    read_failed: bool,
 }
+
+/// Told about every close, for tests that care when one happened relative to
+/// something else.
+type CloseObserver = Arc<dyn Fn(PtyId) + Send + Sync>;
 
 struct Inner {
     next_id: AtomicU64,
     ptys: Mutex<HashMap<PtyId, PtyState>>,
     cond: Condvar,
+    on_close: Mutex<Option<CloseObserver>>,
 }
 
 /// Byte-pump stand-in for a pseudoconsole.
@@ -49,17 +56,29 @@ impl MemoryPseudoconsole {
                 next_id: AtomicU64::new(1),
                 ptys: Mutex::new(HashMap::new()),
                 cond: Condvar::new(),
+                on_close: Mutex::new(None),
             }),
         }
     }
 
+    /// Report every close to `observer`, in the order they happen.
+    pub(crate) fn on_close(&self, observer: impl Fn(PtyId) + Send + Sync + 'static) {
+        *self.inner.on_close.lock().expect("close observer lock") = Some(Arc::new(observer));
+    }
+
     /// Push output as if the app wrote to its console.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `pty` is not live. A test that pushes into a pseudoconsole
+    /// that was never created, or was already closed, is not exercising the
+    /// scenario it names, so the mistake is reported here rather than as an
+    /// unexplained absence of output later.
     pub(crate) fn push_output(&self, pty: PtyId, data: &[u8]) {
         let mut ptys = self.inner.ptys.lock().expect("pty map lock");
-        if let Some(state) = ptys.get_mut(&pty) {
-            state.output.extend(data.iter().copied());
-            self.inner.cond.notify_all();
-        }
+        let state = ptys.get_mut(&pty).expect("pushing output into a live pty");
+        state.output.extend(data.iter().copied());
+        self.inner.cond.notify_all();
     }
 
     /// Withhold output from readers until this pty is finished.
@@ -67,25 +86,62 @@ impl MemoryPseudoconsole {
     /// A reader already parked in `read_output` stays parked, so a test can put
     /// output out of reach of the pump and then require that shutdown still
     /// delivers it.
+    /// # Panics
+    ///
+    /// Panics when `pty` is not live, for the same reason as `push_output`.
     pub(crate) fn withhold_output(&self, pty: PtyId) {
         let mut ptys = self.inner.ptys.lock().expect("pty map lock");
-        if let Some(state) = ptys.get_mut(&pty) {
-            state.withheld = true;
-        }
+        let state = ptys
+            .get_mut(&pty)
+            .expect("withholding output from a live pty");
+        state.withheld = true;
+    }
+
+    /// Fail the output stream as if its host pipe could no longer be read.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `pty` is not live, for the same reason as `push_output`.
+    pub(crate) fn fail_output(&self, pty: PtyId) {
+        let mut ptys = self.inner.ptys.lock().expect("pty map lock");
+        let state = ptys.get_mut(&pty).expect("failing output from a live pty");
+        state.read_failed = true;
+        self.inner.cond.notify_all();
     }
 
     /// Take input the supervisor wrote to the app.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `pty` is not live: an empty result would otherwise be
+    /// indistinguishable from the supervisor having written nothing.
     pub(crate) fn take_input(&self, pty: PtyId) -> Vec<u8> {
         let mut ptys = self.inner.ptys.lock().expect("pty map lock");
-        ptys.get_mut(&pty)
-            .map(|state| state.input.drain(..).collect())
-            .unwrap_or_default()
+        let state = ptys.get_mut(&pty).expect("taking input from a live pty");
+        state.input.drain(..).collect()
     }
 
     /// Current size last applied to this pty.
     pub(crate) fn size(&self, pty: PtyId) -> Option<WindowSize> {
         let ptys = self.inner.ptys.lock().expect("pty map lock");
         ptys.get(&pty).map(|state| state.size)
+    }
+
+    /// The one live pseudoconsole on this host.
+    ///
+    /// A supervisor creates exactly one, so a test that drives it can name it
+    /// without assuming which integer the allocator happened to hand out.
+    ///
+    /// # Panics
+    ///
+    /// Panics unless exactly one pseudoconsole is live, which means the test
+    /// reached this point in a state it did not intend.
+    pub(crate) fn only_pty(&self) -> PtyId {
+        let ptys = self.inner.ptys.lock().expect("pty map lock");
+        let mut live = ptys.keys();
+        let only = *live.next().expect("exactly one live pty");
+        assert!(live.next().is_none(), "exactly one live pty");
+        only
     }
 }
 
@@ -106,6 +162,7 @@ impl Pseudoconsole for MemoryPseudoconsole {
                 output: VecDeque::new(),
                 closed: false,
                 withheld: false,
+                read_failed: false,
             },
         );
         Ok(id)
@@ -136,19 +193,22 @@ impl Pseudoconsole for MemoryPseudoconsole {
     // Blocking condvar wait. A mutation that drops the closed check or the
     // wake hangs tests because watchdogs are disabled under cargo-mutants.
     #[cfg_attr(test, mutants::skip)]
-    fn read_output(&self, pty: PtyId) -> Result<Vec<u8>, PalError> {
+    fn read_output(&self, pty: PtyId) -> Result<Option<Vec<u8>>, PalError> {
         let mut ptys = self.inner.ptys.lock().expect("pty map lock");
         loop {
             let Some(state) = ptys.get_mut(&pty) else {
                 return Err(PalError::new(PalErrorKind::NotFound));
             };
+            if state.read_failed {
+                return Err(PalError::new(PalErrorKind::Other));
+            }
             // Withheld output becomes readable once the pty is finished, which
             // is what makes shutdown the only path that can deliver it.
             if !state.output.is_empty() && (state.closed || !state.withheld) {
-                return Ok(state.output.drain(..).collect());
+                return Ok(Some(state.output.drain(..).collect()));
             }
             if state.closed {
-                return Err(PalError::new(PalErrorKind::NotFound));
+                return Ok(None);
             }
             ptys = self.inner.cond.wait(ptys).expect("pty condvar");
         }
@@ -165,6 +225,17 @@ impl Pseudoconsole for MemoryPseudoconsole {
     fn close(&self, pty: PtyId) {
         self.inner.ptys.lock().expect("pty map lock").remove(&pty);
         self.inner.cond.notify_all();
+        // Outside every lock this type holds: an observer is user code as far
+        // as this type is concerned. Ref: docs/callback-safety.md.
+        let observer = self
+            .inner
+            .on_close
+            .lock()
+            .expect("close observer lock")
+            .clone();
+        if let Some(observer) = observer {
+            observer(pty);
+        }
     }
 }
 
@@ -176,13 +247,49 @@ mod tests {
     #[test]
     fn pumps_bytes_and_tracks_size() {
         let host = MemoryPseudoconsole::new();
-        let pty = host.create(WindowSize { cols: 80, rows: 24 }).unwrap();
+        let pty = host
+            .create(WindowSize::new(80, 24).expect("a fixture size is not empty"))
+            .unwrap();
         host.write_input(pty, b"in").unwrap();
         assert_eq!(host.take_input(pty), b"in");
-        host.resize(pty, WindowSize { cols: 40, rows: 10 }).unwrap();
-        assert_eq!(host.size(pty), Some(WindowSize { cols: 40, rows: 10 }));
+        host.resize(
+            pty,
+            WindowSize::new(40, 10).expect("a fixture size is not empty"),
+        )
+        .unwrap();
+        assert_eq!(
+            host.size(pty),
+            Some(WindowSize::new(40, 10).expect("a fixture size is not empty"))
+        );
         host.push_output(pty, b"out");
-        assert_eq!(host.read_output(pty).unwrap(), b"out");
+        assert_eq!(
+            host.read_output(pty).unwrap().as_deref(),
+            Some(b"out".as_slice())
+        );
         host.close(pty);
+    }
+
+    #[test]
+    fn a_finished_pty_reports_the_end_of_the_stream() {
+        let host = MemoryPseudoconsole::new();
+        let pty = host
+            .create(WindowSize::new(80, 24).expect("a fixture size is not empty"))
+            .unwrap();
+        host.push_output(pty, b"tail");
+        host.finish(pty);
+        // Everything the app wrote is delivered first, and only then does the
+        // stream end; neither is a read failure.
+        assert_eq!(
+            host.read_output(pty).unwrap().as_deref(),
+            Some(b"tail".as_slice())
+        );
+        assert_eq!(host.read_output(pty).unwrap(), None);
+        host.close(pty);
+    }
+
+    #[test]
+    #[should_panic(expected = "live pty")]
+    fn pushing_into_an_unknown_pty_is_a_mistake_the_test_hears_about() {
+        MemoryPseudoconsole::new().push_output(PtyId(404), b"out");
     }
 }

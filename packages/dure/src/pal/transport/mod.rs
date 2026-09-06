@@ -18,4 +18,6 @@ pub(crate) use abstractions::*;
 pub(crate) use facade::*;
 #[cfg(test)]
 pub(crate) use memory::*;
-pub(crate) use windows::BuildTargetTransport;
+// Exposed so a test can ask who the session pipes are restricted to.
+#[cfg(any(test, feature = "private-test-util"))]
+pub(crate) use windows::current_user_sid_string;

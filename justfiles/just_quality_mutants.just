@@ -64,8 +64,9 @@ mutants SHARD="" CAREFUL='false':
         $env:TMP = $env:MUTANTS_TEMP
     }
 
-    # Set environment variable to disable watchdog during mutation testing.
-    # This allows mutations that cause infinite loops to hang as expected.
+    # Disable test-local watchdogs so a timeout cannot count as catching a
+    # mutation. Any mutation that would not terminate must be skipped at its
+    # mutation site instead.
     $env:MUTATION_TESTING = "1"
 
     # Mirror the `just test*` recipes: pre-build the `cargo-bench-history-faker` test-support
@@ -78,12 +79,12 @@ mutants SHARD="" CAREFUL='false':
     # RUSTFLAGS gains `--cfg mutants` below so the artifact matches the one `just test`
     # produces and neither run churns the other's cache.
     $env:CBH_FAKER = just _faker-path | Select-Object -Last 1
+    if ($IsWindows) {
+        $env:DURE_TEST_HELPER = just _dure-test-helper-path | Select-Object -Last 1
+    }
 
-    # Enable the `mutants` cfg so tests carrying `#[cfg_attr(mutants, ignore = "<why>")]`
-    # opt out of mutation runs. cargo-mutants defines no cfg of its own, but it preserves
-    # an existing RUSTFLAGS (chaining its own `--cap-lints=warn` onto it), so the flag we
-    # set here reaches rustc in the temporary build. The `cfg(mutants)` name is registered
-    # in the workspace `unexpected_cfgs` check-cfg list, so the zero-warnings policy holds.
+    # Enable the mutation-test cfg. cargo-mutants preserves RUSTFLAGS,
+    # chaining its own `--cap-lints=warn` onto them.
     $existing_rustflags = if ($env:RUSTFLAGS) { $env:RUSTFLAGS } else { "" }
     if ($existing_rustflags -notlike "*--cfg mutants*") {
         $env:RUSTFLAGS = ($existing_rustflags, "--cfg mutants" | Where-Object { $_ }) -join " "
