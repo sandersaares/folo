@@ -202,10 +202,18 @@ Two of those rules are properties of the manifests rather than of the
 released-content comparison. An intra-workspace requirement must name the exact
 version its target declares, which is checked against the normalized requirement
 `cargo metadata` reports, so a bare requirement arrives as a caret one and both
-spellings that name the version are accepted. A package whose public API exposes
-another package must move incompatibly whenever that package does, compared
-against each package's own anchor so an increment that landed in an earlier pull
-request still counts.
+spellings that name the version are accepted; between version-group members only
+the exact spelling is, and a development edge is exempt because Cargo drops the
+path-only form when packaging. A package whose public API exposes another
+package must move incompatibly whenever that package does, compared against each
+package's own anchor so an increment that landed in an earlier pull request
+still counts.
+
+`apply` preserves each requirement's exact-or-compatible spelling while
+rewriting the version it names, so applying a plan maintains both forms rather
+than having to re-derive them. A hand-written requirement of the wrong form is
+therefore caught by `check` rather than silently corrected, which is the right
+split: it is a manifest edit, not a release decision.
 
 Which dependencies are public is read in `metadata` from each package's
 `allowed_external_types` allow-list, whose leading path segments name crates.

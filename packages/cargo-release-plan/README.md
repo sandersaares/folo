@@ -50,7 +50,8 @@ needs an increment.
 
 Exits non-zero when any publishable package needs an increment, any version
 group declares inconsistent versions, any intra-workspace requirement does not
-name the version its target declares, or any package that exposes a public
+name the version its target declares, any version-group member does not pin its
+siblings with an exact `=` requirement, or any package that exposes a public
 dependency stays compatible while that dependency releases a breaking change.
 Failure text describes the
 self-contained recovery workflow: run `report`, prepare a plan, and run `apply`.

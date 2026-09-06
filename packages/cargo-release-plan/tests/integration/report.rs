@@ -8,6 +8,60 @@ use serde_json::{Value, json};
 use crate::fixture::{Fixture, write_package};
 use crate::harness::{check, report_json, seeded_package};
 
+/// A version-group member must pin its siblings exactly.
+///
+/// The group exists because the members are one package split for Cargo's sake, so a compatible
+/// requirement would let a consumer resolve two members never released together.
+#[cfg_attr(miri, ignore)] // Spawns git and cargo, which Miri cannot emulate.
+#[test]
+fn check_rejects_a_compatible_requirement_between_group_members() {
+    let fixture = group_fixture("1.1.0");
+    fixture.commit("seed");
+    let base = fixture.sha("HEAD");
+
+    let (passed, message) = check(&fixture, &base);
+
+    assert!(!passed, "{message}");
+    assert!(message.contains("pin each other exactly"), "{message}");
+    assert!(message.contains("=1.1.0"), "{message}");
+}
+
+/// The same workspace passes once the sibling requirement is exact.
+#[cfg_attr(miri, ignore)] // Spawns git and cargo, which Miri cannot emulate.
+#[test]
+fn check_accepts_an_exact_requirement_between_group_members() {
+    let fixture = group_fixture("=1.1.0");
+    fixture.commit("seed");
+    let base = fixture.sha("HEAD");
+
+    let (passed, message) = check(&fixture, &base);
+
+    assert!(passed, "{message}");
+}
+
+/// A workspace whose `lib` requires its group sibling `lib_impl` with the given requirement.
+fn group_fixture(requirement: &str) -> Fixture {
+    let fixture = Fixture::new(
+        r#"
+[workspace.metadata.release-plan.groups]
+lib = ["lib", "lib_impl"]
+"#,
+    );
+    write_package(&fixture, "lib_impl", "1.1.0", "");
+    write_package(
+        &fixture,
+        "lib",
+        "1.1.0",
+        &format!(
+            r#"
+[dependencies]
+lib_impl = {{ path = "../lib_impl", version = "{requirement}" }}
+"#
+        ),
+    );
+    fixture
+}
+
 /// A requirement that does not name its target's declared version fails the check.
 ///
 /// The workspace pins every intra-workspace requirement to the version its target declares, so

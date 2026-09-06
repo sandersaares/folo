@@ -169,13 +169,17 @@ skill](../skills/increment-versions/SKILL.md) carries out this policy and owns t
 Two consequences of a package's manifest are checked directly rather than left to that review.
 Every requirement on another workspace package names the exact version its target declares, so a
 released manifest describes the combination the workspace built rather than a range it never
-resolved; incrementing a package therefore also increments its in-workspace dependents, whose
-manifests the rewrite changes. And a package whose public API exposes another workspace package
-must release a breaking change whenever that package does, because an incompatible release
-changes the identity of the exposed types for consumers. Which dependencies are public is read
-from the `allowed_external_types` allow-list that the external-types check already verifies, so
-this rests on a declaration the repository maintains rather than on a second inference of the
-public API.
+resolved; between members of one version group the requirement is an exact `=` pin, because those
+members are one package split for Cargo's sake and must never be resolved at differing versions.
+Incrementing a package therefore also increments its in-workspace dependents, whose manifests the
+rewrite changes. And a package whose public API exposes another workspace package must release a
+breaking change whenever that package does, because an incompatible release changes the identity
+of the exposed types for consumers. Which dependencies are public is read from the
+`allowed_external_types` allow-list that the external-types check already verifies, so this rests
+on a declaration the repository maintains rather than on a second inference of the public API.
+
+A requirement of the wrong form is a manifest defect rather than a missing increment, so it is
+corrected by editing the requirement.
 
 ## Required checks fan-in
 

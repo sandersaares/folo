@@ -338,6 +338,11 @@ output that it rejected a package or a version group rather than failing to run,
 command exits non-zero either way. Report an execution failure instead of revisiting the
 decisions, which cannot repair it.
 
+Two of its verdicts are not decisions to revisit either. A requirement that does not name the
+version its target declares, and a version-group member that does not pin its siblings with an
+exact `=` requirement, are manifest defects: no change level repairs them, so returning to Stage 4
+would loop. Make the edit the message names, then repeat this stage.
+
 `just release-report` exits zero on a SemVer finding, so read `{{VERIFY_DIR}}/semver-checks.log`
 as well. Return to Stage 4 the same way if any package's `Summary` line now demands a level
 above the one that was applied to it.

@@ -80,12 +80,20 @@ Two consequences follow, and the tool enforces both:
 
 * An intra-workspace requirement names the exact version its target declares.
   A requirement that merely admits the target's version lets a consumer resolve
-  a combination the workspace never built.
+  a combination the workspace never built. Between members of one version group
+  the requirement is additionally an exact `=` pin, because those members are
+  one package split for Cargo's sake and a compatible requirement would let a
+  consumer resolve two of them at versions never released together. Development
+  dependencies between members are exempt, since Cargo drops the path-only form
+  when packaging.
 * A package whose public dependency releases a semver-incompatible version
   must release one as well. Such a release changes the identity of the exposed
   types, so a consumer holding the older dependency can no longer hand its
   types to the dependent. This follows from the version move alone, however
   unrelated the dependency's breaking change was to the items actually exposed.
+
+Only the second is a release decision. A requirement whose form is wrong is
+corrected by editing the requirement, not by incrementing anything.
 
 ### The release decision is offline and reproducible
 
@@ -119,10 +127,10 @@ it does not propagate a release decision.
 
 `check` is intended for a merge gate. It fails while any package needs an
 increment, a version group disagrees with itself, an intra-workspace
-requirement does not name the version its target declares, or a package that
-exposes a public dependency stays compatible while that dependency releases a
-breaking change. It points the maintainer to the `increment-versions` skill
-that prepares a plan.
+requirement does not name the version its target declares, a version-group
+member does not pin its siblings exactly, or a package that exposes a public
+dependency stays compatible while that dependency releases a breaking change.
+It points the maintainer to the `increment-versions` skill that prepares a plan.
 
 `--format github` additionally emits GitHub Actions error annotations. These are
 structured log records that attach each failure to the affected package

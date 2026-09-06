@@ -92,14 +92,12 @@ pub(crate) struct ReportedDep {
     pub(crate) name: String,
     pub(crate) req: String,
     pub(crate) exact_pin: bool,
-    /// Whether this is a normal dependency rather than a build or development one.
+    /// Which dependency table declares this edge.
     ///
-    /// Only a normal dependency can supply types to the library's public API, so
-    /// only one can be public. Both other kinds are still carried because
-    /// `apply` rewrites their requirements too. Not reported: the release
-    /// decision reads `public`, which already accounts for this.
+    /// Not reported: it decides how the edge is judged here, and the release
+    /// decision reads the judgement rather than repeating it.
     #[serde(skip)]
-    pub(crate) normal: bool,
+    pub(crate) kind: DepKind,
     /// Whether the dependent's public API exposes types from this dependency.
     ///
     /// Read from the dependent's `allowed_external_types` allow-list, which
@@ -112,6 +110,29 @@ pub(crate) struct ReportedDep {
     /// broken contract.
     /// Ref: docs/external-types.md; docs/design.md, "Public dependencies".
     pub(crate) public: bool,
+}
+
+/// The dependency kinds Cargo distinguishes, as they matter to a release.
+///
+/// Only a normal dependency can supply types to a library's public API. A
+/// development dependency additionally does not survive packaging when it is
+/// declared without a version, so it reaches no published manifest at all.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum DepKind {
+    #[default]
+    Normal,
+    Build,
+    Dev,
+}
+
+impl DepKind {
+    fn from_metadata(kind: Option<&str>) -> Self {
+        match kind {
+            Some("dev") => Self::Dev,
+            Some("build") => Self::Build,
+            _ => Self::Normal,
+        }
+    }
 }
 
 /// Raw `cargo metadata` document before conversion to [`WorkTree`].
@@ -364,7 +385,7 @@ fn work_tree_from_metadata(
                 name: dep.name.clone(),
                 req: dep.req.clone(),
                 exact_pin: dep.req.starts_with('='),
-                normal: dep.kind.as_deref().unwrap_or("normal") == "normal",
+                kind: DepKind::from_metadata(dep.kind.as_deref()),
                 // Resolved once every package's allow-list is known, below.
                 public: false,
             })
@@ -601,7 +622,7 @@ fn mark_public_dependencies(
                 package
                     .dependencies
                     .iter()
-                    .filter(|dependency| dependency.normal)
+                    .filter(|dependency| dependency.kind == DepKind::Normal)
                     .map(|dependency| dependency.name.clone())
                     .collect(),
             )
@@ -660,7 +681,7 @@ fn mark_public_dependencies(
             .cloned()
             .unwrap_or_default();
         for dependency in &mut package.dependencies {
-            dependency.public = dependency.normal
+            dependency.public = dependency.kind == DepKind::Normal
                 && exposes
                     .get(&dependency.name)
                     .is_some_and(|reachable| !reachable.is_disjoint(&wanted));
@@ -1164,7 +1185,7 @@ mod tests {
                 name: "foo".to_string(),
                 req: "0.1.0".to_string(),
                 exact_pin: false,
-                normal: true,
+                kind: DepKind::Normal,
                 public: false,
             }],
         );

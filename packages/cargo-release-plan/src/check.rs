@@ -14,6 +14,7 @@ use crate::classify::{
 use crate::command::run_capture;
 use crate::git::os_path;
 use crate::groups::GroupVerdict;
+use crate::metadata::DepKind;
 use crate::verbose::Verbose;
 use crate::{quote_path, short_commit};
 
@@ -181,6 +182,46 @@ fn render_diagnostics(
             let Some(dependency_version) = declared.get(dependency.name.as_str()) else {
                 continue;
             };
+            // Version-group members release as one version, so a member must pin its siblings
+            // exactly: a compatible requirement would let a consumer resolve two members at
+            // versions that were never released together, which is the split the group exists to
+            // hide. A development dependency is exempt because Cargo drops the path-only form
+            // when packaging, so it reaches no published manifest.
+            // Ref: docs/dependencies.md, "Version groups and exact-pin cross-references".
+            let sibling = dependency.kind != DepKind::Dev
+                && package.group.is_some()
+                && package.group
+                    == by_name
+                        .get(dependency.name.as_str())
+                        .and_then(|dep| dep.group.clone());
+            if sibling {
+                if dependency.req == format!("={dependency_version}") {
+                    continue;
+                }
+                let group = package
+                    .group
+                    .as_deref()
+                    .expect("a sibling edge was found only when this package has a group");
+                let text = format!(
+                    "{}: requires {} {}, but they share version group {}, whose members pin each other exactly. Change the requirement to {}. {}",
+                    quote_path(&package.name),
+                    quote_path(&dependency.name),
+                    quote_path(&dependency.req),
+                    quote_path(group),
+                    quote_path(&format!("={dependency_version}")),
+                    remedy(base)
+                );
+                if format == CheckFormat::Github {
+                    let file = os_path(&package.manifest_path);
+                    lines.push(format!(
+                        "::error file={},title=inexact-group-requirement::{}",
+                        escape_property(&file),
+                        escape_data(&text)
+                    ));
+                }
+                lines.push(text);
+                continue;
+            }
             if requirement_names_version(&dependency.req, dependency_version) {
                 continue;
             }
@@ -188,7 +229,7 @@ fn render_diagnostics(
             // tests against. A wider requirement lets a consumer resolve a combination this
             // workspace never validated, and it makes the release decision depend on requirement
             // arithmetic rather than on the declared versions alone.
-            // Ref: docs/dependencies.md, "Version groups and exact-pin cross-references".
+            // Ref: docs/dependencies.md, "Intra-workspace requirements name the declared version".
             let expected = if dependency.exact_pin {
                 format!("={dependency_version}")
             } else {
@@ -460,7 +501,7 @@ mod tests {
 
     use super::*;
     use crate::anchor::Anchor;
-    use crate::metadata::ReportedDep;
+    use crate::metadata::{DepKind, ReportedDep};
 
     assert_impl_all!(CheckFormat: UnwindSafe, RefUnwindSafe);
 
@@ -599,9 +640,115 @@ mod tests {
             name: name.to_string(),
             req: req.to_string(),
             exact_pin: req.starts_with('='),
-            normal: true,
+            kind: DepKind::Normal,
             public,
         }
+    }
+
+    /// Builds an unchanged package in a version group, carrying the given dependencies.
+    fn grouped(
+        name: &str,
+        group: &str,
+        declared: Version,
+        dependencies: Vec<ReportedDep>,
+    ) -> PackageClass {
+        let mut package = with_dependencies(name, declared.clone(), declared, dependencies);
+        package.group = Some(group.to_string());
+        package
+    }
+
+    /// A version-group member must pin its siblings exactly.
+    ///
+    /// The group exists because the members are one package split for Cargo's sake, so a
+    /// compatible requirement would let a consumer resolve two members that were never released
+    /// together.
+    #[test]
+    fn a_compatible_requirement_between_group_members_is_reported() {
+        let library = grouped("lib_impl", "lib", Version::new(1, 1, 0), vec![]);
+        let shell = grouped(
+            "lib",
+            "lib",
+            Version::new(1, 1, 0),
+            vec![dependency("lib_impl", "^1.1.0", true)],
+        );
+
+        let text = render_diagnostics(&[shell, library], &BTreeMap::new(), BASE, CheckFormat::Text);
+
+        assert!(text.contains("pin each other exactly"), "{text}");
+        assert!(text.contains("=1.1.0"), "{text}");
+    }
+
+    /// The same edge passes once it is pinned exactly.
+    #[test]
+    fn an_exact_requirement_between_group_members_is_accepted() {
+        let library = grouped("lib_impl", "lib", Version::new(1, 1, 0), vec![]);
+        let shell = grouped(
+            "lib",
+            "lib",
+            Version::new(1, 1, 0),
+            vec![dependency("lib_impl", "=1.1.0", true)],
+        );
+
+        let text = render_diagnostics(&[shell, library], &BTreeMap::new(), BASE, CheckFormat::Text);
+
+        assert_eq!(text, "");
+    }
+
+    /// A development dependency between group members may stay compatible.
+    ///
+    /// Cargo drops the path-only form when packaging, so it reaches no published manifest.
+    #[test]
+    fn a_development_requirement_between_group_members_is_exempt() {
+        let library = grouped("lib_impl", "lib", Version::new(1, 1, 0), vec![]);
+        let mut development = dependency("lib_impl", "^1.1.0", false);
+        development.kind = DepKind::Dev;
+        let shell = grouped("lib", "lib", Version::new(1, 1, 0), vec![development]);
+
+        let text = render_diagnostics(&[shell, library], &BTreeMap::new(), BASE, CheckFormat::Text);
+
+        assert_eq!(text, "");
+    }
+
+    /// Packages in different groups may reference each other compatibly.
+    #[test]
+    fn a_compatible_requirement_across_groups_is_accepted() {
+        let library = grouped("lib", "lib", Version::new(1, 1, 0), vec![]);
+        let consumer = grouped(
+            "app",
+            "app",
+            Version::new(0, 1, 0),
+            vec![dependency("lib", "^1.1.0", false)],
+        );
+
+        let text = render_diagnostics(
+            &[consumer, library],
+            &BTreeMap::new(),
+            BASE,
+            CheckFormat::Text,
+        );
+
+        assert_eq!(text, "");
+    }
+
+    /// An ungrouped package may reference a group member compatibly.
+    #[test]
+    fn a_compatible_requirement_from_outside_a_group_is_accepted() {
+        let library = grouped("lib", "lib", Version::new(1, 1, 0), vec![]);
+        let consumer = with_dependencies(
+            "app",
+            Version::new(0, 1, 0),
+            Version::new(0, 1, 0),
+            vec![dependency("lib", "^1.1.0", false)],
+        );
+
+        let text = render_diagnostics(
+            &[consumer, library],
+            &BTreeMap::new(),
+            BASE,
+            CheckFormat::Text,
+        );
+
+        assert_eq!(text, "");
     }
 
     /// A requirement that does not name the version its target declares is rejected.

@@ -58,20 +58,28 @@ places, and keep both in sync:
 
 * **`release-plz.toml`** — give every crate in the set the same `version_group`
   so release-plz bumps them together.
-* **The workspace `Cargo.toml`** — the public crate is referenced by a plain
-  requirement, but every *internal* crate it depends on (the `_impl` / `_core` /
-  macro crates) is referenced with an **exact `=` pin**
-  (`version = "=1.2.3"`). The exact pin means a downstream consumer of the public
-  crate can never resolve a mismatched version of its internal companion.
+* **The workspace `Cargo.toml`** — every reference *between* members of the set
+  is an **exact `=` pin** (`version = "=1.2.3"`). Members are one package as far
+  as consumers are concerned, so an exact pin is what stops a consumer resolving
+  two members at versions that were never released together.
 
-Both forms name the version the target declares, as every intra-workspace
-requirement does; the `=` is what additionally forbids a consumer from resolving
-a later compatible release of the internal crate.
+Development dependencies between members are exempt, because they are path-only
+references that Cargo drops when packaging, so they reach no published manifest.
 
-For example, `many_cpus` is referenced as `version = "2.4.9"` while
-`many_cpus_impl` is referenced as `version = "=2.4.9"`; likewise each `cbh_*`
-implementation crate is referenced with an exact `=` pin because
-`cargo-bench-history` depends on it.
+References *into* a group from outside it, and between separate groups, are
+ordinary compatible requirements. Only the split-package relationship needs the
+pin.
+
+For example, `many_cpus_impl` is referenced as `version = "=2.4.9"` because
+`many_cpus` shares its group, while `many_cpus` itself is referenced as
+`version = "2.4.9"` by the unrelated crates that depend on it. Each `cbh_*`
+implementation crate is likewise exact-pinned within the `cargo-bench-history`
+group.
+
+`cargo release-plan check` rejects a compatible requirement between group
+members, so this is enforced rather than remembered. It is a manifest edit
+rather than a version decision: change the requirement, do not increment
+anything to satisfy it.
 
 ## Public dependencies
 
