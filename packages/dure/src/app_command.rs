@@ -197,6 +197,14 @@ mod tests {
     }
 
     #[test]
+    fn a_quote_doubles_the_backslashes_before_it() {
+        assert_eq!(
+            quote_windows_arg("a\\\"b").chars().collect::<Vec<_>>(),
+            vec!['"', 'a', '\\', '\\', '\\', '"', 'b', '"']
+        );
+    }
+
+    #[test]
     fn a_control_character_cannot_reach_the_terminal() {
         let rendered = command(&["app.exe", "safe\nforged"]).to_string();
         assert!(!rendered.contains('\n'), "a newline survived in {rendered}");

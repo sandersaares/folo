@@ -52,6 +52,35 @@ fn replace_file(tmp: &Path, dest: &Path) -> io::Result<()> {
     move_file_replace(tmp, dest)
 }
 
+/// Converts the impossible serialization failure for a fixed stored-record
+/// shape into the store's error type.
+///
+/// A failure here requires a defect in `serde_json`, so no input can exercise it.
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn serialization_error(error: serde_json::Error) -> PalError {
+    PalError::with_source(
+        PalErrorKind::Other,
+        io::Error::new(io::ErrorKind::InvalidData, error),
+    )
+}
+
+/// Advances an occupied session id, or reports that the complete id space is used.
+fn next_session_id(id: SessionId) -> Result<SessionId, PalError> {
+    id.get()
+        .checked_add(1)
+        .and_then(SessionId::from_u32)
+        .ok_or_else(|| PalError::new(PalErrorKind::Other))
+}
+
+/// Removes a staged claim after an install failure.
+fn remove_failed_staging(staging: &Path, installed: &Result<SessionId, PalError>) {
+    if installed.is_err() {
+        // A staging file nobody installs is this call's to remove; leaving it
+        // would litter the store with files no reader understands.
+        _ = fs::remove_file(staging);
+    }
+}
+
 impl FsSessionStore {
     pub(crate) fn new(root: PathBuf) -> Self {
         Self { root }
@@ -86,17 +115,12 @@ impl FsSessionStore {
     // under cargo-mutants. Ref: docs/testing.md, "Mutation testing".
     #[cfg_attr(test, mutants::skip)]
     fn install_claim(&self, staging: &Path) -> Result<SessionId, PalError> {
-        let mut n: u32 = 1;
+        let mut id = SessionId::MIN;
         loop {
-            let Some(id) = SessionId::from_u32(n) else {
-                return Err(PalError::new(PalErrorKind::Other));
-            };
             match move_file_no_replace(staging, &self.record_path(id)) {
                 Ok(()) => return Ok(id),
                 Err(error) if is_id_taken(&error) => {
-                    n = n
-                        .checked_add(1)
-                        .ok_or_else(|| PalError::new(PalErrorKind::Other))?;
+                    id = next_session_id(id)?;
                 }
                 Err(error) => return Err(PalError::from_io(error)),
             }
@@ -159,18 +183,8 @@ impl SessionStore for FsSessionStore {
 
     fn allocate_id(&self, owner: &ProcessIdentity) -> Result<SessionId, PalError> {
         fs::create_dir_all(&self.root).map_err(PalError::from_io)?;
-        let claim = serde_json::to_vec(&StoredSession::Reserved { owner: *owner }).map_err(
-            // A reservation is a fixed struct of integers, so the only way
-            // serialization reports a failure is a defect in `serde_json`
-            // itself. Nothing can drive this arm from a test.
-            #[cfg_attr(coverage_nightly, coverage(off))]
-            |error| {
-                PalError::with_source(
-                    PalErrorKind::Other,
-                    io::Error::new(io::ErrorKind::InvalidData, error),
-                )
-            },
-        )?;
+        let claim = serde_json::to_vec(&StoredSession::Reserved { owner: *owner })
+            .map_err(serialization_error)?;
         // Built under a name nobody looks for, so the claim is complete on disk
         // before it is given the name that means "this id is taken". A claim
         // that named nobody could never be proved abandoned, and its id would
@@ -179,11 +193,7 @@ impl SessionStore for FsSessionStore {
         let staging = self.staging_path(owner);
         write_new_file(&staging, &claim).map_err(PalError::from_io)?;
         let installed = self.install_claim(&staging);
-        if installed.is_err() {
-            // A staging file nobody installs is this call's to remove; leaving
-            // it would litter the store with files no reader understands.
-            _ = fs::remove_file(&staging);
-        }
+        remove_failed_staging(&staging, &installed);
         installed
     }
 
@@ -192,18 +202,8 @@ impl SessionStore for FsSessionStore {
         let id = record.id;
         let path = self.record_path(id);
         let tmp = self.root.join(format!("{}.json.tmp", id.get()));
-        let json = serde_json::to_vec_pretty(&StoredSession::Published(record.clone())).map_err(
-            // A record is a fixed struct of strings, integers, and paths, so
-            // the only way serialization reports a failure is a defect in
-            // `serde_json` itself. Nothing can drive this arm from a test.
-            #[cfg_attr(coverage_nightly, coverage(off))]
-            |error| {
-                PalError::with_source(
-                    PalErrorKind::Other,
-                    io::Error::new(io::ErrorKind::InvalidData, error),
-                )
-            },
-        )?;
+        let json = serde_json::to_vec_pretty(&StoredSession::Published(record.clone()))
+            .map_err(serialization_error)?;
         let mut file = File::create(&tmp).map_err(PalError::from_io)?;
         file.write_all(&json).map_err(PalError::from_io)?;
         file.sync_all().map_err(PalError::from_io)?;
@@ -350,6 +350,41 @@ mod tests {
             attached: false,
             protocol_version: PROTOCOL_VERSION,
         }
+    }
+
+    #[test]
+    fn advancing_the_last_session_id_reports_exhaustion() {
+        let last = SessionId::from_u32(u32::MAX).unwrap();
+        next_session_id(last).unwrap_err();
+    }
+
+    #[test]
+    // Talks to the real operating system: the session store is a real directory.
+    #[cfg_attr(miri, ignore)]
+    fn an_install_failure_removes_its_staging_file() {
+        let dir = TempDir::new().unwrap();
+        let staging = dir.path().join("failed.claim");
+        fs::write(&staging, b"claim").unwrap();
+        let installed = Err(PalError::new(PalErrorKind::Other));
+
+        remove_failed_staging(&staging, &installed);
+
+        assert!(!staging.exists());
+    }
+
+    #[test]
+    // Talks to the real operating system: the session store calls a real file move.
+    #[cfg_attr(miri, ignore)]
+    #[cfg_attr(
+        mutants,
+        ignore = "a mutated collision predicate makes this scan the complete id space; \
+                  only_an_already_exists_failure_means_the_id_is_taken preserves its signal"
+    )]
+    fn installing_a_missing_staging_file_reports_the_filesystem_error() {
+        let (dir, store) = store();
+        store
+            .install_claim(&dir.path().join("missing.claim"))
+            .unwrap_err();
     }
 
     #[test]

@@ -226,6 +226,7 @@ impl<T: Transport> Drop for StartupChannel<'_, T> {
 }
 
 // Trace wording is not a behavioral contract; the resolution it explains is.
+#[cfg_attr(coverage_nightly, coverage(off))]
 #[cfg_attr(test, mutants::skip)]
 fn resolution_note(how: HowResolved) -> &'static str {
     match how {
@@ -241,6 +242,7 @@ fn resolution_note(how: HowResolved) -> &'static str {
 /// A confirmed tie names the cause; an unreadable job does not, because the
 /// supervisor established nothing and saying otherwise would send the user
 /// after a diagnosis that was never made.
+#[cfg_attr(coverage_nightly, coverage(off))]
 #[cfg_attr(test, mutants::skip)]
 fn launcher_warning(launcher_tie: LauncherTie) -> &'static str {
     match launcher_tie {
@@ -265,6 +267,7 @@ fn as_text(path: &Path) -> Result<String, AppError> {
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
+    use std::collections::HashSet;
     use std::ffi::OsString;
     use std::os::windows::ffi::OsStringExt;
 
@@ -708,5 +711,22 @@ mod tests {
             launcher_warning(LauncherTie::Unknown),
             launcher_warning(LauncherTie::Confirmed)
         );
+        assert!(!launcher_warning(LauncherTie::Unknown).is_empty());
+        assert!(!launcher_warning(LauncherTie::Confirmed).is_empty());
+    }
+
+    #[test]
+    fn every_resolution_path_has_a_distinct_explanation() {
+        let notes = [
+            resolution_note(HowResolved::Absolute),
+            resolution_note(HowResolved::RelativeToLaunchDirectory),
+            resolution_note(HowResolved::SearchPath),
+            resolution_note(HowResolved::NotFound),
+        ];
+        let mut unique = HashSet::new();
+        for note in notes {
+            assert!(!note.is_empty());
+            assert!(unique.insert(note));
+        }
     }
 }

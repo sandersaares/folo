@@ -382,6 +382,18 @@ fn output_is_relayed_to_the_installed_client() {
 }
 
 #[test]
+fn a_stopping_session_does_not_read_more_output() {
+    testing::with_watchdog(|| {
+        let transport = MemoryTransport::new();
+        let pty_host = MemoryPseudoconsole::new();
+        let shared = shared_session(&transport, &pty_host);
+        shared.stopping.store(true, Ordering::SeqCst);
+
+        pty_output_loop(&shared).unwrap();
+    });
+}
+
+#[test]
 fn output_for_a_client_that_is_gone_is_discarded() {
     let transport = MemoryTransport::new();
     let pty_host = MemoryPseudoconsole::new();

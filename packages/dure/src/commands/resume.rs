@@ -164,7 +164,7 @@ mod tests {
     use crate::pal::local_console::{LocalConsoleFacade, MockLocalConsole};
     use crate::pal::processes::{MockProcesses, ProcessLiveness};
     use crate::pal::pseudoconsole::WindowSize;
-    use crate::pal::session_store::{FsSessionStore, SessionStore};
+    use crate::pal::session_store::{FsSessionStore, MemorySessionStore, SessionStore};
     use crate::pal::transport::MemoryTransport;
     use crate::protocol::Message;
     use crate::session_record::ProcessIdentity;
@@ -214,6 +214,34 @@ mod tests {
             Trace::default(),
         )
         .unwrap_err();
+    }
+
+    #[test]
+    fn without_a_console_resume_is_refused_before_store_access() {
+        let store = MemorySessionStore::default();
+        let processes = MockProcesses::new();
+        let transport = MemoryTransport::new();
+        let mut console = MockLocalConsole::new();
+        console.expect_has_console().return_const(false);
+        let console = LocalConsoleFacade::from_mock(console);
+
+        let error = execute(
+            &store,
+            &processes,
+            &transport,
+            &console,
+            None,
+            SOME_NOW_MS,
+            Trace::default(),
+        )
+        .unwrap_err();
+
+        assert!(error.find_source::<NoConsoleError>().is_some());
+    }
+
+    #[test]
+    fn zero_prompted_id_is_reported_as_an_error() {
+        parse_prompted_id("0").unwrap_err();
     }
 
     #[test]

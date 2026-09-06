@@ -533,6 +533,15 @@ mod tests {
     }
 
     #[test]
+    fn startup_ok_rejects_a_pipe_name_that_is_not_utf8() {
+        let mut payload = vec![KIND_STARTUP_OK];
+        payload.extend_from_slice(&SessionId::MIN.get().to_le_bytes());
+        payload.push(LAUNCHER_TIE_NONE_DETECTED);
+        payload.push(0xFF);
+        assert_eq!(decode_payload(&payload).unwrap_err(), DecodeError::Invalid);
+    }
+
+    #[test]
     fn a_size_no_console_could_have_is_refused() {
         // The invariant is established here so nothing below has to decide what
         // a zero means: a peer that sends one is told its frame is invalid

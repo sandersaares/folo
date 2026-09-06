@@ -96,6 +96,19 @@ mod tests {
     }
 
     #[test]
+    fn empty_and_trailing_backslash_arguments_are_quoted() {
+        assert_eq!(quote_wide(&[]), vec![QUOTE, QUOTE]);
+        assert_eq!(
+            quote_wide(&[SPACE, BACKSLASH]),
+            vec![QUOTE, SPACE, BACKSLASH, BACKSLASH, QUOTE]
+        );
+        assert_eq!(
+            quote_wide(&[BACKSLASH, QUOTE]),
+            vec![QUOTE, BACKSLASH, BACKSLASH, BACKSLASH, QUOTE, QUOTE]
+        );
+    }
+
+    #[test]
     fn a_path_windows_gave_us_is_the_path_windows_gets_back() {
         // An unpaired surrogate: a legal Windows filename that no Rust string
         // can hold. Narrowing it would substitute U+FFFD, which names a

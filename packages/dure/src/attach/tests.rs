@@ -7,6 +7,8 @@ use std::sync::{Condvar, Mutex};
 use std::time::Duration;
 use std::vec;
 
+use testing::with_watchdog;
+
 use super::*;
 use crate::durability::LauncherTie;
 use crate::pal::error::{PalError, PalErrorKind};
@@ -505,6 +507,16 @@ fn a_console_that_cannot_be_handed_back_still_forwards_the_app_status() {
 }
 
 #[test]
+fn cleanup_failure_fails_an_outcome_with_nothing_else_to_report() {
+    let cleanup = Err(PalFailedError::caused_by(PalError::new(
+        PalErrorKind::Other,
+    )));
+    let error =
+        finish_with_cleanup(Ok(Outcome::Success), cleanup.map_err(AppError::from)).unwrap_err();
+    assert!(error.find_source::<PalFailedError>().is_some());
+}
+
+#[test]
 fn a_console_that_cannot_be_handed_back_fails_a_relay_with_nothing_to_report() {
     let console = TestConsole {
         end_raw_relay: Err(PalErrorKind::Other),
@@ -564,6 +576,33 @@ fn console_input_failure_makes_the_relay_fail() {
     // without an `AppExited` and must not report success.
     let error = attach_to_scripted_supervisor(console, |_transport, _conn| {}).unwrap_err();
     assert!(error.find_source::<RelayFailedError>().is_some());
+}
+
+#[test]
+fn failed_input_sends_stop_the_reader() {
+    for input in [
+        ConsoleInput::Bytes(b"input".to_vec()),
+        ConsoleInput::Resize(SAMPLE_SIZE),
+    ] {
+        with_watchdog(move || {
+            let transport = MemoryTransport::new();
+            let listener = transport.listen("pipe").unwrap();
+            let client = transport.connect("pipe", Duration::ZERO).unwrap();
+            let supervisor = transport.accept(listener).unwrap();
+            transport.disconnect(supervisor);
+            let console = TestConsole {
+                input: vec![Ok(input)],
+                ..TestConsole::new()
+            }
+            .build();
+            let input_failed = Arc::new(AtomicBool::new(false));
+
+            spawn_input_reader(&transport, &console, client, &input_failed)
+                .join()
+                .unwrap();
+            assert!(!input_failed.load(Ordering::SeqCst));
+        });
+    }
 }
 
 #[test]

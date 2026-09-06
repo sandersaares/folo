@@ -29,6 +29,7 @@ impl LauncherTie {
 
 // The trace and warning wording is not a behavioral contract; whether a warning
 // is emitted at all is, and `warrants_warning` carries that.
+#[cfg_attr(coverage_nightly, coverage(off))]
 #[cfg_attr(test, mutants::skip)]
 impl fmt::Display for LauncherTie {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
