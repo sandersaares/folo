@@ -31,10 +31,12 @@ name twice hands out the same statistics.
 A report is a detached snapshot of that state: it copies the accumulators themselves rather
 than the figures derived from them, which is what lets two reports merge into a statistically
 correct third one. Both the table and the JSON files are rendered from that one snapshot, so
-the figures they show for an operation always agree. They differ only in which operations
-they list: the table has a row for every registered operation, marking one that recorded no
-spans as unavailable, while the JSON output writes a file only for operations that have
-statistics to report.
+the figures they show for an operation always agree. Which operations they list can differ.
+A report holding no measurable work renders as a single "no statistics" line rather than a
+table of rows, while writing that same report to JSON still emits a file for every operation
+that has statistics — which a zero-iteration operation does, having recorded a span. When the
+report does render a table, it carries a row for every registered operation, marking one that
+recorded no spans as unavailable, whereas JSON omits that operation entirely.
 
 ## Counters
 

@@ -887,19 +887,13 @@ mod tests {
 
     #[test]
     fn report_operation_display_shows_robust_per_iteration_estimate() {
-        // 250 bytes/iter over 4 iterations → a single-span slope of 250 with the
-        // interval collapsed onto it. Each figure is asserted against its own label so
-        // that rendering one metric in the other's place would fail.
+        // 250 bytes/iter over 4 iterations yields a single-span slope of 250. Each figure
+        // is asserted against its own label so that rendering one metric in the other's
+        // place would fail.
         let operation = report_operation(250, 3, 4);
         let display_output = operation.to_string();
-        assert!(
-            display_output.contains("250 bytes/iter"),
-            "got {display_output}"
-        );
-        assert!(
-            display_output.contains("3 allocations/iter"),
-            "got {display_output}"
-        );
+        assert!(display_output.contains("250 bytes/iter"));
+        assert!(display_output.contains("3 allocations/iter"));
     }
 
     #[test]

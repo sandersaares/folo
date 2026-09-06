@@ -83,7 +83,9 @@ impl Report {
     /// | Key | Meaning |
     /// |-----|---------|
     /// | `operation` | The operation's name |
-    /// | `total_iterations`, `total_bytes_allocated`, `total_allocations_count` | Totals across every span |
+    /// | `total_iterations` | Iterations covered by every span |
+    /// | `total_bytes_allocated` | Bytes allocated across every span |
+    /// | `total_allocations_count` | Allocations across every span |
     /// | `span_count` | How many spans the estimates were fitted from |
     /// | `slope_bytes_per_iteration` | Bytes allocated per iteration |
     /// | `slope_allocations_per_iteration` | Allocations per iteration |
@@ -393,15 +395,13 @@ mod tests {
             value
                 .get("slope_bytes_per_iteration")
                 .expect("the bytes slope field is always present")
-                .is_null(),
-            "a zero-iteration bytes slope must serialize as null"
+                .is_null()
         );
         assert!(
             value
                 .get("slope_allocations_per_iteration")
                 .expect("the allocations slope field is always present")
-                .is_null(),
-            "a zero-iteration allocations slope must serialize as null"
+                .is_null()
         );
         assert!(value.get("slope_peak_bytes").is_none());
         assert_eq!(

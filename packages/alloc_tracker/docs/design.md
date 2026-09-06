@@ -116,17 +116,18 @@ memory live in the process.
 
 ## Reporting
 
-A session emits its results when dropped: by default a human-readable table on stdout with
-one row per operation, and one machine-readable JSON file per operation that has statistics
-to report. An operation that was registered but never measured therefore appears in the
-table, marked unavailable, and leaves no file behind. Either output may be switched off when
-creating the session. An operation with no peak figure renders as unavailable in the table
-and omits the peak fields from JSON entirely, which is distinct from a figure that is present
-but carries no confidence interval.
+A session emits its results when dropped, provided it recorded measurable work: by default a
+human-readable table on stdout with one row per operation, and one machine-readable JSON file
+per operation that has statistics to report. An operation that was registered but never
+measured therefore appears in the table, marked unavailable, and leaves no file behind.
+Either output may be switched off when creating the session. An operation with no peak figure
+renders as unavailable in the table and omits the peak fields from JSON entirely, which is
+distinct from a figure that is present but carries no confidence interval.
 
-A session that recorded nothing emits nothing, so an unused session leaves no trace. A
-session dropped while the thread is unwinding from a panic likewise emits nothing: the run
-did not complete and its figures would not describe the intended work.
+A session that recorded no measurable work emits nothing, so an unused session leaves no
+trace, and neither does one whose operations all covered zero iterations. A session dropped
+while the thread is unwinding from a panic likewise emits nothing: the run did not complete
+and its figures would not describe the intended work.
 
 Results can also be taken from a session as a report value, which is independent of the
 session and may be moved between threads, merged with other reports, and inspected

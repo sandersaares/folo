@@ -169,7 +169,8 @@ fn process_report_includes_allocations_from_multiple_threads() {
     let min_expected = (THREAD_A_ALLOCS * SIZE_A + THREAD_B_ALLOCS * SIZE_B) as u64;
     assert!(total >= min_expected);
 
-    // Ensure neither thread's contribution is trivially missing: total should exceed each individual component
+    // Ensure neither thread's contribution is trivially missing: the total should exceed
+    // each individual component.
     assert!(total >= (THREAD_A_ALLOCS * SIZE_A) as u64);
     assert!(total >= (THREAD_B_ALLOCS * SIZE_B) as u64);
 }

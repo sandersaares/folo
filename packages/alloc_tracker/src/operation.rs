@@ -490,14 +490,8 @@ mod tests {
         }
 
         let display_output = operation.to_string();
-        assert!(
-            display_output.contains("250 bytes/iter"),
-            "got {display_output}"
-        );
-        assert!(
-            display_output.contains("5 allocations/iter"),
-            "got {display_output}"
-        );
+        assert!(display_output.contains("250 bytes/iter"));
+        assert!(display_output.contains("5 allocations/iter"));
     }
 
     #[test]
