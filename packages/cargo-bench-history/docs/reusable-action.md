@@ -265,6 +265,12 @@ action*: cannot express matrix-collect + single-analyze + separate lifecycle job
      a hard-coded flag (§4.5).
    * **`--config`** is passed **only when the `config` input is set**; otherwise the tool
      discovers the repo's committed `.cargo/bench_history.toml` (§5).
+   * **`--verbose` is on by default.** The tool's verbose channel is *explanatory* — it states
+     the inputs and reasoning behind each decision rather than announcing conclusions — and a
+     CI reader cannot re-run the job locally to find out why it did what it did. Paying for
+     that reasoning in the job log on every run is therefore worth it: the log is the only
+     forensic record a consumer has when a run measures nothing, skips a package, or picks an
+     unexpected partition. It stays an input so a consumer can turn it down.
 3. **Emit this leg's machine key.** After a *successful* collect, the action resolves this
    runner's real hardware fingerprint (`cargo-bench-history machine-key`) and exposes it as a
    `machine-key` **output**, so the caller can hand the exact keys measured this run to the
@@ -425,9 +431,13 @@ commands** so the caller schedules them in their own jobs at the right point:
   self-check guards *this* run's own results at post time, so both angles are covered. This
   command is gated on the same non-empty scope as collect, so it never races the cleanup path.
 * **`pr-comment-cleanup`** runs when a PR touches **no** benchmarkable package (including a PR
-  that touched one earlier and then reverted): it removes any rolling comment a prior push left
-  behind and posts nothing, so a stale, misleading comment never lingers. It is a no-op when
-  there was no comment.
+  that touched one earlier and then reverted). It replaces any rolling comment a prior push
+  left behind with a **one-line note saying nothing benchmarkable changed**, rather than
+  deleting it outright. Silence is the wrong answer here: an absent comment is
+  indistinguishable from a workflow that is broken, skipped, or still running, and a reader
+  who expected benchmark feedback has no way to tell which. Stating the reason costs one line
+  and removes the ambiguity. (Deleting instead remains available for repos that prefer a clean
+  PR, but it is not the default.)
 * **`pr-comment-finalize`** runs *last*, gated on failure, and closes the one hole the two
   above leave open. A placeholder promises results are coming; if collection or analysis then
   fails, `analyze-pr` deliberately posts nothing (§4.3), so without a terminal step the
@@ -673,6 +683,31 @@ override and the `machine-keys` handoff directory, the `analyze-pr` `base`, and 
 The division is clean: the **config file says where history lives; the action inputs say what
 this run does**.
 
+**One repository may run several instances, so every derived identity is namespaced.** A
+monorepo can reasonably keep more than one independent history — separate components, teams,
+or hardware targets, each with its own `[project] id`. Nothing in the analysis prevents that,
+but the *action* would collide with itself, because several of the identities it derives
+default to a single constant:
+
+| Derived identity | Collision if shared |
+| --- | --- |
+| PR comment marker | Two instances overwrite each other's comment on the same PR. |
+| Failure-issue identity | One instance's `resolve-alert` closes the other's open alert. |
+| Machine-key artifact name | Matrix legs of different instances clobber each other. |
+| Binary/history cache key | One instance's cache is served to the other. |
+| Concurrency group | One instance cancels the other's in-flight run. |
+
+The fix is a naming rule, not new machinery: a single **`instance`** input, defaulting to the
+`[project] id` the config already carries, from which *all* of the above are derived. A repo
+running one instance never sets it and sees no difference; a repo running two gets two
+independent sets of comments, issues, artifacts, caches, and concurrency groups for free, and
+the reusable workflows (§4.7) accept it so two `uses:` blocks can coexist.
+
+This is worth settling now rather than later: the comment marker and the issue identity *are*
+the dedup keys. Introducing a namespace after consumers are live would change those keys under
+them, silently abandoning the rolling comment and rolling issue each repo already has and
+starting fresh ones beside the originals.
+
 ### 5.1 Where the logic lives — Rust binaries, not shell
 
 Folo's current sink layer is **PowerShell**: roughly 100 KB of `scripts/bench-history/*.psm1`
@@ -881,9 +916,28 @@ the tiering above removes is the *write* half.
 README links to. A consumer points the action at whatever account/identity they already have.
 
 **Caller permissions** (documented in the README): `contents: read` (checkout);
-`id-token: write` (Entra OIDC self-minting); `issues: write` (history flow, when
-`issue-on-regression: true`, and the `alert`/`resolve-alert` failure lifecycle); `pull-requests:
-write` (branch flow's comment and its lifecycle).
+`actions: read` (cross-attempt artifact download, §4.6); `id-token: write` (Entra OIDC
+self-minting); `issues: write` (history flow, when `issue-on-regression: true`, and the
+`alert`/`resolve-alert` failure lifecycle); `pull-requests: write` (branch flow's comment and
+its lifecycle). These are listed **per command**, not as one union: a job should hold only
+what the command it runs actually needs.
+
+**No job holds both storage credentials and posting rights.** Those two capabilities are
+what an attacker would want to combine, and nothing requires them together. Analysis reads
+the history store; publishing writes to the repository; neither needs the other's access. The
+flows therefore split them across two jobs, passing the report between them as an artifact:
+
+| Job | Holds | Cannot |
+| --- | --- | --- |
+| analyze | `id-token: write` (+ `contents: read`) | post anything |
+| publish | `issues:` / `pull-requests: write` | reach the history store |
+
+The split costs one artifact hand-off and buys a real reduction in blast radius: a compromised
+tool binary cannot post to the repository, and a compromised companion cannot read or corrupt
+the benchmark history. It also falls out of the §5.1 division rather than being bolted on —
+the companion never had a reason to see storage, and the tool never had a reason to see a
+GitHub token. The same reasoning is why the release manifest pins what it pins (§8.1): these
+binaries run inside credentialed jobs, so *which* binary runs is itself a security property.
 
 ## 7. Interface summary (inputs / outputs)
 
@@ -901,7 +955,9 @@ release's manifest; `latest` opts into the newest published release; ignored for
 `install-method: none`; the companion is pinned by the release and is not overridable, §3);
 `tool-path` / `companion-path` (for `install-method: path`); `config` (path to a
 `bench_history.toml`; default: the tool's own `.cargo/bench_history.toml` discovery);
-`local-path` (→ `--local`); `verbose` (default `true`).
+`instance` (namespace for every derived identity — comment marker, failure-issue identity,
+artifact names, cache keys, concurrency group; default: the config's `[project] id`, §5);
+`local-path` (→ `--local`); `verbose` (default `true`, §4.1).
 
 **Cargo build inputs (`collect` / `backfill`):** `all-features` (default `true`, matching the
 flows' need to reach benchmark targets gated behind `required-features`),
