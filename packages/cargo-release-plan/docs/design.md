@@ -368,7 +368,8 @@ distinct in reports so a case-only rename stays visible.
 | `needs-increment` | Released content changed without a version increase           |
 | `unchanged`       | Released content and version still match the anchor            |
 
-`check` fails only for `needs-increment` packages and inconsistent groups.
+Of these statuses, only `needs-increment` fails `check`; the manifest-level
+requirement and public-dependency rules fail it independently of status.
 `publish = false` packages are excluded.
 
 ## Version groups

@@ -122,7 +122,10 @@ check-never-published:
 # `semver-checks` even if the check then fails. Released-content comparison stays in the Rust
 # tool; this recipe is only its command-line entry point.
 #
-# Fails when a publishable package has unreleased changes without an increment, or a version group disagrees with itself.
+# Fails when a publishable package has unreleased changes without an increment, a version group
+# disagrees with itself, a requirement does not name the version its target declares or does not
+# pin a group sibling exactly, or a package exposing a public dependency stays compatible while
+# that dependency releases a breaking change.
 [group('release')]
 [script]
 validate-versions:

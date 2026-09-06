@@ -132,7 +132,13 @@ impl EarlyExit {
 enum Command {
     /// Write report.json and per-package diffs for the changes needing a release.
     Report(ReportArgs),
-    /// Fail on a needed version increment or an inconsistent version group.
+    /// Fail on a release the workspace's manifests cannot support.
+    ///
+    /// Fails when a publishable package has unreleased changes without a version increment, when
+    /// a version group disagrees with itself, when a requirement on another workspace package
+    /// does not name the version that package declares or does not pin a group sibling exactly,
+    /// or when a package whose public API exposes a workspace dependency stays compatible while
+    /// that dependency releases a breaking change.
     Check(CheckArgs),
     /// Produce the explicit plan reviewed and then passed to apply.
     Expand(ExpandArgs),

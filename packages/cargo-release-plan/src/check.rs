@@ -1,4 +1,4 @@
-// `check` command: fail on a needed increment or an inconsistent group.
+// `check` command: fail on a release the workspace's manifests cannot support.
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};

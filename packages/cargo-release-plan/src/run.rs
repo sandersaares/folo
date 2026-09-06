@@ -29,7 +29,12 @@ pub enum RunInput {
         /// When set, print explanatory decision notes to stderr.
         verbose: bool,
     },
-    /// `check` — fail on a needed increment or an inconsistent group.
+    /// `check` — fail on a release the workspace's manifests cannot support.
+    ///
+    /// Covers a package needing an increment, a version group disagreeing with
+    /// itself, a requirement not naming the version its target declares or not
+    /// pinning a group sibling exactly, and a package that exposes a public
+    /// dependency releasing a breaking change without one of its own.
     Check {
         /// Release baseline whose first-parent line supplies anchors.
         ///
@@ -111,7 +116,7 @@ pub enum RunOutcome {
 /// # Errors
 ///
 /// Returns an application error when the requested operation cannot be
-/// completed. A package needing an increment is a [`RunOutcome::Check`] with
+/// completed. A failing check is a [`RunOutcome::Check`] with
 /// `passed: false`, not an error.
 #[doc(hidden)]
 pub fn run(input: &RunInput) -> Result<RunOutcome, AppError> {
