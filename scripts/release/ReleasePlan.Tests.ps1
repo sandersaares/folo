@@ -8,9 +8,9 @@ $VerbosePreference = 'Continue'
 BeforeAll {
     Import-Module (Join-Path $PSScriptRoot 'ReleasePlan.psm1') -Force
 
-    $script:ValidReleasePlanSchemaVersion = [long] 1
+    $script:ValidReleasePlanSchemaVersion = [long] 2
     $script:ValidChangeDecisionSchemaVersion = [long] 1
-    $script:UnsupportedFutureReleasePlanSchemaVersion = [long] 2
+    $script:UnsupportedFutureReleasePlanSchemaVersion = [long] 3
     $script:UnsupportedExpandedPlanSchemaVersion = [long] 99
 
     # Report fixtures include package metadata, anchors, changed entries, dependencies, and groups.

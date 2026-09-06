@@ -63,8 +63,10 @@ places, and keep both in sync:
   as consumers are concerned, so an exact pin is what stops a consumer resolving
   two members at versions that were never released together.
 
-Development dependencies between members are exempt, because they are path-only
-references that Cargo drops when packaging, so they reach no published manifest.
+Development dependencies between members are not exempt. Only a path-only
+dependency escapes packaging, and the repository already requires intra-workspace
+dev-dependencies to be path-only (see above), so any that carries a version is
+published and must pin exactly like any other edge.
 
 References *into* a group from outside it, and between separate groups, are
 ordinary compatible requirements. Only the split-package relationship needs the

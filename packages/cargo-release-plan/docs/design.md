@@ -83,9 +83,9 @@ Two consequences follow, and the tool enforces both:
   a combination the workspace never built. Between members of one version group
   the requirement is additionally an exact `=` pin, because those members are
   one package split for Cargo's sake and a compatible requirement would let a
-  consumer resolve two of them at versions never released together. Development
-  dependencies between members are exempt, since Cargo drops the path-only form
-  when packaging.
+  consumer resolve two of them at versions never released together. This covers
+  every edge that survives packaging, development edges included; a path-only
+  dependency escapes packaging and is not assessed at all.
 * A package whose public dependency releases a semver-incompatible version
   must release one as well. Such a release changes the identity of the exposed
   types, so a consumer holding the older dependency can no longer hand its

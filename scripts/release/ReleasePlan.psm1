@@ -11,7 +11,7 @@ $ErrorActionPreference = "Stop"
 $PSNativeCommandUseErrorActionPreference = $true
 
 # Must match packages/cargo-release-plan/src/plan.rs. An incompatible report must fail closed.
-$script:ReleasePlanSchemaVersion = [long] 1
+$script:ReleasePlanSchemaVersion = [long] 2
 
 # Local working-file format used by the increment-versions skill. Advance it for incompatible
 # working-file shape changes, coordinated with the skill that reads and writes the same contract.

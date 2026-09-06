@@ -11,7 +11,7 @@ use toml_edit::{DocumentMut, Formatted, Item, TableLike, Value};
 
 use crate::command::run_capture;
 use crate::inherited::is_workspace_inherit;
-use crate::manifest::{DEPENDENCY_TABLES, parse_document};
+use crate::manifest::{DEPENDENCY_TABLES, parse_document, requirement_names_version};
 use crate::metadata::{WorkTree, load_tracked_work_tree};
 use crate::plan::{PlanFile, ResolvedVersions, resolve_plan};
 use crate::text::plural;
@@ -437,20 +437,30 @@ fn set_formatted(formatted: &mut Formatted<String>, rewritten: String) -> bool {
 
 /// The requirement a dependent must declare once its target is incremented.
 ///
-/// Every intra-workspace requirement names the version its target declares, so
-/// a requirement that merely still *admits* the new version is not good enough
-/// and is rewritten too. Keeping a wider requirement would let a consumer
-/// resolve a combination this workspace never built, and `check` rejects the
-/// drift on the next run.
-/// Ref: docs/dependencies.md, "Version groups and exact-pin cross-references".
+/// A requirement that already names the new version is returned untouched,
+/// down to its spelling. That matters beyond tidiness: an exact group
+/// alignment resolves the leading member to the version it already declares,
+/// so rewriting its dependents' spelling would edit published manifests that
+/// no increment covers. What counts as already naming the version is
+/// [`requirement_names_version`], the same predicate `check` validates with.
 ///
-/// An exact comparator is replaced by an exact pin on the new version, keeping
-/// the lockstep the author asked for; anything else becomes the bare new
-/// version, which is also what an unparsable requirement gets: Cargo would
-/// reject that anyway, so the apply leaves behind a manifest Cargo can read
-/// rather than one it cannot.
+/// Anything else is replaced, because a requirement that merely still *admits*
+/// the new version would let a consumer resolve a combination this workspace
+/// never built. An exact comparator is replaced by an exact pin on the new
+/// version, keeping the lockstep the author asked for; anything else becomes
+/// the bare new version, which is also what an unparsable requirement gets:
+/// Cargo would reject that anyway, so the apply leaves behind a manifest Cargo
+/// can read rather than one it cannot.
+///
+/// A requirement whose *form* is wrong for its edge, such as a compatible
+/// requirement between two version-group members, is left for `check` to
+/// report rather than silently corrected here: that is a manifest defect, not
+/// a consequence of the version moving.
 /// Ref: docs/implementation.md, "Plan resolution and application".
 fn rewrite_req(old: &str, new_version: &Version) -> String {
+    if requirement_names_version(old, new_version) {
+        return old.to_string();
+    }
     if old.trim().starts_with('=') {
         return format!("={new_version}");
     }
@@ -609,10 +619,12 @@ mod tests {
         assert!(lockfile_refresh_skip_reason(dir.path(), &resolved).is_none());
     }
 
-    /// Every requirement is rewritten to name the new version, whether or not it still admits it.
+    /// Every requirement is rewritten to name the new version unless it already does.
     ///
-    /// A requirement that merely admits the new version would let a consumer resolve a
-    /// combination the workspace never built, so admitting it is not the question.
+    /// A requirement that merely admits the new version is not good enough, because it would
+    /// let a consumer resolve a combination the workspace never built. One that already names
+    /// it keeps its exact spelling, so an alignment that leaves a package on its current
+    /// version does not edit its dependents' manifests.
     #[test]
     fn rewrite_req_names_the_new_version_and_keeps_the_exact_comparator() {
         let new = v("0.1.1");
@@ -620,6 +632,19 @@ mod tests {
         assert_eq!(rewrite_req("^0.1", &new), "0.1.1");
         assert_eq!(rewrite_req("=0.1.0", &new), "=0.1.1");
         assert_eq!(rewrite_req("0.1.0", &v("0.2.0")), "0.2.0");
+    }
+
+    /// A requirement already naming the new version survives byte for byte.
+    ///
+    /// Exact group alignment resolves the leading member to the version it already declares, so
+    /// rewriting its dependents here would edit manifests that no increment covers.
+    #[test]
+    fn rewrite_req_leaves_a_requirement_that_already_names_the_version() {
+        let new = v("1.1.0");
+        assert_eq!(rewrite_req("1.1.0", &new), "1.1.0");
+        assert_eq!(rewrite_req("^1.1.0", &new), "^1.1.0");
+        assert_eq!(rewrite_req("=1.1.0", &new), "=1.1.0");
+        assert_eq!(rewrite_req(" ^1.1.0 ", &new), " ^1.1.0 ");
     }
 
     /// A partial comparator that still admits the new version is narrowed to name it.

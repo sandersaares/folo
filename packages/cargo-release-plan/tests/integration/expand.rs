@@ -42,7 +42,7 @@ shell_impl = { workspace = true }
     let plan_path = fixture.path().join("plan.json");
     fs::write(
         &plan_path,
-        r#"{ "schema_version": 1, "increments": [
+        r#"{ "schema_version": 2, "increments": [
             { "name": "shell", "level": "patch" },
             { "name": "loner", "level": "minor" }
         ] }"#,
@@ -121,7 +121,7 @@ release-family = ["shell"]
     let plan_path = fixture.path().join("plan.json");
     fs::write(
         &plan_path,
-        r#"{ "schema_version": 1, "increments": [{ "name": "shell", "level": "patch" }] }"#,
+        r#"{ "schema_version": 2, "increments": [{ "name": "shell", "level": "patch" }] }"#,
     )
     .unwrap();
     let expanded_path = fixture.path().join("expanded.json");
@@ -192,7 +192,7 @@ release-family = ["shell", "shell_impl"]
     let plan_path = fixture.path().join("plan.json");
     fs::write(
         &plan_path,
-        r#"{ "schema_version": 1, "increments": [
+        r#"{ "schema_version": 2, "increments": [
             { "name": "shell", "version": "0.2.0" },
             { "name": "shell_impl", "version": "0.3.0" }
         ] }"#,
@@ -237,7 +237,7 @@ g = ["shell", "shell_impl"]
     let plan_path = fixture.path().join("plan.json");
     fs::write(
         &plan_path,
-        r#"{ "schema_version": 1, "increments": [{ "name": "shell", "level": "patch" }] }"#,
+        r#"{ "schema_version": 2, "increments": [{ "name": "shell", "level": "patch" }] }"#,
     )
     .unwrap();
     let expanded_path = fixture.path().join("expanded.json");
@@ -296,7 +296,7 @@ g = ["shell", "shell_impl"]
     let plan_path = fixture.path().join("plan.json");
     fs::write(
         &plan_path,
-        r#"{ "schema_version": 1, "increments": [{ "name": "g", "version": "1.1.0" }] }"#,
+        r#"{ "schema_version": 2, "increments": [{ "name": "g", "version": "1.1.0" }] }"#,
     )
     .unwrap();
     let expanded_path = fixture.path().join("expanded.json");

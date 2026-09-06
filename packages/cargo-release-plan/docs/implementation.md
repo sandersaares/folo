@@ -203,8 +203,8 @@ released-content comparison. An intra-workspace requirement must name the exact
 version its target declares, which is checked against the normalized requirement
 `cargo metadata` reports, so a bare requirement arrives as a caret one and both
 spellings that name the version are accepted; between version-group members only
-the exact spelling is, and a development edge is exempt because Cargo drops the
-path-only form when packaging. A package whose public API exposes another
+the exact spelling is, for every edge that survives packaging including a
+versioned development one. A package whose public API exposes another
 package must move incompatibly whenever that package does, compared against each
 package's own anchor so an increment that landed in an earlier pull request
 still counts.
@@ -267,7 +267,17 @@ requirement is changed only when:
 * the entry has a path,
 * that path resolves to the named workspace member,
 * the resolved versions include the member, and
-* the existing requirement does not admit the new version.
+* the existing requirement does not already name the new version.
+
+The last criterion is the same predicate `check` validates the requirement
+convention with, kept in one place so the two cannot drift: `apply` must rewrite
+exactly what `check` would reject, and leave exactly what it would accept.
+Leaving an already-correct requirement byte for byte is what keeps an exact
+group alignment, which resolves the leading member to the version it already
+declares, from editing that member's dependents under an unchanged version. A
+requirement whose form is wrong for its edge, such as a compatible requirement
+between version-group members, is reported rather than rewritten: that is a
+manifest defect rather than a consequence of a version moving.
 
 Paths are normalized lexically first and canonicalized only for link or
 case-variant spellings, keeping the ordinary path free of filesystem calls.

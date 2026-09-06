@@ -39,7 +39,7 @@ shell_impl = { workspace = true }
     let plan_path = fixture.path().join("plan.json");
     fs::write(
         &plan_path,
-        r#"{ "schema_version": 1, "increments": [{ "name": "shell", "level": "patch" }] }"#,
+        r#"{ "schema_version": 2, "increments": [{ "name": "shell", "level": "patch" }] }"#,
     )
     .unwrap();
 
@@ -93,7 +93,7 @@ edition = "2021"
     let plan_path = fixture.path().join("plan.json");
     fs::write(
         &plan_path,
-        r#"{ "schema_version": 1, "increments": [{ "name": "demo", "level": "patch" }] }"#,
+        r#"{ "schema_version": 2, "increments": [{ "name": "demo", "level": "patch" }] }"#,
     )
     .unwrap();
     run(&RunInput::Apply {
@@ -128,7 +128,7 @@ fn apply_rewrites_pins_declared_by_a_non_publishable_member() {
     let plan_path = fixture.path().join("plan.json");
     fs::write(
         &plan_path,
-        r#"{ "schema_version": 1, "increments": [{ "name": "demo", "level": "minor" }] }"#,
+        r#"{ "schema_version": 2, "increments": [{ "name": "demo", "level": "minor" }] }"#,
     )
     .unwrap();
 
@@ -154,7 +154,7 @@ fn apply_rejects_an_untracked_package_as_a_plan_target() {
     write_package(&fixture, "untracked", "0.1.0", "");
     fixture.write(
         "plan.json",
-        r#"{ "schema_version": 1, "increments": [{ "name": "untracked", "level": "patch" }] }"#,
+        r#"{ "schema_version": 2, "increments": [{ "name": "untracked", "level": "patch" }] }"#,
     );
 
     let result = run(&RunInput::Apply {
@@ -205,7 +205,7 @@ g = ["demo", "ignored"]
     write_package(&fixture, "ignored", "0.1.0", "");
     fixture.write(
         "plan.json",
-        r#"{ "schema_version": 1, "increments": [{ "name": "demo", "level": "patch" }] }"#,
+        r#"{ "schema_version": 2, "increments": [{ "name": "demo", "level": "patch" }] }"#,
     );
 
     let result = run(&RunInput::Apply {
@@ -238,7 +238,7 @@ fn apply_rewrites_a_pin_under_a_target_specific_dependency_table() {
     let plan_path = fixture.path().join("plan.json");
     fs::write(
         &plan_path,
-        r#"{ "schema_version": 1, "increments": [{ "name": "demo", "level": "minor" }] }"#,
+        r#"{ "schema_version": 2, "increments": [{ "name": "demo", "level": "minor" }] }"#,
     )
     .unwrap();
     run(&RunInput::Apply {
@@ -317,7 +317,7 @@ fn apply_with_an_empty_plan_changes_nothing() {
     let manifest = fixture.path().join("packages/demo/Cargo.toml");
     let before = fs::read_to_string(&manifest).unwrap();
     let plan_path = fixture.path().join("plan.json");
-    fs::write(&plan_path, r#"{ "schema_version": 1, "increments": [] }"#).unwrap();
+    fs::write(&plan_path, r#"{ "schema_version": 2, "increments": [] }"#).unwrap();
 
     run(&RunInput::Apply {
         plan: plan_path,
@@ -337,7 +337,7 @@ fn apply_dry_run_does_not_write() {
     let plan_path = fixture.path().join("plan.json");
     fs::write(
         &plan_path,
-        r#"{ "schema_version": 1, "increments": [{ "name": "demo", "level": "minor" }] }"#,
+        r#"{ "schema_version": 2, "increments": [{ "name": "demo", "level": "minor" }] }"#,
     )
     .unwrap();
     let before = fs::read_to_string(fixture.path().join("packages/demo/Cargo.toml")).unwrap();

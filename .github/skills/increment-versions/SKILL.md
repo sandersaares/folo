@@ -196,7 +196,7 @@ batch reads its dependency decisions from the file. Omit a package that needs no
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "changes": [
     { "name": "nm", "level": "breaking" },
     { "name": "events", "level": "patch" }
@@ -233,7 +233,7 @@ which stage it is:
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "expanded": true,
   "increments": [
     { "name": "nm", "version": "2.0.0" },

@@ -25,7 +25,16 @@ use crate::{
 /// Plan and report formats advance together. Incompatible field, enum, or
 /// path-layout changes increment this constant. Contract: package README
 /// "Plan and report schema".
-pub(crate) const SCHEMA_VERSION: u32 = 1;
+///
+/// A field whose absence changes how a document is interpreted counts as
+/// incompatible even though older readers simply ignore it. Revision 2 added
+/// the plan's stage flag and the report's public-dependency marking: a reader
+/// that ignores the first treats an expanded plan as a proposal and expands it
+/// again, which is the widening the flag exists to prevent, and one that
+/// ignores the second silently omits breaking-change propagation. Both
+/// producers compare this revision for equality, so a mismatch in either
+/// direction fails loudly instead.
+pub(crate) const SCHEMA_VERSION: u32 = 2;
 
 /// On-disk plan file.
 ///

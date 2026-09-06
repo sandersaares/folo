@@ -1080,6 +1080,103 @@ mod tests {
         assert!(glob_matches("a*é", "abcé"));
     }
 
+    /// Exposure follows re-exports to the dependency that actually supplies the named crate.
+    ///
+    /// `outer` names `impl` in its allow-list but depends on `facade`, which re-exports it. The
+    /// edge that must be marked is `outer -> facade`, because that is the requirement whose
+    /// version moves when `impl` breaks. A crate no one names stays private, and a build or
+    /// development edge never counts because neither can supply types to a library's API.
+    #[test]
+    fn exposure_follows_re_exports_to_the_supplying_dependency() {
+        fn work_package(name: &str, dependencies: Vec<ReportedDep>) -> WorkPackage {
+            WorkPackage {
+                manifest: PackageManifest {
+                    name: name.to_string(),
+                    version: "0.1.0".parse().unwrap(),
+                    directory: format!("packages/{name}"),
+                    packaging: PackagingRules::default(),
+                    inherited: InheritedKeys::default(),
+                    publish: true,
+                    path_dependencies: Vec::new(),
+                    inherited_path_dependencies: Vec::new(),
+                    resource_paths: Vec::new(),
+                    inherited_resource_paths: Vec::new(),
+                    auto_readme: false,
+                    targets: TargetDiscovery::default(),
+                },
+                manifest_path: PathBuf::from(format!("packages/{name}/Cargo.toml")),
+                dependencies,
+                has_lockfile_target: false,
+                resources: BTreeMap::new(),
+            }
+        }
+        fn edge(name: &str, kind: DepKind) -> ReportedDep {
+            ReportedDep {
+                name: name.to_string(),
+                req: "0.1.0".to_string(),
+                exact_pin: false,
+                kind,
+                public: false,
+            }
+        }
+        fn is_public(packages: &[WorkPackage], from: &str, to: &str) -> bool {
+            packages
+                .iter()
+                .find(|package| package.manifest.name == from)
+                .and_then(|package| {
+                    package
+                        .dependencies
+                        .iter()
+                        .find(|dependency| dependency.name == to)
+                })
+                .is_some_and(|dependency| dependency.public)
+        }
+
+        let mut packages = vec![
+            work_package(
+                "outer",
+                vec![
+                    edge("facade", DepKind::Normal),
+                    edge("private", DepKind::Normal),
+                    edge("tool", DepKind::Build),
+                    edge("harness", DepKind::Dev),
+                ],
+            ),
+            work_package("facade", vec![edge("implementation", DepKind::Normal)]),
+            work_package("implementation", Vec::new()),
+            work_package("private", Vec::new()),
+            work_package("tool", Vec::new()),
+            work_package("harness", Vec::new()),
+        ];
+        // `outer` and `harness` name the defining crate; `facade` names what it re-exports.
+        let exposed = BTreeMap::from([
+            ("outer".to_string(), vec!["implementation".to_string()]),
+            ("facade".to_string(), vec!["implementation".to_string()]),
+            ("harness".to_string(), vec!["implementation".to_string()]),
+        ]);
+        let libraries = BTreeMap::from([
+            ("facade", "facade".to_string()),
+            ("implementation", "implementation".to_string()),
+            ("private", "private".to_string()),
+            ("tool", "tool".to_string()),
+            ("harness", "harness".to_string()),
+        ]);
+
+        mark_public_dependencies(&mut packages, &exposed, &libraries);
+
+        // The re-export chain is public at every hop.
+        assert!(is_public(&packages, "outer", "facade"));
+        assert!(is_public(&packages, "facade", "implementation"));
+
+        // A crate `outer` never names is private even though it is a normal dependency.
+        assert!(!is_public(&packages, "outer", "private"));
+
+        // Neither non-normal kind can supply types to a library's public API, so neither is
+        // public even though both reach a package naming the exposed crate.
+        assert!(!is_public(&packages, "outer", "tool"));
+        assert!(!is_public(&packages, "outer", "harness"));
+    }
+
     /// An absent allow-list permits no external type, so it exposes no crate.
     #[test]
     fn an_absent_allow_list_exposes_no_crate() {

@@ -14,7 +14,6 @@ use crate::classify::{
 use crate::command::run_capture;
 use crate::git::os_path;
 use crate::groups::GroupVerdict;
-use crate::metadata::DepKind;
 use crate::verbose::Verbose;
 use crate::{quote_path, short_commit};
 
@@ -185,11 +184,10 @@ fn render_diagnostics(
             // Version-group members release as one version, so a member must pin its siblings
             // exactly: a compatible requirement would let a consumer resolve two members at
             // versions that were never released together, which is the split the group exists to
-            // hide. A development dependency is exempt because Cargo drops the path-only form
-            // when packaging, so it reaches no published manifest.
+            // hide. Every edge reaching here already survives packaging, development edges
+            // included, so each one can carry that mismatch into a published manifest.
             // Ref: docs/dependencies.md, "Version groups and exact-pin cross-references".
-            let sibling = dependency.kind != DepKind::Dev
-                && package.group.is_some()
+            let sibling = package.group.is_some()
                 && package.group
                     == by_name
                         .get(dependency.name.as_str())
@@ -694,11 +692,13 @@ mod tests {
         assert_eq!(text, "");
     }
 
-    /// A development dependency between group members may stay compatible.
+    /// A development dependency between group members is not exempt.
     ///
-    /// Cargo drops the path-only form when packaging, so it reaches no published manifest.
+    /// Only a path-only development dependency escapes packaging, and one of those never
+    /// reaches the report at all. A retained development edge is published, so it can carry a
+    /// mismatched group pairing into a consumer's resolution just as a normal edge can.
     #[test]
-    fn a_development_requirement_between_group_members_is_exempt() {
+    fn a_development_requirement_between_group_members_is_reported() {
         let library = grouped("lib_impl", "lib", Version::new(1, 1, 0), vec![]);
         let mut development = dependency("lib_impl", "^1.1.0", false);
         development.kind = DepKind::Dev;
@@ -706,7 +706,7 @@ mod tests {
 
         let text = render_diagnostics(&[shell, library], &BTreeMap::new(), BASE, CheckFormat::Text);
 
-        assert_eq!(text, "");
+        assert!(text.contains("pin each other exactly"), "{text}");
     }
 
     /// Packages in different groups may reference each other compatibly.

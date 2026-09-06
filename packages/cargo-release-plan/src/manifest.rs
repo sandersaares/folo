@@ -745,6 +745,23 @@ fn directory_of(manifest_path: &str) -> String {
 /// A member may be outside the workspace root while remaining inside the same
 /// repository. Leading parent components preserve that relationship until the
 /// caller rebases the path into Git's repository-relative path space.
+/// Whether a requirement names exactly `version` rather than a range containing it.
+///
+/// This is the workspace's intra-workspace requirement convention in one place,
+/// because `check` validates it and `apply` maintains it: if the two disagreed,
+/// `apply` would either rewrite a requirement `check` accepts, editing a
+/// published manifest for no reason, or leave one `check` rejects.
+///
+/// All three accepted spellings name the version. `cargo metadata` normalizes a
+/// bare requirement to the caret form before `check` sees it, while `apply`
+/// reads the manifest text, so both forms reach this predicate.
+/// Ref: docs/dependencies.md, "Intra-workspace requirements name the declared version".
+pub(crate) fn requirement_names_version(requirement: &str, version: &Version) -> bool {
+    let trimmed = requirement.trim();
+    let bare = version.to_string();
+    trimmed == bare || trimmed == format!("^{bare}") || trimmed == format!("={bare}")
+}
+
 pub(crate) fn workspace_relative_path(workspace_root: &Path, path: &Path) -> Option<String> {
     if let Ok(relative) = path.strip_prefix(workspace_root) {
         return Some(os_path(relative));

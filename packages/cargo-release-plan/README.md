@@ -114,7 +114,7 @@ The plan schema is:
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "increments": [
     { "name": "nm", "level": "patch" },
     { "name": "events", "version": "0.7.14" }
