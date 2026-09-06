@@ -469,6 +469,18 @@ defaults to `skip` for `backfill` and to `error` everywhere else. The default is
 **per command** rather than as one action-wide constant, so an omitted input means "this
 command's sensible default", and an explicitly set one always wins.
 
+**PR measurements are expected to be orphaned, and that is fine.** Points are keyed by commit,
+so a repository that **squash- or rebase-merges** — the default on many projects — discards
+the very SHAs the PR flow measured: the branch commits never land on the trunk, and the
+squashed commit is one nobody has benchmarked. PR-collected data therefore has a *shorter*
+useful life than history-flow data: it exists to answer "does this change move anything?"
+while the PR is open, and afterwards it is dead weight that no trunk analysis will ever
+select. This is a deliberate acceptance, not an oversight. Two consequences follow, and both
+are load-bearing elsewhere in this design: the trunk series is fed by the **history flow and
+the densification pass**, never by PR runs, so nothing downstream depends on PR points
+surviving; and because those points are disposable, a PR run has no need to *write* to the
+shared store at all, which is what makes the read-only fork tiering of §6 possible.
+
 **Analysis mode is inferred by the tool, not selected by the action.** There is no `--mode`
 flag: `analyze` auto-detects **history** vs **branch** from git topology and the recorded
 runs it admits (`DESIGN.md` §8.5) — the analyzed tip being its own merge-base with no dirty
@@ -817,18 +829,52 @@ inputs** — and, since the tool's Azure backend is **Entra-ID-only**, there is 
   action's steps inherit the job env, so the tool sees them without the action plumbing
   anything.
 
-**Fork PRs skip the cloud.** OIDC self-minting needs a same-repo trust boundary, so a pull
-request from a fork cannot obtain the federated identity. The PR flow is therefore
-**same-repo-only**: the caller gates the collect/analyze jobs on `head.repo.full_name ==
-github.repository` (as `pr-bench-history.yml` does), and the action documents this gate rather
-than trying to work around it. A fork PR simply produces no benchmark comment.
+**Fork PRs: a trust gate, not a blanket ban.** The concern is narrow and worth stating
+precisely — a PR run *executes the contributor's code*, and that run holds credentials to the
+history store. A drive-by contributor must never reach them. But excluding *all* forks also
+excludes trusted people who simply work from a fork, which is a normal workflow for
+maintainers of many projects.
+
+Two separate things have to line up, and conflating them is what makes this look harder than
+it is:
+
+* **Trust in the person** is answered by the PR event's own `author_association`. `OWNER`,
+  `MEMBER`, and `COLLABORATOR` are people the repository already trusts to push branches and
+  run CI; `CONTRIBUTOR`, `FIRST_TIME_CONTRIBUTOR`, and `NONE` are not. This is the gate the
+  action exposes, as an `allowed-associations` input defaulting to those first three.
+* **Availability of credentials** is a platform fact that association cannot change. A
+  `pull_request` event from a fork gets a read-only token, no secrets, and — decisively — **no
+  OIDC**, no matter who opened it. So "trusted author" alone does not produce a working run.
+
+`pull_request_target` is the usual workaround and is **categorically rejected here**: it runs
+in the base repo's context with full credentials, and this workflow's entire purpose is to
+execute the PR's code. That combination is the textbook privilege-escalation shape, and
+benchmarking is its worst case.
+
+Two mechanisms close the gap honestly, and the design supports both:
+
+* **Reduce what a PR run needs to a read.** A PR's own measurements are discarded on merge
+  anyway (§4.5), so the PR flow does not need *write* access to the shared store — only the
+  ability to read the baseline and keep its own points somewhere temporary. Running PRs
+  against a **read-only identity** with a scratch store for this run's own data shrinks the
+  blast radius to "can read benchmark history", which is a far smaller thing to extend to a
+  trusted fork. This is the preferred answer and the one that makes fork support cheap.
+* **Approval-gated credentials** for anything that still needs them. Routing the
+  credential-holding job through a deployment **environment with required reviewers** means a
+  maintainer explicitly approves the run before secrets exist. It costs a click, which is the
+  correct price for handing credentials to code from outside the repository.
+
+The resulting behaviour is tiered: a **same-repo PR** gets the full experience unchanged; a
+**fork PR from a trusted association** gets it too, via read-only access (or after approval);
+and a **fork PR from anyone else** runs no benchmarks at all. The last case is silent by
+default rather than misleading, but §9's diagnosability rules apply — a reader should be able
+to discover *why* nothing ran.
 
 **PR analysis reads the same production store as `main`.** Branch mode compares the PR head
 against `main`'s recorded baseline, so the PR flow must read the very store that holds it — a
-separate PR store is rejected because it would have no baseline to compare against. Granting
-the production identity to PR runs widens the trust boundary from "only pushes to `main`" to
-"any same-repo PR run"; that is an accepted trade to let a PR's benchmarks be judged against
-the real baseline, and it is why the fork gate above is load-bearing.
+separate PR store is rejected because it would have no baseline to compare against. Read
+access to that baseline is therefore unavoidable for any PR run that reports anything; what
+the tiering above removes is the *write* half.
 
 **Bring-your-own infrastructure.** The action does **not** bundle the Azure provisioning
 (`infra/azure-bench-history-prod/`); that stays in the monorepo as a *referenced example* the
@@ -1155,11 +1201,29 @@ binary** that owns the GitHub-shaped half (§5.1):
   once the tool and the companion can, they are replaced by the action rather than generalized
   into it, and Folo's four bench-history workflows collapse into calls to the reusable
   workflows (§4.7, §10).
-* **Docs:** this file, a pointer from `DESIGN.md` §7.3, and (once built) the action repo's
-  README. That README documents only the *action* (inputs, the workflow recipes, install
-  methods) and links out to the tool's own published **user guide** (the `cargo-bench-history`
-  mdBook, served via GitHub Pages — see the monorepo's `book.yml` / `docs/book.md`) for
-  tool-level concepts (engines, comparability, analysis modes), rather than restating them.
+* **Docs — the book gains a "Continuous integration" section.** The user guide currently
+  documents the tool as something you run by hand (Installation, Commands, Concepts,
+  Appendix), which leaves its most common *real* deployment undocumented. Running
+  `cargo-bench-history` in CI is not a footnote to local use; it is the primary use, and it
+  raises questions that have no local analogue. The book therefore gains a section covering:
+  * **The three flows** — per-push history, per-PR branch, nightly densification — and why a
+    useful setup runs all three rather than just the first.
+  * **Adopting the action**, pointing at the published action for the mechanics.
+  * **Deployment profiles** — the shared, rotating, ephemeral runner pool versus dedicated
+    self-hosted benchmark machines. These differ in almost every way that matters (machine-key
+    stability, noise floor, whether densification is needed at all, useful `best-of` values),
+    and a reader choosing hardware needs that comparison before they build a pipeline around
+    one of them.
+  * **What CI data means** — that PR measurements are keyed to branch commits and are
+    discarded by squash- and rebase-merges (§4.5), so the trunk series is fed by the history
+    and densification flows alone.
+  * **Reading a CI report** — in particular telling apart "no findings", "not enough baseline
+    yet", and "nothing benchmarkable changed" (§9).
+
+  The division of labour stays as it was: the **book** owns tool-level concepts and the
+  deployment thinking, and the action repo's **README** owns only the action's own mechanics
+  (inputs, workflow recipes, install methods) and links to the book rather than restating it.
+  This file and the pointer from `DESIGN.md` §7.3 remain the design record.
 
 ## 12. Open questions
 
