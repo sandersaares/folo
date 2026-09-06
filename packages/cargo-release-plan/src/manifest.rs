@@ -802,6 +802,29 @@ pub(crate) fn workspace_relative_path(workspace_root: &Path, path: &Path) -> Opt
 mod tests {
     use super::*;
 
+    /// A requirement names a version only when it pins exactly that version.
+    ///
+    /// All three spellings that name it are accepted: `apply` reads the manifest text, where a
+    /// bare requirement stays bare, while `cargo metadata` normalizes the same requirement to
+    /// the caret form before `check` sees it. A partial requirement names a range, not a
+    /// version, so it is not accepted however close it looks.
+    #[test]
+    fn a_requirement_names_a_version_only_when_it_pins_exactly_that_version() {
+        let version = Version::new(1, 2, 3);
+        assert!(requirement_names_version("1.2.3", &version));
+        assert!(requirement_names_version("^1.2.3", &version));
+        assert!(requirement_names_version("=1.2.3", &version));
+        assert!(requirement_names_version(" ^1.2.3 ", &version));
+
+        assert!(!requirement_names_version("^1.2", &version));
+        assert!(!requirement_names_version("^1", &version));
+        assert!(!requirement_names_version("=1.2", &version));
+        assert!(!requirement_names_version(">=1.2.3", &version));
+        assert!(!requirement_names_version("^1.2.4", &version));
+        assert!(!requirement_names_version("*", &version));
+        assert!(!requirement_names_version("", &version));
+    }
+
     fn members(patterns: &[&str]) -> WorkspaceMembers {
         cased_members(patterns, PathCase::Sensitive)
     }

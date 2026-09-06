@@ -14,6 +14,7 @@ use crate::classify::{
 use crate::command::run_capture;
 use crate::git::os_path;
 use crate::groups::GroupVerdict;
+use crate::manifest::requirement_names_version;
 use crate::verbose::Verbose;
 use crate::{quote_path, short_commit};
 
@@ -304,15 +305,6 @@ fn render_diagnostics(
     lines.join("\n")
 }
 
-/// Whether a published requirement names exactly the version the dependency declares.
-///
-/// `cargo metadata` normalizes a requirement before it reaches here, so a bare
-/// `1.2.3` arrives as `^1.2.3`. Both spellings name the version; anything else,
-/// including a partial `^1.2` or a range, does not.
-fn requirement_names_version(req: &str, version: &Version) -> bool {
-    req == format!("^{version}") || req == format!("={version}")
-}
-
 /// Whether the package's declared version is a semver-incompatible move from its last release.
 ///
 /// Cargo treats the leftmost non-zero component as the major component, so this
@@ -554,24 +546,6 @@ mod tests {
         assert!(default_success_message(true, "diagnostic").is_none());
         assert!(default_success_message(false, "").is_none());
         assert!(default_success_message(false, "fail").is_none());
-    }
-
-    /// A requirement names a version only when it pins exactly that version.
-    ///
-    /// `cargo metadata` normalizes a bare requirement to a caret one, so both
-    /// spellings that name the version have to be accepted while a partial
-    /// requirement, which names a range, does not.
-    #[test]
-    fn a_requirement_names_a_version_only_when_it_pins_exactly_that_version() {
-        let version = Version::new(1, 2, 3);
-        assert!(requirement_names_version("^1.2.3", &version));
-        assert!(requirement_names_version("=1.2.3", &version));
-
-        assert!(!requirement_names_version("^1.2", &version));
-        assert!(!requirement_names_version("^1", &version));
-        assert!(!requirement_names_version(">=1.2.3", &version));
-        assert!(!requirement_names_version("^1.2.4", &version));
-        assert!(!requirement_names_version("*", &version));
     }
 
     /// Compatibility follows Cargo's leftmost-non-zero rule rather than the major component.
