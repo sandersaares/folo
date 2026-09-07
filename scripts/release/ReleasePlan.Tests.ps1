@@ -30,7 +30,10 @@ BeforeAll {
             [object[]] $Dependencies = @(),
             [string] $Group,
             [string] $DeclaredVersion = '1.0.0',
-            [string] $AnchorVersion = '1.0.0'
+            [string] $AnchorVersion = '1.0.0',
+            # Defaults to the tool's own default: a package presents a contract unless its
+            # manifest declares otherwise.
+            [bool] $ConsumerContract = $true
         )
 
         $package = [ordered]@{
@@ -39,6 +42,7 @@ BeforeAll {
             status           = $Status
             changed          = @($Changed)
             dependencies     = @($Dependencies)
+            consumer_contract = $ConsumerContract
         }
         if ($PSBoundParameters.ContainsKey('Group')) {
             $package.group = $Group
@@ -182,12 +186,12 @@ Describe 'Get-AffectedSemverCheckTarget' {
         Get-TestAffectedSemverCheckTarget -ReportPath $path | Should -Be @('events', 'nm')
     }
 
-    It 'excludes unchanged packages and unsupported handoff crates' {
+    It 'excludes unchanged packages and crates that declare no contract' {
         $path = Join-Path $TestDrive 'unsupported.json'
         Write-TestReport -Path $path -Package @(
             Get-TestPackage -Name 'events'
             Get-TestPackage -Name 'folo_utils' -Status 'needs-increment' `
-                -Changed @(@{ path = 'src/lib.rs' })
+                -ConsumerContract $false -Changed @(@{ path = 'src/lib.rs' })
         )
         Get-TestAffectedSemverCheckTarget -ReportPath $path | Should -BeNullOrEmpty
     }
@@ -196,7 +200,7 @@ Describe 'Get-AffectedSemverCheckTarget' {
         $path = Join-Path $TestDrive 'impl.json'
         Write-TestReport -Path $path -Package @(
             Get-TestPackage -Name 'nm_impl' -Status 'needs-increment' -Group 'nm' `
-                -Changed @(@{ path = 'src/lib.rs' })
+                -ConsumerContract $false -Changed @(@{ path = 'src/lib.rs' })
             Get-TestPackage -Name 'nm' -Group 'nm'
         ) -Group @{
             nm = @{ members = @('nm', 'nm_impl'); consistent = $true; version = '1.0.0' }
@@ -208,7 +212,7 @@ Describe 'Get-AffectedSemverCheckTarget' {
         $path = Join-Path $TestDrive 'verbose-group.json'
         Write-TestReport -Path $path -Package @(
             Get-TestPackage -Name 'nm_impl' -Status 'needs-increment' -Group 'nm' `
-                -Changed @(@{ path = 'src/lib.rs' })
+                -ConsumerContract $false -Changed @(@{ path = 'src/lib.rs' })
             Get-TestPackage -Name 'nm' -Group 'nm'
         ) -Group @{
             nm = @{ members = @('nm', 'nm_impl'); consistent = $true; version = '1.0.0' }
@@ -217,20 +221,20 @@ Describe 'Get-AffectedSemverCheckTarget' {
         $messages = Get-TestAffectedSemverCheckTargetVerboseMessage -ReportPath $path
 
         ($messages -join "`n") | Should -Match "belongs to version group 'nm'"
-        ($messages -join "`n") | Should -Match "supported consumer-contract target 'nm'"
+        ($messages -join "`n") | Should -Match "consumer-contract target 'nm'"
     }
 
-    It 'explains unsupported changed-package exclusion' {
+    It 'explains exclusion of a changed package that declares no contract' {
         $path = Join-Path $TestDrive 'verbose-exclusion.json'
         Write-TestReport -Path $path -Package @(
             Get-TestPackage -Name 'folo_utils' -Status 'needs-increment' `
-                -Changed @(@{ path = 'src/lib.rs' })
+                -ConsumerContract $false -Changed @(@{ path = 'src/lib.rs' })
         )
 
         $messages = Get-TestAffectedSemverCheckTargetVerboseMessage -ReportPath $path
 
         ($messages -join "`n") |
-            Should -Match 'none are in the supported consumer-contract target allow-list'
+            Should -Match 'none of which declares a consumer contract'
     }
 
     It 'does not log packages that cannot affect SemVer target selection' {
@@ -249,9 +253,11 @@ Describe 'Get-AffectedSemverCheckTarget' {
         Write-TestReport -Path $path -Package @(
             Get-TestPackage -Name 'cargo-bench-history' -Group 'cargo-bench-history'
             Get-TestPackage -Name 'cargo-bench-history-faker' -Status 'pending-release' `
-                -Group 'cargo-bench-history' -Changed @(@{ path = 'src/lib.rs' })
+                -Group 'cargo-bench-history' -ConsumerContract $false `
+                -Changed @(@{ path = 'src/lib.rs' })
             Get-TestPackage -Name 'cbh_stats' -Status 'needs-increment' `
-                -Group 'cargo-bench-history' -Changed @(@{ path = 'src/lib.rs' })
+                -Group 'cargo-bench-history' -ConsumerContract $false `
+                -Changed @(@{ path = 'src/lib.rs' })
         ) -Group @{
             'cargo-bench-history' = @{
                 members = $members
@@ -262,51 +268,17 @@ Describe 'Get-AffectedSemverCheckTarget' {
         Get-TestAffectedSemverCheckTarget -ReportPath $path | Should -Be @('cargo-bench-history')
     }
 
-    It 'guards explicit targets against ungrouped documented-package drift' {
-        # Pin the workspace manifest: the test reads real workspace metadata, and the runner's
-        # working directory is not guaranteed to be the workspace root.
-        $manifest = Join-Path $PSScriptRoot '../../Cargo.toml'
-        InModuleScope ReleasePlan -Parameters @{ Manifest = $manifest } {
-            param($Manifest)
+    It 'fails closed when a package carries no contract declaration' {
+        # The field is not optional: a report that predates it would otherwise silently read as
+        # "no package has a contract", which selects nothing and checks nothing.
+        $path = Join-Path $TestDrive 'missing-contract.json'
+        $package = Get-TestPackage -Name 'events' -Status 'needs-increment' `
+            -Changed @(@{ path = 'src/lib.rs' })
+        $package.Remove('consumer_contract')
+        Write-TestReport -Path $path -Package @($package)
 
-            $metadata = cargo metadata --no-deps --format-version 1 --manifest-path $Manifest |
-                ConvertFrom-Json
-            $grouped = [System.Collections.Generic.HashSet[string]]::new(
-                [System.StringComparer]::Ordinal
-            )
-            foreach ($group in $metadata.metadata.'release-plan'.groups.PSObject.Properties) {
-                foreach ($member in $group.Value) {
-                    [void] $grouped.Add([string] $member)
-                }
-            }
-
-            $published = @(
-                $metadata.packages |
-                    Where-Object { $null -eq $_.publish -or @($_.publish).Count -gt 0 }
-            )
-            $missing = @(
-                $published |
-                    Where-Object {
-                        -not $grouped.Contains([string] $_.name) -and
-                        @(
-                            $_.targets |
-                                Where-Object {
-                                    $_.doc -and
-                                    ($_.kind -contains 'lib' -or $_.kind -contains 'proc-macro')
-                                }
-                        ).Count -gt 0 -and
-                        -not $script:SemverCheckTargetAllowList.Contains([string] $_.name)
-                    } |
-                    ForEach-Object { [string] $_.name }
-            )
-            $stale = @(
-                $script:SemverCheckTargetAllowList |
-                    Where-Object { [string] $_ -notin @($published.name) }
-            )
-
-            $missing | Should -BeNullOrEmpty
-            $stale | Should -BeNullOrEmpty
-        }
+        { Get-TestAffectedSemverCheckTarget -ReportPath $path } |
+            Should -Throw '*missing the consumer_contract field*'
     }
 
     It 'fails closed on an unsupported schema revision' {
@@ -369,7 +341,7 @@ Describe 'Invoke-ReleaseReport' {
                     Get-TestPackage -Name 'events' -Status 'needs-increment' `
                         -Changed @(@{ path = 'src/lib.rs' })
                     Get-TestPackage -Name 'folo_utils' -Status 'needs-increment' `
-                        -Changed @(@{ path = 'src/lib.rs' })
+                        -ConsumerContract $false -Changed @(@{ path = 'src/lib.rs' })
                 )
             } else {
                 $global:LASTEXITCODE = 0

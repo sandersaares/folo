@@ -27,6 +27,11 @@ allowed_external_types = [
     "smallvec::SmallVec",
 ]
 
+[package.metadata.release-plan]
+# Implementation partition of `cargo-bench-history`; consumers reach this surface
+# through that package, which is where its compatibility is assessed.
+consumer-contract = false
+
 [lib]
 # This is an implementation crate whose surface is documented on `cargo-bench-history`.
 doc = false

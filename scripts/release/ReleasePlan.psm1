@@ -32,38 +32,6 @@ $script:PublishStatusRetryDelaySeconds = 1
 # a separate loop at the release-plan boundary.
 Import-Module (Join-Path $PSScriptRoot '..' 'utility' 'Retry.psm1') -Force
 
-# Packages whose library surface is a supported consumer contract. Implementation partitions,
-# test-support packages, and undocumented handoff crates are intentionally absent. A change in a
-# grouped implementation package selects the listed public package from that group.
-$script:SemverCheckTargetAllowList = [System.Collections.Generic.HashSet[string]]::new(
-    [System.StringComparer]::Ordinal
-)
-@(
-    'all_the_time'
-    'alloc_tracker'
-    'awaiter_set'
-    'cargo-bench-history'
-    'cargo-detect-package'
-    'cargo-freeze-deps'
-    'cargo-release-plan'
-    'cpulist'
-    'dure'
-    'events'
-    'events_once'
-    'fast_time'
-    'future_deque'
-    'infinity_pool'
-    'linked'
-    'many_cpus'
-    'many_cpus_benchmarking'
-    'nm'
-    'nm_otel'
-    'par_bench'
-    'region_cached'
-    'region_local'
-    'vicinal'
-) | ForEach-Object { [void] $script:SemverCheckTargetAllowList.Add($_) }
-
 function Get-ReleasePlanCargoArgument {
     # Argument vector for `cargo run -p cargo-release-plan --locked -- ...`. Forwards
     # `$Base` as `--base` when set; otherwise the tool chooses the release baseline.
@@ -180,9 +148,37 @@ function Get-PackageByName {
     return $byName
 }
 
+function Test-PackageIsConsumerContract {
+    # Whether the named package presents a library API contract to consumers.
+    #
+    # Read from the report, which derives it from the package's own manifest, so adding a package
+    # to the workspace needs no edit here. A name the report does not carry is not a publishable
+    # package of this workspace and has no contract to assess.
+    # Ref: packages/cargo-release-plan/README.md, "Plan and report schema".
+    param(
+        [Parameter(Mandatory)] $Report,
+        [Parameter(Mandatory)][string] $Name
+    )
+
+    foreach ($package in $Report.packages) {
+        if ([string] $package.name -cne $Name) {
+            continue
+        }
+        if ($package.PSObject.Properties.Name -notcontains 'consumer_contract') {
+            throw "release-plan report package '$Name' is missing the consumer_contract field."
+        }
+        return [bool] $package.consumer_contract
+    }
+    return $false
+}
+
 function Get-AffectedSemverCheckTarget {
-    # Returns the explicit consumer-contract targets affected by a release-plan report. A
-    # well-formed report with no selected target is a valid empty result.
+    # Returns the consumer-contract targets affected by a release-plan report. A well-formed
+    # report with no selected target is a valid empty result.
+    #
+    # Which packages present a consumer contract is declared by each package and carried in the
+    # report, never listed here: a list beside the workspace goes stale silently, and the failure
+    # is a package that quietly stops being checked.
     [CmdletBinding()]
     [OutputType([string[]])]
     param(
@@ -216,7 +212,7 @@ function Get-AffectedSemverCheckTarget {
 
         $supportedTargets = @(
             $candidateTargets |
-                Where-Object { $script:SemverCheckTargetAllowList.Contains($_) } |
+                Where-Object { Test-PackageIsConsumerContract -Report $report -Name $_ } |
                 Sort-Object -Unique
         )
         if ($supportedTargets.Count -eq 0) {
@@ -227,8 +223,8 @@ function Get-AffectedSemverCheckTarget {
             }
             Write-Verbose (
                 "Changed package '$packageName' has candidate SemVer-check targets " +
-                "$candidateText, but none are in the supported consumer-contract target " +
-                "allow-list, so no cargo-semver-checks target is emitted."
+                "$candidateText, none of which declares a consumer contract, so no " +
+                "cargo-semver-checks target is emitted."
             ) -Verbose
             continue
         }
@@ -238,14 +234,13 @@ function Get-AffectedSemverCheckTarget {
                 if ($null -ne $groupName) {
                     Write-Verbose (
                         "Changed package '$packageName' belongs to version group '$groupName'; " +
-                        "supported consumer-contract target '$target' is emitted because group " +
+                        "consumer-contract target '$target' is emitted because group " +
                         "members are checked through the public package contract."
                     ) -Verbose
                 } else {
                     Write-Verbose (
                         "Changed package '$packageName' is emitted as cargo-semver-checks " +
-                        "target '$target' because it is in the supported consumer-contract " +
-                        "target allow-list."
+                        "target '$target' because its manifest declares a consumer contract."
                     ) -Verbose
                 }
             }

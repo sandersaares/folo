@@ -16,6 +16,11 @@ ignored = ["proc-macro2"]
 [package.metadata.docs.rs]
 all-features = true
 
+[package.metadata.release-plan]
+# Implementation partition of `linked`; consumers reach this surface through that
+# package, which is where its compatibility is assessed.
+consumer-contract = false
+
 [lib]
 proc-macro = true
 doc = false

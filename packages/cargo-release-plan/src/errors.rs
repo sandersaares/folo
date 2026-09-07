@@ -560,6 +560,31 @@ pub(crate) struct MalformedVersionGroupError {
 impl UnwindSafe for MalformedVersionGroupError {}
 impl RefUnwindSafe for MalformedVersionGroupError {}
 
+/// A package's consumer-contract declaration is present but is not a boolean.
+///
+/// Fails closed rather than defaulting: a typo here would otherwise silently
+/// decide whether the package is assessed for API compatibility at all.
+#[ohno::error]
+#[display(
+    "Package '{}' declares `[package.metadata.release-plan] consumer-contract` as {}, which must be a boolean",
+    package.quoted(),
+    value.quoted()
+)]
+pub(crate) struct MalformedConsumerContractError {
+    package: String,
+    value: String,
+}
+
+impl UnwindSafe for MalformedConsumerContractError {}
+impl RefUnwindSafe for MalformedConsumerContractError {}
+
+#[cfg(test)]
+impl MalformedConsumerContractError {
+    pub(crate) fn package(&self) -> &str {
+        &self.package
+    }
+}
+
 #[cfg(test)]
 impl MalformedVersionGroupError {
     pub(crate) fn group(&self) -> &str {

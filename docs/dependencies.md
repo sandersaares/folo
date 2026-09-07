@@ -27,12 +27,23 @@ rather than reverting to a narrower set of changes.
 
 ## Intra-workspace requirements name the declared version
 
-Every dependency on another package in this workspace declares the exact version
-that package currently declares — `version = "1.2.3"` when it is at `1.2.3`, not
+Every dependency on another package in this workspace names the version that
+package currently declares — `version = "1.2.3"` when it is at `1.2.3`, not
 `version = "1.0.0"` merely because that requirement would still admit `1.2.3`.
 
+This constrains the version *number*, not the kind of requirement. Both kinds
+appear, and which one to use is decided by the next chapter:
+
+| Reference | Requirement | Admits |
+| --------- | ----------- | ------ |
+| Between members of one version group | `version = "=1.2.3"` | that version only |
+| Everything else | `version = "1.2.3"` | `1.2.3` and later compatible releases |
+
+So the rule here is that the number is always the current one; the `=` is a
+separate decision about whether later compatible releases may be resolved.
+
 This keeps the released manifest describing the combination the workspace
-actually built and tested. A wider requirement lets a consumer resolve a pairing
+actually built and tested. A wider *number* lets a consumer resolve a pairing
 that never ran here, and it makes release reasoning depend on requirement
 arithmetic rather than on the declared versions alone.
 
@@ -98,4 +109,16 @@ dependency releases a semver-incompatible version this crate must release one
 too — a consumer holding the older dependency can no longer hand its types
 across. `cargo release-plan check` enforces this, so keeping the allow-list
 accurate keeps the release decision accurate.
+
+Note that the list names each type's **defining crate**, not the dependency this
+crate reaches it through. Where `foo` re-exports a type from `bar` that
+re-exports it from `baz`, every crate along the chain lists `baz::Something`,
+including the one that only ever names `foo` in its dependency table.
+
+That indirection is why the release decision follows re-export declarations
+rather than matching the list against the dependency table directly: a crate's
+allow-list frequently names a crate it has no edge to. It also makes the
+propagation self-consistent — because each crate in the chain must list
+`baz::Something` to pass the external-types check, a breaking release of `baz`
+reaches every one of them rather than stopping at the first.
 

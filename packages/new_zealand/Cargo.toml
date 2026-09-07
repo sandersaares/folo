@@ -13,9 +13,6 @@ rust-version.workspace = true
 [package.metadata.docs.rs]
 all-features = true
 
-[lib]
-doc = false
-
 [features]
 default = []
 

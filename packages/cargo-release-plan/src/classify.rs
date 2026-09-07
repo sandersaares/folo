@@ -81,6 +81,10 @@ pub(crate) struct PackageClass {
     pub(crate) untracked: Vec<String>,
     pub(crate) dependencies: Vec<ReportedDep>,
     pub(crate) dependents: Vec<String>,
+    /// Whether the package's library is documented for consumers.
+    ///
+    /// Ref: `crate::metadata::WorkPackage::consumer_contract`.
+    pub(crate) consumer_contract: bool,
     pub(crate) manifest_path: PathBuf,
 }
 
@@ -216,6 +220,7 @@ impl PackageClass {
             untracked: Vec::new(),
             dependencies: Vec::new(),
             dependents: Vec::new(),
+            consumer_contract: true,
             manifest_path,
         }
     }
@@ -489,6 +494,7 @@ fn classify_one(
             untracked,
             dependencies: package.dependencies.clone(),
             dependents,
+            consumer_contract: package.consumer_contract,
             manifest_path: package.manifest_path.clone(),
         });
     };
@@ -605,6 +611,7 @@ fn classify_one(
         untracked,
         dependencies: package.dependencies.clone(),
         dependents,
+        consumer_contract: package.consumer_contract,
         manifest_path: package.manifest_path.clone(),
     };
     verbose.note(|| {

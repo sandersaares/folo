@@ -162,11 +162,11 @@ jobs:
         run: just validate-versions
         shell: pwsh
 
-  # cargo-semver-checks scoped to the explicit consumer-contract package set. `semver_targets`
-  # holds that selection: the supported consumer-contract packages carrying unreleased content
-  # changes, which is narrower than the set this pull request will publish, because
-  # implementation and test-support packages have no consumer contract to compare. An unreleased
-  # change in any version-group member selects the supported members of that group.
+  # cargo-semver-checks scoped to the consumer-contract package set. `semver_targets`
+  # holds that selection: the packages carrying unreleased content changes that declare a
+  # consumer contract, which is narrower than the set this pull request will publish, because
+  # implementation and test-support packages declare they have none. An unreleased
+  # change in any version-group member selects the contract members of that group.
   # `--all-features` because gated API is still public API. An empty `semver_targets` output is a
   # successful skip. Parallel with the rest of validation; does not gate other jobs.
   # `!cancelled()` rather than `always()` so a failing version check still surfaces an

@@ -22,10 +22,12 @@ from, which is not the branch a pull request targets, so the workflow passes the
 on a pull request and the merge-group base commit on a queue run.
 
 `scripts/release/ReleasePlan.psm1` is the PowerShell boundary between that report and hosted
-validation. It accepts only the report schema revision it understands and owns the explicit
-set of packages whose library surface is a supported consumer contract. The same target
-selection drives both the CI SemVer job and evidence collection by the increment-versions
-skill. Package-name patterns do not determine whether a crate has a consumer contract.
+validation. It accepts only the report schema revision it understands and selects SemVer targets
+from the `consumer_contract` field the report carries for each package. That field comes from the
+package's own manifest, so adding a package to the workspace requires no edit here and no list
+goes stale; the same target selection drives both the CI SemVer job and evidence collection by
+the increment-versions skill. Package-name patterns do not determine whether a crate has a
+consumer contract.
 
 The module also owns the skill's deterministic mechanics: dependency-order presentation,
 publication eligibility, change-level validation, version-group realignment, and

@@ -52,6 +52,34 @@ The tool determines whether an increment is required and records the evidence.
 It does not infer API compatibility or choose an increment level. A maintainer or
 automation with knowledge of the package's promises makes that judgement.
 
+### Consumer contracts
+
+A published package does not necessarily offer an API for consumers to use. An
+implementation partition exists to serve the public package in front of it, and
+some packages are published only because Cargo requires a dependency to be
+published. Both still have `pub` items, so nothing in the code distinguishes
+them from a package meant for direct use: it is a promise the publisher makes,
+and the package declares it.
+
+```toml
+[package.metadata.release-plan]
+consumer-contract = false
+```
+
+The declaration defaults to true, so a package presents a contract unless it says
+otherwise, and a package with no library target presents none either way. The
+default is chosen for its failure mode rather than its frequency: a package
+wrongly treated as a contract produces a finding a maintainer can act on, while
+one wrongly skipped produces nothing at all. A malformed declaration is an error
+for the same reason.
+
+This bears on API-compatibility assessment, which is a consumer of the report
+rather than part of it. Assessing an implementation partition directly would
+measure a surface no consumer can reach, and demand version increases of the
+public package for changes its consumers cannot observe. Assessing the public
+package instead loses nothing, because a re-exported item appears in the public
+package's own documented API.
+
 ### Public dependencies
 
 A dependency is **public** when the dependent's own public API exposes types

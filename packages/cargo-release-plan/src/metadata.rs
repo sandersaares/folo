@@ -28,9 +28,9 @@ use crate::manifest::{
 use crate::packaging::PackagingRules;
 use crate::packaging::relativize;
 use crate::{
-    GroupNameCollisionError, InvalidVersionError, MalformedVersionGroupError,
-    MalformedVersionGroupsError, NonPublishableGroupMemberError, ParseMetadataError, ReadFileError,
-    UnknownGroupMemberError,
+    GroupNameCollisionError, InvalidVersionError, MalformedConsumerContractError,
+    MalformedVersionGroupError, MalformedVersionGroupsError, NonPublishableGroupMemberError,
+    ParseMetadataError, ReadFileError, UnknownGroupMemberError,
 };
 
 /// Work-tree snapshot from `cargo metadata --no-deps`.
@@ -73,6 +73,18 @@ pub(crate) struct WorkPackage {
     pub(crate) manifest: PackageManifest,
     pub(crate) manifest_path: PathBuf,
     pub(crate) dependencies: Vec<ReportedDep>,
+    /// Whether the package presents a library API contract to consumers.
+    ///
+    /// True when the package has a library target and has not declared
+    /// `[package.metadata.release-plan] consumer-contract = false`. A package
+    /// opts out to say that its library exists to serve another package rather
+    /// than to be depended on directly, which is a release-policy statement the
+    /// package makes about itself rather than something derivable from its code.
+    ///
+    /// This is reported as evidence; what to do with it is the consumer's
+    /// decision.
+    /// Ref: docs/design.md, "Consumer contracts".
+    pub(crate) consumer_contract: bool,
     /// Whether the package builds a target that makes its locked closure relevant.
     ///
     /// Ref: docs/design.md, "Relevant lockfile closures".
@@ -395,6 +407,7 @@ fn work_tree_from_metadata(
 
         packages.push(WorkPackage {
             has_lockfile_target: tracked.has_lockfile_target(&manifest)?,
+            consumer_contract: is_consumer_contract(package)?,
             manifest,
             manifest_path: path,
             dependencies,
@@ -487,6 +500,48 @@ fn groups_from_metadata(
 /// survives packaging only when its manifest declaration supplies a version
 /// requirement; Cargo reports both an explicit wildcard and no requirement as
 /// `*`, so metadata alone cannot distinguish them.
+/// Whether the package presents a library API contract to consumers.
+///
+/// Two facts combine. A package with no library target has no library API at
+/// all. A package that declares
+/// `[package.metadata.release-plan] consumer-contract = false` has one but
+/// states that it is not for direct use: an implementation partition behind a
+/// public package, or a crate published only because Cargo requires a
+/// dependency to be published.
+///
+/// The declaration is read from the package rather than inferred, because no
+/// property of the code distinguishes a library meant for consumers from one
+/// meant for a sibling crate. Adjacent facts such as `[lib] doc = false`
+/// correlate in some workspaces but mean something else, so keying release
+/// policy on them would silently mis-classify a package whose author changed
+/// one for an unrelated reason.
+///
+/// Defaults to true, so a package is a contract unless it says otherwise. The
+/// safe direction: a new package is assessed by default, and a package wrongly
+/// assessed reports a finding a maintainer can see, while a package wrongly
+/// skipped reports nothing at all.
+fn is_consumer_contract(package: &MetadataPackage) -> Result<bool, AppError> {
+    let has_library = package.targets.iter().any(|target| {
+        target
+            .kind
+            .iter()
+            .any(|kind| LIBRARY_TARGET_KINDS.contains(&kind.as_str()))
+    });
+    if !has_library {
+        return Ok(false);
+    }
+    let Some(declared) = package
+        .metadata
+        .get("release-plan")
+        .and_then(|value| value.get("consumer-contract"))
+    else {
+        return Ok(true);
+    };
+    declared.as_bool().ok_or_else(|| {
+        MalformedConsumerContractError::new(&package.name, declared.to_string()).into()
+    })
+}
+
 /// The identifier a Rust path uses for a package's library, if it has one.
 ///
 /// A package without a library target exposes no API for another crate to
@@ -1107,6 +1162,7 @@ mod tests {
                 manifest_path: PathBuf::from(format!("packages/{name}/Cargo.toml")),
                 dependencies,
                 has_lockfile_target: false,
+                consumer_contract: true,
                 resources: BTreeMap::new(),
             }
         }
@@ -1251,6 +1307,85 @@ mod tests {
         assert_eq!(library_crate_name(&metadata_package(Vec::new())), None);
     }
 
+    /// A package declares whether its library is a consumer contract.
+    ///
+    /// No property of the code distinguishes a library meant for consumers from one meant for a
+    /// sibling crate, so the package states it. The default is true, which keeps a new package
+    /// assessed rather than silently skipped.
+    #[test]
+    fn a_package_declares_whether_its_library_is_a_consumer_contract() {
+        fn metadata_package(kinds: &[&str], metadata: Value) -> MetadataPackage {
+            MetadataPackage {
+                name: "demo".to_string(),
+                version: "0.1.0".to_string(),
+                id: "demo".to_string(),
+                manifest_path: "packages/demo/Cargo.toml".to_string(),
+                publish: None,
+                dependencies: Vec::new(),
+                targets: kinds
+                    .iter()
+                    .map(|kind| MetadataTarget {
+                        name: "demo".to_string(),
+                        kind: vec![(*kind).to_string()],
+                    })
+                    .collect(),
+                metadata,
+            }
+        }
+        fn declaring(value: bool) -> Value {
+            serde_json::json!({ "release-plan": { "consumer-contract": value } })
+        }
+
+        // A library is a contract unless the package says otherwise.
+        assert!(is_consumer_contract(&metadata_package(&["lib"], Value::Null)).unwrap());
+        assert!(is_consumer_contract(&metadata_package(&["proc-macro"], Value::Null)).unwrap());
+        assert!(is_consumer_contract(&metadata_package(&["lib"], declaring(true))).unwrap());
+
+        // An opted-out library is not, and neither is a package with no library at all.
+        assert!(!is_consumer_contract(&metadata_package(&["lib"], declaring(false))).unwrap());
+        assert!(!is_consumer_contract(&metadata_package(&["bin"], Value::Null)).unwrap());
+        assert!(!is_consumer_contract(&metadata_package(&[], Value::Null)).unwrap());
+
+        // Unrelated package metadata leaves the default alone.
+        assert!(
+            is_consumer_contract(&metadata_package(
+                &["lib"],
+                serde_json::json!({ "binstall": { "pkg-fmt": "zip" } })
+            ))
+            .unwrap()
+        );
+    }
+
+    /// A malformed declaration fails rather than falling back to the default.
+    ///
+    /// Defaulting would let a typo silently decide whether the package is assessed at all.
+    #[test]
+    fn a_malformed_consumer_contract_declaration_is_an_error() {
+        let package = MetadataPackage {
+            name: "demo".to_string(),
+            version: "0.1.0".to_string(),
+            id: "demo".to_string(),
+            manifest_path: "packages/demo/Cargo.toml".to_string(),
+            publish: None,
+            dependencies: Vec::new(),
+            targets: vec![MetadataTarget {
+                name: "demo".to_string(),
+                kind: vec!["lib".to_string()],
+            }],
+            metadata: serde_json::json!({ "release-plan": { "consumer-contract": "false" } }),
+        };
+
+        let error = is_consumer_contract(&package).unwrap_err();
+
+        assert_eq!(
+            error
+                .find_source::<MalformedConsumerContractError>()
+                .unwrap()
+                .package(),
+            "demo"
+        );
+    }
+
     #[test]
     fn dependents_of_lists_packages_that_depend_on_the_name() {
         fn package(name: &str, dependencies: Vec<ReportedDep>) -> WorkPackage {
@@ -1272,6 +1407,7 @@ mod tests {
                 manifest_path: PathBuf::from(format!("packages/{name}/Cargo.toml")),
                 dependencies,
                 has_lockfile_target: false,
+                consumer_contract: true,
                 resources: BTreeMap::new(),
             }
         }

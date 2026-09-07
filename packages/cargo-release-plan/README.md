@@ -149,7 +149,8 @@ set, because the plan gives a dependent no version of its own.
 `report.json` uses the same schema revision. Top-level fields are
 `schema_version`, `head`, `packages`, and `groups`. Each package object includes
 `name`, `declared_version`, `status` (`pending-release` / `needs-increment` /
-`unchanged`), `changed`, `stat`, `dependencies`, and `dependents`, plus omitted
+`unchanged`), `changed`, `stat`, `dependencies`, `dependents`, and
+`consumer_contract`, plus omitted
 when empty: `group`, `anchor`, `diff_path`, `untracked`. A change is one of
 `{"path","change","source":"package"}`, `{"field","source":"inherited"}`, or
 `{"dependency","change","source":"lockfile"}`.
@@ -158,6 +159,10 @@ dependency that supplies types the dependent's own public API exposes, derived
 from the dependent's `allowed_external_types` allow-list and followed
 transitively through re-exports, so a package exposing an implementation crate
 marks the public crate it actually depends on. Only normal dependencies qualify.
+`consumer_contract` is true when the package has a library target and has not
+declared `[package.metadata.release-plan] consumer-contract = false`, which is
+how a package states that its library serves another package rather than
+consumers.
 `diff_path` is relative to the report directory. Plan and report formats
 advance this revision together: an incompatible field, enum, or path-layout
 change increments it.
