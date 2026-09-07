@@ -387,9 +387,11 @@ gh-analyze-pr-bench-history dir base keydir:
 # from any path (--body-file), so it can live in the runner temp dir, outside the repo checkout.
 # The title is the dedup key - a persisting condition updates one rolling issue instead of opening
 # a new one each run - so both the regression alert ('Benchmark regressions detected') and the
-# workflow-failure alert route through here with their own title/label. `label` is the
-# comma-separated label list applied on creation. Needs GH_TOKEN in the environment (the workflow
-# supplies it).
+# workflow-failure alert share Publish-RollingIssue with their own title/label; only the regression
+# path goes through this recipe, since the lightweight alert job skips the build-environment setup
+# `just` needs and imports the module directly. `label` is the single label applied on creation; it
+# must already exist in the repository, which the calling workflow step ensures. Needs GH_TOKEN in
+# the environment (the workflow supplies it).
 [group('automation')]
 [script]
 gh-file-rolling-issue title label body_file:
@@ -398,7 +400,7 @@ gh-file-rolling-issue title label body_file:
     $PSNativeCommandUseErrorActionPreference = $true
     Import-Module ./scripts/bench-history/BenchHistoryIssue.psm1 -Force
 
-    Write-Verbose "Filing or updating the rolling issue titled '{{title}}' (labels '{{label}}') from body file {{body_file}}." -Verbose
+    Write-Verbose "Filing or updating the rolling issue titled '{{title}}' (label '{{label}}') from body file {{body_file}}." -Verbose
     $url = Publish-RollingIssue `
         -Title '{{title}}' `
         -Label '{{label}}' `
