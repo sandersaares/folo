@@ -547,6 +547,11 @@ struct AnalyzeCommand {
     /// large analysis still fits within a GitHub issue body.
     #[arg(long, value_name = "PATH", help_heading = HEADING_OUTPUT)]
     markdown_summary: Option<PathBuf>,
+
+    /// Also write the stable analysis outcome wire name to this path (a relative
+    /// path resolves against the working directory).
+    #[arg(long, value_name = "PATH", help_heading = HEADING_OUTPUT)]
+    outcome: Option<PathBuf>,
 }
 
 impl AnalyzeCommand {
@@ -568,6 +573,7 @@ impl AnalyzeCommand {
             markdown: self.output.markdown,
             json: self.output.json,
             markdown_summary: self.markdown_summary,
+            outcome: self.outcome,
             verbose: self.env.verbose,
             timing: false,
         }
@@ -1659,6 +1665,7 @@ mod tests {
         assert!(!options.no_text);
         assert!(options.markdown.is_none());
         assert!(options.json.is_none());
+        assert!(options.outcome.is_none());
     }
 
     #[test]
@@ -1670,12 +1677,15 @@ mod tests {
             "out/report.md",
             "--json",
             "out/report.json",
+            "--outcome",
+            "out/outcome.txt",
         ]) else {
             panic!("expected analyze command");
         };
         assert!(options.no_text);
         assert_eq!(options.markdown, Some(PathBuf::from("out/report.md")));
         assert_eq!(options.json, Some(PathBuf::from("out/report.json")));
+        assert_eq!(options.outcome, Some(PathBuf::from("out/outcome.txt")));
     }
 
     #[test]

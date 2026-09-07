@@ -22,7 +22,7 @@ use colored::Colorize;
 use rasciigraph::{Config, plot};
 use serde::Serialize;
 
-use crate::Coverage;
+use crate::{AnalysisOutcome, Coverage};
 
 /// Height, in rows, of a finding chart.
 const CHART_HEIGHT: u32 = 4;
@@ -423,6 +423,8 @@ struct JsonReport<'a> {
     /// The analysis mode. Serializes to its stable lowercase wire name
     /// (`history`/`branch`).
     mode: AnalysisMode,
+    /// The primary verdict of the successful analysis.
+    outcome: &'static str,
     /// Whether any finding survived — the downstream automation signal.
     notable: bool,
     /// Total stored runs loaded.
@@ -1458,6 +1460,8 @@ fn branch_relation(kind: MetricKind, direction: Direction) -> &'static str {
 // cargo-mutants timeout on the slower Windows shards.
 #[cfg_attr(test, mutants::skip)]
 fn render_json(input: &ReportInput<'_>) -> String {
+    let coverage = Coverage::from_census(&input.census);
+    let outcome = AnalysisOutcome::from_analysis(input.notable, &coverage);
     let sets = input
         .sets
         .iter()
@@ -1481,6 +1485,7 @@ fn render_json(input: &ReportInput<'_>) -> String {
         tip_commit: input.tip_commit,
         tip_dirty: input.tip_dirty,
         mode: input.mode,
+        outcome: outcome.as_str(),
         notable: input.notable,
         runs: input.runs,
         series: input.series,
@@ -1489,7 +1494,7 @@ fn render_json(input: &ReportInput<'_>) -> String {
             .report_improvements
             .then(|| count_top(input.findings, Direction::Improvement)),
         ghosts_excluded: input.ghosts_excluded,
-        census: JsonCensus::from_coverage(&Coverage::from_census(&input.census)),
+        census: JsonCensus::from_coverage(&coverage),
         hint: input.hint,
         warning: input.warning,
         findings: input
@@ -2314,10 +2319,17 @@ mod tests {
         // Automation gates on `coverage`, so every distinct situation must reach the
         // JSON with its own state and an in-scope denominator that excludes ghosts.
         let cases = [
-            ("absent census", SeriesCensus::default(), "no_series", 0),
+            (
+                "absent census",
+                SeriesCensus::default(),
+                "no_series",
+                "nothing_in_scope",
+                0,
+            ),
             (
                 "every series a ghost",
                 census_of(0, &[(UnjudgedReason::Ghost, 4)]),
+                "nothing_in_scope",
                 "nothing_in_scope",
                 0,
             ),
@@ -2325,18 +2337,20 @@ mod tests {
                 "nothing judged",
                 census_of(0, &[(UnjudgedReason::NotMeasuredOnBranch, 2)]),
                 "nothing_judged",
+                "insufficient_baseline",
                 2,
             ),
             (
                 "partial",
                 census_of(2, &[(UnjudgedReason::TooFewBaseCommits, 1)]),
                 "partial",
+                "partial",
                 3,
             ),
-            ("full", census_of(2, &[]), "full", 2),
+            ("full", census_of(2, &[]), "full", "clean", 2),
         ];
 
-        for (name, census, state, in_scope) in cases {
+        for (name, census, state, outcome, in_scope) in cases {
             let input = ReportInput {
                 census,
                 ..flat_input(&[])
@@ -2344,8 +2358,25 @@ mod tests {
             let json = render(&input, ReportFormat::Json, false);
             let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
             assert_eq!(parsed["census"]["coverage"], state, "{name}: {json}");
+            assert_eq!(parsed["outcome"], outcome, "{name}: {json}");
             assert_eq!(parsed["census"]["in_scope"], in_scope, "{name}: {json}");
         }
+    }
+
+    #[test]
+    fn json_outcome_prioritizes_findings_over_partial_coverage() {
+        let findings = [regression()];
+        let input = ReportInput {
+            notable: true,
+            findings: &findings,
+            census: census_of(1, &[(UnjudgedReason::TooFewPoints, 1)]),
+            ..flat_input(&findings)
+        };
+        let json = render(&input, ReportFormat::Json, false);
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed["outcome"], "findings", "{json}");
+        assert_eq!(parsed["census"]["coverage"], "partial", "{json}");
     }
 
     #[test]

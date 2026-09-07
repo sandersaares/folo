@@ -117,9 +117,11 @@
 //! `<package>/<group>/<case>/<value>` identity) to scope the analysis to a subset
 //! of benchmarks. Findings are *advisory*: the exit code reflects only whether the
 //! analysis ran, never what it found. Downstream automation reads the
-//! machine-readable signal from the `json` report — `mode`, the boolean `notable`
-//! (any finding survived), each finding's `direction`, and the full
-//! per-finding `series` for charting. See [Analyze modes](#analyze-modes) below.
+//! machine-readable signal from the `json` report — `mode`, the named `outcome`,
+//! the backward-compatible boolean `notable` (any finding survived), each finding's
+//! `direction`, and the full per-finding `series` for charting. `--outcome <path>`
+//! writes just the stable outcome wire name for lightweight automation. See
+//! [Analyze modes](#analyze-modes) below.
 //!
 //! ## `list`
 //!
@@ -324,7 +326,7 @@ mod errors;
 mod outcome;
 mod output;
 
-pub use cbh_analyze::AutoDiscriminants;
+pub use cbh_analyze::{AnalysisOutcome, AutoDiscriminants};
 pub use cbh_cli::{Cli, EarlyExit};
 pub use cbh_command::{
     AnalyzeOptions, BackfillOptions, BlessOptions, CacheSelection, CollectOptions, Command,

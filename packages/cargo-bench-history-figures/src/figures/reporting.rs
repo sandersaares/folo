@@ -407,6 +407,11 @@ fn formats() -> String {
         summary_limit.get(),
     )
     .expect("writing to a String never fails");
+    markdown.push_str(
+        "| Outcome | `--outcome <path>` (`analyze` only) | Selecting an automation \
+         message without parsing JSON | one stable wire name: `findings`, `clean`, \
+         `insufficient_baseline`, `nothing_in_scope` or `partial` |\n",
+    );
 
     markdown.push_str(
         "\nJSON is the complete machine-readable result: it always carries every finding and \
@@ -416,7 +421,8 @@ fn formats() -> String {
          findings to show, so only JSON always reveals the ghost count. The condensed \
          summary is lossy by design, so it is the one output that must not be automated \
          against: a check reading it cannot distinguish findings that were capped away from \
-         findings that were never made.\n",
+         findings that were never made. The outcome file repeats only JSON's top-level \
+         `outcome` field; it carries no report details.\n",
     );
     markdown
 }

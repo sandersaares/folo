@@ -1,6 +1,8 @@
 //! The result of executing a `Command`: the [`RunOutcome`] a successful `run`
 //! returns.
 
+use crate::AnalysisOutcome;
+
 /// The outcome of a successful `run`.
 #[doc(hidden)]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -10,7 +12,7 @@ pub enum RunOutcome {
         /// Human-readable summary of what happened.
         message: String,
     },
-    /// The `analyze` command produced a findings report.
+    /// The `analyze` command produced an analysis report.
     Analyzed {
         /// The rendered findings report for the requested output format.
         report: String,
@@ -19,6 +21,8 @@ pub enum RunOutcome {
         /// are advisory, so the machine-readable signal lives in the report's
         /// JSON (`notable`), not in the exit status.
         regressions: usize,
+        /// The primary verdict of the successful analysis.
+        outcome: AnalysisOutcome,
     },
 }
 
@@ -80,6 +84,7 @@ mod tests {
             RunOutcome::Analyzed {
                 report: "r".to_owned(),
                 regressions: 3,
+                outcome: AnalysisOutcome::Findings,
             }
             .is_success()
         );
@@ -87,6 +92,7 @@ mod tests {
             RunOutcome::Analyzed {
                 report: "r".to_owned(),
                 regressions: 0,
+                outcome: AnalysisOutcome::Clean,
             }
             .is_success()
         );
@@ -105,6 +111,7 @@ mod tests {
             RunOutcome::Analyzed {
                 report: "report body".to_owned(),
                 regressions: 2,
+                outcome: AnalysisOutcome::Findings,
             }
             .stdout_text(),
             Some("report body")
@@ -126,6 +133,7 @@ mod tests {
             RunOutcome::Analyzed {
                 report: String::new(),
                 regressions: 0,
+                outcome: AnalysisOutcome::NothingInScope,
             }
             .stdout_text(),
             None

@@ -556,16 +556,21 @@ are selected), the ghost filter is analyze-only and outside the shared selection
 Output toggles select which renderings one analysis pass emits — text to stdout by default,
 with file output flags that compose so a single pass can also write Markdown and JSON to
 their requested paths; requesting no output at all is an error. Beyond those three canonical
-renderings, `analyze` offers one **derived** output — a condensed Markdown *summary* — for a
-downstream consumer
-whose body has a hard size limit (the workflow posts it as a rolling GitHub issue, capped at
-65,536 characters). The summary keeps only the most significant findings and drops the
-per-discriminant grouping, so it is intentionally lossy; it is analyze-only because truncating a
-ranked list is meaningless for the enumerating commands, and it never displaces the full
-reports, which the workflow attaches alongside it. **Findings never affect the exit code**:
-the process exits non-zero only when the analysis fails to *run*. A finding is advisory, and
-the machine-readable signal lives in the JSON report. Downstream automation (a scheduled
-regression watch, a PR comment bot) reads that rather than the exit status.
+renderings, `analyze` offers two **derived** outputs. A condensed Markdown *summary* serves a
+downstream consumer whose body has a hard size limit (the workflow posts it as a rolling
+GitHub issue, capped at 65,536 characters). The summary keeps only the most significant
+findings and drops the per-discriminant grouping, so it is intentionally lossy;
+`--outcome <path>` writes the one stable analysis verdict (`findings`, `clean`,
+`insufficient_baseline`, `nothing_in_scope` or `partial`) so automation can select a message
+without parsing JSON merely to recover one field. Both are analyze-only, and neither
+displaces the full reports, which the workflow attaches alongside the summary.
+
+**Findings never affect the exit code**: the process exits non-zero only when the analysis
+fails to *run*. A finding is advisory. The JSON report carries both `outcome` and the
+backward-compatible `notable` flag (`true` exactly for `findings`), while `--outcome` exposes
+the former directly to lightweight automation. Execution failure and partial coverage of an
+external collection matrix are separate workflow facts that can coexist with any successful
+analysis verdict.
 
 Regardless of `--verbose`, every query run (`analyze`, `list`, `prune`, `examine`) prints a
 one-line **effective-selection** summary to stderr — the engine, target-triple, and

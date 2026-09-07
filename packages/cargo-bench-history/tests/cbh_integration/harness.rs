@@ -8,9 +8,9 @@ use std::sync::LazyLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub(crate) use cargo_bench_history::{
-    AutoDiscriminants, BenchmarkId, BenchmarkResult, Cli, Command, EnvironmentInfo, GitInfo,
-    Metric, MetricKind, Overrides, Run, RunContext, RunOutcome, SCHEMA_VERSION, ToolchainInfo,
-    default_template, run, run_with_overrides,
+    AnalysisOutcome, AutoDiscriminants, BenchmarkId, BenchmarkResult, Cli, Command,
+    EnvironmentInfo, GitInfo, Metric, MetricKind, Overrides, Run, RunContext, RunOutcome,
+    SCHEMA_VERSION, ToolchainInfo, default_template, run, run_with_overrides,
 };
 use cbh_codec as codec;
 use cbh_model::{DiscriminantSet, Engine, MachineKey, TargetTriple};

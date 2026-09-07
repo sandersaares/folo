@@ -5,8 +5,8 @@
 //! it. `--markdown <path>` and `--json <path>` each request that format. `analyze`
 //! additionally offers `--markdown-summary <path>`: a condensed Markdown report
 //! carrying only the most significant findings, so a large analysis still fits within
-//! a GitHub issue body. It is analyze-only (the other commands do not rank findings),
-//! so it is not one of the three shared formats.
+//! a GitHub issue body, plus `--outcome <path>` for the stable one-line verdict.
+//! Both are analyze-only, so neither is one of the three shared formats.
 //!
 //! These commands no longer write files themselves: they render each requested format
 //! into a [`RenderedReports`] and return it, and the binary writes the `Some` fields to
@@ -15,7 +15,7 @@
 
 use std::path::Path;
 
-use cbh_render::ReportFormat;
+use cbh_render::{AnalysisOutcome, ReportFormat};
 
 use crate::{AnalyzeError, NoOutputSelectedError};
 
@@ -24,9 +24,12 @@ use crate::{AnalyzeError, NoOutputSelectedError};
 ///
 /// `text` is `Some` unless `--no-text` suppressed it; `markdown`/`json` are `Some`
 /// only when their `--markdown <path>`/`--json <path>` option was given;
-/// `markdown_summary` is analyze-only and `Some` only for `--markdown-summary <path>`.
+/// `markdown_summary` is analyze-only and requested on demand; `outcome` is always
+/// present for analyze so the shell can expose it in process or write it on request.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct RenderedReports {
+    /// The primary verdict, present only for `analyze`.
+    pub outcome: Option<AnalysisOutcome>,
     /// The text report destined for standard output, unless `--no-text` suppressed it.
     pub text: Option<String>,
     /// The Markdown report, when `--markdown <path>` was requested.
@@ -93,18 +96,25 @@ impl ReportRequest {
     ///
     /// Returns a [`NoOutputSelectedError`] when nothing would be produced —
     /// `--no-text` suppresses the text report and none of `--markdown`,
-    /// `--markdown-summary`, or `--json` was requested — so a run that would produce
-    /// nothing is rejected up front rather than completing silently.
+    /// `--markdown-summary`, `--json`, or `--outcome` was requested — so a run that
+    /// would produce nothing is rejected up front rather than completing silently.
     pub(crate) fn resolve_analyze(
         no_text: bool,
         markdown: Option<&Path>,
         json: Option<&Path>,
         markdown_summary: Option<&Path>,
+        outcome: Option<&Path>,
     ) -> Result<Self, AnalyzeError> {
-        if no_text && markdown.is_none() && json.is_none() && markdown_summary.is_none() {
+        if no_text
+            && markdown.is_none()
+            && json.is_none()
+            && markdown_summary.is_none()
+            && outcome.is_none()
+        {
             return Err(NoOutputSelectedError::new(
                 "--no-text suppresses the text report, so request at least one of \
-                 --markdown <path>, --markdown-summary <path>, or --json <path>",
+                 --markdown <path>, --markdown-summary <path>, --json <path>, or \
+                 --outcome <path>",
             )
             .into());
         }
@@ -127,6 +137,7 @@ impl ReportRequest {
         F: Fn(ReportFormat) -> String,
     {
         RenderedReports {
+            outcome: None,
             text: (!self.no_text).then(|| render(ReportFormat::Text)),
             markdown: self.markdown.then(|| render(ReportFormat::Markdown)),
             json: self.json.then(|| render(ReportFormat::Json)),
@@ -139,12 +150,18 @@ impl ReportRequest {
     ///
     /// The `render_summary` closure runs only when `--markdown-summary` was requested,
     /// so an unrequested summary is never rendered.
-    pub(crate) fn render_analyze<F, S>(self, render: F, render_summary: S) -> RenderedReports
+    pub(crate) fn render_analyze<F, S>(
+        self,
+        outcome: AnalysisOutcome,
+        render: F,
+        render_summary: S,
+    ) -> RenderedReports
     where
         F: Fn(ReportFormat) -> String,
         S: FnOnce() -> String,
     {
         RenderedReports {
+            outcome: Some(outcome),
             text: (!self.no_text).then(|| render(ReportFormat::Text)),
             markdown: self.markdown.then(|| render(ReportFormat::Markdown)),
             json: self.json.then(|| render(ReportFormat::Json)),
@@ -218,21 +235,31 @@ mod tests {
     #[test]
     fn resolve_analyze_allows_only_the_summary() {
         let summary = PathBuf::from("summary.md");
-        ReportRequest::resolve_analyze(true, None, None, Some(&summary)).unwrap();
+        ReportRequest::resolve_analyze(true, None, None, Some(&summary), None).unwrap();
+    }
+
+    #[test]
+    fn resolve_analyze_allows_only_the_outcome() {
+        let outcome = PathBuf::from("outcome.txt");
+        ReportRequest::resolve_analyze(true, None, None, None, Some(&outcome)).unwrap();
     }
 
     #[test]
     fn resolve_analyze_rejects_a_run_that_would_render_nothing() {
-        let error = ReportRequest::resolve_analyze(true, None, None, None).unwrap_err();
+        let error = ReportRequest::resolve_analyze(true, None, None, None, None).unwrap_err();
         assert!(error.find_source::<NoOutputSelectedError>().is_some());
     }
 
     #[test]
     fn render_analyze_renders_the_summary_when_requested() {
         let summary = PathBuf::from("summary.md");
-        let request = ReportRequest::resolve_analyze(true, None, None, Some(&summary)).unwrap();
-        let rendered = request.render_analyze(render_label, || "SUMMARY".to_owned());
+        let request =
+            ReportRequest::resolve_analyze(true, None, None, Some(&summary), None).unwrap();
+        let rendered = request.render_analyze(AnalysisOutcome::Clean, render_label, || {
+            "SUMMARY".to_owned()
+        });
         assert!(rendered.text.is_none());
+        assert_eq!(rendered.outcome, Some(AnalysisOutcome::Clean));
         assert_eq!(rendered.markdown_summary.as_deref(), Some("SUMMARY"));
     }
 
@@ -240,9 +267,9 @@ mod tests {
     fn render_analyze_is_a_noop_for_the_summary_without_a_requested_path() {
         // The summary is unset: the renderer must not run and the summary stays `None`.
         let json = PathBuf::from("report.json");
-        let request = ReportRequest::resolve_analyze(true, None, Some(&json), None).unwrap();
+        let request = ReportRequest::resolve_analyze(true, None, Some(&json), None, None).unwrap();
         let mut rendered = false;
-        let reports = request.render_analyze(render_label, || {
+        let reports = request.render_analyze(AnalysisOutcome::Clean, render_label, || {
             rendered = true;
             "SUMMARY".to_owned()
         });

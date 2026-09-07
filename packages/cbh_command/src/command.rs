@@ -287,6 +287,9 @@ pub struct AnalyzeOptions {
     /// against the working directory. Analyze-only, so a large analysis still fits
     /// within a GitHub issue body.
     pub markdown_summary: Option<PathBuf>,
+    /// Write the stable analysis outcome wire name to this path, if set
+    /// (`--outcome <path>`). A relative path resolves against the working directory.
+    pub outcome: Option<PathBuf>,
     /// Emit detailed diagnostic notes to standard error describing each step.
     pub verbose: bool,
     /// Emit per-stage wall-clock timings to standard error, independent of

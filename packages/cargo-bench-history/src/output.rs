@@ -5,7 +5,8 @@
 //! returns it; this module writes the `Some` fields to the paths the user gave.
 //! Text is the default and goes to standard output (the caller prints it), so it is
 //! never written here; `--markdown <path>` and `--json <path>` each write that
-//! format to a file, and `analyze` additionally offers `--markdown-summary <path>`.
+//! format to a file, and `analyze` additionally offers `--markdown-summary <path>`
+//! plus a one-line `--outcome <path>`.
 //! The file writes go through the [`OutputWriter`] port (mirroring the `ConfigWriter`
 //! used by `install`) so the write path stays filesystem-agnostic: production uses
 //! [`TokioOutputWriter`], while tests drive an in-memory fake.
@@ -72,11 +73,12 @@ impl OutputWriter for TokioOutputWriter {
 /// Writes each rendered report to its requested destination path.
 ///
 /// The `Some`-ness of each [`RenderedReports`] field is the single source of truth
-/// for what gets written: `cbh_analyze` renders a format exactly when the user
-/// requested its path, so a rendered field and its destination path always agree.
-/// A `debug_assert!` guards that agreement in both directions. Each file write is
-/// announced on the verbose trail with its path and size, so a `--verbose` run
-/// records exactly what landed where.
+/// for what gets written for the optional report formats: `cbh_analyze` renders a
+/// format exactly when the user requested its path, so a rendered field and its
+/// destination path always agree. The outcome is different: analysis always computes
+/// it for the in-process caller and only writes it when `--outcome` supplied a path.
+/// Each file write is announced on the verbose trail with its path and size, so a
+/// `--verbose` run records exactly what landed where.
 ///
 /// # Errors
 ///
@@ -87,6 +89,7 @@ pub(crate) async fn write_reports<W: OutputWriter>(
     markdown: Option<&Path>,
     json: Option<&Path>,
     markdown_summary: Option<&Path>,
+    outcome: Option<&Path>,
     rendered: &RenderedReports,
 ) -> Result<(), AppError> {
     debug_assert_eq!(
@@ -104,7 +107,6 @@ pub(crate) async fn write_reports<W: OutputWriter>(
         rendered.markdown_summary.is_some(),
         "a --markdown-summary path and a rendered summary must accompany each other"
     );
-
     if let (Some(path), Some(contents)) = (markdown, rendered.markdown.as_deref()) {
         write_report(writer, reporter, path, contents, "Markdown").await?;
     }
@@ -113,6 +115,12 @@ pub(crate) async fn write_reports<W: OutputWriter>(
     }
     if let (Some(path), Some(contents)) = (markdown_summary, rendered.markdown_summary.as_deref()) {
         write_report(writer, reporter, path, contents, "Markdown summary").await?;
+    }
+    if let Some(path) = outcome {
+        let value = rendered
+            .outcome
+            .expect("an --outcome path is valid only for analyze, which always has an outcome");
+        write_report(writer, reporter, path, value.as_str(), "analysis outcome").await?;
     }
     Ok(())
 }
@@ -201,12 +209,14 @@ mod tests {
 
     use super::fake::{FailingOutputWriter, MemoryOutputWriter};
     use super::*;
+    use crate::AnalysisOutcome;
 
     #[test]
     fn write_reports_writes_both_files_and_still_announces_them() {
         let markdown = PathBuf::from("report.md");
         let json = PathBuf::from("report.json");
         let rendered = RenderedReports {
+            outcome: None,
             text: Some("Text".to_owned()),
             markdown: Some("Markdown".to_owned()),
             json: Some("Json".to_owned()),
@@ -220,6 +230,7 @@ mod tests {
             &reporter,
             Some(&markdown),
             Some(&json),
+            None,
             None,
             &rendered,
         ))
@@ -252,7 +263,7 @@ mod tests {
         let reporter = RecordingReporter::new();
 
         block_on(write_reports(
-            &writer, &reporter, None, None, None, &rendered,
+            &writer, &reporter, None, None, None, None, &rendered,
         ))
         .unwrap();
 
@@ -275,6 +286,7 @@ mod tests {
             None,
             None,
             Some(&summary),
+            None,
             &rendered,
         ))
         .unwrap();
@@ -282,6 +294,38 @@ mod tests {
         assert_eq!(writer.written(&summary).as_deref(), Some("SUMMARY"));
         assert!(
             reporter.contains("wrote the Markdown summary report"),
+            "{:?}",
+            reporter.notes()
+        );
+    }
+
+    #[test]
+    fn write_reports_writes_the_analysis_outcome_and_announces_it() {
+        let outcome = PathBuf::from("outcome.txt");
+        let rendered = RenderedReports {
+            outcome: Some(AnalysisOutcome::InsufficientBaseline),
+            ..RenderedReports::default()
+        };
+        let writer = MemoryOutputWriter::new();
+        let reporter = RecordingReporter::new();
+
+        block_on(write_reports(
+            &writer,
+            &reporter,
+            None,
+            None,
+            None,
+            Some(&outcome),
+            &rendered,
+        ))
+        .unwrap();
+
+        assert_eq!(
+            writer.written(&outcome).as_deref(),
+            Some("insufficient_baseline")
+        );
+        assert!(
+            reporter.contains("wrote the analysis outcome report"),
             "{:?}",
             reporter.notes()
         );
@@ -302,6 +346,7 @@ mod tests {
             &reporter,
             None,
             Some(&json),
+            None,
             None,
             &rendered,
         ))

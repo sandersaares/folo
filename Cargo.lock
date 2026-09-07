@@ -747,6 +747,7 @@ dependencies = [
  "rasciigraph",
  "serde",
  "serde_json",
+ "static_assertions",
 ]
 
 [[package]]

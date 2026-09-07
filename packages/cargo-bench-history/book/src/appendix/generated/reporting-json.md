@@ -6,6 +6,7 @@
   "tip_commit": "9f2c4a1d3b5e708aab12cd34ef5678901234567a",
   "tip_dirty": false,
   "mode": "history",
+  "outcome": "findings",
   "notable": true,
   "runs": 128,
   "series": 8,

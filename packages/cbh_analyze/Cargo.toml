@@ -26,6 +26,7 @@ allowed_external_types = [
     "cbh_command::command::UnblessOptions",
     "cbh_config::error::ConfigError",
     "cbh_detect::detect::findings::AnalysisMode",
+    "cbh_render::coverage::AnalysisOutcome",
     "cbh_storage::error::StorageError",
     "cbh_storage::facade::StorageFacade",
     "ohno::enrichable::Enrichable",

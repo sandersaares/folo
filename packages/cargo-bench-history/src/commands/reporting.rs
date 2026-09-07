@@ -49,12 +49,17 @@ pub(crate) async fn analyze(
         options.markdown.as_deref(),
         options.json.as_deref(),
         options.markdown_summary.as_deref(),
+        options.outcome.as_deref(),
         &rendered,
     )
     .await?;
+    let outcome = rendered
+        .outcome
+        .expect("analyze always renders its primary outcome");
     Ok(RunOutcome::Analyzed {
         report: rendered.text.unwrap_or_default(),
         regressions,
+        outcome,
     })
 }
 
@@ -83,6 +88,7 @@ pub(crate) async fn list(
         options.verbose,
         options.markdown.as_deref(),
         options.json.as_deref(),
+        None,
         None,
         &rendered,
     )
@@ -118,6 +124,7 @@ pub(crate) async fn examine(
         options.markdown.as_deref(),
         options.json.as_deref(),
         None,
+        None,
         &rendered,
     )
     .await?;
@@ -151,6 +158,7 @@ pub(crate) async fn prune(
         options.verbose,
         options.markdown.as_deref(),
         options.json.as_deref(),
+        None,
         None,
         &rendered,
     )
@@ -202,6 +210,7 @@ async fn write_rendered(
     markdown: Option<&Path>,
     json: Option<&Path>,
     markdown_summary: Option<&Path>,
+    outcome: Option<&Path>,
     rendered: &RenderedReports,
 ) -> Result<(), AppError> {
     let writer = TokioOutputWriter::new(workspace_dir.to_path_buf());
@@ -212,6 +221,7 @@ async fn write_rendered(
         markdown,
         json,
         markdown_summary,
+        outcome,
         rendered,
     )
     .await

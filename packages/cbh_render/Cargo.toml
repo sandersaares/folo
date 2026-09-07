@@ -47,6 +47,7 @@ serde_json = { workspace = true }
 [dev-dependencies]
 mutants = { workspace = true }
 nonempty = { workspace = true }
+static_assertions = { workspace = true }
 
 [lints]
 workspace = true

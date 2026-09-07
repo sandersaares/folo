@@ -10,6 +10,64 @@
 
 use cbh_detect::{SeriesCensus, UnjudgedReason};
 
+/// The primary verdict of a successful analysis.
+///
+/// This is deliberately separate from execution success and platform coverage:
+/// a command that fails does not produce an analysis verdict, and findings can
+/// coexist with a partially failed external collection matrix.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AnalysisOutcome {
+    /// At least one finding survived the detection policy.
+    Findings,
+    /// Every in-scope series was judged and no finding survived.
+    Clean,
+    /// In-scope series existed, but none carried enough evidence to be judged.
+    InsufficientBaseline,
+    /// No series entered analysis, or every accounted series was absent at the
+    /// analyzed context commit.
+    NothingInScope,
+    /// Some in-scope series were judged and some were not, with no findings.
+    Partial,
+}
+
+impl AnalysisOutcome {
+    /// Every successful analysis outcome, in wire-order for documentation and tests.
+    pub const ALL: [Self; 5] = [
+        Self::Findings,
+        Self::Clean,
+        Self::InsufficientBaseline,
+        Self::NothingInScope,
+        Self::Partial,
+    ];
+
+    /// The stable `snake_case` wire name used by automation.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Findings => "findings",
+            Self::Clean => "clean",
+            Self::InsufficientBaseline => "insufficient_baseline",
+            Self::NothingInScope => "nothing_in_scope",
+            Self::Partial => "partial",
+        }
+    }
+
+    /// Derives the verdict from findings and the shared coverage projection.
+    #[must_use]
+    pub fn from_analysis(notable: bool, coverage: &Coverage) -> Self {
+        if notable {
+            return Self::Findings;
+        }
+
+        match coverage.state() {
+            CoverageState::NoSeries | CoverageState::NothingInScope => Self::NothingInScope,
+            CoverageState::NothingJudged => Self::InsufficientBaseline,
+            CoverageState::Partial => Self::Partial,
+            CoverageState::Full => Self::Clean,
+        }
+    }
+}
+
 /// How much of the in-scope suite an analysis reached a verdict on.
 ///
 /// The three "nothing was judged" situations are distinct operational states with
@@ -266,9 +324,14 @@ impl Coverage {
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
+    use std::panic::{RefUnwindSafe, UnwindSafe};
+
     use cbh_detect::Testability;
+    use static_assertions::assert_impl_all;
 
     use super::*;
+
+    assert_impl_all!(AnalysisOutcome: Send, Sync, Unpin, UnwindSafe, RefUnwindSafe);
 
     /// A census of `judged` judged series plus the given unjudged breakdown.
     fn census_of(judged: usize, unjudged: &[(UnjudgedReason, usize)]) -> SeriesCensus {
@@ -379,6 +442,53 @@ mod tests {
             assert_eq!(coverage.total(), census.total(), "{name}");
             assert_eq!(coverage.unjudged(), census.unjudged(), "{name}");
         }
+    }
+
+    #[test]
+    fn analysis_outcome_combines_findings_with_coverage() {
+        let cases = [
+            (SeriesCensus::default(), AnalysisOutcome::NothingInScope),
+            (
+                census_of(0, &[(UnjudgedReason::Ghost, 2)]),
+                AnalysisOutcome::NothingInScope,
+            ),
+            (
+                census_of(0, &[(UnjudgedReason::TooFewPoints, 2)]),
+                AnalysisOutcome::InsufficientBaseline,
+            ),
+            (
+                census_of(1, &[(UnjudgedReason::TooFewPoints, 1)]),
+                AnalysisOutcome::Partial,
+            ),
+            (census_of(2, &[]), AnalysisOutcome::Clean),
+        ];
+
+        for (census, expected) in cases {
+            let coverage = Coverage::from_census(&census);
+            assert_eq!(AnalysisOutcome::from_analysis(false, &coverage), expected);
+            assert_eq!(
+                AnalysisOutcome::from_analysis(true, &coverage),
+                AnalysisOutcome::Findings
+            );
+        }
+    }
+
+    #[test]
+    fn analysis_outcome_wire_names_are_distinct_and_stable() {
+        let names: Vec<&str> = AnalysisOutcome::ALL
+            .iter()
+            .map(|outcome| outcome.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "findings",
+                "clean",
+                "insufficient_baseline",
+                "nothing_in_scope",
+                "partial"
+            ]
+        );
     }
 
     #[test]
