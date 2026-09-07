@@ -31,7 +31,9 @@ so a brand-new crate's first version must be published manually:
 The `increment-versions` skill runs `just check-never-published` as an early,
 workspace-wide advisory. Before applying an approved plan,
 `just check-increment-published` fails unless every package the plan reaches has
-already completed this first-publication procedure.
+already reached crates.io. That gate cannot verify Trusted Publisher
+configuration or the release-workflow follow-up, so complete those remaining
+steps explicitly before retrying the increment.
 
 ## Emergency manual publish
 
