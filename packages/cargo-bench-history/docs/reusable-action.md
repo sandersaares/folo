@@ -7,6 +7,14 @@ action: its command surface, distribution model, configuration surface, and host
 tool's own data model, commands, storage, auth, and analysis modes live in `DESIGN.md`;
 this document does not restate them, only how they are wrapped for external consumers.
 
+**This is a working document, not a finished reference.** It exists to be *consumed* while
+the design is implemented: expect it to be split, rewritten, and largely dismantled as the
+implementation lands, whether as one pull request or a stack of them. Sections graduate out
+of it as they find permanent homes — user-facing material into the book's GitHub-automation
+section (§11) and the action repo's README, internal decisions into the owning package's
+design and implementation guides — and what remains here shrinks accordingly. Treat
+disagreement between this document and shipped behaviour as a defect in this document.
+
 ## 1. Problem & goals
 
 Folo drives the tool from a set of in-tree workflows, all consuming the committed
@@ -116,36 +124,53 @@ monorepo-wide tags that collide with the release automation. We keep one *intern
 composite action in the monorepo only if it helps us dogfood (see §10), but the
 **published** artifact is the dedicated repo.
 
-*Development flow.* The action is small — `action.yml` and the reusable workflows (§4.7) are
-thin wiring, because the behaviour they invoke lives in Rust: the tool composes the report
-bodies and a small companion binary performs the GitHub writes (§5.1). It is authored directly
-in the new repo. Because most of the action's value lives in behaviour that is awkward to
+*Where the code lives.* The split is by *language and release cadence*, not by convenience:
+
+* **All Rust stays in the monorepo.** The tool, the companion binary (§5.1), and the faker are
+  workspace packages, sharing its toolchain, lints, test conventions, release automation, and
+  version groups. They are published to crates.io like any other package here and installed by
+  the action at run time (§3). Nothing Rust is authored in the action repo.
+* **Only the GitHub-shaped files live in the action repo**: the root `action.yml`, the reusable
+  workflows (§4.7), the README, and the release tooling (§8.1). These are exactly the artefacts
+  that need their own Marketplace listing and their own semver tag stream.
+
+This keeps the boundary honest in both directions: the action repo carries no logic worth
+testing in isolation, so it needs no Rust toolchain, and the monorepo keeps every piece of
+behaviour under the validation it already runs. The interface between them is the published
+binary plus its documented arguments.
+
+*Testability.* Most of the action's value lives in behaviour that is awkward to
 test — a history that only becomes interesting once it accrues over many commits, and real
-GitHub side effects (filing an issue, posting and updating a PR comment) — its CI leans on a
-layered strategy (§9): fast Rust unit tests of the composition and transport, a local-storage
-end-to-end pass on every push, and a synthetic-history sandbox pass (built on the published
+GitHub side effects (filing an issue, posting and updating a PR comment) — so it leans on a
+layered strategy (§9): fast Rust unit tests of the composition and transport (in the monorepo,
+beside the code), a local-storage
+end-to-end pass on every push, and a synthetic-history pass (built on the published
 `cargo-bench-history-faker` engine and the tool's hidden `import` command) that drives the real
-GitHub-write paths. None of it needs the monorepo to be testable.
+GitHub-write paths.
 
 ## 3. Binary distribution
 
 External callers cannot `cargo run -p cargo-bench-history` against our workspace, so the
-action must obtain a real `cargo-bench-history` binary. The published tool is the
-`cargo-bench-history` package (the binary) plus the small private-use `cbh_*` packages it
-depends on (all `publish = true`; see `DESIGN.md` §9), published together from CI to crates.io.
+action must obtain real binaries. The published tool is the `cargo-bench-history` package,
+published from CI to crates.io.
 Every published release also carries **prebuilt, `cargo-binstall`-consumable binaries**
 (per-target archives + `.sha256`, attached to the release; see
 [`../../../docs/release-automation.md`](../../../docs/release-automation.md)), so the action
 has both a from-source path and a download-a-binary fast path.
 
-The action exposes an **`install-method`** input with four modes:
+The action exposes an **`install-method`** input with four modes. **The chosen method applies
+to every binary the action needs**, not just the tool: the companion (§5.1), and any other
+`folo-rs/folo` binary a command depends on, are obtained the same way. A consumer who chose
+`binstall` because their runners cannot afford a compile must not have that choice silently
+ignored for the second binary, and one who pre-seeded `PATH` expects *nothing* to be
+downloaded. Each command installs only the binaries it actually uses.
 
 | `install-method` | How | When |
 | --- | --- | --- |
-| `binstall` | Install `cargo-binstall`, then `cargo binstall cargo-bench-history --version <v> --locked` | **Default.** Downloads the prebuilt archive from the package's GitHub Release (seconds), automatically falling back to a source build if no asset matches the runner target. Best for `cargo-bench-history`, whose Azure SDK + `mimalloc` dependencies are slow to compile. |
-| `cargo-install` | `cargo install cargo-bench-history --version <v> --locked` | Pure source build, no extra tooling. Always works once published; pays the full cold-cache compile. The escape hatch when a prebuilt asset is unavailable or unwanted. |
-| `path` | `cargo install --path <tool-path>/packages/cargo-bench-history --locked` | Dogfooding (§10): build the tool from a checkout of *this* workspace so Folo's own collection exercises `main`'s HEAD, not a release. |
-| `none` | (nothing) | The caller has already put `cargo-bench-history` on `PATH` — a prior step, a devcontainer, a warmed tool cache — and the action just runs it. `tool-version` is ignored; the caller owns which build is used. |
+| `binstall` | Install `cargo-binstall`, then `cargo binstall <package> --version <v> --locked` for each required binary | **Default.** Downloads the prebuilt archive from each package's GitHub Release (seconds), automatically falling back to a source build if no asset matches the runner target. Best for `cargo-bench-history`, whose Azure SDK + `mimalloc` dependencies are slow to compile. |
+| `install` | `cargo install <package> --version <v> --locked` for each required binary | Pure source build, no extra tooling. Always works once published; pays the full cold-cache compile. The escape hatch when a prebuilt asset is unavailable or unwanted. |
+| `path` | `cargo install --path <workspace>/packages/<package> --locked` for each required binary | Dogfooding (§10): build from a checkout of *this* workspace so Folo's own collection exercises `main`'s HEAD, not a release. |
+| `none` | (nothing) | The caller has already put the required binaries on `PATH` — a prior step, a devcontainer, a warmed tool cache — and the action just runs them. `tool-version` is ignored; the caller owns which builds are used. |
 
 **Which version, and why a tool release never forces an action release.** For the three
 installing methods the version comes from the **`tool-version`** input (§7), which defaults to a
@@ -181,24 +206,33 @@ different owners:
 Each command installs only what it uses: `collect` and `backfill` need the tool alone, the
 sink commands need the companion, and `analyze-*` needs both. `install-method: none` therefore
 requires whichever of the two that command uses to be on `PATH` already, and `path` accepts a
-location for each. Because `alert` exists precisely to report that a run failed, it must not
-be able to fail for want of an install — its companion is fetched by the same cached,
-checksum-verified path as everything else, and a release gate (§8.1) refuses to move the
-floating major tag until every binary named in the manifest is resolvable.
+location for each.
+
+**The failure-reporting path must not itself be fragile.** `alert` (§4.4) runs *because*
+something already went wrong, so it is the one command that cannot afford a flaky install: if
+fetching its companion fails, the run loses not only its results but also the notification that
+anything is wrong, and the failure becomes silent. Two existing mechanisms cover this, and
+neither is special-cased for `alert` — they simply matter most there. Installs are cached and
+retried like every other install, so a transient network fault does not reach the command; and
+the release gate (§8.1) refuses to move the floating major tag until every binary named in the
+manifest resolves on every supported target, so a release can never ship a manifest whose
+companion cannot be installed.
 
 **All install modes stay testable.** Method selection, version resolution, and the binary
 cache are unit-tested in the same Rust layer as the rest of the action's logic (§5.1), with
 mocked tool output; and the CI matrix (§9) additionally runs each *real* method (`binstall`,
-`cargo-install`, `path`; `none` against a pre-seeded `PATH`) against a published version, so
+`install`, `path`; `none` against a pre-seeded `PATH`) against a published version, so
 both the branching and the actual installs stay covered.
 
 **No test scaffolding is ever shipped to consumers.** `cargo install cargo-bench-history` (or a
 `binstall` of it) installs **only** the real tool. The end-to-end test engine is a *separate
 package*, `cargo-bench-history-faker`, with its own binary; installing the tool never pulls it
-in (see `DESIGN.md` §9). The faker is itself `publish = true` but **unsupported** — its crate
-root is `#![doc(hidden)]` and neither its library API nor its CLI carries a semver contract — so
-it is on crates.io (and `binstall`-able) purely so a sandbox repo can run it without vendoring
-(§9). A consumer of the action never installs it: it appears in the release manifest only for
+in (see `DESIGN.md` §9). The faker is **already published** — it is on crates.io today, with
+`binstall`-able prebuilt binaries from the same release pipeline — but **unsupported**: its
+crate root is doc-hidden and neither its library API nor its CLI carries a semver contract. It
+is published purely so a test job can run it without vendoring or a workspace checkout (§9);
+nothing about the testing strategy below is blocked on publishing work. A consumer of the
+action never installs it: it appears in the release manifest only for
 the action's own test jobs. So the action needs no `--bin`
 selector or any other guard against test binaries leaking onto a consumer's `PATH`; the install
 commands above are the plain package-name form.
@@ -214,10 +248,13 @@ workflow jobs** the monorepo already factors the flows into (and, today, onto it
 | --- | --- |
 | `collect` | Measure and store (per platform, in a matrix). |
 | `backfill` | Densify recent history for this machine key; no analysis, no sink (§4.8). |
-| `analyze-history` | Trend analysis of `main`, → rolling **issue** (once, after the matrix). |
+| `analyze-history` | Trend analysis of the default branch, → rolling **issue** (once, after the matrix). |
 | `analyze-pr` | Branch-vs-base analysis of a PR, → rolling **PR comment** (once). |
 | `pr-comment-preflight` | Keep the PR comment honest at run *start* (staleness + in-progress seeding). |
-| `pr-comment-cleanup` | Drop the PR comment when the PR touches nothing benchmarkable. |
+| `pr-comment-cleanup` | Replace the PR comment with a note when the PR touches nothing benchmarkable. |
+| `pr-comment-finalize` | Retire the in-progress placeholder when the run failed (§4.4). |
+| `issue-preflight` | Flag the open regression issue as stale at run *start* (§4.4). |
+| `issue-cleanup` | Move the regression issue to all-clear when a run comes back clean (§4.4). |
 | `alert` / `resolve-alert` | The failure-issue open / close lifecycle for the history flow. |
 
 A single monolithic "do everything" action cannot express these shapes: `collect` runs
@@ -331,10 +368,18 @@ PR, whose points are transient.
    --engine all --target-triple all --machine-key <k>… --no-text --markdown <scratch>/report.md
    --json <scratch>/report.json --markdown-summary <scratch>/summary.md [--since <window>]
    --verbose`.
-   * **Analysis mode is inferred, not passed.** With the context left at `main`'s tip (its own
-     merge-base, clean), the tool auto-selects **history** mode — long-range change-point and
-     drift detection reporting regressions only (§4.5). The action passes no mode flag because
-     none exists.
+   * **Analysis mode is inferred, not passed.** With the context left at the analyzed branch's
+     own tip (its own merge-base, clean), the tool auto-selects **history** mode — long-range
+     change-point and drift detection reporting regressions only (§4.5). The action passes no
+     mode flag because none exists.
+   * **Nothing here is specific to a branch named `main`.** History mode is selected by
+     *topology*, not by a branch name: it applies to whatever branch the run collected on, so a
+     repo whose trunk is `master`, `develop`, or `trunk` works unchanged, as does a repo running
+     the flow on a long-lived release branch. What the flow does assume is that it runs on **one
+     branch that accumulates a continuous series** — the trunk, in practice — because a history
+     is only comparable along a line of commits that share ancestry. Running the history flow
+     against a second branch is supported, but it is a second history: give it its own
+     `instance` (§5) so the two do not share a rolling issue, an artifact name, or a cache key.
    * **Machine keys.** The facets default to surveying every engine and triple (`all`), but
      the machine key is **not** `all`: it is the exact set of fingerprints collected this run,
      threaded from the collect matrix (§4.6), so the survey is scoped to the machines that
@@ -495,18 +540,47 @@ commands** so the caller schedules them in their own jobs at the right point:
   genuine failure, not cancellation: a superseded run is *expected* to leave the placeholder
   standing, because the run that cancelled it is about to refresh it.
 
-**Issue sink (history flow).** Symmetrically, the *failure* of a run — distinct from a
+**Regression-issue sink (history flow).** The rolling regression issue needs the same upkeep
+as the PR comment, and for the same reason: it is a long-lived artefact that keeps asserting
+something after the run that wrote it has become history. Without upkeep it goes stale
+silently — an issue filed six commits ago still reads as a current statement about `main` —
+and it never acknowledges being fixed, so a maintainer cannot tell "still broken" from
+"nobody has looked". Two commands mirror the PR pair:
+
+* **`issue-preflight`** runs at the *start* of each history run. When an open regression issue
+  exists, it prepends the same sentinel-bounded staleness banner the PR sink uses — *"findings
+  are N commits behind HEAD"*, from the compare distance — so a reader who arrives mid-run
+  knows the issue describes an older state of `main` and that a fresher answer is on its way.
+  It is a no-op when no issue is open; unlike the PR sink it seeds **no placeholder**, because
+  an issue that exists only to say "benchmarking in progress" would be noise in the issue
+  tracker rather than context on something already being read.
+* **`issue-cleanup`** runs at the *end* of a run whose outcome is **clean** (§4.2) while an
+  issue filed by an earlier run is still open. It rewrites the body to an **all-clear** state
+  naming the commit that came back clean, so the issue stops asserting a regression that no
+  longer reproduces. By default it **leaves the issue open**: the tool detects that the numbers
+  recovered, which is not the same as the underlying problem being understood — a regression
+  may have been masked, worked around, or accepted, and closing it would discard a thread a
+  human may still want. An **`auto-close`** input (default `false`) closes it for maintainers
+  who prefer the issue to track the *measurement* rather than the *investigation*.
+
+This is deliberately asymmetric with the failure alert below, and the distinction is the point:
+a **failure** is a machine condition that is definitively over when the next run goes green, so
+it auto-closes; a **regression finding** is a statement about the code that a green run does
+not by itself resolve. Same mechanism, opposite defaults, because they answer to different
+readers.
+
+**Failure-alert sink (history flow).** Separately, the *failure* of a run — distinct from a
 regression *finding* — is a recurring condition on a rolling target, so it gets its own
-deduplicated tracking issue that **does** auto-close on recovery (unlike the manual regression
-issue of §4.2):
+deduplicated tracking issue that **does** auto-close on recovery:
 
 * **`alert`** opens or refreshes a dedup failure issue when the run fails.
 * **`resolve-alert`** closes it when a subsequent run succeeds.
 
-Both use the same rolling-issue path in the companion binary as §4.2, keyed on a distinct
-failure identity. Every message named in this section — placeholder, staleness banner,
-terminal failure notice, failure alert — has no analysis behind it, which is precisely why
-the companion owns the whole catalogue (§5.1) rather than splitting it with the tool.
+All four use the same rolling-issue path in the companion binary as §4.2, each keyed on a
+distinct identity so they never collide. Every message named in this section — placeholder,
+staleness banners, all-clear, terminal failure notice, failure alert — has no analysis behind
+it, which is precisely why the companion owns the whole catalogue (§5.1) rather than splitting
+it with the tool.
 
 ### 4.5 Collect write mode, inferred analysis mode, recollect
 
@@ -620,7 +694,7 @@ The action repo therefore publishes **two layers**:
         issues: write       # rolling issue + failure alert
       uses: folo-rs/cargo-bench-history-action/.github/workflows/history.yml@v1
       with:
-        platforms: '["ubuntu-latest", "windows-latest"]'
+        platforms: ubuntu-latest, windows-latest
         azure-client-id: ${{ vars.AZURE_CLIENT_ID }}
         azure-tenant-id: ${{ vars.AZURE_TENANT_ID }}
   ```
@@ -642,16 +716,19 @@ Four platform constraints shape this split, and none is worked around:
   (`$/`), which resolves at the exact commit the workflow is running from — a hardcoded
   `@v1` there would let a workflow pinned to `v1.2.3` silently invoke a newer action.
 * **`workflow_call` inputs are scalars.** Only `string`, `number`, and `boolean` exist, so
-  list-shaped inputs (the platform matrix, package scopes, labels) are passed as **JSON
-  strings** and expanded with `fromJSON` inside the reusable workflow. This is why
-  `platforms` above is a quoted JSON array. The composite layer, which has no such
-  restriction, keeps its more forgiving newline/space lists; the reusable workflow is the
-  one place that converts.
+  list-shaped inputs (the platform matrix, package scopes, labels) are passed as
+  **comma-separated strings** and split inside the reusable workflow. JSON-in-a-string is the
+  other common encoding and is rejected here: it is fiddly to write in YAML (quoting a JSON
+  array inside a YAML scalar), easy to get subtly wrong, and produces an unhelpful failure when
+  it is — a malformed array surfaces as a matrix expansion error rather than as "your input is
+  wrong". A comma-separated list is what a human would write unprompted, and the same spelling
+  works at both layers, so the composite action accepts it too rather than having one list
+  syntax for the workflow and another for the action.
 * **A caller matrix fans out the whole invocation, not one phase of it.** A matrix job *can*
   call a reusable workflow, but it re-instantiates the entire workflow per combination —
   which would give one analyze per platform instead of the single aggregate analyze the
   design requires. The collect matrix therefore lives **inside** `history.yml`, driven by the
-  JSON `platforms` input, so many collect jobs converge on one analyze. This is the main
+  `platforms` input, so many collect jobs converge on one analyze. This is the main
   reason the reusable-workflow layer is worth having at all: the fan-out-then-converge shape
   is the single most awkward piece for a consumer to reproduce.
 * **Secrets and permissions do not flow implicitly.** `secrets: inherit` only works when
@@ -792,7 +869,14 @@ the tool's own reason names, and therefore the piece that drifts. `notable` like
 first-class output rather than something callers read back out of the JSON. Nothing
 GitHub-shaped enters the tool: it never learns what a comment marker or an artifact URL is.
 
-**The GitHub envelope and the whole sink lifecycle live in the companion binary.** It wraps
+**The GitHub envelope and the whole sink lifecycle live in the companion binary,
+`cargo-bench-history-github`.** The name states what it is — the GitHub adapter for
+`cargo-bench-history` — and follows the family convention the faker already sets
+(`cargo-bench-history-faker`), so the relationship and the ownership are obvious on a
+crates.io listing or a `PATH` entry. Naming it after the *action* was considered and rejected:
+the action is a distribution wrapper that happens to invoke this binary, while the binary
+itself is a GitHub adapter that would still make sense driven by a hand-written workflow, and
+tying its name to the wrapper would misstate that. It wraps
 the tool's rendered summary in the report body, adds the markers and the artifact link, and
 owns *every* message — including the ones with no analysis behind them: the in-progress
 placeholder, the staleness banner, the terminal failure notice, and the rolling failure
@@ -1001,7 +1085,7 @@ binaries run inside credentialed jobs, so *which* binary runs is itself a securi
 
 This section describes the **composite action** — the building-block layer. The reusable
 workflows (§4.7) accept a smaller, flow-shaped subset of the same names (plus `platforms`,
-the JSON-encoded runner matrix) and pass the rest through, so a consumer on the default path
+the comma-separated runner matrix) and pass the rest through, so a consumer on the default path
 sees only the inputs their flow actually varies.
 
 **Common inputs:** `command` (`collect` | `analyze-history` | `analyze-pr` | `backfill` |
@@ -1022,7 +1106,7 @@ flows' need to reach benchmark targets gated behind `required-features`),
 `no-default-features`, and `features` (a list). Without these a repo whose benches sit behind
 a feature would silently measure nothing.
 
-**`collect` inputs:** `packages` (newline/space list → `--package` per name; empty → whole
+**`collect` inputs:** `packages` (comma-separated list → `--package` per name; empty → whole
 workspace); `exclude`, `bench` (→ repeated flags); `best-of` (→ `--best-of`, default 1);
 `machine-key` (override; default auto-detect); `on-existing` (`error` (default here) | `skip` |
 `overwrite` → neither / `--skip-existing` / `--overwrite`; §4.5); `recollect-commit` (a SHA →
@@ -1195,10 +1279,10 @@ so both the install branching and the actual installs are exercised, not just mo
 6. **Caller canaries for the reusable workflows.** The action repo carries its own caller
    workflows that invoke `history.yml`, `pr.yml`, and `backfill.yml` exactly as an external
    consumer would, because none of the other levels exercise the layer that is now doing the
-   most work: matrix expansion from the JSON `platforms` input, fan-out-then-converge onto one
+   most work: matrix expansion from the `platforms` input, fan-out-then-converge onto one
    analyze, permission narrowing, the fork gate, artifact aggregation, and concurrency. The
    canaries deliberately include the ugly cases — a **partially failed** matrix, a **fully
-   failed** matrix, a malformed `platforms` JSON, an **empty package scope** (which must route
+   failed** matrix, a malformed `platforms` list, an **empty package scope** (which must route
    to cleanup, not analyze), and a cancelled run — since each is a path where the graph, not
    the binaries, decides the outcome. The two layers' input lists are contract-tested against
    each other so a new composite input cannot silently go unexposed by the workflows.
