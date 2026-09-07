@@ -661,10 +661,17 @@ accumulate (which is what the nightly densification pass, §4.8, exists to short
 because even integer-count metrics turned out to be machine-dependent (libraries dispatch to
 microarchitecture-specific code paths). There is no ride-along exemption: a result is only
 analyzed when its own machine key was threaded in, so the handoff above is what makes *any*
-engine's data visible to analysis, not just the wall-clock ones. Whether the artifact
-upload/download is bundled into the composite action (via `actions/upload-artifact` steps) or
-left to the caller is an implementation choice (§12); either way the tool stays GitHub-agnostic
-— it only ever sees `--machine-key <fingerprint>`.
+engine's data visible to analysis, not just the wall-clock ones.
+
+**The artifact steps stay in the workflow, not inside the action.** The upload and download are
+plain `actions/upload-artifact` / `download-artifact` steps in the reusable workflows, which
+already hide them from everyone on the default path. Bundling them into the composite action
+would save two steps for hand-assembled callers only, and would cost us a permanent dependency
+on two more actions to pin and upgrade, a fixed artifact-naming scheme to keep collision-free,
+and ownership of their cross-attempt and retention failure modes. Since neither arrangement is
+visible to most consumers, the tie breaks on which we would rather maintain — and the answer is
+the one that adds nothing. Either way the tool stays GitHub-agnostic: it only ever sees
+`--machine-key <fingerprint>`.
 
 ### 4.7 Two consumption layers — reusable workflows over composite actions
 
@@ -704,6 +711,31 @@ The action repo therefore publishes **two layers**:
   calls `collect` / `analyze-history` / `analyze-pr` / the lifecycle commands directly and
   wires the jobs themselves. Nothing is hidden from them; the reusable workflow is a
   convenience, not a privileged path.
+
+**`pr.yml` owns the scope preflight end to end.** Deciding *which packages a PR should
+benchmark* is a prerequisite for the PR flow, and leaving it to the consumer would leave the
+hardest part of adoption unsolved while claiming the flow is one `uses:` line. The workflow
+therefore computes it, in three steps:
+
+1. **Changed files → owning packages.** The diff against the base names files; each file
+   belongs to a package. This is what `cargo-detect-package` answers, and taking a versioned
+   dependency on it is preferable to reimplementing the lookup.
+2. **Expand to dependents.** A change to a package can move the numbers of anything that
+   depends on it, so the set is closed over reverse dependencies within the workspace.
+3. **Keep the packages that carry benchmarks.** `cargo metadata` lists every target with its
+   kind, so this is a filter over data Cargo already hands us — no bespoke walk, and notably
+   *not* a job for a package-detection tool.
+
+The result is the `packages` scope that drives collect (§4.1), and an empty result routes to
+the cleanup path instead of an analysis that would find nothing.
+
+Placing this in the **workflow** layer rather than the action layer is the point. Repositories
+genuinely disagree about what "affected" means — whether dev-dependencies count, whether a
+workspace-wide config change touches everything — so this is exactly the kind of policy that
+should be replaceable rather than baked into a published action's contract. A consumer who
+disagrees with our answer drops to the composite layer, runs whatever preflight they prefer,
+and passes the resulting `packages` to `collect`. They lose the one `uses:` line and gain full
+control, which is the trade the two-layer split exists to offer.
 
 Four platform constraints shape this split, and none is worked around:
 
@@ -1452,7 +1484,9 @@ binary** that owns the GitHub-shaped half (§5.1):
     self-hosted benchmark machines. These differ in almost every way that matters (machine-key
     stability, noise floor, whether densification is needed at all, useful `best-of` values),
     and a reader choosing hardware needs that comparison before they build a pipeline around
-    one of them.
+    one of them. This is **documentation, not a supported configuration we exercise**: our own
+    runs are on shared public runners, and the dedicated-hardware profile is described so a
+    reader can reason about the trade rather than because we test it.
   * **What automated measurements mean** — that PR measurements are keyed to branch commits and
     are discarded by squash- and rebase-merges (§4.5), so the trunk series is fed by the history
     and densification flows alone.
@@ -1469,50 +1503,3 @@ binary** that owns the GitHub-shaped half (§5.1):
   the action's reference material; the action repo's **README** is a quick start that links
   here. This file and the pointer from `DESIGN.md` §7.3 remain the design record until it is
   dismantled into those homes.
-
-## 12. Open questions
-
-* **How much of the PR scope preflight the action should own.** The PR flow needs the set of
-  benchmarkable packages a PR touches, and that decomposes into two steps which are easy to
-  conflate:
-  1. **Changed files → owning packages** (plus their dependents, since a change to a dependency
-     can move a dependent's numbers). This is the harder half, and it is what
-     `cargo-detect-package` addresses — it maps a *file* to its owning package. Note it answers
-     only the file-to-package question; the dependent closure is a separate walk.
-  2. **Of those packages, which carry benchmarks.** This half is not hard at all: `cargo
-     metadata` already lists every target with its kind, so "has a target of kind `bench`" is a
-     filter over data Cargo hands us. No new tool is needed, and no bespoke walk — which is why
-     it would be wrong to reach for a package-detection binary to answer *this* part.
-
-  The open question is **scope, not implementation**: whether the action offers a preflight
-  command that does this at all, or whether `packages` stays a caller-supplied input and the
-  consumer runs whatever delta tooling they already have. Owning it makes the PR flow adoptable
-  in one step; not owning it keeps the action out of the business of guessing what "affected"
-  means, which is a question repositories answer differently (some include dev-dependencies,
-  some treat workspace-wide config changes as touching everything). If we do own it, taking a
-  versioned dependency on `cargo-detect-package` for step 1 is fine and preferable to
-  reimplementing it; step 2 should just read `cargo metadata`.
-* **Whether the action bundles the machine-key artifact steps.** The handoff (§4.6) needs the
-  per-platform keys uploaded by each collect leg and downloaded by the single analyze job. The
-  choice is who calls `actions/upload-artifact` / `download-artifact`:
-
-  | | Action bundles the steps | Caller wires the artifacts |
-  | --- | --- | --- |
-  | Hand-assembled caller | Two fewer steps to write | Two steps to write, names are theirs |
-  | Reusable-workflow caller | No difference — hidden either way | No difference — hidden either way |
-  | Action's dependencies | Takes a dependency on two first-party actions, pinned and updated by us | Stays dependency-free |
-  | Artifact naming | Fixed by us; a second instance needs the `instance` namespace to avoid collisions | Caller's choice, collisions are theirs to avoid |
-  | Failure modes | Cross-attempt `github-token` handling, retention, and 404s become ours to get right | Caller owns them, and can debug them in their own YAML |
-
-  The decisive observation is the second row: the reusable workflows already hide this from
-  everyone on the default path, so bundling would buy nothing for the majority and would spend
-  the action's dependency budget to save two steps for the minority who deliberately chose to
-  hand-assemble. That argues for **not bundling**, but it is worth a deliberate decision rather
-  than drift.
-* **How far to take dedicated benchmark hardware in our own testing.** Everything else about
-  the testing strategy is settled (§9): unit tests, local-storage end-to-end, faker-driven
-  history, in-repo real-GitHub runs on the repository's own token, and dogfooding. What none of
-  those cover is the **dedicated self-hosted profile** the book will document (§11) — stable
-  machine keys, a low noise floor, densification largely unnecessary. Folo runs on shared public
-  runners, so that profile is currently designed but never exercised. Whether to stand up a
-  self-hosted runner to validate it, or to document it as untested-by-us, is unresolved.
