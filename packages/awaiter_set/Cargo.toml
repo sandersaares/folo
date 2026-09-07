@@ -2,7 +2,7 @@
 name = "awaiter_set"
 description = "Zero-allocation awaiter tracking for async synchronization primitives"
 publish = true
-version = "0.1.13"
+version = "0.1.14"
 
 authors.workspace = true
 edition.workspace = true

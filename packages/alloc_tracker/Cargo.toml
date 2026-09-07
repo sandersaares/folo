@@ -2,7 +2,7 @@
 name = "alloc_tracker"
 description = "Memory allocation tracking utilities for benchmarks and performance analysis"
 publish = true
-version = "0.7.4"
+version = "0.7.5"
 
 authors.workspace = true
 edition.workspace = true

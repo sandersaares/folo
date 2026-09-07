@@ -3,7 +3,7 @@
 name = "cargo-freeze-deps"
 description = "A Cargo subcommand that freezes all floating dependency versions in a Cargo.toml file to their literal values"
 publish = true
-version = "0.1.9"
+version = "0.1.10"
 
 authors.workspace = true
 edition.workspace = true

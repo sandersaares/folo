@@ -2,7 +2,7 @@
 name = "vicinal"
 description = "Processor-local worker pool that schedules tasks in the vicinity of the caller"
 publish = true
-version = "0.1.38"
+version = "0.1.39"
 
 authors.workspace = true
 edition.workspace = true
