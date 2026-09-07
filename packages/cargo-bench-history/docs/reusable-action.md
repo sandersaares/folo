@@ -1597,17 +1597,17 @@ rather than before it, since it describes behaviour the previous phases have by 
 
 ### 12.1 Phase 0 — what needs your hands
 
-None of this can be done from a pull request, and everything else can proceed while it is
-pending. In rough order of when it is needed:
+Short, and shorter than it looks: only two items genuinely gate anything, and neither gates
+the near-term work. Nothing here can be done from a pull request.
 
-| # | Action | Needed by | Notes |
+| # | Action | Gates | Notes |
 | --- | --- | --- | --- |
-| 1 | **Configure `folo-rs/cargo-bench-history-action`** — see §12.2 | Phase 4 | The repository exists; this is its settings. |
-| 2 | **Add `cargo-bench-history-github` as a crates.io trusted publisher** | Phase 2 (before its first publish) | Same one-time setup every published package here needs. Cannot be scripted from a PR. |
-| 3 | **Enable Marketplace publishing** on the action repo — accept the agreement, choose a category, verify the listing | Phase 7 | A one-time UI flow tied to the account, not to a release run (§8.1). |
-| 4 | **Decide the `v1` promise** — when the floating major tag starts moving, its consumers inherit whatever it points at | Phase 7 | Worth an explicit decision rather than discovering it after the first breaking change. |
+| 1 | **Add `cargo-bench-history-github` as a crates.io trusted publisher** | Its first publish, end of Phase 2 | The one-time setup every published package here needs. This is the first item that can actually block progress, and only at the moment of publishing. |
+| 2 | **Enable Marketplace publishing** on the action repo — accept the agreement, choose a category, verify the listing | Phase 7 | A one-time UI flow tied to the account, not to a release run (§8.1). |
+| 3 | **Decide the `v1` promise** — when the floating major tag starts moving, its consumers inherit whatever it points at | Phase 7 | A decision, not a setting. Worth making deliberately rather than discovering it after the first breaking change. |
+| 4 | **Repository settings** (§12.2) | Nothing | Hygiene. Worth doing, but no phase waits on it. |
 
-Three things I want to flag as **not** needed, because they would each be reasonable to assume:
+Four things I want to flag as **not** needed, because they would each be reasonable to assume:
 
 * **No new secrets or tokens.** Every phase runs on the per-run `GITHUB_TOKEN` (§9) or the
   existing Azure federation. Nothing here introduces a credential to create or rotate.
@@ -1615,30 +1615,40 @@ Three things I want to flag as **not** needed, because they would each be reason
   is what removes the cross-repository credential problem entirely.
 * **No issue labels.** The action applies none and configures none (§5.1), so no repository
   needs labels created before it can file.
+* **No permission changes.** Workflow-level `permissions:` blocks already grant what the
+  release and the sink-writing tests need, regardless of the repository's default (§12.2).
 
 ### 12.2 Configuring the action repository
 
-The repository holds YAML, Markdown, and release tooling — no Rust, no published binaries
-(§2) — so its settings are about protecting the tag stream consumers depend on, not about
-build validation.
+**Almost none of this is a prerequisite.** The repository needs no configuration to be worked
+in, and the design does not depend on any particular setting. Two facts are worth stating
+plainly so effort goes where it matters:
+
+* **The one genuine requirement is already met.** A Marketplace listing requires a public
+  repository with the action's metadata at its root; the repository is public, so nothing is
+  blocked.
+* **Workflow permissions are a default, not a ceiling.** A repository whose default token
+  permission is read-only can still run workflows that request `issues: write`,
+  `contents: write`, or `id-token: write` through a job's `permissions:` block — the monorepo
+  does exactly this today. So no permission setting needs changing before the release workflow
+  or the sink-writing tests can work.
+
+Everything below is **hygiene, doable at any time**, and listed because it is worth doing
+rather than because anything waits on it:
 
 * **Protect `main`**: no direct pushes, no force-pushes, no deletion. Its ref is what
-  `uses: …@v1` ultimately resolves to.
-* **Require a pull request to merge**, with the repository's CI as the required check. The
-  repo's own CI is Layers 1–2 and the caller canaries (§9); wire the required check as a single
-  fan-in job rather than naming individual matrix jobs, matching how the monorepo does it, so
-  adding a canary does not require a settings change.
-* **Allow the release workflow to move tags.** Releases are cut by pushing `vX.Y.Z` and
-  force-moving `v1` (§8.1), so whatever protection covers tags must permit the release
-  workflow — and only it — to do that. This is the one setting where getting it wrong is
-  discovered late, at the first release.
-* **Grant the release workflow permission to create releases** (`contents: write` in that
-  workflow), since publishing a GitHub Release is what refreshes the Marketplace listing.
-* **Merge policy is yours.** Squash, merge commit, or a merge queue — nothing in the design
-  depends on it. The action repo has no benchmark history, so the squash-merge consideration
-  of §4.5 does not apply here.
+  `uses: …@v1` ultimately resolves to, so it is worth the same care as the monorepo's.
+* **Require a pull request to merge**, with the repository's CI as the required check. Wire the
+  requirement as a single fan-in job rather than naming individual matrix jobs, matching how the
+  monorepo does it, so adding a canary (§9) does not require a settings change. The check cannot
+  be named until Phase 4 creates the workflow that produces it, so set protection now and add
+  the requirement then.
+* **Merge policy is yours.** Squash, merge commit, or a merge queue — nothing depends on it.
+  The action repo has no benchmark history, so the squash-merge consideration of §4.5 does not
+  apply here.
 
-Deferred until the repository actually has content: branch protection is worth setting now,
-but the required-check name cannot be chosen until Phase 4 creates the workflow that produces
-it. Setting protection first and adding the check requirement in Phase 4 avoids a chicken-and-egg
-block.
+One trap is worth recording, because it is the only setting that can silently break a release:
+**if tag protection is ever added, it must exempt the release workflow.** Releases work by
+pushing `vX.Y.Z` and force-moving `v1` (§8.1), so a protection rule added later for tidiness
+would block the release rather than the mistake it was aimed at. Not adding tag protection is
+a perfectly good answer; adding it without the exemption is the failure mode.
