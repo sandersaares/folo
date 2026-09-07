@@ -12,6 +12,7 @@
 mod apply;
 mod baseline;
 mod cli_binary;
+mod expand;
 mod fixture;
 mod groups;
 mod harness;

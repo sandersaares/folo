@@ -64,8 +64,9 @@ pub(crate) struct Classification {
 ///
 /// The status, anchor, and change evidence are not independent: a package that
 /// does not exist on the base line has no anchor and no evidence, while an
-/// anchored package always has one and carries a patch only when it failed. The
-/// classifier produces only those combinations, so they are held in one closed
+/// anchored package always has one and carries a patch whenever its released
+/// files differ, whatever its status. The classifier produces only those
+/// combinations, so they are held in one closed
 /// [`Verdict`] rather than as separately writable fields. `check` gates the
 /// process exit on the status while `report` emits the anchor and evidence
 /// beside it, and the two must never disagree.
@@ -80,6 +81,10 @@ pub(crate) struct PackageClass {
     pub(crate) untracked: Vec<String>,
     pub(crate) dependencies: Vec<ReportedDep>,
     pub(crate) dependents: Vec<String>,
+    /// Whether the package's library is documented for consumers.
+    ///
+    /// Ref: `crate::metadata::WorkPackage::consumer_contract`.
+    pub(crate) consumer_contract: bool,
     pub(crate) manifest_path: PathBuf,
 }
 
@@ -113,11 +118,17 @@ impl PackageClass {
         }
     }
 
-    /// The rendered patch, empty unless the package needs an increment.
+    /// The rendered file-difference patch.
+    ///
+    /// Empty when the package has no released file difference. Pending-release
+    /// packages retain the patch because judging whether an existing increment
+    /// covers accumulated changes needs the same evidence as choosing a new
+    /// increment. Inherited workspace values and locked dependency identities are
+    /// not file differences and never appear here.
     pub(crate) fn patch(&self) -> &str {
         match &self.verdict {
-            Verdict::NeedsIncrement { patch, .. } => patch,
-            Verdict::New | Verdict::PendingRelease { .. } | Verdict::Unchanged { .. } => "",
+            Verdict::PendingRelease { patch, .. } | Verdict::NeedsIncrement { patch, .. } => patch,
+            Verdict::New | Verdict::Unchanged { .. } => "",
         }
     }
 }
@@ -156,6 +167,7 @@ impl PackageClass {
             Verdict::PendingRelease {
                 anchor,
                 changed: Vec::new(),
+                patch: String::new(),
             },
             manifest_path,
         )
@@ -180,6 +192,15 @@ impl PackageClass {
         )
     }
 
+    /// A package created on this branch, with no anchor to compare against.
+    pub(crate) fn new_package(
+        name: &str,
+        declared_version: Version,
+        manifest_path: PathBuf,
+    ) -> Self {
+        Self::with_verdict(name, declared_version, Verdict::New, manifest_path)
+    }
+
     fn with_verdict(
         name: &str,
         declared_version: Version,
@@ -199,6 +220,7 @@ impl PackageClass {
             untracked: Vec::new(),
             dependencies: Vec::new(),
             dependents: Vec::new(),
+            consumer_contract: true,
             manifest_path,
         }
     }
@@ -221,6 +243,7 @@ enum Verdict {
     PendingRelease {
         anchor: Anchor,
         changed: Vec<ChangedItem>,
+        patch: String,
     },
     /// The declared version did not increase, and neither did the content.
     Unchanged { anchor: Anchor },
@@ -471,6 +494,7 @@ fn classify_one(
             untracked,
             dependencies: package.dependencies.clone(),
             dependents,
+            consumer_contract: package.consumer_contract,
             manifest_path: package.manifest_path.clone(),
         });
     };
@@ -564,7 +588,11 @@ fn classify_one(
 
     let version_increased = package.manifest.version > anchor.version;
     let verdict = if version_increased {
-        Verdict::PendingRelease { anchor, changed }
+        Verdict::PendingRelease {
+            anchor,
+            changed,
+            patch,
+        }
     } else if changed.is_empty() {
         Verdict::Unchanged { anchor }
     } else {
@@ -583,6 +611,7 @@ fn classify_one(
         untracked,
         dependencies: package.dependencies.clone(),
         dependents,
+        consumer_contract: package.consumer_contract,
         manifest_path: package.manifest_path.clone(),
     };
     verbose.note(|| {

@@ -13,6 +13,8 @@
 # behind small seams the tests mock.
 
 Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
+$PSNativeCommandUseErrorActionPreference = $true
 
 # The transient-fault retry (used by Invoke-ReleasePublish) is the shared workspace helper rather
 # than a private copy, so every network-facing script retries the same way.
@@ -295,7 +297,9 @@ function ConvertTo-MatrixJson {
 
     if (-not $Row -or $Row.Count -eq 0) { return '[]' }
 
-    $json = ConvertTo-Json -InputObject @($Row) -Compress -Depth 5
+    # The matrix contract is a top-level array of row objects with scalar workflow fields.
+    $matrixJsonDepth = 5
+    $json = ConvertTo-Json -InputObject @($Row) -Compress -Depth $matrixJsonDepth
     if ($json.TrimStart().StartsWith('[')) { $json } else { "[$json]" }
 }
 
@@ -415,11 +419,18 @@ function Test-NeverPublishedCrate {
 function Set-GitHubOutput {
     # Emits a `name=value` step output for the workflow (and echoes it for the run log). No-ops
     # the file append when GITHUB_OUTPUT is unset, so the recipes are runnable locally.
+    # Empty values are opt-in because most workflow outputs, including release-asset outputs, are
+    # contracts whose absence must not be hidden behind a syntactically present output line.
     [CmdletBinding(SupportsShouldProcess)]
     param(
         [Parameter(Mandatory)][string] $Name,
-        [Parameter(Mandatory)][string] $Value
+        [Parameter(Mandatory)][AllowEmptyString()][string] $Value,
+        [switch] $AllowEmptyValue
     )
+
+    if ($Value.Length -eq 0 -and -not $AllowEmptyValue) {
+        throw "GitHub output '$Name' must not be empty."
+    }
 
     Write-Host "$Name=$Value"
     if ($env:GITHUB_OUTPUT -and $PSCmdlet.ShouldProcess($env:GITHUB_OUTPUT, "append output '$Name'")) {

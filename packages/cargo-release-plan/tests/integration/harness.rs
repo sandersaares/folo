@@ -140,7 +140,7 @@ pub(crate) fn apply_increment(fixture: &Fixture, name: &str, level: &str) {
     fs::write(
         &plan_path,
         format!(
-            r#"{{ "schema_version": 1, "increments": [{{ "name": "{name}", "level": "{level}" }}] }}"#
+            r#"{{ "schema_version": 2, "increments": [{{ "name": "{name}", "level": "{level}" }}] }}"#
         ),
     )
     .unwrap();

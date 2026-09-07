@@ -35,7 +35,9 @@ fn main() -> ExitCode {
 
     match run(&cli.into_input()) {
         Ok(outcome) => match outcome {
-            RunOutcome::Report { message } | RunOutcome::Apply { message } => {
+            RunOutcome::Report { message }
+            | RunOutcome::Expand { message }
+            | RunOutcome::Apply { message } => {
                 if !message.is_empty() {
                     println!("{message}");
                 }

@@ -1,5 +1,10 @@
 #Requires -Modules @{ ModuleName = 'Pester'; ModuleVersion = '5.0' }
 
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
+$PSNativeCommandUseErrorActionPreference = $true
+$VerbosePreference = 'Continue'
+
 # Pester suite for ReleaseAutomation.psm1. Where it is safe on fixtures, the tests drive the
 # real external tool: Get-PublishableBinaryCrate runs an actual `cargo metadata` against a
 # fixture workspace, and New-ReleasePlzConfig / Set-GitHubOutput perform real file I/O (so
@@ -146,7 +151,7 @@ Describe 'Add-GitReleaseEnableFlag (pure line-based injection)' {
 
 Describe 'New-ReleasePlzConfig (real file write)' {
     BeforeEach {
-        $script:OutPath = Join-Path ([System.IO.Path]::GetTempPath()) ("rp-" + [guid]::NewGuid() + ".toml")
+        $script:OutPath = Join-Path $TestDrive ("rp-" + [guid]::NewGuid() + ".toml")
     }
 
     AfterEach {
@@ -478,8 +483,14 @@ Describe 'Get-MissingBinaryMatrix (mocked gh release view)' {
 
         It 'is silent on the verbose stream without -Verbose' {
             $crate = [pscustomobject]@{ Name = 'have-some'; Version = '2.0.0' }
-            $verbose = Get-MissingBinaryMatrix -Crate $crate -Target $script:TwoTargets 4>&1 |
-                Where-Object { $_ -is [System.Management.Automation.VerboseRecord] }
+            $previousVerbosePreference = $VerbosePreference
+            try {
+                $VerbosePreference = 'SilentlyContinue'
+                $verbose = Get-MissingBinaryMatrix -Crate $crate -Target $script:TwoTargets 4>&1 |
+                    Where-Object { $_ -is [System.Management.Automation.VerboseRecord] }
+            } finally {
+                $VerbosePreference = $previousVerbosePreference
+            }
             $verbose | Should -BeNullOrEmpty
         }
 
@@ -544,25 +555,28 @@ Describe 'ConvertTo-MatrixJson' {
 
 Describe 'Invoke-ReleasePublish (mocked release-plz)' {
     It 'invokes release-plz once with the composed config on success' {
+        $configPath = Join-Path $TestDrive 'ci.toml'
         Mock release-plz -ModuleName ReleaseAutomation { $global:LASTEXITCODE = 0 }
-        Invoke-ReleasePublish -ConfigPath '/tmp/ci.toml' -Attempt 3 -DelaySeconds 0
+        Invoke-ReleasePublish -ConfigPath $configPath -Attempt 3 -DelaySeconds 0
         Should -Invoke release-plz -ModuleName ReleaseAutomation -Times 1 -Exactly `
-            -ParameterFilter { ($args -contains 'release') -and ($args -contains '--config') -and ($args -contains '/tmp/ci.toml') }
+            -ParameterFilter { ($args -contains 'release') -and ($args -contains '--config') -and ($args -contains $configPath) }
     }
 
     It 'retries on a non-zero exit and then succeeds' {
+        $configPath = Join-Path $TestDrive 'ci.toml'
         $script:attempts = 0
         Mock release-plz -ModuleName ReleaseAutomation {
             $script:attempts++
             $global:LASTEXITCODE = if ($script:attempts -lt 2) { 1 } else { 0 }
         }
-        Invoke-ReleasePublish -ConfigPath '/tmp/ci.toml' -Attempt 3 -DelaySeconds 0
+        Invoke-ReleasePublish -ConfigPath $configPath -Attempt 3 -DelaySeconds 0
         Should -Invoke release-plz -ModuleName ReleaseAutomation -Times 2 -Exactly
     }
 
     It 'throws after every attempt fails' {
+        $configPath = Join-Path $TestDrive 'ci.toml'
         Mock release-plz -ModuleName ReleaseAutomation { $global:LASTEXITCODE = 1 }
-        { Invoke-ReleasePublish -ConfigPath '/tmp/ci.toml' -Attempt 3 -DelaySeconds 0 } | Should -Throw
+        { Invoke-ReleasePublish -ConfigPath $configPath -Attempt 3 -DelaySeconds 0 } | Should -Throw
         Should -Invoke release-plz -ModuleName ReleaseAutomation -Times 3 -Exactly
     }
 }
@@ -570,7 +584,7 @@ Describe 'Invoke-ReleasePublish (mocked release-plz)' {
 Describe 'Set-GitHubOutput' {
     It 'appends name=value to the GITHUB_OUTPUT file when it is set' {
         $original = $env:GITHUB_OUTPUT
-        $file = Join-Path ([System.IO.Path]::GetTempPath()) ("out-" + [guid]::NewGuid())
+        $file = Join-Path $TestDrive ("out-" + [guid]::NewGuid())
         try {
             $env:GITHUB_OUTPUT = $file
             Set-GitHubOutput -Name 'matrix' -Value '[]'
@@ -591,6 +605,24 @@ Describe 'Set-GitHubOutput' {
             { Set-GitHubOutput -Name 'matrix' -Value '[]' } | Should -Not -Throw
         } finally {
             if ($null -ne $original) { $env:GITHUB_OUTPUT = $original }
+        }
+    }
+
+    It 'rejects an empty release-asset output before writing it' {
+        $original = $env:GITHUB_OUTPUT
+        $file = Join-Path $TestDrive 'empty-output'
+        New-Item -ItemType File -Path $file | Out-Null
+        try {
+            $env:GITHUB_OUTPUT = $file
+            { Set-GitHubOutput -Name 'matrix' -Value '' } |
+                Should -Throw "*GitHub output 'matrix' must not be empty*"
+            @(Get-Content -LiteralPath $file).Count | Should -Be 0
+        } finally {
+            if ($null -ne $original) {
+                $env:GITHUB_OUTPUT = $original
+            } else {
+                Remove-Item Env:GITHUB_OUTPUT -ErrorAction SilentlyContinue
+            }
         }
     }
 }

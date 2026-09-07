@@ -113,3 +113,134 @@ check-never-published:
 
     Write-Verbose "Checking crates.io for never-before-published crates" -Verbose
     Test-NeverPublishedCrate -Verbose
+
+# CI version-readiness wrappers.
+#
+# `RELEASE_PLAN_BASE` supplies the release baseline when set (CI passes the release branch, or
+# `merge_group.base_sha` on a queue run); an empty value falls through to the tool default. When
+# `GITHUB_OUTPUT` is set, a report is written first so the `semver_targets` step output reaches
+# `semver-checks` even if the check then fails. Released-content comparison stays in the Rust
+# tool; this recipe is only its command-line entry point.
+#
+# Fails when a publishable package has unreleased changes without an increment, a version group
+# disagrees with itself, a requirement does not name the version its target declares or does not
+# pin a group sibling exactly, or a package exposing a public dependency stays compatible while
+# that dependency releases a breaking change.
+[group('release')]
+[script]
+validate-versions:
+    Set-StrictMode -Version Latest
+    $ErrorActionPreference = "Stop"
+    $PSNativeCommandUseErrorActionPreference = $true
+
+    Import-Module "{{ justfile_directory() }}/scripts/release/ReleasePlan.psm1" -Force
+    Invoke-ValidateVersions
+
+# The module owns the valid-empty skip and the repeated `-p` argument construction, so an empty
+# `package` value is a successful no-op rather than a workspace-wide comparison.
+#
+# Runs cargo-semver-checks over the packages in the `package` variable; an empty value checks nothing.
+[group('release')]
+[script]
+semver-checks:
+    Set-StrictMode -Version Latest
+    $ErrorActionPreference = "Stop"
+    $PSNativeCommandUseErrorActionPreference = $true
+
+    Import-Module "{{ justfile_directory() }}/scripts/release/ReleasePlan.psm1" -Force
+    Invoke-SemverCheck -Package "{{ package }}"
+
+# The recipes below are the guided increment workflow, in the order the increment-versions skill
+# runs them: collect evidence, determine analysis order, create the plan, expand it, confirm the
+# expanded targets are published, and apply. Each is a thin entry point; the decisions live in
+# `scripts/release/ReleasePlan.psm1` and in `cargo-release-plan`.
+
+# Target selection matches the CI SemVer job exactly, so local evidence and hosted validation
+# cannot disagree about which packages have a supported consumer contract. The module owns
+# validation, target selection, and exit handling.
+#
+# Writes the release-plan report, per-package diffs, and cargo-semver-checks evidence under DIR.
+[group('release')]
+[script]
+release-report DIR:
+    Set-StrictMode -Version Latest
+    $ErrorActionPreference = "Stop"
+    $PSNativeCommandUseErrorActionPreference = $true
+
+    Import-Module "{{ justfile_directory() }}/scripts/release/ReleasePlan.psm1" -Force
+    Invoke-ReleaseReport -OutDir "{{ DIR }}"
+
+# Analyzing a package after the packages it depends on is what lets a dependency decision inform
+# its dependents. Mutually dependent packages share a batch and are analyzed to a fixed point.
+# The increment-versions skill redirects the output to a working file and documents the fields.
+#
+# Prints the dependency-first analysis batches from the release-plan report REPORT as a JSON array.
+[group('release')]
+[script]
+release-analysis-order REPORT:
+    Set-StrictMode -Version Latest
+    $ErrorActionPreference = "Stop"
+    $PSNativeCommandUseErrorActionPreference = $true
+
+    Import-Module "{{ justfile_directory() }}/scripts/release/ReleasePlan.psm1" -Force
+    Get-ReleasePlanAnalysisBatchJson -ReportPath "{{ REPORT }}"
+
+# Also realigns any inconsistent version group the decisions leave unnamed. Expansion is
+# plan-driven, so a drifted group that no entry reaches would otherwise stay drifted and keep the
+# version check red.
+#
+# Converts the approved change levels in DECISIONS into the proposed plan PLAN, using report REPORT.
+[group('release')]
+[script]
+create-release-plan REPORT DECISIONS PLAN:
+    Set-StrictMode -Version Latest
+    $ErrorActionPreference = "Stop"
+    $PSNativeCommandUseErrorActionPreference = $true
+
+    Import-Module "{{ justfile_directory() }}/scripts/release/ReleasePlan.psm1" -Force
+    New-ReleasePlanFile -ReportPath "{{ REPORT }}" -DecisionPath "{{ DECISIONS }}" -PlanPath "{{ PLAN }}"
+
+# The expanded document is what gets presented for approval and what gets applied, so the
+# approved set cannot widen during apply. Group expansion stays in cargo-release-plan rather than
+# being reimplemented here.
+#
+# Expands the proposed plan PLAN into the expanded plan EXPANDED, naming every package it reaches.
+[group('release')]
+[script]
+expand-release-plan PLAN EXPANDED:
+    Set-StrictMode -Version Latest
+    $ErrorActionPreference = "Stop"
+    $PSNativeCommandUseErrorActionPreference = $true
+
+    Import-Module "{{ justfile_directory() }}/scripts/release/ReleasePlan.psm1" -Force
+    Invoke-ExpandReleasePlan -PlanPath "{{ PLAN }}" -ExpandedPath "{{ EXPANDED }}"
+
+# Reads the expanded plan, so the checked set is exactly the set apply will edit. Applying cannot
+# create a crate on crates.io, so a never-published package has to be published by hand first.
+#
+# Fails unless every package the expanded plan EXPANDED names is already published on crates.io.
+[group('release')]
+[script]
+check-increment-published EXPANDED:
+    Set-StrictMode -Version Latest
+    $ErrorActionPreference = "Stop"
+    $PSNativeCommandUseErrorActionPreference = $true
+
+    Import-Module "{{ justfile_directory() }}/scripts/release/ReleasePlan.psm1" -Force
+    Assert-IncrementPackagePublished -ExpandedPath "{{ EXPANDED }}"
+
+# Takes the expanded plan rather than the proposed one, because the publication gate above runs
+# over the expanded plan's packages and applying a proposed plan would edit packages that gate
+# never saw. The file is an uncommitted working-tree artifact; the version check verifies manifest
+# state, not intent. A failure part way through leaves the work tree partly edited.
+#
+# Applies the expanded plan EXPANDED: package versions, `=`-pin rewrites, and a lockfile refresh.
+[group('release')]
+[script]
+apply-release-plan EXPANDED:
+    Set-StrictMode -Version Latest
+    $ErrorActionPreference = "Stop"
+    $PSNativeCommandUseErrorActionPreference = $true
+
+    Import-Module "{{ justfile_directory() }}/scripts/release/ReleasePlan.psm1" -Force
+    Invoke-ApplyReleasePlan -ExpandedPath "{{ EXPANDED }}"

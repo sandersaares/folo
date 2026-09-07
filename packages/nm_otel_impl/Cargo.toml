@@ -34,6 +34,11 @@ development = [
     "par_bench",
 ]
 
+[package.metadata.release-plan]
+# Implementation partition of `nm_otel`; consumers reach this surface through
+# that package, which is where its compatibility is assessed.
+private-api = true
+
 [lib]
 # nm_otel_impl exists only to host the implementation of `nm_otel` and to expose
 # internal items to in-workspace tests and benchmarks; user-facing documentation lives in

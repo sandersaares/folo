@@ -19,6 +19,11 @@ all-features = true
 [package.metadata.cargo_check_external_types]
 allowed_external_types = ["proc_macro2::TokenStream"]
 
+[package.metadata.release-plan]
+# Implementation partition of `linked`; consumers reach this surface through that
+# package, which is where its compatibility is assessed.
+private-api = true
+
 [lib]
 doc = false
 

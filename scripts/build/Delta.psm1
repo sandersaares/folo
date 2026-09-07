@@ -2,16 +2,13 @@
 
 # cargo-delta orchestration shared by the local `just delta*` recipes and the CI `delta` job.
 #
-# cargo-delta answers "which workspace packages are affected by this branch's changes vs.
-# origin/main", so the whole validation matrix can be scoped to just those packages. The same
-# analyze-current / analyze-baseline-via-worktree / run / parse pipeline was previously copied both
-# into the justfile and into .github/workflows/validation.yml, which is exactly how the two drift
-# apart. It lives here once now: the fragile parsing (Read-DeltaAffectedPackage), the removed-package
-# filtering (Select-ExistingPackage) and the CI output shaping (Get-DeltaOutput) are pure and
-# Pester-tested, and the orchestration (Invoke-CargoDelta) is the single seam both callers use. The
-# only intentional difference between callers is baseline
-# freshness: the local recipe fetches origin/main first, whereas CI checks out with full history
-# (fetch-depth: 0) and passes -SkipFetch.
+# cargo-delta answers which workspace packages are affected by this branch's changes when
+# compared with a caller-selected baseline revision. The validation matrix can then scope itself
+# to those packages.
+#
+# Callers supply the appropriate baseline revision and freshness policy. This module owns
+# cargo-delta orchestration: current and baseline analysis, removed-package filtering, JSON report
+# parsing, and CI output shaping.
 
 Set-StrictMode -Version Latest
 
@@ -37,13 +34,13 @@ function Read-DeltaAffectedPackage {
 
 function Select-ExistingPackage {
     # Filters affected package names down to those that still exist in the current workspace,
-    # preserving order. cargo-delta compares the branch against origin/main, so a package deleted or
-    # renamed away on this branch is reported as affected (its files changed - they were removed) yet
-    # cannot be validated here: a scoped `cargo <cmd> -p <name>` would fail with "package ID
-    # specification `<name>` did not match any packages". Dropping such a package is correct - there
-    # is nothing left on this branch to validate - while every package that still exists (including
-    # the rename's replacement and anything depending on it) is retained. Pure, so the membership
-    # logic is test-covered independently of the cargo/git orchestration.
+    # preserving order. cargo-delta compares the branch against the baseline revision, so a package
+    # deleted or renamed away on this branch is reported as affected (its files changed - they were
+    # removed) yet cannot be validated here: a scoped `cargo <cmd> -p <name>` would fail with
+    # "package ID specification `<name>` did not match any packages". Dropping such a package is
+    # correct - there is nothing left on this branch to validate - while every package that still
+    # exists (including the rename's replacement and anything depending on it) is retained. Pure,
+    # so the membership logic is test-covered independently of the cargo/git orchestration.
     [CmdletBinding()]
     [OutputType([string[]])]
     param(
@@ -82,6 +79,52 @@ function Get-DeltaOutput {
     }
 }
 
+function Get-DeltaWorkflowOutput {
+    # Shapes the Validation `delta` job output lines while keeping workflow-only branching under
+    # Pester coverage. Push-to-main runs must keep the full workspace as the validation backstop;
+    # pull requests and merge-queue runs use cargo-delta with the checkout's already-complete
+    # history.
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)][AllowEmptyString()][string] $EventName,
+        [AllowEmptyString()][string] $BaselineRevision = '',
+        [scriptblock] $Analyze = {
+            param([hashtable] $Argument)
+            Invoke-CargoDelta @Argument
+        }
+    )
+
+    if ($EventName -eq 'push') {
+        Write-Host 'Push to main detected, running full workspace validation.'
+        return @(
+            'packages='
+            'packages_json=[]'
+            'skip_all=false'
+        )
+    }
+
+    $deltaArgs = @{ SkipFetch = $true }
+    if (-not [string]::IsNullOrWhiteSpace($BaselineRevision)) {
+        $deltaArgs['BaselineRevision'] = $BaselineRevision
+    }
+
+    $affected = @(& $Analyze $deltaArgs)
+    $output = Get-DeltaOutput -Affected $affected
+
+    if ($affected.Count -eq 0) {
+        Write-Host 'No packages affected by changes.'
+    } else {
+        Write-Host "Affected packages: $($output.Packages)"
+    }
+
+    return @(
+        "packages=$($output.Packages)"
+        "packages_json=$($output.PackagesJson)"
+        "skip_all=$($output.SkipAll)"
+    )
+}
+
 function Get-WorkspacePackage {
     # Returns the current workspace's member package names as a string array, via `cargo metadata`.
     # Used to drop packages that cargo-delta reports as affected but that no longer exist on this
@@ -99,16 +142,20 @@ function Get-WorkspacePackage {
 
 function Invoke-CargoDelta {
     # Runs the full cargo-delta pipeline and returns the affected package names as a string array.
-    # Analyzes the current checkout, then analyzes origin/main in a throwaway git worktree (so the
-    # branch is never switched), runs the comparison, and parses the result. Unless -SkipFetch is
-    # given, origin/main is refreshed first (unshallowing a shallow clone) so the baseline is
-    # current; CI passes -SkipFetch because it already checks out full history. All intermediate
-    # artifacts go in a temp directory that is always cleaned up.
+    # Analyzes the current checkout, then analyzes $BaselineRevision in a throwaway git worktree
+    # so the branch is never switched, runs the comparison, and parses the result. Unless
+    # -SkipFetch is given, origin/main is refreshed first (unshallowing a shallow clone) so the
+    # default baseline revision is current; CI passes -SkipFetch because it already checks out
+    # full history. All intermediate artifacts go in a temp directory that is always cleaned up.
     [CmdletBinding()]
     [OutputType([string[]])]
     param(
         [string] $ConfigPath = (Resolve-Path 'delta.toml').Path,
-        [switch] $SkipFetch
+        [switch] $SkipFetch,
+        # Revision whose tree anchors the Git comparison. Local runs and pull requests use
+        # origin/main; merge-queue runs pass merge_group.base_sha so scoping matches the queued
+        # candidate's base.
+        [string] $BaselineRevision = 'origin/main'
     )
 
     $PSNativeCommandUseErrorActionPreference = $true
@@ -124,24 +171,44 @@ function Invoke-CargoDelta {
         }
     }
 
-    $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) "cargo-delta-$([guid]::NewGuid().ToString('n'))"
+    # $BaselineRevision can arrive from a workflow event payload, so an unfetched or misspelled
+    # revision is a realistic input. Resolving it before any analysis turns that into a message
+    # naming the revision, instead of several minutes of work followed by a git worktree error
+    # that reads like a repository fault. The lookup is expected to fail for a bad revision, so
+    # its own error is caught rather than left to $PSNativeCommandUseErrorActionPreference.
+    $resolvedBaselineRevision = $null
+    $revParseArgs = @('rev-parse', '--verify', '--quiet', "$BaselineRevision^{commit}")
+    try {
+        $resolvedBaselineRevision = git @revParseArgs 2>$null
+    } catch {
+        $resolvedBaselineRevision = $null
+    }
+    if ([string]::IsNullOrWhiteSpace($resolvedBaselineRevision)) {
+        $message = "Delta baseline revision '{0}' does not resolve to a commit in this repository."
+        throw ($message -f $BaselineRevision)
+    }
+
+    $tempName = "cargo-delta-$([guid]::NewGuid().ToString('n'))"
+    $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) $tempName
     New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
     try {
-        $baselineJson = Join-Path $tempDir 'baseline.json'
-        $currentJson = Join-Path $tempDir 'current.json'
+        $baselineAnalysisPath = Join-Path $tempDir 'baseline.json'
+        $currentAnalysisPath = Join-Path $tempDir 'current.json'
 
         # Analyze the current branch first (we are already on it).
         Write-Host 'Analyzing current branch...'
-        cargo delta -c $ConfigPath analyze | Set-Content -Path $currentJson -Encoding utf8
+        cargo delta -c $ConfigPath analyze |
+            Set-Content -Path $currentAnalysisPath -Encoding utf8
 
-        # Use a git worktree to analyze origin/main without switching branches.
+        # Use a git worktree to analyze the baseline revision without switching branches.
         $worktreeDir = Join-Path $tempDir 'main-worktree'
-        git worktree add --quiet $worktreeDir origin/main | Out-Null
+        git worktree add --quiet $worktreeDir $resolvedBaselineRevision | Out-Null
         try {
-            Write-Host 'Analyzing baseline (origin/main)...'
+            Write-Host "Analyzing baseline revision ($BaselineRevision)..."
             Push-Location $worktreeDir
             try {
-                cargo delta -c $ConfigPath analyze | Set-Content -Path $baselineJson -Encoding utf8
+                cargo delta -c $ConfigPath analyze |
+                    Set-Content -Path $baselineAnalysisPath -Encoding utf8
             } finally {
                 Pop-Location
             }
@@ -152,7 +219,17 @@ function Invoke-CargoDelta {
         Write-Host 'Computing delta...'
         # Capture stdout directly: when nothing changed, cargo-delta writes its "quitting" notice
         # to stderr and emits no stdout, which the parser treats as "nothing affected".
-        $deltaJson = cargo delta -c $ConfigPath run --baseline $baselineJson --current $currentJson | Out-String
+        $runArgs = @(
+            'delta'
+            '-c'
+            $ConfigPath
+            'run'
+            '--baseline'
+            $baselineAnalysisPath
+            '--current'
+            $currentAnalysisPath
+        )
+        $deltaJson = cargo @runArgs | Out-String
 
         # Re-wrap in @(): Read-DeltaAffectedPackage returns an empty array for a "nothing affected"
         # report, but PowerShell collapses a bare empty-array return to $null on assignment, and
@@ -165,4 +242,11 @@ function Invoke-CargoDelta {
     }
 }
 
-Export-ModuleMember -Function Read-DeltaAffectedPackage, Select-ExistingPackage, Get-WorkspacePackage, Get-DeltaOutput, Invoke-CargoDelta
+Export-ModuleMember -Function @(
+    'Read-DeltaAffectedPackage'
+    'Select-ExistingPackage'
+    'Get-WorkspacePackage'
+    'Get-DeltaOutput'
+    'Get-DeltaWorkflowOutput'
+    'Invoke-CargoDelta'
+)

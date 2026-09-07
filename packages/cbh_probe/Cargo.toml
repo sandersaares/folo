@@ -18,6 +18,11 @@ rust-version.workspace = true
 [package.metadata.cargo_check_external_types]
 allowed_external_types = ["cbh_model::context::GitInfo"]
 
+[package.metadata.release-plan]
+# Implementation partition of `cargo-bench-history`; consumers reach this surface
+# through that package, which is where its compatibility is assessed.
+private-api = true
+
 [lib]
 # This is an implementation crate whose surface is documented on `cargo-bench-history`.
 doc = false

@@ -6,7 +6,181 @@ use cargo_release_plan::{CheckFormat, RunInput, RunOutcome, run};
 use serde_json::{Value, json};
 
 use crate::fixture::{Fixture, write_package};
-use crate::harness::{report_json, seeded_package};
+use crate::harness::{check, report_json, seeded_package};
+
+/// A version-group member must pin its siblings exactly.
+///
+/// The group exists because the members are one package split for Cargo's sake, so a compatible
+/// requirement would let a consumer resolve two members never released together.
+#[cfg_attr(miri, ignore)] // Spawns git and cargo, which Miri cannot emulate.
+#[test]
+fn check_rejects_a_compatible_requirement_between_group_members() {
+    let fixture = group_fixture("1.1.0");
+    fixture.commit("seed");
+    let base = fixture.sha("HEAD");
+
+    let (passed, message) = check(&fixture, &base);
+
+    assert!(!passed, "{message}");
+    assert!(message.contains("pin each other exactly"), "{message}");
+    assert!(message.contains("=1.1.0"), "{message}");
+}
+
+/// The same workspace passes once the sibling requirement is exact.
+#[cfg_attr(miri, ignore)] // Spawns git and cargo, which Miri cannot emulate.
+#[test]
+fn check_accepts_an_exact_requirement_between_group_members() {
+    let fixture = group_fixture("=1.1.0");
+    fixture.commit("seed");
+    let base = fixture.sha("HEAD");
+
+    let (passed, message) = check(&fixture, &base);
+
+    assert!(passed, "{message}");
+}
+
+/// A workspace whose `lib` requires its group sibling `lib_impl` with the given requirement.
+fn group_fixture(requirement: &str) -> Fixture {
+    let fixture = Fixture::new(
+        r#"
+[workspace.metadata.release-plan.groups]
+lib = ["lib", "lib_impl"]
+"#,
+    );
+    write_package(&fixture, "lib_impl", "1.1.0", "");
+    write_package(
+        &fixture,
+        "lib",
+        "1.1.0",
+        &format!(
+            r#"
+[dependencies]
+lib_impl = {{ path = "../lib_impl", version = "{requirement}" }}
+"#
+        ),
+    );
+    fixture
+}
+
+/// A requirement that does not name its target's declared version fails the check.
+///
+/// The workspace pins every intra-workspace requirement to the version its target declares, so
+/// a requirement that merely admits that version is drift the merge gate has to catch.
+#[cfg_attr(miri, ignore)] // Spawns git and cargo, which Miri cannot emulate.
+#[test]
+fn check_rejects_a_requirement_that_does_not_name_the_declared_version() {
+    let fixture = Fixture::new("");
+    write_package(&fixture, "helper", "1.1.0", "");
+    write_package(
+        &fixture,
+        "demo",
+        "0.1.0",
+        r#"
+[dependencies]
+helper = { path = "../helper", version = "1.0.0" }
+"#,
+    );
+    fixture.commit("seed");
+    let base = fixture.sha("HEAD");
+
+    let (passed, message) = check(&fixture, &base);
+
+    assert!(!passed, "{message}");
+    assert!(
+        message.contains("does not name the version it declares"),
+        "{message}"
+    );
+    assert!(message.contains("1.1.0"), "{message}");
+}
+
+/// The same workspace passes once the requirement names the declared version.
+#[cfg_attr(miri, ignore)] // Spawns git and cargo, which Miri cannot emulate.
+#[test]
+fn check_accepts_a_requirement_naming_the_declared_version() {
+    let fixture = Fixture::new("");
+    write_package(&fixture, "helper", "1.1.0", "");
+    write_package(
+        &fixture,
+        "demo",
+        "0.1.0",
+        r#"
+[dependencies]
+helper = { path = "../helper", version = "1.1.0" }
+"#,
+    );
+    fixture.commit("seed");
+    let base = fixture.sha("HEAD");
+
+    let (passed, message) = check(&fixture, &base);
+
+    assert!(passed, "{message}");
+}
+
+/// A package exposing a dependency that breaks must break as well.
+///
+/// `demo` re-exports `helper` types, declared through its allow-list, so `helper` moving to an
+/// incompatible version changes the identity of what `demo` exposes.
+#[cfg_attr(miri, ignore)] // Spawns git and cargo, which Miri cannot emulate.
+#[test]
+fn check_rejects_a_public_dependency_breaking_alone() {
+    let fixture = public_dependency_fixture("1.0.0", "0.1.0");
+    let base = fixture.sha("HEAD");
+
+    // `helper` releases 1.0.0 -> 2.0.0 while `demo` stays on a compatible 0.1.1.
+    write_public_dependency_packages(&fixture, "2.0.0", "0.1.1");
+
+    let (passed, message) = check(&fixture, &base);
+
+    assert!(!passed, "{message}");
+    assert!(
+        message.contains("must release a breaking change of its own"),
+        "{message}"
+    );
+}
+
+/// The same move passes once the dependent breaks too.
+#[cfg_attr(miri, ignore)] // Spawns git and cargo, which Miri cannot emulate.
+#[test]
+fn check_accepts_a_public_dependency_breaking_together_with_its_dependent() {
+    let fixture = public_dependency_fixture("1.0.0", "0.1.0");
+    let base = fixture.sha("HEAD");
+
+    // 0.1.0 -> 0.2.0 is incompatible on a 0.x line, so `demo` breaks as well.
+    write_public_dependency_packages(&fixture, "2.0.0", "0.2.0");
+
+    let (passed, message) = check(&fixture, &base);
+
+    assert!(
+        passed,
+        "a dependent breaking alongside its public dependency is accepted: {message}"
+    );
+}
+
+/// A workspace whose `demo` exposes `helper` in its public API, at the given versions.
+fn public_dependency_fixture(helper: &str, demo: &str) -> Fixture {
+    let fixture = Fixture::new("");
+    write_public_dependency_packages(&fixture, helper, demo);
+    fixture.commit("seed");
+    fixture
+}
+
+fn write_public_dependency_packages(fixture: &Fixture, helper: &str, demo: &str) {
+    write_package(fixture, "helper", helper, "");
+    write_package(
+        fixture,
+        "demo",
+        demo,
+        &format!(
+            r#"
+[package.metadata.cargo_check_external_types]
+allowed_external_types = ["helper::*"]
+
+[dependencies]
+helper = {{ path = "../helper", version = "{helper}" }}
+"#
+        ),
+    );
+}
 
 #[cfg_attr(miri, ignore)] // Spawns git and cargo, which Miri cannot emulate.
 #[test]
@@ -93,7 +267,8 @@ path_only_helper = { path = "../path_only_helper" }
         &json!([{
             "name": "wildcard_helper",
             "req": "*",
-            "exact_pin": false
+            "exact_pin": false,
+            "public": false
         }])
     );
 }

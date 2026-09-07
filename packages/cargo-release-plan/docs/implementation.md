@@ -7,7 +7,7 @@ describes the internal boundaries that keep that behavior consistent.
 
 The binary is intentionally thin. `main` parses Cargo's injected subcommand
 argument, then delegates to the library `run()` entry used by integration tests.
-The selected command drives one of three paths:
+The selected command drives command-specific paths through shared components:
 
 ```text
 Cli -> RunInput -> run()
@@ -15,15 +15,16 @@ Cli -> RunInput -> run()
                     +-> classify -> check diagnostics
                     |           \-> report JSON + patches
                     |
-                    \-> load workspace -> expand plan -> compute edits
-                                                       -> write manifests
-                                                       -> refresh lockfile
+                    \-> load workspace -> normalize plan
+                                       |-> expanded-plan JSON
+                                       \-> compute edits -> write manifests
+                                                         -> refresh lockfile
 ```
 
 Modules own subjects rather than syntactic categories. `metadata` and `manifest`
 build the work-tree model, `git` owns repository facts, `anchor` resolves release
 history, `classify` combines those inputs, `groups` and `plan` expand release
-decisions, and `apply`, `check`, and `report` own their command outputs.
+decisions, and `apply`, `check`, `expand`, and `report` own their command outputs.
 
 ## Subprocess boundaries
 
@@ -192,17 +193,69 @@ rules. `check` renders failing package and group verdicts in text and optionally
 as escaped GitHub workflow commands. Its packaging probe compares Cargo's list
 with the exact work-tree selection produced by classification.
 
+`check`'s verdict is read back from the rendered diagnostics rather than
+recomputed from the classification, because every gating rule already appends a
+line. A rule added to the rendering therefore cannot be reported without also
+failing the check, which a second condition kept in step by hand would allow.
+
+Two of those rules are properties of the manifests rather than of the
+released-content comparison. An intra-workspace requirement must name the exact
+version its target declares, which is checked against the normalized requirement
+`cargo metadata` reports, so a bare requirement arrives as a caret one and both
+spellings that name the version are accepted; between version-group members only
+the exact spelling is, for every edge that survives packaging including a
+versioned development one. A package whose public API exposes another
+package must move incompatibly whenever that package does, compared against each
+package's own anchor so an increment that landed in an earlier pull request
+still counts.
+
+`apply` preserves each requirement's exact-or-compatible spelling while
+rewriting the version it names, so applying a plan maintains both forms rather
+than having to re-derive them. A hand-written requirement of the wrong form is
+therefore caught by `check` rather than silently corrected, which is the right
+split: it is a manifest edit, not a release decision.
+
+Which dependencies are public is read in `metadata` from each package's
+`allowed_external_types` allow-list, whose leading path segments name crates.
+Matching follows `wildmatch`, the pattern language cargo-check-external-types
+itself uses, against library target names taken from the target rather than
+derived from the package name, so a `[lib] name` override cannot silently break
+it.
+
+An allow-list names the crate defining a type, while the release decision needs
+the direct dependency supplying it. The two are bridged by growing each
+package's exposed set to a fixed point: a dependency edge is public when what
+that dependency exposes intersects what this package names, and its exposed set
+then joins this package's own. The sets only grow and are bounded by the
+workspace, so this settles; the bound is asserted rather than assumed.
+
 `report` serializes the full package and group assessment, then writes patches
 only where file differences exist. It removes any earlier `report.json` marker
 before replacing the patch tree and writes the new marker through a same-directory
 staging file after every patch succeeds. A failed rerun therefore cannot present
 stale JSON and a partial patch set as one complete assessment.
 
-## Plan application
+## Plan resolution and application
 
-`plan` first normalizes package and group entries into one target version per
-publishable package. Levels combine by taking the highest and matching explicit
-versions coalesce. Mixed decision kinds and conflicting explicit versions fail.
+`plan` owns both planning stages and the resolution shared between them. It first
+resolves package and group entries into one target version per publishable
+package. Levels combine by taking the highest and matching explicit versions
+coalesce. Mixed decision kinds and conflicting explicit versions fail.
+
+A plan's stage decides what resolution guarantees. A proposed plan may reach
+packages it does not name, which is how a decision about one group member moves
+the group. An expanded plan must resolve to exactly the set it names and must
+already carry a version for each, because that document is what a caller
+reviewed; reaching another package means the group configuration changed after it
+was written, and a surviving increment level would be re-resolved against the
+manifests of the day. Both are rejected. The stage is matched on rather than
+tested as a condition, so a new code path has to state which rule it wants.
+
+`expand` and `apply` share that resolution and both read the same Git-tracked
+publishable package set. The resolved versions branch to expanded-plan output for
+`expand`, and to manifest edits, writes, and lockfile processing for `apply`. The
+resolved versions are not themselves the expanded plan: `apply` resolves a
+proposed plan to the same shape without any expanded plan existing.
 
 `apply` accepts plan targets and validates groups against the same Git-tracked
 publishable package set as classification. It parses and rewrites every affected
@@ -213,8 +266,18 @@ requirement is changed only when:
 
 * the entry has a path,
 * that path resolves to the named workspace member,
-* the expanded plan includes the member, and
-* the existing requirement does not admit the new version.
+* the resolved versions include the member, and
+* the existing requirement does not already name the new version.
+
+The last criterion is the same predicate `check` validates the requirement
+convention with, kept in one place so the two cannot drift: `apply` must rewrite
+exactly what `check` would reject, and leave exactly what it would accept.
+Leaving an already-correct requirement byte for byte is what keeps an exact
+group alignment, which resolves the leading member to the version it already
+declares, from editing that member's dependents under an unchanged version. A
+requirement whose form is wrong for its edge, such as a compatible requirement
+between version-group members, is reported rather than rewritten: that is a
+manifest defect rather than a consequence of a version moving.
 
 Paths are normalized lexically first and canonicalized only for link or
 case-variant spellings, keeping the ordinary path free of filesystem calls.

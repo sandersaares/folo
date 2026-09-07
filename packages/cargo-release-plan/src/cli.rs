@@ -75,6 +75,14 @@ impl Cli {
                 verify_packaging: args.verify_packaging,
                 verbose: args.verbose,
             },
+            Command::Expand(args) => RunInput::Expand {
+                plan: args.plan,
+                out: args.out,
+                manifest_path: args
+                    .manifest_path
+                    .unwrap_or_else(|| PathBuf::from("Cargo.toml")),
+                verbose: args.verbose,
+            },
             Command::Apply(args) => RunInput::Apply {
                 plan: args.plan,
                 dry_run: args.dry_run,
@@ -124,8 +132,16 @@ impl EarlyExit {
 enum Command {
     /// Write report.json and per-package diffs for the changes needing a release.
     Report(ReportArgs),
-    /// Fail on a needed version increment or an inconsistent version group.
+    /// Fail on a release the workspace's manifests cannot support.
+    ///
+    /// Fails when a publishable package has unreleased changes without a version increment, when
+    /// a version group disagrees with itself, when a requirement on another workspace package
+    /// does not name the version that package declares or does not pin a group sibling exactly,
+    /// or when a package whose public API exposes a workspace dependency stays compatible while
+    /// that dependency releases a breaking change.
     Check(CheckArgs),
+    /// Produce the explicit plan reviewed and then passed to apply.
+    Expand(ExpandArgs),
     /// Apply an approved increment plan to manifests and the lockfile.
     Apply(ApplyArgs),
 }
@@ -176,6 +192,26 @@ struct CheckArgs {
     verify_packaging: bool,
 
     /// Print explanatory notes for each classification decision.
+    #[arg(long)]
+    verbose: bool,
+}
+
+/// Arguments for `expand`.
+#[derive(Debug, Parser)]
+struct ExpandArgs {
+    /// Path to the plan JSON file to expand.
+    #[arg(long)]
+    plan: PathBuf,
+
+    /// Path that receives the expanded plan JSON.
+    #[arg(long)]
+    out: PathBuf,
+
+    /// Path to the workspace `Cargo.toml`.
+    #[arg(long)]
+    manifest_path: Option<PathBuf>,
+
+    /// Print explanatory notes for each expansion decision.
     #[arg(long)]
     verbose: bool,
 }

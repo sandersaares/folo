@@ -13,6 +13,11 @@ rust-version.workspace = true
 [package.metadata.docs.rs]
 all-features = true
 
+[package.metadata.release-plan]
+# Published only so other Folo packages can depend on it; it offers no stable API
+# surface of its own.
+private-api = true
+
 [lib]
 doc = false
 

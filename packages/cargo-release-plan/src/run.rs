@@ -4,6 +4,7 @@ use ohno::AppError;
 
 use crate::apply::run_apply;
 use crate::check::{CheckFormat, run_check};
+use crate::expand::run_expand;
 use crate::report::run_report;
 use crate::verbose::Verbose;
 
@@ -28,7 +29,12 @@ pub enum RunInput {
         /// When set, print explanatory decision notes to stderr.
         verbose: bool,
     },
-    /// `check` — fail on a needed increment or an inconsistent group.
+    /// `check` — fail on a release the workspace's manifests cannot support.
+    ///
+    /// Covers a package needing an increment, a version group disagreeing with
+    /// itself, a requirement not naming the version its target declares or not
+    /// pinning a group sibling exactly, and a package that exposes a public
+    /// dependency releasing a breaking change without one of its own.
     Check {
         /// Release baseline whose first-parent line supplies anchors.
         ///
@@ -40,6 +46,17 @@ pub enum RunInput {
         format: CheckFormat,
         /// When set, warn on divergence from `cargo package --list` without failing.
         verify_packaging: bool,
+        /// When set, print explanatory decision notes to stderr.
+        verbose: bool,
+    },
+    /// `expand` — resolve version groups into an explicit per-package plan.
+    Expand {
+        /// Path to the plan JSON file to expand.
+        plan: PathBuf,
+        /// Path that receives the expanded plan JSON.
+        out: PathBuf,
+        /// Workspace manifest supplying groups and declared versions. Used verbatim.
+        manifest_path: PathBuf,
         /// When set, print explanatory decision notes to stderr.
         verbose: bool,
     },
@@ -78,6 +95,11 @@ pub enum RunOutcome {
         /// Non-gating advisory lines for stderr.
         warnings: String,
     },
+    /// `expand` finished and wrote the expanded plan.
+    Expand {
+        /// Human-readable summary for stdout.
+        message: String,
+    },
     /// `apply` finished (including `--dry-run`).
     Apply {
         /// Human-readable summary for stdout.
@@ -88,13 +110,13 @@ pub enum RunOutcome {
 /// Executes one requested operation and reports its outcome.
 ///
 /// Selects the command named by `input` and returns what that command produced:
-/// the report directory, the check verdict and its diagnostics, or the apply
-/// summary.
+/// the report summary, the check verdict and its diagnostics, the expanded-plan
+/// summary, or the apply summary.
 ///
 /// # Errors
 ///
 /// Returns an application error when the requested operation cannot be
-/// completed. A package needing an increment is a [`RunOutcome::Check`] with
+/// completed. A failing check is a [`RunOutcome::Check`] with
 /// `passed: false`, not an error.
 #[doc(hidden)]
 pub fn run(input: &RunInput) -> Result<RunOutcome, AppError> {
@@ -132,6 +154,15 @@ pub fn run(input: &RunInput) -> Result<RunOutcome, AppError> {
                 message,
                 warnings,
             })
+        }
+        RunInput::Expand {
+            plan,
+            out,
+            manifest_path,
+            verbose,
+        } => {
+            let message = run_expand(plan, out, manifest_path, Verbose::new(*verbose))?;
+            Ok(RunOutcome::Expand { message })
         }
         RunInput::Apply {
             plan,
