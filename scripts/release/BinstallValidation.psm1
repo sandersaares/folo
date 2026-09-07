@@ -127,7 +127,7 @@ function Test-BinaryTargetMetadata {
     if ($binaryTargets.Count -eq 1) {
         return @()
     }
-    , @("declares $($binaryTargets.Count) binary targets; exactly one is required")
+    "declares $($binaryTargets.Count) binary targets; exactly one is required"
 }
 
 function Invoke-BinstallValidation {

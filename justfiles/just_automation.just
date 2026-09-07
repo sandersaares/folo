@@ -548,10 +548,12 @@ gh-release config:
 # Creates any GitHub release/tag that release-plz could not create because the matching crates.io
 # version was already published manually or before a partial failure. Each tag points at the
 # package's version anchor from cargo-release-plan, so it identifies the revision that introduced
-# the published version even when recovery happens after later unrelated merges.
+# the published version even when recovery happens after later unrelated merges. COMMIT is the
+# exact checked-out release-branch commit: it fixes the report baseline so a feature branch or a
+# later-moving remote-tracking ref cannot pair current manifest versions with older anchors.
 [group('automation')]
 [script]
-gh-create-missing-binary-releases:
+gh-create-missing-binary-releases COMMIT:
     Set-StrictMode -Version Latest
     $ErrorActionPreference = "Stop"
     $PSNativeCommandUseErrorActionPreference = $true
@@ -560,7 +562,7 @@ gh-create-missing-binary-releases:
     $crates = @(Get-PublishableBinaryCrate)
     Write-Verbose "Publishable binary crates: $($crates.Name -join ', ')" -Verbose
     if ($crates.Count -gt 0) {
-        Invoke-BinaryReleaseReconciliation -Crate $crates -Verbose
+        Invoke-BinaryReleaseReconciliation -Crate $crates -Base "{{ COMMIT }}" -Verbose
     }
 
 # Reconciles the desired prebuilt-binary archive and checksum pairs against each

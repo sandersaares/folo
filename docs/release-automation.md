@@ -28,8 +28,8 @@ flowchart TD
     A["Merge of a PR that incremented"] --> B["Push to main"]
     B --> C["release.yml runs on every push to main"]
     C --> D{"release-plz detects an<br/>unpublished version?"}
-    D -- no --> Z["No-op (most pushes)"]
     D -- yes --> E["Publish changed crates to crates.io<br/>(Trusted Publishing, OIDC — no token)"]
+    D -- no --> F
     E --> F["Ensure a git tag + GitHub release exists<br/>per published binary crate"]
     F --> G["Reconcile: for every published binary crate,<br/>find incomplete archive/checksum pairs"]
     G --> H["Matrix build only the incomplete<br/>(crate, target) pairs"]

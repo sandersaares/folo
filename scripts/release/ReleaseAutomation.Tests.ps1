@@ -409,6 +409,20 @@ Describe 'Invoke-BinaryReleaseReconciliation' {
             $args[3] -eq '--target' -and $args[4] -eq 'version-anchor'
         }
     }
+
+    It 'rejects a missing checked-out commit before invoking cargo' {
+        $calls = [System.Collections.Generic.List[object]]::new()
+        $cargo = {
+            param([string[]] $Argument)
+            $calls.Add($Argument)
+        }
+        $crate = [pscustomobject]@{ Name = 'missing'; Version = '2.0.0' }
+
+        { Invoke-BinaryReleaseReconciliation -Crate $crate -Base '' -Cargo $cargo } |
+            Should -Throw
+
+        $calls.Count | Should -Be 0
+    }
 }
 
 Describe 'Get-MissingBinaryMatrix (mocked gh release view)' {

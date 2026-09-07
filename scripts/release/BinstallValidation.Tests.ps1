@@ -121,12 +121,16 @@ Describe 'Test-BinaryTargetMetadata' {
                 [pscustomobject]@{ name = 'second'; kind = @('bin') }
             )
         }
-        @(Test-BinaryTargetMetadata -Package $pkg).Count | Should -Be 1
+        $problems = @(Test-BinaryTargetMetadata -Package $pkg)
+        $problems.Count | Should -Be 1
+        ($problems[0] -is [string]) | Should -BeTrue
     }
 
     It 'rejects a package with no target metadata' {
-        @(Test-BinaryTargetMetadata -Package ([pscustomobject]@{ name = 'crafted' })).Count |
-            Should -Be 1
+        $problems =
+            @(Test-BinaryTargetMetadata -Package ([pscustomobject]@{ name = 'crafted' }))
+        $problems.Count | Should -Be 1
+        ($problems[0] -is [string]) | Should -BeTrue
     }
 }
 

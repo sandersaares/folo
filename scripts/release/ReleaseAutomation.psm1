@@ -253,7 +253,7 @@ function New-MissingBinaryRelease {
         }
         Write-Verbose (
             "GitHub release '$tag' is missing; creating it at version anchor '$targetCommit'."
-        ) -Verbose
+        )
         if ($PSCmdlet.ShouldProcess($tag, "create GitHub release at $targetCommit")) {
             gh release create $tag `
                 --target $targetCommit `
@@ -271,9 +271,13 @@ function Invoke-BinaryReleaseReconciliation {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][object[]] $Crate,
-        [string] $Base = $env:GITHUB_SHA,
+        [Parameter(Mandatory)][AllowEmptyString()][string] $Base,
         [scriptblock] $Cargo = { param([string[]] $Argument) & cargo @Argument }
     )
+
+    if ([string]::IsNullOrWhiteSpace($Base)) {
+        throw 'Binary release reconciliation requires the checked-out commit as its base.'
+    }
 
     $outDir = Join-Path ([System.IO.Path]::GetTempPath()) "binary-release-plan-$(New-Guid)"
     New-Item -ItemType Directory -Path $outDir | Out-Null
@@ -282,9 +286,7 @@ function Invoke-BinaryReleaseReconciliation {
             'run', '-p', 'cargo-release-plan', '--locked', '--',
             'report', '--out-dir', $outDir
         )
-        if (-not [string]::IsNullOrWhiteSpace($Base)) {
-            $argument += @('--base', $Base)
-        }
+        $argument += @('--base', $Base)
         & $Cargo $argument
         if ($LASTEXITCODE -ne 0) {
             throw "cargo-release-plan report failed with exit code $LASTEXITCODE."
@@ -300,7 +302,7 @@ function Invoke-BinaryReleaseReconciliation {
         foreach ($anchor in $anchors) {
             $targetCommitByName[[string] $anchor.Name] = [string] $anchor.Commit
         }
-        New-MissingBinaryRelease -Crate $Crate -TargetCommitByName $targetCommitByName -Verbose
+        New-MissingBinaryRelease -Crate $Crate -TargetCommitByName $targetCommitByName
     } finally {
         Remove-Item -LiteralPath $outDir -Recurse -Force -ErrorAction SilentlyContinue
     }

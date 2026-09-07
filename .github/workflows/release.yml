@@ -122,8 +122,10 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         # release-plz skips versions already present on crates.io, so it cannot repair a missing
         # tag/release after a manual publish or a partial failure. Create that release at the
-        # package's version anchor before asset reconciliation.
-        run: just gh-create-missing-binary-releases
+        # package's version anchor before asset reconciliation. GITHUB_SHA is the exact
+        # release-branch commit checked out by this main-only workflow, so anchor resolution
+        # cannot drift to a later ref or accidentally use feature-branch manifest versions.
+        run: just gh-create-missing-binary-releases "$env:GITHUB_SHA"
 
       - name: Reconcile missing binary assets
         id: plan
