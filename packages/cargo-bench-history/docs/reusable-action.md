@@ -1011,18 +1011,20 @@ on the issues, so that is what ships. Consumers who want labels can add them by 
 their own automation, and label support can arrive later without breaking anyone, because
 adding labels to an issue nobody was labelling is not a behaviour change.
 
-**Rolling issues are found by author and marker, never by label or title.** Dropping labels
-removes the narrowing mechanism the monorepo's shell layer uses today — it lists issues
-carrying a known label and then matches the title client-side — so the companion needs a
-replacement, and the one it uses is better anyway. It lists **open issues authored by the
-identity it posts as**, which on any runner is the workflow's own token identity, and matches
-the **hidden marker** in the body. Author is a strong, free filter: a repository has few issues
-opened by its own automation, so the candidate set stays small without anyone configuring
-anything. The marker then decides identity exactly, which title-matching never did — a title is
-consumer-editable, so matching on it means an edited title silently abandons the issue it was
-tracking, and could adopt an unrelated issue that happens to collide. The same marker is the
-identity a create reconciles against when its outcome is uncertain (above), so one mechanism
-serves lookup, deduplication, and retry safety.
+**Rolling issues are found by marker, never by label, title or author.** Dropping labels removes
+the narrowing mechanism the monorepo's shell layer uses today — it lists issues carrying a
+known label and then matches the title client-side — so the companion lists the repository's
+open issues and matches the **hidden marker** in the body. The marker decides identity exactly,
+which title-matching never did: a title is consumer-editable, so matching on it means an edited
+title silently abandons the issue it was tracking, and could adopt an unrelated issue that
+happens to collide. Author is not part of identity either; the per-run Actions token does not
+offer a useful portable "viewer login" contract, and changing the posting identity must not
+strand an existing rolling issue.
+
+The issue marker carries both the `instance` and an **issue kind** (`regression` or
+`failure-alert`), since both lifecycles share one repository and neither has a label to
+distinguish it. The same marker is the identity a create reconciles against when its outcome is
+uncertain (above), so one mechanism serves lookup, deduplication and retry safety.
 
 ### 5.2 Standard reports, with narrow overrides
 
@@ -1149,8 +1151,8 @@ the comma-separated runner matrix) and pass the rest through, so a consumer on t
 sees only the inputs their flow actually varies.
 
 **Common inputs:** `command` (`collect` | `analyze-history` | `analyze-pr` | `backfill` |
-`pr-comment-preflight` | `pr-comment-cleanup` | `pr-comment-finalize` | `alert` |
-`resolve-alert`, required);
+`issue-preflight` | `issue-cleanup` | `pr-comment-preflight` | `pr-comment-cleanup` |
+`pr-comment-finalize` | `alert` | `resolve-alert`, required);
 `install-method` (`binstall` | `install` | `path` | `none`, default `binstall`; applies to
 every binary the command needs, §3);
 `tool-version` (package version to install; defaults to the version named in the action
@@ -1190,9 +1192,10 @@ unconditionally in branch mode, so there is no direction input.
 
 **Lifecycle-command inputs:** `pr-comment-preflight` / `pr-comment-cleanup` /
 `pr-comment-finalize` take `pr-number` and `comment-marker`, plus (preflight) the `packages`
-scope to disclose and (finalize) the failed run's URL; `issue-preflight` / `issue-cleanup` take
-`issue-title`, and `issue-cleanup` additionally takes **`auto-close`**
-(default `false`, §4.4); `alert` / `resolve-alert` take `issue-title`.
+scope to disclose and (finalize) the failed run's URL; `issue-preflight` identifies the
+regression issue from `instance`; `issue-cleanup` additionally takes **`auto-close`**
+(default `false`, §4.4); `alert` takes the failure issue's displayed title; and
+`resolve-alert` identifies that issue from `instance`.
 
 **`backfill` inputs:** the same scope inputs as `collect` (`packages`, `exclude`, `bench`,
 `best-of`), plus the history window to densify and `on-existing` (which defaults to `skip`
