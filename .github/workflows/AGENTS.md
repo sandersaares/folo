@@ -40,8 +40,8 @@ high-level design in `design.md` and per-job mechanics in inline YAML comments.
 - Azure OIDC jobs (`test-azure`, `test-azure-gh`) must not run on `merge_group`. The test
   identity's federated subjects are `pull_request` and the `main` branch ref only.
 - A workflow edit must consume the consumer-contract package set from the release-plan report
-  rather than restating it in YAML. Which packages present a consumer contract is declared by
-  each package in its own manifest, described in
+  rather than restating it in YAML. A package states this in its own manifest by declaring
+  a private API, described in
   [the release validation guide](implementation.md#release-validation).
 
 ## Required-checks fan-in

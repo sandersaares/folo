@@ -240,7 +240,7 @@ function Get-AffectedSemverCheckTarget {
                 } else {
                     Write-Verbose (
                         "Changed package '$packageName' is emitted as cargo-semver-checks " +
-                        "target '$target' because its manifest declares a consumer contract."
+                        "target '$target' because its manifest does not declare a private API."
                     ) -Verbose
                 }
             }

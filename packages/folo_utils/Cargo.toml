@@ -16,7 +16,7 @@ all-features = true
 [package.metadata.release-plan]
 # Published only so other Folo packages can depend on it; it offers no stable API
 # surface of its own.
-consumer-contract = false
+private-api = true
 
 [lib]
 doc = false

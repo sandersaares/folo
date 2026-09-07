@@ -37,7 +37,7 @@ development = [
 [package.metadata.release-plan]
 # Implementation partition of `nm_otel`; consumers reach this surface through
 # that package, which is where its compatibility is assessed.
-consumer-contract = false
+private-api = true
 
 [lib]
 # nm_otel_impl exists only to host the implementation of `nm_otel` and to expose

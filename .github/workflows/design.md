@@ -148,8 +148,9 @@ package advances its patch component and a 0.0.z package has no compatible incre
 
 Automated API comparison supplies evidence for those decisions but does not replace semantic
 review. It is fail-closed when its input format or execution is unsupported. Comparisons cover
-only packages that present a consumer contract, which each package declares in its own manifest.
-Published implementation and test-support packages declare that they do not; changes in a grouped
+only packages that present a consumer contract, which a package states in its own manifest by
+declaring a private API or by saying nothing. Published implementation and test-support packages
+declare themselves private; changes in a grouped
 implementation package are assessed through the owning public package instead, which loses
 nothing because a re-exported item appears in that package's own API.
 

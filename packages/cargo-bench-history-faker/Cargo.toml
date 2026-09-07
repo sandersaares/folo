@@ -24,7 +24,7 @@ pkg-fmt = "zip"
 [package.metadata.release-plan]
 # Unsupported synthetic generator for validating `cargo-bench-history` end to end;
 # it offers no stable API or CLI.
-consumer-contract = false
+private-api = true
 
 [lib]
 name = "cargo_bench_history_faker"

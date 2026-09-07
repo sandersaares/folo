@@ -63,15 +63,14 @@ and the package declares it.
 
 ```toml
 [package.metadata.release-plan]
-consumer-contract = false
+private-api = true
 ```
 
-The declaration defaults to true, so a package presents a contract unless it says
-otherwise, and a package with no library target presents none either way. The
-default is chosen for its failure mode rather than its frequency: a package
-wrongly treated as a contract produces a finding a maintainer can act on, while
-one wrongly skipped produces nothing at all. A malformed declaration is an error
-for the same reason.
+A package is public unless it declares itself private, and a package with no
+library target presents no contract either way. That direction is chosen for its
+failure mode rather than its frequency: a package wrongly treated as public
+produces a finding a maintainer can act on, while one wrongly treated as private
+produces nothing at all. A malformed declaration is an error for the same reason.
 
 This bears on API-compatibility assessment, which is a consumer of the report
 rather than part of it. Assessing an implementation partition directly would

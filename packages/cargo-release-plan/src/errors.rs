@@ -560,26 +560,26 @@ pub(crate) struct MalformedVersionGroupError {
 impl UnwindSafe for MalformedVersionGroupError {}
 impl RefUnwindSafe for MalformedVersionGroupError {}
 
-/// A package's consumer-contract declaration is present but is not a boolean.
+/// A package's private-API declaration is present but is not a boolean.
 ///
 /// Fails closed rather than defaulting: a typo here would otherwise silently
 /// decide whether the package is assessed for API compatibility at all.
 #[ohno::error]
 #[display(
-    "Package '{}' declares `[package.metadata.release-plan] consumer-contract` as {}, which must be a boolean",
+    "Package '{}' declares `[package.metadata.release-plan] private-api` as {}, which must be a boolean",
     package.quoted(),
     value.quoted()
 )]
-pub(crate) struct MalformedConsumerContractError {
+pub(crate) struct MalformedPrivateApiError {
     package: String,
     value: String,
 }
 
-impl UnwindSafe for MalformedConsumerContractError {}
-impl RefUnwindSafe for MalformedConsumerContractError {}
+impl UnwindSafe for MalformedPrivateApiError {}
+impl RefUnwindSafe for MalformedPrivateApiError {}
 
 #[cfg(test)]
-impl MalformedConsumerContractError {
+impl MalformedPrivateApiError {
     pub(crate) fn package(&self) -> &str {
         &self.package
     }

@@ -160,9 +160,8 @@ from the dependent's `allowed_external_types` allow-list and followed
 transitively through re-exports, so a package exposing an implementation crate
 marks the public crate it actually depends on. Only normal dependencies qualify.
 `consumer_contract` is true when the package has a library target and has not
-declared `[package.metadata.release-plan] consumer-contract = false`, which is
-how a package states that its library serves another package rather than
-consumers.
+declared `[package.metadata.release-plan] private-api = true`, which is how a
+package states that its library serves another package rather than consumers.
 `diff_path` is relative to the report directory. Plan and report formats
 advance this revision together: an incompatible field, enum, or path-layout
 change increments it.

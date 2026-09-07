@@ -29,7 +29,7 @@ allowed_external_types = [
 [package.metadata.release-plan]
 # Implementation partition of `cargo-bench-history`; consumers reach this surface
 # through that package, which is where its compatibility is assessed.
-consumer-contract = false
+private-api = true
 
 [lib]
 # This is an implementation crate whose surface is documented on `cargo-bench-history`.

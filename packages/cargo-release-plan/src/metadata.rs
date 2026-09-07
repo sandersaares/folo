@@ -28,7 +28,7 @@ use crate::manifest::{
 use crate::packaging::PackagingRules;
 use crate::packaging::relativize;
 use crate::{
-    GroupNameCollisionError, InvalidVersionError, MalformedConsumerContractError,
+    GroupNameCollisionError, InvalidVersionError, MalformedPrivateApiError,
     MalformedVersionGroupError, MalformedVersionGroupsError, NonPublishableGroupMemberError,
     ParseMetadataError, ReadFileError, UnknownGroupMemberError,
 };
@@ -76,10 +76,11 @@ pub(crate) struct WorkPackage {
     /// Whether the package presents a library API contract to consumers.
     ///
     /// True when the package has a library target and has not declared
-    /// `[package.metadata.release-plan] consumer-contract = false`. A package
-    /// opts out to say that its library exists to serve another package rather
-    /// than to be depended on directly, which is a release-policy statement the
-    /// package makes about itself rather than something derivable from its code.
+    /// `[package.metadata.release-plan] private-api = true`. A package
+    /// declares itself private to say that its library exists to serve another
+    /// package rather than to be depended on directly, which is a release-policy
+    /// statement the package makes about itself rather than something derivable
+    /// from its code.
     ///
     /// This is reported as evidence; what to do with it is the consumer's
     /// decision.
@@ -504,10 +505,9 @@ fn groups_from_metadata(
 ///
 /// Two facts combine. A package with no library target has no library API at
 /// all. A package that declares
-/// `[package.metadata.release-plan] consumer-contract = false` has one but
-/// states that it is not for direct use: an implementation partition behind a
-/// public package, or a crate published only because Cargo requires a
-/// dependency to be published.
+/// `[package.metadata.release-plan] private-api = true` has one but states that
+/// it is private: an implementation partition behind a public package, or a
+/// crate published only because Cargo requires a dependency to be published.
 ///
 /// The declaration is read from the package rather than inferred, because no
 /// property of the code distinguishes a library meant for consumers from one
@@ -516,10 +516,10 @@ fn groups_from_metadata(
 /// policy on them would silently mis-classify a package whose author changed
 /// one for an unrelated reason.
 ///
-/// Defaults to true, so a package is a contract unless it says otherwise. The
-/// safe direction: a new package is assessed by default, and a package wrongly
-/// assessed reports a finding a maintainer can see, while a package wrongly
-/// skipped reports nothing at all.
+/// A package is public unless it declares otherwise. The safe direction: a new
+/// package is assessed by default, and a package wrongly assessed reports a
+/// finding a maintainer can see, while a package wrongly skipped reports
+/// nothing at all.
 fn is_consumer_contract(package: &MetadataPackage) -> Result<bool, AppError> {
     let has_library = package.targets.iter().any(|target| {
         target
@@ -533,13 +533,14 @@ fn is_consumer_contract(package: &MetadataPackage) -> Result<bool, AppError> {
     let Some(declared) = package
         .metadata
         .get("release-plan")
-        .and_then(|value| value.get("consumer-contract"))
+        .and_then(|value| value.get("private-api"))
     else {
         return Ok(true);
     };
-    declared.as_bool().ok_or_else(|| {
-        MalformedConsumerContractError::new(&package.name, declared.to_string()).into()
-    })
+    declared
+        .as_bool()
+        .map(|private| !private)
+        .ok_or_else(|| MalformedPrivateApiError::new(&package.name, declared.to_string()).into())
 }
 
 /// The identifier a Rust path uses for a package's library, if it has one.
@@ -1307,13 +1308,13 @@ mod tests {
         assert_eq!(library_crate_name(&metadata_package(Vec::new())), None);
     }
 
-    /// A package declares whether its library is a consumer contract.
+    /// A package declares whether its library is private.
     ///
     /// No property of the code distinguishes a library meant for consumers from one meant for a
-    /// sibling crate, so the package states it. The default is true, which keeps a new package
+    /// sibling crate, so the package states it. Absent means public, which keeps a new package
     /// assessed rather than silently skipped.
     #[test]
-    fn a_package_declares_whether_its_library_is_a_consumer_contract() {
+    fn a_package_declares_whether_its_library_is_private() {
         fn metadata_package(kinds: &[&str], metadata: Value) -> MetadataPackage {
             MetadataPackage {
                 name: "demo".to_string(),
@@ -1333,16 +1334,16 @@ mod tests {
             }
         }
         fn declaring(value: bool) -> Value {
-            serde_json::json!({ "release-plan": { "consumer-contract": value } })
+            serde_json::json!({ "release-plan": { "private-api": value } })
         }
 
-        // A library is a contract unless the package says otherwise.
+        // A library is a contract unless the package declares itself private.
         assert!(is_consumer_contract(&metadata_package(&["lib"], Value::Null)).unwrap());
         assert!(is_consumer_contract(&metadata_package(&["proc-macro"], Value::Null)).unwrap());
-        assert!(is_consumer_contract(&metadata_package(&["lib"], declaring(true))).unwrap());
+        assert!(is_consumer_contract(&metadata_package(&["lib"], declaring(false))).unwrap());
 
-        // An opted-out library is not, and neither is a package with no library at all.
-        assert!(!is_consumer_contract(&metadata_package(&["lib"], declaring(false))).unwrap());
+        // A private library is not, and neither is a package with no library at all.
+        assert!(!is_consumer_contract(&metadata_package(&["lib"], declaring(true))).unwrap());
         assert!(!is_consumer_contract(&metadata_package(&["bin"], Value::Null)).unwrap());
         assert!(!is_consumer_contract(&metadata_package(&[], Value::Null)).unwrap());
 
@@ -1360,7 +1361,7 @@ mod tests {
     ///
     /// Defaulting would let a typo silently decide whether the package is assessed at all.
     #[test]
-    fn a_malformed_consumer_contract_declaration_is_an_error() {
+    fn a_malformed_private_api_declaration_is_an_error() {
         let package = MetadataPackage {
             name: "demo".to_string(),
             version: "0.1.0".to_string(),
@@ -1372,14 +1373,14 @@ mod tests {
                 name: "demo".to_string(),
                 kind: vec!["lib".to_string()],
             }],
-            metadata: serde_json::json!({ "release-plan": { "consumer-contract": "false" } }),
+            metadata: serde_json::json!({ "release-plan": { "private-api": "true" } }),
         };
 
         let error = is_consumer_contract(&package).unwrap_err();
 
         assert_eq!(
             error
-                .find_source::<MalformedConsumerContractError>()
+                .find_source::<MalformedPrivateApiError>()
                 .unwrap()
                 .package(),
             "demo"
