@@ -3,7 +3,7 @@
 name = "cargo-bench-history"
 description = "A Cargo tool that maintains a long-lived history of benchmark results and analyzes it for trends"
 publish = true
-version = "0.2.5"
+version = "0.2.6"
 
 authors.workspace = true
 edition.workspace = true
