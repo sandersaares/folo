@@ -389,9 +389,9 @@ gh-analyze-pr-bench-history dir base keydir:
 # a new one each run - so both the regression alert ('Benchmark regressions detected') and the
 # workflow-failure alert share Publish-RollingIssue with their own title/label; only the regression
 # path goes through this recipe, since the lightweight alert job skips the build-environment setup
-# `just` needs and imports the module directly. `label` is the single label applied on creation,
-# which must already exist in the repository. Needs GH_TOKEN in the environment (the workflow
-# supplies it).
+# `just` needs and imports the module directly. `label` is the single label applied on creation; it
+# must already exist in the repository, which the calling workflow step ensures. Needs GH_TOKEN in
+# the environment (the workflow supplies it).
 [group('automation')]
 [script]
 gh-file-rolling-issue title label body_file:

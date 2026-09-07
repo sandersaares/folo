@@ -117,8 +117,8 @@ function Publish-RollingIssue {
     # into the repo checkout. $Label is the single label applied on creation, and also the label the
     # dedup search is narrowed to, so the next run finds the filed issue instead of duplicating it.
     # It must already exist in the repository - `gh issue create` fails outright on an unknown label
-    # - so callers pass one of the repository's standing labels rather than inventing a
-    # workflow-specific one. Returns the issue URL.
+    # - so callers pass one of the repository's standing labels and reinstate it idempotently before
+    # calling rather than inventing a workflow-specific one. Returns the issue URL.
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string] $Title,

@@ -378,18 +378,31 @@ jobs:
       # One rolling issue, updated rather than duplicated each run (the fixed title is
       # the dedup key), so a regression that persists does not spam new issues. Opened
       # only when findings exist; runs with none touch nothing. Filed over `gh` via the
-      # shared gh-file-rolling-issue recipe (the workflow's one issue-filing path) rather
-      # than a template action, so the body file can live in the runner temp dir, outside
-      # the repo checkout. The label is one of the repository's standing labels: it is both
-      # applied on creation and the label the dedup search narrows to, and `gh issue create`
-      # fails outright on a label the repository does not define.
+      # gh-file-rolling-issue recipe (a thin wrapper over the Publish-RollingIssue seam both of
+      # this workflow's issue paths share) rather than a template action, so the body file can
+      # live in the runner temp dir, outside the repo checkout. The label is one of the
+      # repository's standing labels: it is both applied on creation and the label the dedup
+      # search narrows to. `gh issue create` fails outright on a label the repository does not
+      # define, so the step reinstates it first.
       - name: File rolling regression issue
         if: steps.notable.outputs.value == 'true'
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SCRATCH_DIR: ${{ steps.scratch.outputs.dir }}
-        run: just gh-file-rolling-issue 'Benchmark regressions detected' 'regression' (Join-Path $env:SCRATCH_DIR 'issue-body.md')
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+
+          # Ensure the standing label exists (idempotent) so `gh issue create` cannot fail on a
+          # missing label. --force also rewrites an existing label, so the color and description
+          # must stay the repository's canonical ones or every run would churn them.
+          $PSNativeCommandUseErrorActionPreference = $false
+          gh label create regression --color d73a4a --description "Performance/behavior regression" --force *> $null
+          $PSNativeCommandUseErrorActionPreference = $true
+
+          just gh-file-rolling-issue 'Benchmark regressions detected' 'regression' (Join-Path $env:SCRATCH_DIR 'issue-body.md')
 
   alert:
     # Open a deduplicated issue whenever collection or analysis fails, so a broken
@@ -440,6 +453,13 @@ jobs:
           $body = $template -f $env:RUN_URL
           $bodyFile = Join-Path $env:RUNNER_TEMP 'bench-history-failure-issue.md'
           Set-Content -Path $bodyFile -Value $body -Encoding utf8
+
+          # Ensure the standing label exists (idempotent) so `gh issue create` cannot fail on a
+          # missing label. This label is shared with the per-run alerts that validation.yml and
+          # release.yml file, so its color and description are kept identical to the guard there.
+          $PSNativeCommandUseErrorActionPreference = $false
+          gh label create ci-failure --color B60205 --description "CI workflow failure" --force *> $null
+          $PSNativeCommandUseErrorActionPreference = $true
 
           $url = Publish-RollingIssue `
             -Title $env:FAILURE_ISSUE_TITLE `
