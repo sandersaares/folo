@@ -47,8 +47,8 @@ concurrency:
   cancel-in-progress: true
 
 # Title of the rolling failure-alert issue, defined once and shared by the two jobs that
-# reference it: the `alert` job files it under this exact title (via the shared
-# gh-file-rolling-issue recipe), and the `resolve-alert` job matches on it to close that issue.
+# reference it: the `alert` job files it under this exact title (via Publish-RollingIssue),
+# and the `resolve-alert` job matches on it to close that issue.
 # The rolling-issue filing dedups solely by exact title, so this string is the alert's
 # identity; a single definition keeps the open and close paths from drifting apart.
 env:
@@ -317,7 +317,7 @@ jobs:
             ${{ steps.scratch.outputs.dir }}/report.json
           if-no-files-found: error
 
-      # The File step passes the title and labels to the gh-file-rolling-issue recipe as `gh`
+      # The File step passes the title and label to the gh-file-rolling-issue recipe as `gh`
       # flags, so this body needs NO YAML front matter - it is the pure issue body. That fixed
       # title is the dedup key that turns findings into one rolling issue.
       # The body carries the CONDENSED summary (not the full report) so it fits the issue
@@ -360,7 +360,7 @@ jobs:
           - **A defect to fix**: fix it as usual. A fixed finding self-clears on its own several runs after the fix, even without a blessing. This is **not** immediate: clearing it needs statistical evidence from multiple post-fix runs.
           '@
 
-          # The title and labels are NOT front matter here - the File step passes them to the
+          # The title and label are NOT front matter here - the File step passes them to the
           # gh-file-rolling-issue recipe as `gh` flags - so this file is the pure issue body.
           $parts = @(
             $summary
@@ -380,14 +380,16 @@ jobs:
       # only when findings exist; runs with none touch nothing. Filed over `gh` via the
       # shared gh-file-rolling-issue recipe (the workflow's one issue-filing path) rather
       # than a template action, so the body file can live in the runner temp dir, outside
-      # the repo checkout.
+      # the repo checkout. The label is one of the repository's standing labels: it is both
+      # applied on creation and the label the dedup search narrows to, and `gh issue create`
+      # fails outright on a label the repository does not define.
       - name: File rolling regression issue
         if: steps.notable.outputs.value == 'true'
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SCRATCH_DIR: ${{ steps.scratch.outputs.dir }}
-        run: just gh-file-rolling-issue 'Benchmark regressions detected' 'bench-history,regression' (Join-Path $env:SCRATCH_DIR 'issue-body.md')
+        run: just gh-file-rolling-issue 'Benchmark regressions detected' 'regression' (Join-Path $env:SCRATCH_DIR 'issue-body.md')
 
   alert:
     # Open a deduplicated issue whenever collection or analysis fails, so a broken
@@ -441,7 +443,7 @@ jobs:
 
           $url = Publish-RollingIssue `
             -Title $env:FAILURE_ISSUE_TITLE `
-            -Label 'bench-history,ci-failure' `
+            -Label 'ci-failure' `
             -BodyFile $bodyFile `
             -Verbose
           Write-Host "Failure alert issue: $url"
