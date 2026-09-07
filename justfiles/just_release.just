@@ -7,11 +7,13 @@ audit:
 # tool fails to *run* - most commonly because the installed cargo-semver-checks is too old for the
 # current toolchain's rustdoc JSON format (e.g. "unsupported rustdoc format v57 ... supported
 # formats are v53, v55, v56") - a broken tool must never be read as "no breaking changes". This
-# canary runs cargo-semver-checks on one small, fast-to-build package, comparing it against its own
-# `HEAD` so the two sides are byte-identical and the *only* way the check can fail is the tool
-# itself failing to run. A non-zero exit therefore means "cargo-semver-checks is broken", not "a
-# real breaking change was found". Runnable on its own to sanity-check a fresh toolchain/tool
-# combination.
+# canary runs cargo-semver-checks on one small, fast-to-build package against its own `HEAD` as
+# the baseline. `--baseline-rev` fixes only the baseline: the candidate is still built from the
+# work tree, so the two sides are identical exactly when the work tree has not touched that
+# package - which is the normal case, since it is not a package a release change would edit. A
+# non-zero exit therefore means "cargo-semver-checks is broken" unless the canary package itself
+# was edited, which the diagnostic calls out. Runnable on its own to sanity-check a fresh
+# toolchain/tool combination.
 [group('release')]
 [script]
 verify-semver-checks:

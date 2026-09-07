@@ -16,7 +16,7 @@ to `main`. Version increments land in the pull request that causes them; see
   pull-request conventions), [`build-and-tooling.md`](build-and-tooling.md)
   (`just` recipes), [`.github/workflows/design.md`](../.github/workflows/design.md)
   (the bench matrix this reuses), [`RELEASING.md`](../RELEASING.md) (first
-  publish, emergency manual publish, remaining GitHub settings).
+  publish, emergency manual publish, required GitHub configuration).
 
 ## The flow
 
@@ -130,7 +130,7 @@ publish:
   permissions:
     contents: write   # release-plz creates tags + GitHub releases
     id-token: write   # crates.io Trusted Publishing (OIDC)
-  timeout-minutes: 350   # just below the GitHub 6-hour cap; covers 10 retry attempts (see below)
+  timeout-minutes: 270   # covers the retry budget plus a cold-cache setup (see below)
   steps:
     - uses: actions/checkout@v7
       with:
@@ -346,11 +346,12 @@ versions), and Trusted-Publishing OIDC tokens are short-lived (~30 minutes). The
 publish step is built to ride out both without bespoke complexity:
 
 * **Bounded retry.** The `release-plz release` invocation is wrapped in a retry —
-  up to **10 attempts, 15 minutes apart**. Each wait refills roughly fifteen
-  crates.io tokens, so a full-workspace publish fits inside the budget. The
-  `publish` job's `timeout-minutes` is set just below GitHub's six-hour cap
-  (350) so the job's own timeout fires first, and release-plz keeps its
-  45-minute `publish_timeout`.
+  up to **3 attempts, 15 minutes apart**. Each wait refills roughly fifteen
+  crates.io tokens. A release throttled for longer than that budget is finished
+  by the next push to `main` or by re-running the workflow, which is safe for the
+  idempotency reason below. The `publish` job's `timeout-minutes` (270) bounds the
+  job as a whole and can cut a retry loop short; release-plz keeps its 45-minute
+  `publish_timeout`.
 * **Idempotency does the heavy lifting.** Each `release-plz release` run
   re-checks crates.io and publishes only versions not already there. So a retry
   after a rate-limit rejection (or a manual re-run of the whole workflow) resumes

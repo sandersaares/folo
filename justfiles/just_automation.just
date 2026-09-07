@@ -530,7 +530,7 @@ gh-compose-release-config output:
     Write-Host "----- End composed CI release-plz config -----"
 
 # Publishes changed crates to crates.io via release-plz using the composed CI config, with
-# bounded retries (10 attempts, 15 minutes apart) to ride out crates.io rate limits and the
+# bounded retries (3 attempts, 15 minutes apart) to ride out crates.io rate limits and the
 # short-lived OIDC token. release-plz is idempotent - it re-checks the registry and skips
 # already-published versions - so a retry (or a whole re-run) safely resumes a partially
 # published release, and each attempt mints a fresh OIDC token. NOT for local use: it

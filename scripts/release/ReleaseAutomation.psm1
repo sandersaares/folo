@@ -314,7 +314,7 @@ function Invoke-ReleasePublish {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string] $ConfigPath,
-        [int] $Attempt = 10,
+        [int] $Attempt = 3,
         [int] $DelaySeconds = 900
     )
 

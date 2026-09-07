@@ -14,11 +14,12 @@ When addressing PR review comments, reply to each comment thread with the
 disposition (what you did to address it) and mark the thread as resolved after
 pushing the commit that addresses it.
 
-## Version bumps
+## Version increments
 
 A pull request that changes a package's released content must increment that
-package's version. The increment *is* the release: merge publishes. Do not bump
-casually, and do not leave released-content changes without an increment.
+package's version. The increment *is* the release: merge publishes. Do not
+increment casually, and do not leave released-content changes without an
+increment.
 
 Run the `increment-versions` skill to propose and apply levels. The author may
 raise a level above the `cargo-semver-checks` floor; they may not lower one.

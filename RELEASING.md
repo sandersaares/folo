@@ -7,8 +7,8 @@ See [docs/release-versioning.md](docs/release-versioning.md) for how versions ar
 decided and [docs/release-automation.md](docs/release-automation.md) for the publish
 design.
 
-Once the remaining GitHub settings below are in place, `main` is behind a merge
-queue whose only required status check is `required-checks`.
+`main` is behind a merge queue whose only required status check is `required-checks`.
+See [Required GitHub configuration](#required-github-configuration) below.
 
 1. Validate everything via `just validate` on Windows (will automatically invoke Linux validation).
 1. If you feel like it, also perform extra validation via `just validate-extra`.
@@ -36,17 +36,17 @@ If the CI publish path is broken, publish by hand with `cargo publish -p <crate>
 dependency order). For a binary crate, re-run `release.yml` (or push a version bump)
 afterwards so the prebuilt binaries are produced.
 
-## Remaining GitHub settings
+## Required GitHub configuration
 
 Branch protection, the merge queue, and the required-status-check ruleset are GitHub
-settings, not files in this repository. A human with repository admin access must
-apply:
+settings rather than files in this repository, so they are configured once by a
+repository admin and are prerequisites of the process above:
 
-* Protect `main`.
-* Enable the merge queue on `main`.
-* Require only the status check named `required-checks`.
-* Do not require individual Validation matrix job names — skipped legs never post a
-  check and would block the queue.
+* `main` is protected.
+* The merge queue is enabled on `main`.
+* The ruleset requires only the status check named `required-checks`.
+* Individual Validation matrix job names are not required — a skipped leg never
+  posts a check and would block the queue forever.
 
 `cargo-release-plan` also needs a one-time first `cargo publish` (and Trusted
 Publishing configured afterwards) before later versions can go through `release.yml`.

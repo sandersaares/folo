@@ -41,8 +41,9 @@ contract. It is published only so sibling repositories can run the binary (via
   which passes the subcommand name back as the first argument. `main` drops that
   leading token so the argument grammar is identical whether run directly or via
   cargo.
-* **Version stays in the `cargo-bench-history` group** (see `release-plz.toml`), so
-  a faker-only change bumps the whole CLI family. That is accepted.
+* **Version stays in the `cargo-bench-history` group** (see
+  `[workspace.metadata.release-plan.groups]` in the root `Cargo.toml`), so a faker-only change
+  increments the whole CLI family. That is accepted.
 
 ## Building and testing
 

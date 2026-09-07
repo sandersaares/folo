@@ -36,11 +36,10 @@ jobs:
     # already main-only, so this stops a dispatch on a feature branch from publishing.
     if: github.repository == 'folo-rs/folo' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    # Just below GitHub's 6-hour cap so this timeout fires first. Covers 10 publish
-    # attempts (release-plz publish_timeout is 45m) with 15-minute waits between retries,
-    # which is the rate-limit budget for a full-workspace publish. See
-    # docs/release-versioning.md.
-    timeout-minutes: 350
+    # Generous ceiling: covers up to 3 publish attempts (release-plz publish_timeout is
+    # 45m) with 15-minute waits between retries (~165m), plus up to 90 min for a cold-cache
+    # setup-environment, comfortably under this cap.
+    timeout-minutes: 270
 
     permissions:
       # release-plz pushes the git tags and creates the GitHub releases.
