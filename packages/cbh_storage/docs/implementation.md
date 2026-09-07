@@ -20,5 +20,6 @@ collision. Other distinctions remain private under the workspace
 [error-handling guide](../../../docs/error-handling.md).
 
 Local writes compress data and publish it atomically. Azure operations retain SDK diagnostics,
-while read-through caching uses per-project invalidation markers after remote overwrites and
-deletions.
+while conditional creates persist an opaque request identity so a collision caused by an automatic
+retry after a committed upload is recognized as success. Read-through caching uses per-project
+invalidation markers after remote overwrites and deletions.
