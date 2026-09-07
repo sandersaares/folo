@@ -254,13 +254,13 @@ deciding what either of them means.
 
 **Window size.** The app always sees the size of the terminal it is currently
 being viewed through. The attaching client's size is applied to the app's
-console before the relay starts, and a resize while attached is carried through
-as it happens, so an app that redraws on resize reflows immediately. A resize is
-therefore not a detach-and-resume affair; it works in the middle of a live
-session. While no client is attached the console keeps the size the last client
-gave it, and the next attach replaces it. This is what makes a session portable
-between terminals: resuming from a differently sized window is a resize, not a
-broken layout.
+console before the relay starts, and a resize while attached converges to the
+new size within a short interval, so an app that redraws on resize reflows
+promptly. A resize is therefore not a detach-and-resume affair; it works in the
+middle of a live session. While no client is attached the console keeps the size
+the last client gave it, and the next attach replaces it. This is what makes a
+session portable between terminals: resuming from a differently sized window is
+a resize, not a broken layout.
 
 **Keyboard.** Keys arrive at the app the way the terminal sent them, including
 the ones that are sequences rather than characters — arrows, function keys, Home
@@ -272,10 +272,11 @@ movement, colors and styling, the alternate screen buffer, scroll regions, and
 window-title sequences all reach the terminal unchanged. `dure` does not parse,
 rewrite, or filter this stream.
 
-Mouse reporting is deliberately not carried, and neither are console events that
-describe the window rather than the user's input, such as focus changes and menu
-activity. An app that would use the mouse in the user's terminal does not get it
-under `dure`.
+Mouse and focus reports are carried when the app enables their terminal
+protocols and the local terminal stack provides them as VT input. The
+byte-transparent relay handles those bytes without per-protocol support. Console
+events with no byte representation, such as menu activity, are not carried;
+window size is handled separately as described above.
 
 Everything in this section follows from the relay being byte-transparent and
 size-aware; none of it is per-application support, so an app that works in the

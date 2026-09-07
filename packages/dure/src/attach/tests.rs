@@ -34,12 +34,12 @@ struct ConsoleScript {
 
 #[derive(Debug, Default)]
 struct ScriptState {
-    input: VecDeque<Result<ConsoleInput, PalErrorKind>>,
+    input: VecDeque<Result<Vec<u8>, PalErrorKind>>,
     cancelled: bool,
 }
 
 impl ConsoleScript {
-    fn new(input: Vec<Result<ConsoleInput, PalErrorKind>>) -> Self {
+    fn new(input: Vec<Result<Vec<u8>, PalErrorKind>>) -> Self {
         Self {
             state: Mutex::new(ScriptState {
                 input: input.into(),
@@ -49,7 +49,7 @@ impl ConsoleScript {
         }
     }
 
-    fn read(&self) -> Result<ConsoleInput, PalError> {
+    fn read(&self) -> Result<Vec<u8>, PalError> {
         let mut state = self.state.lock().unwrap();
         loop {
             if state.cancelled {
@@ -78,7 +78,7 @@ struct TestConsole {
     window_size: Result<(), PalErrorKind>,
     write_output: Result<(), PalErrorKind>,
     cancel_input: Result<(), PalErrorKind>,
-    input: Vec<Result<ConsoleInput, PalErrorKind>>,
+    input: Vec<Result<Vec<u8>, PalErrorKind>>,
     hand_backs: Arc<AtomicUsize>,
 }
 
@@ -543,27 +543,96 @@ fn the_console_can_be_taken_over_again_after_a_relay() {
 
 #[test]
 fn console_input_is_forwarded_to_the_supervisor() {
-    let resize = WindowSize::new(10, 20).expect("a fixture size is not empty");
     let console = TestConsole {
-        input: vec![
-            Ok(ConsoleInput::Bytes(b"hi".to_vec())),
-            Ok(ConsoleInput::Resize(resize)),
-        ],
+        input: vec![Ok(b"hi".to_vec())],
         ..TestConsole::new()
     };
-    let outcome = attach_to_scripted_supervisor(console, move |transport, conn| {
+    let outcome = attach_to_scripted_supervisor(console, |transport, conn| {
         assert!(matches!(
             transport.recv(conn),
             Ok(Message::Input(bytes)) if bytes == b"hi"
-        ));
-        assert!(matches!(
-            transport.recv(conn),
-            Ok(Message::Resize { size }) if size == resize
         ));
         _ = transport.send(conn, &Message::AppExited { status: 0 });
     })
     .unwrap();
     assert!(matches!(outcome, Outcome::AppExit(0)));
+}
+
+#[test]
+fn a_changed_console_size_is_forwarded_to_the_supervisor() {
+    let changed = WindowSize::new(100, 50).expect("a fixture size is not empty");
+    let (transport, client, supervisor) = connected_transport();
+    let mut console = MockLocalConsole::new();
+    console.expect_window_size().returning(move || Ok(changed));
+    let mut last_size = SAMPLE_SIZE;
+
+    poll_size_once(&transport, &console, client, &mut last_size).unwrap();
+
+    assert_eq!(last_size, changed);
+    assert!(matches!(
+        transport.recv_timeout(supervisor, Duration::ZERO),
+        Ok(Message::Resize { size }) if size == changed
+    ));
+}
+
+#[test]
+fn an_unchanged_console_size_is_not_forwarded() {
+    let (transport, client, supervisor) = connected_transport();
+    let mut console = MockLocalConsole::new();
+    console.expect_window_size().returning(|| Ok(SAMPLE_SIZE));
+    let mut last_size = SAMPLE_SIZE;
+
+    poll_size_once(&transport, &console, client, &mut last_size).unwrap();
+
+    assert_eq!(last_size, SAMPLE_SIZE);
+    transport.expire_next_recv("poll");
+    assert!(matches!(
+        transport.recv_timeout(supervisor, Duration::ZERO),
+        Err(error) if error.kind() == PalErrorKind::Timeout
+    ));
+}
+
+#[test]
+fn a_console_size_read_failure_is_returned() {
+    let (transport, client, supervisor) = connected_transport();
+    let mut console = MockLocalConsole::new();
+    console
+        .expect_window_size()
+        .returning(|| Err(PalError::new(PalErrorKind::Other)));
+    let mut last_size = SAMPLE_SIZE;
+
+    let result = poll_size_once(&transport, &console, client, &mut last_size);
+
+    assert!(result.is_err());
+    assert_eq!(last_size, SAMPLE_SIZE);
+    transport.expire_next_recv("poll");
+    assert!(matches!(
+        transport.recv_timeout(supervisor, Duration::ZERO),
+        Err(error) if error.kind() == PalErrorKind::Timeout
+    ));
+}
+
+#[test]
+fn a_console_size_send_failure_is_returned() {
+    let changed = WindowSize::new(100, 50).expect("a fixture size is not empty");
+    let (transport, client, supervisor) = connected_transport();
+    transport.disconnect(supervisor);
+    let mut console = MockLocalConsole::new();
+    console.expect_window_size().returning(move || Ok(changed));
+    let mut last_size = SAMPLE_SIZE;
+
+    let result = poll_size_once(&transport, &console, client, &mut last_size);
+
+    assert!(result.is_err());
+    assert_eq!(last_size, SAMPLE_SIZE);
+}
+
+fn connected_transport() -> (MemoryTransport, ConnId, ConnId) {
+    let transport = MemoryTransport::new();
+    let listener = transport.listen("poll").unwrap();
+    let client = transport.connect("poll", Duration::ZERO).unwrap();
+    let supervisor = transport.accept(listener).unwrap();
+    (transport, client, supervisor)
 }
 
 #[test]
@@ -580,29 +649,24 @@ fn console_input_failure_makes_the_relay_fail() {
 
 #[test]
 fn failed_input_sends_stop_the_reader() {
-    for input in [
-        ConsoleInput::Bytes(b"input".to_vec()),
-        ConsoleInput::Resize(SAMPLE_SIZE),
-    ] {
-        with_watchdog(move || {
-            let transport = MemoryTransport::new();
-            let listener = transport.listen("pipe").unwrap();
-            let client = transport.connect("pipe", Duration::ZERO).unwrap();
-            let supervisor = transport.accept(listener).unwrap();
-            transport.disconnect(supervisor);
-            let console = TestConsole {
-                input: vec![Ok(input)],
-                ..TestConsole::new()
-            }
-            .build();
-            let input_failed = Arc::new(AtomicBool::new(false));
+    with_watchdog(|| {
+        let transport = MemoryTransport::new();
+        let listener = transport.listen("pipe").unwrap();
+        let client = transport.connect("pipe", Duration::ZERO).unwrap();
+        let supervisor = transport.accept(listener).unwrap();
+        transport.disconnect(supervisor);
+        let console = TestConsole {
+            input: vec![Ok(b"input".to_vec())],
+            ..TestConsole::new()
+        }
+        .build();
+        let input_failed = Arc::new(AtomicBool::new(false));
 
-            spawn_input_reader(&transport, &console, client, &input_failed)
-                .join()
-                .unwrap();
-            assert!(!input_failed.load(Ordering::SeqCst));
-        });
-    }
+        spawn_input_reader(&transport, &console, client, &input_failed)
+            .join()
+            .unwrap();
+        assert!(!input_failed.load(Ordering::SeqCst));
+    });
 }
 
 #[test]

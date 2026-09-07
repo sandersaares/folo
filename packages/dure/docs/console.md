@@ -99,8 +99,9 @@ echoed locally, buffered until a newline, or turned into a Ctrl+C signal for the
 client. `ENABLE_VIRTUAL_TERMINAL_INPUT` is set so the console encodes keys that
 are not characters — arrows, function keys, modifier chords — as the VT
 sequences an app already knows how to read, which is why no per-key mapping
-exists anywhere in this crate. `ENABLE_WINDOW_INPUT` is set so window changes
-arrive as records rather than being dropped.
+exists anywhere in this crate. `ENABLE_WINDOW_INPUT` is cleared so window
+changes do not enter the byte reader's queue; size is observed independently,
+as described under [Window size](#window-size).
 
 On output, `ENABLE_VIRTUAL_TERMINAL_PROCESSING`, `ENABLE_PROCESSED_OUTPUT`, and
 `ENABLE_WRAP_AT_EOL_OUTPUT` are set so the local console host renders the
@@ -139,42 +140,46 @@ received.
 
 ### Reading input
 
-Reading resizes is the one place the client cannot simply read bytes. Window
-changes are console *input records*, not VT input, so an ordinary read on stdin
-neither reports them nor returns while one is queued ahead of it. The client
-therefore inspects the record queue before every read: it reports a leading
-window-size record as a resize, waits for the handle to signal when nothing is
-pending, inspects again because a resize can arrive during the wait, and only
-reads bytes when the queue starts with a key.
+One blocking `ReadFile` path owns the console input queue. Under VT input mode,
+the console host exposes keys and terminal reports that have a VT representation
+through that byte stream. This includes mouse and focus reports when the app has
+negotiated them and the local console presents them as VT input. The relay does
+not inspect, classify, or consume individual input records.
 
-The same inspection drops leading records that are neither a resize nor a key —
-focus, menu, and mouse events — which would otherwise sit at the head of the
-queue and keep the read from ever returning. Discarding them is what excludes
-mouse reporting from pass-through. That discard runs before every read, so it
-uses fixed stack storage and allocates nothing.
+Window changes have no VT byte representation. They are deliberately kept out
+of the input queue and observed through the console's current size instead.
+Keeping those mechanisms independent avoids a check-then-read race in which a
+window record can arrive after the queue is inspected and be consumed without
+being reported by `ReadFile`.
 
 A blocking read outlives the relay unless something ends it, and a console
 handed back while a read is still outstanding would take the next thing the user
 types. The relay therefore cancels the read and joins its thread before handing
 the console back. The reader waits on the console input handle and a dedicated
-cancellation event together. Cancellation signals that event instead of adding
-a console input record, so it cannot race with queue inspection and leave a
-discardable record in front of a blocking byte read. Some key records produce no
-bytes and leave that read waiting; cancellation also cancels any such read. A
-sticky cancellation flag and a published read-active flag close the handoff
-between those two paths: a read starts only after checking the sticky flag, and
-the canceller retries for a bounded scheduler handoff and waits for an accepted
-cancellation to retire the read. If either step fails, the relay reports that
-failure without joining a reader it cannot prove was woken; the command can then
-leave instead of waiting indefinitely.
+cancellation event together. Some input records produce no bytes and leave that
+read waiting; cancellation also cancels any such read. A sticky cancellation
+flag and a published read-active flag close the handoff between those two paths:
+a read starts only after checking the sticky flag, and the canceller retries for
+a bounded scheduler handoff and waits for an accepted cancellation to retire
+the read. If either step fails, the relay reports that failure without joining a
+reader it cannot prove was woken; the command can then leave instead of waiting
+indefinitely.
 
 ### Window size
 
 Size travels on the same connection as bytes but as its own message, because it
 is console state rather than console content: the attach message carries the
-size the client starts with, and a resize message carries each later change.
-Both end at the pseudoconsole's resize, which is what makes the app observe a
-console resize rather than receive bytes describing one.
+size the client starts with, and a dedicated watcher samples the attached
+console at a short fixed cadence. It sends a resize message only when the
+observed size differs from the last size sent. Both messages end at the
+pseudoconsole's resize, which is what makes the app observe a console resize
+rather than receive bytes describing one.
+
+Size observation is state convergence rather than event forwarding. Several
+changes within one polling interval may collapse to the latest geometry, and
+ordering against input bytes is not defined. Neither distinction changes the
+app's result: it receives the current geometry shortly after the terminal
+settles, and a missed observation is corrected by the next sample.
 
 The attach size is applied only once the connection owns the client slot. The
 app redraws in response to a size change, and that redraw belongs to the client
@@ -183,7 +188,8 @@ client's screen. Until the first attach the pseudoconsole runs at a default
 geometry, which exists only so the app has some size during the window between
 spawn and attach.
 
-A resize failure is ignored on both paths. It means the pseudoconsole is already
-gone, which the app wait and the output pump observe on their own and act on by
-ending the relay; treating it as an error here would only report the same fact
-twice, and earlier than the paths that can act on it.
+A watcher stops if a size observation fails or the connection can no longer
+accept a resize. The input reader and receive loop own relay lifetime, so this
+secondary observer does not race them to decide how the relay ends. A
+pseudoconsole resize failure is likewise ignored: the app wait and output pump
+observe that teardown and end the session through the paths that own it.

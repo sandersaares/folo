@@ -14,7 +14,10 @@ use std::fs;
 use std::sync::mpsc::Receiver;
 
 use dure::test_support::ConsoleProcess;
-use dure_test_helper::SAMPLE_NON_ASCII_TEXT;
+use dure_test_helper::{
+    RESIZE_READY, SAMPLE_NON_ASCII_TEXT, SAMPLE_TERMINAL_INPUT, TERMINAL_INPUT_OK,
+    TERMINAL_INPUT_READY,
+};
 use tempfile::TempDir;
 use testing::with_watchdog;
 
@@ -29,6 +32,11 @@ use fixture::{
 const ESC: char = '\u{1b}';
 /// Terminator the pseudoconsole uses for its window-title sequences.
 const BEL: char = '\u{7}';
+
+/// Geometry that differs from the harness default in both dimensions.
+///
+/// The dimensions are distinct so swapping them cannot accidentally pass.
+const DISTINCT_RESIZED_SIZE: (u16, u16) = (91, 37);
 
 /// Strip the control sequences a pseudoconsole typically injects around app text.
 ///
@@ -297,8 +305,39 @@ fn relayed_input_keeps_non_ascii_text_intact() {
 
 #[cfg_attr(miri, ignore)]
 #[test]
-fn the_app_is_given_the_attaching_terminal_size_and_told_when_it_changes() {
+fn relayed_input_carries_focus_and_mouse_vt_sequences() {
     with_watchdog(|| {
+        let dir = TempDir::new().unwrap();
+        let client = DureCommand::run(dir.path(), Scenario::VerifyTerminalInput).spawn(dir.path());
+        let mut watching = Console::watching(&client);
+        _ = watching.until(TERMINAL_INPUT_READY);
+
+        client.write_input(SAMPLE_TERMINAL_INPUT);
+        let output = watching.rest();
+        let status = client.wait();
+
+        assert_eq!(status, 0, "client output: {output:?}");
+        assert!(
+            output.contains(TERMINAL_INPUT_OK),
+            "focus and mouse VT input must reach the app unchanged, got {output:?}"
+        );
+    });
+}
+
+#[cfg_attr(miri, ignore)]
+#[test]
+fn the_app_is_given_the_attaching_terminal_size_and_told_when_it_changes() {
+    assert_resize_reaches_app(None);
+}
+
+#[cfg_attr(miri, ignore)]
+#[test]
+fn keyboard_input_does_not_hide_a_later_resize() {
+    assert_resize_reaches_app(Some(b"x"));
+}
+
+fn assert_resize_reaches_app(input_before_resize: Option<&'static [u8]>) {
+    with_watchdog(move || {
         let dir = TempDir::new().unwrap();
         let client =
             DureCommand::run(dir.path(), Scenario::ReportSizeAfterResize).spawn(dir.path());
@@ -313,6 +352,9 @@ fn the_app_is_given_the_attaching_terminal_size_and_told_when_it_changes() {
         // one. Deliberately smaller in one dimension and larger in the other,
         // so a report that swapped them would not match either.
         let resized = (attach_size.0.saturating_add(11), 17_u16);
+        if let Some(input) = input_before_resize {
+            client.write_input(input);
+        }
         client.resize(resized.0, resized.1);
         // The helper waits for the app console's resize event, so its second
         // report cannot race a separately injected input record.
@@ -324,6 +366,36 @@ fn the_app_is_given_the_attaching_terminal_size_and_told_when_it_changes() {
             last_reported_size(&output),
             Some(resized),
             "a live resize must reach the app, got {output:?}"
+        );
+    });
+}
+
+#[cfg_attr(miri, ignore)]
+#[test]
+fn a_resumed_session_receives_later_terminal_resizes() {
+    with_watchdog(|| {
+        let store = TempDir::new().unwrap();
+        let launch = TempDir::new().unwrap();
+        let original = DureCommand::run(store.path(), Scenario::ReportSizeAfterInputAndResize)
+            .spawn(launch.path());
+        let mut watching_original = Console::watching(&original);
+        _ = watching_original.until("size:");
+        drop(original);
+
+        let resumed = DureCommand::resume(store.path()).spawn(launch.path());
+        let mut watching_resumed = Console::watching(&resumed);
+        resumed.write_input(b"x");
+        _ = watching_resumed.until(RESIZE_READY);
+
+        resumed.resize(DISTINCT_RESIZED_SIZE.0, DISTINCT_RESIZED_SIZE.1);
+        let output = watching_resumed.rest();
+        let status = resumed.wait();
+
+        assert_eq!(status, 0, "resumed client output: {output:?}");
+        assert_eq!(
+            last_reported_size(&output),
+            Some(DISTINCT_RESIZED_SIZE),
+            "a resize after resume must reach the app, got {output:?}"
         );
     });
 }

@@ -20,6 +20,13 @@ pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 /// Ref: docs/implementation.md, "Process split".
 pub(crate) const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Cadence at which an attached client reconciles its console size.
+///
+/// A window drag should reach the app without a perceptible pause, while
+/// querying one local console property at this cadence has negligible cost.
+/// Ref: docs/console.md, "Window size".
+pub(crate) const SIZE_POLL_INTERVAL: Duration = Duration::from_millis(250);
+
 /// Bound on how long `terminate` waits for a killed process to become signaled.
 ///
 /// `TerminateProcess` only initiates termination; the process object signals

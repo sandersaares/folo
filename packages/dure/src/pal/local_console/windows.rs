@@ -13,9 +13,8 @@ use windows::Win32::System::Console::{
     ENABLE_LINE_INPUT, ENABLE_PROCESSED_INPUT, ENABLE_PROCESSED_OUTPUT,
     ENABLE_VIRTUAL_TERMINAL_INPUT, ENABLE_VIRTUAL_TERMINAL_PROCESSING, ENABLE_WINDOW_INPUT,
     ENABLE_WRAP_AT_EOL_OUTPUT, GetConsoleCP, GetConsoleMode, GetConsoleOutputCP,
-    GetConsoleScreenBufferInfo, GetStdHandle, INPUT_RECORD, KEY_EVENT, PeekConsoleInputW,
-    ReadConsoleInputW, STD_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, SetConsoleCP,
-    SetConsoleCtrlHandler, SetConsoleMode, SetConsoleOutputCP, WINDOW_BUFFER_SIZE_EVENT,
+    GetConsoleScreenBufferInfo, GetStdHandle, STD_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
+    SetConsoleCP, SetConsoleCtrlHandler, SetConsoleMode, SetConsoleOutputCP,
 };
 use windows::Win32::System::IO::CancelIoEx;
 use windows::Win32::System::Threading::{CreateEventW, INFINITE, SetEvent, WaitForMultipleObjects};
@@ -23,7 +22,7 @@ use windows::core::{BOOL, HRESULT};
 
 use crate::pal::error::{PalError, PalErrorKind};
 use crate::pal::ids::RelayLeaseId;
-use crate::pal::local_console::{ConsoleInput, LocalConsole};
+use crate::pal::local_console::LocalConsole;
 use crate::pal::pseudoconsole::WindowSize;
 use crate::pal::raw_handle::RawHandle;
 
@@ -34,14 +33,6 @@ pub(crate) struct BuildTargetConsole;
 /// One console `ReadFile` burst. Larger than a typical key or CSI sequence;
 /// `ReadFile` may return less. Not a protocol bound.
 const INPUT_READ_BUF: usize = 4096;
-
-/// Input records inspected per `PeekConsoleInputW` call.
-///
-/// Bounds how many leading records one pass can classify and discard; the queue
-/// is re-inspected until it starts with a key, so a smaller batch costs extra
-/// passes rather than losing events. It also sizes the stack buffer the discard
-/// path reads into, which is why the discard path allocates nothing.
-const PEEK_INPUT_RECORDS: usize = 16;
 
 /// Wait result for the input handle, which follows cancellation in the wait set.
 const WAIT_INPUT: WAIT_EVENT = WAIT_EVENT(WAIT_OBJECT_0.0 + 1);
@@ -287,86 +278,6 @@ fn read_window_size(output: HANDLE) -> Result<WindowSize, PalError> {
     .ok_or_else(|| PalError::new(PalErrorKind::Other))
 }
 
-fn event_kind(record: &INPUT_RECORD) -> u32 {
-    u32::from(record.EventType)
-}
-
-fn peek_input(handle: HANDLE) -> Result<([INPUT_RECORD; PEEK_INPUT_RECORDS], usize), PalError> {
-    let mut peek = [INPUT_RECORD::default(); PEEK_INPUT_RECORDS];
-    let mut count = 0_u32;
-    // SAFETY: `handle` is stdin; `peek` is exclusive for this call.
-    unsafe { PeekConsoleInputW(handle, &mut peek, &raw mut count) }
-        .map_err(|error| PalError::with_source(PalErrorKind::Other, error))?;
-    Ok((peek, count as usize))
-}
-
-/// Reads and throws away `count` leading records.
-///
-/// `count` is always a prefix of one peek, so the records fit on the stack and
-/// this path — which runs before every blocking read — allocates nothing.
-fn consume_records(handle: HANDLE, count: usize) -> Result<(), PalError> {
-    if count == 0 {
-        return Ok(());
-    }
-    let mut discarded = [INPUT_RECORD::default(); PEEK_INPUT_RECORDS];
-    let discarded = discarded
-        .get_mut(..count)
-        .ok_or_else(|| PalError::new(PalErrorKind::Other))?;
-    let mut read = 0_u32;
-    // SAFETY: `discarded` is exclusive and exactly `count` records long.
-    unsafe { ReadConsoleInputW(handle, discarded, &raw mut read) }
-        .map_err(|error| PalError::with_source(PalErrorKind::Other, error))?;
-    Ok(())
-}
-
-/// Consumes leading `WINDOW_BUFFER_SIZE_EVENT` records so a later `ReadFile`
-/// is not blocked behind them. Window changes are console input records, not
-/// VT bytes, which is why attach cannot learn resizes from `ReadFile` alone.
-/// Ref: docs/console.md, "Window size".
-fn take_leading_resize(handle: HANDLE) -> Result<Option<WindowSize>, PalError> {
-    let (peek, count) = peek_input(handle)?;
-    let leading_resizes = peek
-        .iter()
-        .take(count)
-        .take_while(|record| event_kind(record) == WINDOW_BUFFER_SIZE_EVENT)
-        .count();
-    if leading_resizes == 0 {
-        return Ok(None);
-    }
-    consume_records(handle, leading_resizes)?;
-    let output = std_handle(STD_OUTPUT_HANDLE)?;
-    read_window_size(output).map(Some)
-}
-
-/// Drops focus/menu/mouse records so they cannot hide a later resize or key.
-/// This is what excludes mouse reporting from pass-through.
-/// Ref: docs/console.md, "Window size".
-fn discard_leading_noise(handle: HANDLE) -> Result<bool, PalError> {
-    let (peek, count) = peek_input(handle)?;
-    let leading_noise = peek
-        .iter()
-        .take(count)
-        .take_while(|record| {
-            let kind = event_kind(record);
-            kind != WINDOW_BUFFER_SIZE_EVENT && kind != KEY_EVENT
-        })
-        .count();
-    if leading_noise == 0 {
-        return Ok(false);
-    }
-    consume_records(handle, leading_noise)?;
-    Ok(true)
-}
-
-/// Whether a queued record exists and, if so, whether it is a key.
-fn leading_record_is_key(handle: HANDLE) -> Result<Option<bool>, PalError> {
-    let (peek, count) = peek_input(handle)?;
-    Ok(peek
-        .first()
-        .filter(|_record| count != 0)
-        .map(|record| event_kind(record) == KEY_EVENT))
-}
-
 /// Puts both console directions into the relay's modes, recording each success.
 ///
 /// Ref: docs/console.md, "Modes".
@@ -379,12 +290,15 @@ fn take_over_console(
     out_mode: CONSOLE_MODE,
 ) -> Result<(), PalError> {
     // Disable cooked input so keystrokes reach the app immediately. Enable
-    // VT input for CSI sequences and window-input so resizes appear as
-    // `WINDOW_BUFFER_SIZE_EVENT` records rather than being dropped.
+    // VT input for CSI sequences, while leaving size observation to the
+    // independent poller so `ReadFile` owns the input queue without races.
     let raw_in = CONSOLE_MODE(
-        (in_mode.0 & !(ENABLE_ECHO_INPUT.0 | ENABLE_LINE_INPUT.0 | ENABLE_PROCESSED_INPUT.0))
-            | ENABLE_VIRTUAL_TERMINAL_INPUT.0
-            | ENABLE_WINDOW_INPUT.0,
+        (in_mode.0
+            & !(ENABLE_ECHO_INPUT.0
+                | ENABLE_LINE_INPUT.0
+                | ENABLE_PROCESSED_INPUT.0
+                | ENABLE_WINDOW_INPUT.0))
+            | ENABLE_VIRTUAL_TERMINAL_INPUT.0,
     );
     // VT processing plus wrap so the local console host renders the same
     // sequences the app writes through its pseudoconsole.
@@ -520,56 +434,40 @@ impl LocalConsole for BuildTargetConsole {
         read_window_size(std_handle(STD_OUTPUT_HANDLE)?)
     }
 
-    fn read_input(&self) -> Result<ConsoleInput, PalError> {
+    fn read_input(&self) -> Result<Vec<u8>, PalError> {
         let handle = std_handle(STD_INPUT_HANDLE)?;
         let cancel_event = active_cancel_event()?;
-        loop {
-            // Cancellation is a separate kernel event rather than a console
-            // input record, so it cannot land between queue inspection and
-            // `ReadFile` and become a record that blocks that read.
-            // SAFETY: both handles remain live across this wait. The lease owns
-            // the input handle, and `cancel_event` keeps the event alive.
-            let wait = unsafe {
-                WaitForMultipleObjects(&[cancel_event.as_handle(), handle], false, INFINITE)
-            };
-            if wait == WAIT_OBJECT_0 {
-                return Err(PalError::new(PalErrorKind::Disconnected));
-            }
-            if wait != WAIT_INPUT {
-                return Err(PalError::new(PalErrorKind::Other));
-            }
-            if let Some(size) = take_leading_resize(handle)? {
-                return Ok(ConsoleInput::Resize(size));
-            }
-            if discard_leading_noise(handle)? {
-                continue;
-            }
-            match leading_record_is_key(handle)? {
-                Some(true) | None => {}
-                Some(false) => continue,
-            }
-            if !cancel_event.begin_read() {
-                return Err(PalError::new(PalErrorKind::Disconnected));
-            }
-            let mut buf = vec![0_u8; INPUT_READ_BUF];
-            let mut transferred = 0_u32;
-            // SAFETY: `handle` is stdin; `buf` is exclusive for this call.
-            let read = unsafe {
-                ReadFile(
-                    handle,
-                    Some(buf.as_mut_slice()),
-                    Some(&raw mut transferred),
-                    None,
-                )
-            };
-            cancel_event.end_read();
-            read.map_err(|error| PalError::with_source(PalErrorKind::Disconnected, error))?;
-            if transferred == 0 {
-                return Err(PalError::new(PalErrorKind::Disconnected));
-            }
-            buf.truncate(transferred as usize);
-            return Ok(ConsoleInput::Bytes(buf));
+        // SAFETY: both handles remain live across this wait. The lease owns
+        // the input handle, and `cancel_event` keeps the event alive.
+        let wait =
+            unsafe { WaitForMultipleObjects(&[cancel_event.as_handle(), handle], false, INFINITE) };
+        if wait == WAIT_OBJECT_0 {
+            return Err(PalError::new(PalErrorKind::Disconnected));
         }
+        if wait != WAIT_INPUT {
+            return Err(PalError::new(PalErrorKind::Other));
+        }
+        if !cancel_event.begin_read() {
+            return Err(PalError::new(PalErrorKind::Disconnected));
+        }
+        let mut buf = vec![0_u8; INPUT_READ_BUF];
+        let mut transferred = 0_u32;
+        // SAFETY: `handle` is stdin; `buf` is exclusive for this call.
+        let read = unsafe {
+            ReadFile(
+                handle,
+                Some(buf.as_mut_slice()),
+                Some(&raw mut transferred),
+                None,
+            )
+        };
+        cancel_event.end_read();
+        read.map_err(|error| PalError::with_source(PalErrorKind::Disconnected, error))?;
+        if transferred == 0 {
+            return Err(PalError::new(PalErrorKind::Disconnected));
+        }
+        buf.truncate(transferred as usize);
+        Ok(buf)
     }
 
     fn cancel_input(&self) -> Result<(), PalError> {

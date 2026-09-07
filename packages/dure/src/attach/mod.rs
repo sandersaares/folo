@@ -8,15 +8,17 @@ mod tests;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::thread;
 
 use ohno::AppError;
 
-use crate::constants::CONNECT_TIMEOUT;
+use crate::constants::{CONNECT_TIMEOUT, SIZE_POLL_INTERVAL};
 use crate::output::note_line;
 use crate::pal::error::{PalError, PalErrorKind};
 use crate::pal::ids::{ConnId, RelayLeaseId};
-use crate::pal::local_console::{ConsoleInput, LocalConsole};
+use crate::pal::local_console::LocalConsole;
+use crate::pal::pseudoconsole::WindowSize;
 use crate::pal::transport::Transport;
 use crate::protocol::Message;
 use crate::{
@@ -116,7 +118,7 @@ where
         }
     }
 
-    relay(transport, console, conn)
+    relay(transport, console, conn, size)
 }
 
 /// The local console, taken over for one relay and owed back.
@@ -160,15 +162,25 @@ impl<C: LocalConsole> Drop for ConsoleLease<'_, C> {
     }
 }
 
-fn relay<T, C>(transport: &T, console: &C, conn: ConnId) -> Result<Outcome, AppError>
+fn relay<T, C>(
+    transport: &T,
+    console: &C,
+    conn: ConnId,
+    initial_size: WindowSize,
+) -> Result<Outcome, AppError>
 where
     T: Transport + Clone + Send + Sync + 'static,
     C: LocalConsole + Clone + Send + Sync + 'static,
 {
     let input_failed = Arc::new(AtomicBool::new(false));
     let reader = spawn_input_reader(transport, console, conn, &input_failed);
+    let (size_watcher_stop, size_watcher_stop_rx) = mpsc::channel();
+    let size_watcher =
+        spawn_size_watcher(transport, console, conn, initial_size, size_watcher_stop_rx);
 
     let outcome = receive_until_relay_ends(transport, console, conn);
+    drop(size_watcher_stop);
+    _ = size_watcher.join();
     // Read before the reader is cancelled: a reader that failed set this flag
     // and then disconnected, which is what ended the receive above, while a
     // reader cancelled from here reports the same disconnect for a reason that
@@ -220,13 +232,8 @@ where
         move || {
             loop {
                 match console.read_input() {
-                    Ok(ConsoleInput::Bytes(bytes)) => {
+                    Ok(bytes) => {
                         if transport.send(conn, &Message::Input(bytes)).is_err() {
-                            break;
-                        }
-                    }
-                    Ok(ConsoleInput::Resize(size)) => {
-                        if transport.send(conn, &Message::Resize { size }).is_err() {
                             break;
                         }
                     }
@@ -235,6 +242,54 @@ where
                         transport.disconnect(conn);
                         break;
                     }
+                }
+            }
+        }
+    })
+}
+
+fn poll_size_once<T, C>(
+    transport: &T,
+    console: &C,
+    conn: ConnId,
+    last_size: &mut WindowSize,
+) -> Result<(), PalError>
+where
+    T: Transport,
+    C: LocalConsole,
+{
+    let size = console.window_size()?;
+    if size == *last_size {
+        return Ok(());
+    }
+    transport.send(conn, &Message::Resize { size })?;
+    *last_size = size;
+    Ok(())
+}
+
+// The cadence loop relies on elapsed real time. Its instantaneous work is
+// covered through `poll_size_once` instead of making tests wait.
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[cfg_attr(test, mutants::skip)]
+fn spawn_size_watcher<T, C>(
+    transport: &T,
+    console: &C,
+    conn: ConnId,
+    initial_size: WindowSize,
+    stop: Receiver<()>,
+) -> thread::JoinHandle<()>
+where
+    T: Transport + Clone + Send + Sync + 'static,
+    C: LocalConsole + Clone + Send + Sync + 'static,
+{
+    thread::spawn({
+        let transport = transport.clone();
+        let console = console.clone();
+        move || {
+            let mut last_size = initial_size;
+            while stop.recv_timeout(SIZE_POLL_INTERVAL) == Err(RecvTimeoutError::Timeout) {
+                if poll_size_once(&transport, &console, conn, &mut last_size).is_err() {
+                    break;
                 }
             }
         }
