@@ -309,7 +309,9 @@ macro_rules! thread_local_arc {
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
+    use std::hint::black_box;
     use std::panic::{RefUnwindSafe, UnwindSafe};
+    use std::sync::Arc;
     use std::sync::atomic::{self, AtomicUsize};
     use std::thread;
 
@@ -341,6 +343,17 @@ mod tests {
         fn increment(&self) {
             self.local_value.fetch_add(1, atomic::Ordering::Relaxed);
         }
+    }
+
+    #[test]
+    fn constructor_executes_at_runtime() {
+        thread_local! {
+            static CACHE: Arc<TokenCache> = Arc::new(TokenCache::new(1000));
+        }
+
+        let instance = black_box(StaticInstancePerThreadSync::new(|| &CACHE));
+
+        instance.with(|cache| assert_eq!(cache.value(), 1000));
     }
 
     #[test]

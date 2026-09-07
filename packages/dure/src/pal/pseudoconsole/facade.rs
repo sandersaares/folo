@@ -33,14 +33,15 @@ impl fmt::Debug for PseudoconsoleFacade {
     }
 }
 
-#[cfg_attr(coverage_nightly, coverage(off))]
-#[cfg_attr(test, mutants::skip)]
 impl PseudoconsoleFacade {
     pub(crate) const fn target() -> Self {
         Self::Target(&TARGET)
     }
 
     #[cfg(test)]
+    // Facade pass-through logic is not worth testing.
+    #[cfg_attr(coverage_nightly, coverage(off))]
+    #[cfg_attr(test, mutants::skip)]
     pub(crate) fn from_memory(pty: MemoryPseudoconsole) -> Self {
         Self::Memory(pty)
     }
@@ -101,7 +102,17 @@ impl Pseudoconsole for PseudoconsoleFacade {
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
+    use std::hint::black_box;
+
     use super::*;
+
+    #[test]
+    fn target_constructor_executes_at_runtime() {
+        assert!(matches!(
+            black_box(PseudoconsoleFacade::target()),
+            PseudoconsoleFacade::Target(_)
+        ));
+    }
 
     #[test]
     fn from_memory_creates_pty() {

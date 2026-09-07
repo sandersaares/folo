@@ -1,6 +1,3 @@
-// Facade types are trivial pass-through layers - not worth testing.
-#![cfg_attr(coverage_nightly, coverage(off))]
-
 use std::fmt::Debug;
 #[cfg(test)]
 use std::sync::Arc;
@@ -25,6 +22,8 @@ impl BindingsFacade {
     }
 }
 
+// Facade types are trivial pass-through layers - not worth testing.
+#[cfg_attr(coverage_nightly, coverage(off))]
 impl Bindings for BindingsFacade {
     #[inline]
     fn get_tick_count_64(&self) -> u64 {
@@ -45,6 +44,8 @@ impl Bindings for BindingsFacade {
     }
 }
 
+// Facade types are trivial pass-through layers - not worth testing.
+#[cfg_attr(coverage_nightly, coverage(off))]
 impl From<&'static BuildTargetBindings> for BindingsFacade {
     fn from(bindings: &'static BuildTargetBindings) -> Self {
         Self::Real(bindings)
@@ -52,6 +53,8 @@ impl From<&'static BuildTargetBindings> for BindingsFacade {
 }
 
 #[cfg(test)]
+// Facade types are trivial pass-through layers - not worth testing.
+#[cfg_attr(coverage_nightly, coverage(off))]
 impl From<MockBindings> for BindingsFacade {
     fn from(bindings: MockBindings) -> Self {
         Self::Mock(Arc::new(bindings))

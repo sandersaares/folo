@@ -44,9 +44,6 @@ where
     /// This function exists to serve the inner workings of the
     /// `linked::instances!` macro and should not be used directly.
     /// It is not part of the public API and may be removed or changed at any time.
-    // Only ever called in const context by macros. Coverage instrumentation
-    // cannot detect const context execution.
-    #[cfg_attr(coverage_nightly, coverage(off))]
     #[doc(hidden)]
     #[must_use]
     pub const fn new(
@@ -330,6 +327,7 @@ pub fn __private_clear_linked_variables_local() {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use std::any::TypeId;
+    use std::hint::black_box;
     use std::panic::{RefUnwindSafe, UnwindSafe};
     use std::rc::Rc;
     use std::sync::{Arc, Mutex};
@@ -365,6 +363,17 @@ mod tests {
             let mut writer = self.value.lock().unwrap();
             *writer = writer.saturating_add(1);
         }
+    }
+
+    #[test]
+    fn constructor_executes_at_runtime() {
+        struct Key;
+
+        let instances = black_box(StaticInstances::new(TypeId::of::<Key>, || {
+            TokenCache::new(42)
+        }));
+
+        assert_eq!(instances.get().value(), 42);
     }
 
     #[test]

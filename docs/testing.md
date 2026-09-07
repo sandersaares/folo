@@ -215,12 +215,11 @@ covered by tests. For example:
   (anything `#[cfg(test)]`) need to be excluded. Integration tests in `tests/`
   are automatically excluded, though — no need to worry about those.
 * Defensive branches that can never be reached due to defense in depth layering.
-* Code that is only ever executed in a const context, as const context is not
-  covered in coverage measurements.
 * When code has no API contract to test (e.g. `fmt::Debug` implementations which
   may contractually write anything).
-* Facade types whose only purpose is to redirect calls to either a real or mock
-  implementation — not worth testing.
+* Facade pass-through methods whose only purpose is to redirect calls to either a
+  real or mock implementation. Const facade constructors remain instrumented and
+  are called at runtime as described below.
 
 To exclude code from coverage measurement, mark it with
 `#[cfg_attr(coverage_nightly, coverage(off))]`. This also requires
@@ -233,3 +232,37 @@ known gaps rather than trying to restructure the code to work around them.
 
 When excluding code for any other reason than "it is test code", leave a comment
 to explain why.
+
+### Cover const functions at runtime
+
+Coverage instrumentation cannot observe compile-time evaluation. A `const fn`
+that production code and behavioral tests only use in constants or static
+initializers therefore appears uncovered even though the compiler evaluates it.
+
+Add a focused test that calls the function in a non-const expression and passes
+the result through `std::hint::black_box()`. The test supplies the runtime
+context; the optimization barrier prevents the compiler from discarding the
+call or replacing it with a precomputed value:
+
+```rust
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use std::hint::black_box;
+
+    use super::*;
+
+    #[test]
+    fn constructor_executes_at_runtime() {
+        _ = black_box(Widget::new());
+    }
+}
+```
+
+Passing an already initialized `const` or `static` item to `black_box()` does not
+execute the const function and therefore does not generate coverage. When one
+const function consumes the result of another, pass each call through
+`black_box()` before passing the intermediate value onward. This makes both
+runtime calls explicit and prevents either from being folded away. Do not
+exclude a function from coverage merely because its production callers evaluate
+it in a const context.

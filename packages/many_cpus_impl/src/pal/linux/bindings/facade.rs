@@ -1,5 +1,3 @@
-#![cfg_attr(coverage_nightly, coverage(off))]
-
 use std::fmt::Debug;
 use std::io;
 use std::num::NonZero;
@@ -25,11 +23,15 @@ impl BindingsFacade {
     }
 
     #[cfg(test)]
+    // Facade pass-through logic is not worth testing.
+    #[cfg_attr(coverage_nightly, coverage(off))]
     pub(crate) fn from_mock(mock: MockBindings) -> Self {
         Self::Mock(Arc::new(mock))
     }
 }
 
+// Facade pass-through logic is not worth testing.
+#[cfg_attr(coverage_nightly, coverage(off))]
 impl Bindings for BindingsFacade {
     fn sched_setaffinity_current(&self, mask: &CpuMask) -> Result<(), io::Error> {
         match self {

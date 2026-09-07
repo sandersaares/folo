@@ -102,8 +102,6 @@ impl Allocator<std::alloc::System> {
     /// allocations without changing the underlying allocation strategy.
     #[must_use]
     #[inline]
-    // Only ever executed in const context, which is not covered by coverage measurement.
-    #[cfg_attr(coverage_nightly, coverage(off))]
     pub const fn system() -> Self {
         Self {
             inner: std::alloc::System,
@@ -118,8 +116,6 @@ impl<A: GlobalAlloc> Allocator<A> {
     /// as the underlying allocator, with the addition of allocation tracking capabilities.
     #[must_use]
     #[inline]
-    // Only ever executed in const context, which is not covered by coverage measurement.
-    #[cfg_attr(coverage_nightly, coverage(off))]
     pub const fn new(allocator: A) -> Self {
         Self { inner: allocator }
     }
@@ -203,6 +199,7 @@ unsafe impl<A: GlobalAlloc> GlobalAlloc for Allocator<A> {
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
+    use std::hint::black_box;
     use std::panic::{RefUnwindSafe, UnwindSafe};
     use std::{ptr, thread};
 
@@ -268,6 +265,11 @@ mod tests {
         unsafe fn realloc(&self, _ptr: *mut u8, _layout: Layout, _new_size: usize) -> *mut u8 {
             ptr::null_mut()
         }
+    }
+
+    #[test]
+    fn system_constructor_executes_at_runtime() {
+        _ = black_box(Allocator::system());
     }
 
     /// An arbitrary layout, large enough that a real allocation is unlikely to be optimized away.

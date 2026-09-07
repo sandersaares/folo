@@ -1,5 +1,3 @@
-#![cfg_attr(coverage_nightly, coverage(off))]
-
 use std::fmt::Debug;
 #[cfg(test)]
 use std::sync::Arc;
@@ -30,11 +28,15 @@ impl BindingsFacade {
     }
 
     #[cfg(test)]
+    // Facade pass-through logic is not worth testing.
+    #[cfg_attr(coverage_nightly, coverage(off))]
     pub(crate) fn from_mock(mock: MockBindings) -> Self {
         Self::Mock(Arc::new(mock))
     }
 }
 
+// Facade pass-through logic is not worth testing.
+#[cfg_attr(coverage_nightly, coverage(off))]
 impl Bindings for BindingsFacade {
     fn get_active_processor_count(&self, group_number: u16) -> u32 {
         match self {

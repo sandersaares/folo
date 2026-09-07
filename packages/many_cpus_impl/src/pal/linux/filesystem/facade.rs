@@ -1,5 +1,3 @@
-#![cfg_attr(coverage_nightly, coverage(off))]
-
 use std::fmt::Debug;
 #[cfg(test)]
 use std::sync::Arc;
@@ -23,11 +21,15 @@ impl FilesystemFacade {
     }
 
     #[cfg(test)]
+    // Facade pass-through logic is not worth testing.
+    #[cfg_attr(coverage_nightly, coverage(off))]
     pub(crate) fn from_mock(mock: MockFilesystem) -> Self {
         Self::Mock(Arc::new(mock))
     }
 }
 
+// Facade pass-through logic is not worth testing.
+#[cfg_attr(coverage_nightly, coverage(off))]
 impl Filesystem for FilesystemFacade {
     fn get_cpuinfo_contents(&self) -> String {
         match self {
