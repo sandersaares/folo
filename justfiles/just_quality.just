@@ -21,6 +21,9 @@ coverage-measure:
     # shared coverage tree while another test is spawning it - the transient "No such file or
     # directory" spawn races previously seen on macOS (issue #332).
     $env:CBH_FAKER = just _faker-path | Select-Object -Last 1
+    if ($IsWindows) {
+        $env:DURE_TEST_HELPER = just _dure-test-helper-path | Select-Object -Last 1
+    }
 
     # This will run tests and generate test coverage data files, to be analyzed separately.
     #
@@ -239,6 +242,9 @@ careful FILTER="":
     # cargo-bench-history integration tests skip the per-process on-demand faker build (the
     # same pattern the `test` and `coverage-measure` recipes use).
     $env:CBH_FAKER = just _faker-path | Select-Object -Last 1
+    if ($IsWindows) {
+        $env:DURE_TEST_HELPER = just _dure-test-helper-path | Select-Object -Last 1
+    }
 
     cargo +$env:RUST_NIGHTLY careful test {{ target_package }} --no-fail-fast --all-features {{ FILTER }} --locked
 
@@ -249,7 +255,7 @@ import 'just_quality_mutants.just'
 # Skips some potentially very lengthy validation, which you can run separately via `validate-extra`.
 # We assume this is executed on Windows, and will also perform the full validation on Linux.
 [group('quality')]
-validate: validate-local validate-linux
+validate: validate-local validate-linux validate-versions
 
 # Performs the part of the `validate` recipe that must run on Linux, when commanded from Windows.
 [group('quality')]

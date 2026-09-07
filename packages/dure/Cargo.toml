@@ -2,18 +2,23 @@
 name = "dure"
 description = "Detachable Windows console sessions that outlive the terminal"
 publish = true
-version = "0.2.1"
+version = "0.2.4"
 
 authors.workspace = true
 edition.workspace = true
+include.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 
-include = ["Cargo.toml", "README.md", "docs/**/*", "src/**/*"]
-
+# `dure` is a command-line tool; its Rust API exists only so the in-package binary and the
+# integration tests can reach the crate, so the crate root carries
+# `#![cfg_attr(docsrs, doc(hidden))]` (see `src/lib.rs`). Documenting the Windows targets is what
+# keeps the rendered page the tool's own introduction rather than an empty Linux build, where
+# `#![cfg(windows)]` removes the crate.
 [package.metadata.docs.rs]
-all-features = true
+default-target = "x86_64-pc-windows-msvc"
+targets = ["x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"]
 
 # The release workflow publishes prebuilt archives under release-plz's `<crate>-v<version>` tag,
 # which cargo-binstall cannot derive on its own. Ref: docs/release-automation.md.
@@ -33,9 +38,13 @@ release-targets = ["x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"]
 [package.metadata.cargo-udeps.ignore]
 development = ["dure-test-helper"]
 
-# Baseline of external types intentionally exposed in the public API. Any new
-# external type here trips the check so accidental exposures are caught.
-# Ref: docs/external-types.md.
+# External types intentionally exposed in the handoff surface. The check fails when a public
+# external type matches no entry, so a new exposure is a deliberate, reviewed act rather than an
+# oversight. Each is listed individually rather than globbed, so exposing a further type from an
+# already-referenced crate still trips the check. Ref: docs/external-types.md.
+#
+# The `clap` traits arrive with the `Parser` derive on `Cli`, the `serde` traits with the record
+# encoding on `AppCommand`, and `AppError` is what `run` hands back for the binary to report.
 [package.metadata.cargo_check_external_types]
 allowed_external_types = [
     "clap_builder::derive::Args",
@@ -43,11 +52,13 @@ allowed_external_types = [
     "clap_builder::derive::FromArgMatches",
     "clap_builder::derive::Parser",
     "ohno::app::error::AppError",
+    "serde_core::de::Deserialize",
+    "serde_core::ser::Serialize",
 ]
 
 [features]
-# Exposes the in-crate test support the Windows integration tests drive the real
-# PAL through. Not part of the product.
+# Exposes the in-crate test support and isolated-store override that the Windows
+# integration tests use to drive the real PAL. Not part of the product.
 private-test-util = []
 
 # Every dependency is Windows-only because the crate itself is: a non-Windows build compiles to a
@@ -86,6 +97,20 @@ mockall = { workspace = true }
 static_assertions = { workspace = true }
 tempfile = { workspace = true }
 testing = { path = "../testing" }
+
+# The end-to-end Windows suite needs the test support above, which is not part of the product and
+# is therefore behind a feature. The CLI suite drives `--store-root`, which is behind the same
+# private feature. Declaring the requirement here is what makes that visible: a `cargo test -p
+# dure` without the feature skips those targets and says so, rather than building empty ones and
+# reporting success for coverage it never compiled. The package's own validation
+# (`just package=dure validate-local`) enables all features, so both suites always run there.
+[[test]]
+name = "windows"
+required-features = ["private-test-util"]
+
+[[test]]
+name = "cli"
+required-features = ["private-test-util"]
 
 [lints]
 workspace = true

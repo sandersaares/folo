@@ -2,7 +2,7 @@
 # call. It is a self-contained [workspace] so the parent repo (members = ["packages/*"]) never
 # pulls it in. Members deliberately cover every branch of the publishable-binary filter:
 #   pub-bin        publishable + bin  -> selected
-#   demo-tool      publishable + bin  -> selected (name-prefix pair with demo-tool-core)
+#   demo-tool      publishable + custom-named bin -> selected (name-prefix pair with demo-tool-core)
 #   win-tool       publishable + bin  -> selected, with a release-target restriction
 #   demo-tool-core publishable + lib  -> excluded (library)
 #   pub-lib        publishable + lib  -> excluded (library)

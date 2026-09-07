@@ -73,16 +73,25 @@ function Invoke-GhCapture {
 
 function Get-OpenIssueByTitle {
     # Returns the first OPEN issue whose title equals $Title exactly, or $null when none matches.
-    # The list is narrowed to $Label so only a handful of issues come back, then the exact-title
-    # match is done client-side - the same list-then-match approach the workflow's `resolve-alert` job
-    # uses to find the failure-alert issue, which avoids the eventual-consistency lag of the GitHub
-    # search index that a `gh issue list --search`/`gh search issues` query would hit. Isolates the
-    # real `gh issue list` call so the tests can mock it.
+    # The list is narrowed to $Label, then the exact-title match is done client-side - the same
+    # list-then-match approach the workflow's `resolve-alert` job uses to find the failure-alert
+    # issue, which avoids the eventual-consistency lag of the GitHub search index that a
+    # `gh issue list --search`/`gh search issues` query would hit. Isolates the real
+    # `gh issue list` call so the tests can mock it.
+    #
+    # $Limit must stay well above the number of open issues the label can plausibly carry, because
+    # `gh` returns them newest-first: the rolling issue is updated in place rather than refiled, so
+    # it only ages relative to its label-mates, and anything past the limit is invisible here - a
+    # miss would silently file a duplicate. The standing labels these callers use (`ci-failure`,
+    # `regression`) are shared with the per-run failure issues that validation.yml and release.yml
+    # file and never auto-close, so a backlog is possible even though a healthy repository keeps
+    # only a handful open. `gh` pages internally to satisfy the limit and stops once the results
+    # are exhausted, so a generous ceiling costs a single request in the healthy case.
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string] $Title,
         [Parameter(Mandatory)][string] $Label,
-        [int] $Limit = 100
+        [int] $Limit = 1000
     )
 
     # Ask `gh` for the open issues carrying $Label as JSON; Invoke-GhCapture keeps stderr off
@@ -105,8 +114,11 @@ function Publish-RollingIssue {
     # body is updated in place (so a persisting condition never spams duplicates), otherwise a new
     # issue is created with $Label. The body is read by `gh` from $BodyFile, which may be any path
     # (for example the runner temp dir) - this is what frees the workflow from writing scratch files
-    # into the repo checkout. $Label is the comma-separated label list applied on creation; the
-    # dedup search is narrowed to the first of those labels. Returns the issue URL.
+    # into the repo checkout. $Label is the single label applied on creation, and also the label the
+    # dedup search is narrowed to, so the next run finds the filed issue instead of duplicating it.
+    # It must already exist in the repository - `gh issue create` fails outright on an unknown label
+    # - so callers pass one of the repository's standing labels and reinstate it idempotently before
+    # calling rather than inventing a workflow-specific one. Returns the issue URL.
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string] $Title,
@@ -118,9 +130,8 @@ function Publish-RollingIssue {
         throw "Issue body file '$BodyFile' does not exist."
     }
 
-    $searchLabel = ($Label -split ',')[0].Trim()
-    Write-Verbose "Searching for an existing open issue titled '$Title' among issues labelled '$searchLabel' before filing, so a regression that persists across runs updates one rolling issue instead of opening a duplicate every run."
-    $existing = Get-OpenIssueByTitle -Title $Title -Label $searchLabel
+    Write-Verbose "Searching for an existing open issue titled '$Title' among issues labelled '$Label' before filing, so a regression that persists across runs updates one rolling issue instead of opening a duplicate every run."
+    $existing = Get-OpenIssueByTitle -Title $Title -Label $Label
 
     if ($existing) {
         Write-Verbose "Found open issue #$($existing.number) ($($existing.url)); updating its body from '$BodyFile' rather than creating a duplicate."
@@ -128,7 +139,7 @@ function Publish-RollingIssue {
         return $existing.url
     }
 
-    Write-Verbose "No open issue titled '$Title' found; creating a new one with labels '$Label' and body from '$BodyFile'."
+    Write-Verbose "No open issue titled '$Title' found; creating a new one with label '$Label' and body from '$BodyFile'."
     $output = Invoke-GhCapture -Arguments @('issue', 'create', '--title', $Title, '--label', $Label, '--body-file', $BodyFile)
 
     # `gh issue create` prints the new issue's URL on success; extract it (stderr is already kept
@@ -154,10 +165,11 @@ function Close-RollingIssue {
         [Parameter(Mandatory)][string] $Title,
         [Parameter(Mandatory)][string] $Label,
         [Parameter(Mandatory)][string] $Comment,
-        [int] $Limit = 100
+        [int] $Limit = 1000
     )
 
-    # `--limit` defeats the 30-result default so a backlog of historical duplicates all come back.
+    # `--limit` defeats the 30-result default so a backlog of historical duplicates all come back;
+    # see Get-OpenIssueByTitle for why the ceiling is generous rather than merely comfortable.
     $output = Invoke-GhCapture -RetryOnFailure -Arguments @(
         'issue', 'list', '--state', 'open', '--label', $Label, '--limit', $Limit, '--json', 'number,title'
     )

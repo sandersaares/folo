@@ -1,0 +1,13 @@
+[package]
+name = "multi-tool"
+version = "1.0.0"
+edition = "2021"
+autobins = false
+
+[[bin]]
+name = "first"
+path = "src/first.rs"
+
+[[bin]]
+name = "second"
+path = "src/second.rs"

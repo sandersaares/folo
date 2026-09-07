@@ -2,10 +2,11 @@
 name = "nm_otel_impl"
 description = "Implementation crate for nm_otel; do not depend on it directly"
 publish = true
-version = "0.4.18"
+version = "0.4.19"
 
 authors.workspace = true
 edition.workspace = true
+include.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
@@ -33,6 +34,11 @@ development = [
     "nm_otel",
     "par_bench",
 ]
+
+[package.metadata.release-plan]
+# Implementation partition of `nm_otel`; consumers reach this surface through
+# that package, which is where its compatibility is assessed.
+private-api = true
 
 [lib]
 # nm_otel_impl exists only to host the implementation of `nm_otel` and to expose

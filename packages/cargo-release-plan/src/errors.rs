@@ -122,6 +122,16 @@ pub(crate) struct WriteFileError {
 impl UnwindSafe for WriteFileError {}
 impl RefUnwindSafe for WriteFileError {}
 
+/// An expanded-plan output directory could not be created.
+#[ohno::error]
+#[display("Failed to create output directory '{}'", path.quoted())]
+pub(crate) struct CreateOutputDirectoryError {
+    path: PathBuf,
+}
+
+impl UnwindSafe for CreateOutputDirectoryError {}
+impl RefUnwindSafe for CreateOutputDirectoryError {}
+
 /// A TOML document is not valid.
 #[ohno::error]
 #[display("Failed to parse '{}'", path.quoted())]
@@ -204,6 +214,59 @@ impl RefUnwindSafe for UnknownPlanTargetError {}
 impl UnknownPlanTargetError {
     pub(crate) fn name(&self) -> &str {
         &self.name
+    }
+}
+
+/// An expanded plan no longer names every package it reaches.
+///
+/// An expanded plan is an approval artifact: it lists every package the decision
+/// moves, so a reviewer can see the whole set before it is applied. Expanding it
+/// again must therefore reproduce exactly that set. Reaching a package it does
+/// not name means the workspace's group configuration changed after the
+/// document was produced, so applying it would edit a package nobody approved.
+#[ohno::error]
+#[display(
+    "Expanded plan reaches packages it does not name: {}. The workspace's version groups changed \
+     after this document was produced, so expand the proposed plan again and review the wider set",
+    unnamed.join(", ")
+)]
+pub(crate) struct ExpandedPlanDriftError {
+    unnamed: Vec<String>,
+}
+
+impl UnwindSafe for ExpandedPlanDriftError {}
+impl RefUnwindSafe for ExpandedPlanDriftError {}
+
+#[cfg(test)]
+impl ExpandedPlanDriftError {
+    pub(crate) fn unnamed(&self) -> &[String] {
+        &self.unnamed
+    }
+}
+
+/// An expanded plan carries an increment level instead of an explicit version.
+///
+/// An expanded plan records the version each package will take, which is what
+/// makes reviewing one meaningful. A level is resolved against the manifests as
+/// they stand when it is applied, so the same approved document could apply a
+/// different version than the one that was reviewed.
+#[ohno::error]
+#[display(
+    "Expanded plan leaves an increment level unresolved for: {}. An expanded plan records the \
+     version each package takes, so expand the proposed plan again",
+    unresolved.join(", ")
+)]
+pub(crate) struct UnresolvedExpandedPlanError {
+    unresolved: Vec<String>,
+}
+
+impl UnwindSafe for UnresolvedExpandedPlanError {}
+impl RefUnwindSafe for UnresolvedExpandedPlanError {}
+
+#[cfg(test)]
+impl UnresolvedExpandedPlanError {
+    pub(crate) fn unresolved(&self) -> &[String] {
+        &self.unresolved
     }
 }
 
@@ -497,6 +560,31 @@ pub(crate) struct MalformedVersionGroupError {
 impl UnwindSafe for MalformedVersionGroupError {}
 impl RefUnwindSafe for MalformedVersionGroupError {}
 
+/// A package's private-API declaration is present but is not a boolean.
+///
+/// Fails closed rather than defaulting: a typo here would otherwise silently
+/// decide whether the package is assessed for API compatibility at all.
+#[ohno::error]
+#[display(
+    "Package '{}' declares `[package.metadata.release-plan] private-api` as {}, which must be a boolean",
+    package.quoted(),
+    value.quoted()
+)]
+pub(crate) struct MalformedPrivateApiError {
+    package: String,
+    value: String,
+}
+
+impl UnwindSafe for MalformedPrivateApiError {}
+impl RefUnwindSafe for MalformedPrivateApiError {}
+
+#[cfg(test)]
+impl MalformedPrivateApiError {
+    pub(crate) fn package(&self) -> &str {
+        &self.package
+    }
+}
+
 #[cfg(test)]
 impl MalformedVersionGroupError {
     pub(crate) fn group(&self) -> &str {
@@ -785,6 +873,30 @@ mod tests {
     );
     assert_impl_all!(
         LockfileClosureUnavailableError: Send,
+        Sync,
+        Debug,
+        error::Error,
+        UnwindSafe,
+        RefUnwindSafe
+    );
+    assert_impl_all!(
+        CreateOutputDirectoryError: Send,
+        Sync,
+        Debug,
+        error::Error,
+        UnwindSafe,
+        RefUnwindSafe
+    );
+    assert_impl_all!(
+        ExpandedPlanDriftError: Send,
+        Sync,
+        Debug,
+        error::Error,
+        UnwindSafe,
+        RefUnwindSafe
+    );
+    assert_impl_all!(
+        UnresolvedExpandedPlanError: Send,
         Sync,
         Debug,
         error::Error,

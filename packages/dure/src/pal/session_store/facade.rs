@@ -4,11 +4,11 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use crate::SessionId;
 use crate::pal::error::PalError;
 #[cfg(test)]
 use crate::pal::session_store::MockSessionStore;
 use crate::pal::session_store::{FsSessionStore, SessionStore};
-use crate::session_id::SessionId;
 use crate::session_record::{ProcessIdentity, SessionRecord};
 
 /// Dispatches session-store calls to the filesystem store or a test mock.

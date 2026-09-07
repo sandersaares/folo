@@ -3,42 +3,54 @@
 use std::fmt;
 
 use crate::pal::error::PalError;
+use crate::pal::ids::RelayLeaseId;
 use crate::pal::pseudoconsole::WindowSize;
 
-/// One blocking read from the local console during attach.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum ConsoleInput {
-    /// VT or key bytes to forward as [`crate::protocol::Message::Input`].
-    Bytes(Vec<u8>),
-    /// Window size changed; forward as [`crate::protocol::Message::Resize`].
-    Resize(WindowSize),
-}
-
-/// Detect a console, switch it to a raw relay, and exchange bytes.
+/// Detect a console, take it over for a relay, and exchange bytes.
 ///
-/// Ref: docs/implementation.md, PAL slicing.
+/// Ref: docs/implementation.md, "PAL slicing"; docs/console.md.
 #[cfg_attr(test, mockall::automock)]
 pub(crate) trait LocalConsole: Send + Sync + fmt::Debug + 'static {
-    /// Whether this process is attached to a console.
+    /// Whether this process has a console the relay can run on.
+    ///
+    /// The relay drives console input and console output, so an attach is
+    /// possible only when both of them are consoles.
     fn has_console(&self) -> bool;
 
     /// Whether stdin can be used for an interactive id prompt.
     fn stdin_is_terminal(&self) -> bool;
 
-    /// Disable the client's Ctrl+C handler so the key is forwarded.
-    fn disable_ctrl_c_handler(&self) -> Result<(), PalError>;
+    /// Take the console over for the duration of a relay.
+    ///
+    /// Switches it to a raw VT relay, converts its encoding, and suppresses the
+    /// Ctrl+C handling that would otherwise act on a key belonging to the app.
+    /// These are one operation because they are one takeover: the returned
+    /// lease owns whatever this call changed and is the only thing that can
+    /// change it back. A second lease is refused while one is outstanding.
+    ///
+    /// Ref: docs/console.md, "Modes".
+    fn begin_raw_relay(&self) -> Result<RelayLeaseId, PalError>;
 
-    /// Put the console into a raw VT relay.
-    fn enter_raw_relay(&self) -> Result<(), PalError>;
-
-    /// Restore console modes saved by [`LocalConsole::enter_raw_relay`].
-    fn leave_raw_relay(&self) -> Result<(), PalError>;
+    /// Hand the console back, undoing exactly what `lease` took over.
+    ///
+    /// Every recorded change is attempted even when an earlier one fails, so a
+    /// console is never left half-restored in order to report an error sooner.
+    fn end_raw_relay(&self, lease: RelayLeaseId) -> Result<(), PalError>;
 
     /// Current console size.
     fn window_size(&self) -> Result<WindowSize, PalError>;
 
-    /// Blocking read of console input bytes or a window-size change.
-    fn read_input(&self) -> Result<ConsoleInput, PalError>;
+    /// Blocking read of console input bytes.
+    fn read_input(&self) -> Result<Vec<u8>, PalError>;
+
+    /// Wake a blocked [`LocalConsole::read_input`] so its reader can stop.
+    ///
+    /// A relay reads the console from its own thread, and that read outlives
+    /// the relay unless something ends it: a console that is handed back while
+    /// a read is still outstanding would take the next thing the user types.
+    /// Reading becomes possible again with the next takeover. A successful
+    /// return guarantees that the blocked reader has been made runnable.
+    fn cancel_input(&self) -> Result<(), PalError>;
 
     /// Write console output bytes.
     fn write_output(&self, data: &[u8]) -> Result<(), PalError>;

@@ -3,6 +3,7 @@
 The high-level design of this repository's CI/CD workflows: the patterns they share,
 the tenets behind them, and how the pieces relate. Per-job mechanics live in inline
 YAML comments and in the `just` recipes the steps call; this document stays high-level.
+Ownership of the release-validation pipeline is in [implementation.md](implementation.md).
 
 ## Job granularity and gating
 
@@ -24,6 +25,9 @@ rebuild the workspace. The complement of this pattern is the rule that a job who
 are **not** Cargo packages — the workflow files themselves, or the standalone PowerShell
 under `scripts/` — must run unconditionally. Delta analysis reports "nothing affected" for
 such a change, so gating those jobs on it would leave the change validated by nothing.
+Release-plan generation (`validate-versions`) is in that class: it compares every
+publishable package's released content to that package's version anchor. Gating it on
+delta's changed-package set would skip a package that already needed an increment.
 
 ## Platform strategy
 
@@ -62,6 +66,14 @@ and Miri passes, `clippy-release`, `careful`) carries a whole-job `github.event_
 'push'` guard, while a job that keeps some legs on a PR (macOS-dropping test/docs, the
 Ubuntu-dropping `miri-x64`) selects its platform list with a `fromJSON` conditional matrix
 keyed on the same event. Both reduce to "the full set on push, the pruned set on a PR".
+A `merge_group` (merge queue) run uses that same pruned set: those guards are false for
+anything that is not `push`. Do not rewrite them as `!= 'pull_request'`, or a queue entry
+would take the full matrix. Push to `main` remains the backstop.
+
+Delta analysis on a queue run uses `merge_group.base_sha` (the commit the queue rebased
+onto) rather than a freshly fetched `origin/main`, so the affected-package set cannot
+drift from the version check's base. Pull requests keep today's `origin/main` baseline.
+Push to `main` still skips delta and validates the whole workspace.
 
 ## External type surface
 
@@ -95,7 +107,10 @@ arrives on the branch, so closing or merging a PR — which pushes nothing to th
 would otherwise leave its in-flight Validation run to burn to completion. A dedicated
 companion workflow closes that gap: it triggers on the PR-close event and joins the target
 workflow's concurrency group so cancel-in-progress reclaims the stale run. Both the Validation
-workflow and the PR benchmark-history workflow pair with such a close companion. The exception
+workflow and the PR benchmark-history workflow pair with such a close companion. Validation's
+group (`github.head_ref || github.ref`) already distinguishes merge-queue entries: `head_ref`
+is empty there and `github.ref` is the unique queue ref. The close companion stays
+pull-request-only. The exception
 is history collection on `main`, which is keyed on the commit **SHA**: each commit is a distinct
 measurement, so distinct commits must run in parallel and only a redundant re-trigger of the
 *same* commit is deduplicated. A schedule-driven workflow carries a concurrency block only when
@@ -112,6 +127,89 @@ the steps call, so it runs and is debugged locally instead of only by pushing to
 Logic worth unit-testing goes one level deeper into a module under `scripts/` covered by a
 Pester suite. Every `run:` step uses `pwsh`; the `setup-environment` composite is the sole
 Bash holdout because it bootstraps PowerShell itself.
+
+## Pull-request version readiness
+
+Published content changes require an explicit **change level** — `breaking`, `nonbreaking`, or
+`patch` — decided before release. The change level describes the substance of the change;
+tooling maps it to a Cargo increment level or an exact target version. This applies to the
+workspace as a whole rather than only packages selected by delta analysis: an earlier change can
+remain pending even when the current pull request does not touch that package.
+
+Release state is read from the branch that publishes, not from the branch a pull request
+targets, so a stacked pull request is assessed against the same baseline as any other and a
+parent branch's pending increment is never mistaken for a release. A merge-queue entry is the
+exception: it is assessed against the commit the queue rebased it onto, so its scope matches
+what will actually land.
+
+Version increments follow Cargo's compatibility rule rather than plain semantic versioning:
+the leftmost non-zero component acts as the major component, so a compatible change to a 0.y
+package advances its patch component and a 0.0.z package has no compatible increment at all.
+
+Automated API comparison supplies evidence for those decisions but does not replace semantic
+review. It is fail-closed when its input format or execution is unsupported. Comparisons cover
+only packages that present a consumer contract, which a package states in its own manifest by
+declaring a private API or by saying nothing. Published implementation and test-support packages
+declare themselves private; changes in a grouped
+implementation package are assessed through the owning public package instead, which loses
+nothing because a re-exported item appears in that package's own API.
+
+The checks support a valid empty consumer-contract set without turning that case into a
+workspace-wide comparison.
+
+A change level rests on released evidence rather than on the version a manifest already declares.
+A package's own released-content diff, the workspace values it inherits, the locked dependencies
+an executable releases, and the decisions taken for its dependencies all participate, and any
+package-metadata change establishes at least `patch`. A version group whose members disagree is
+realigned mechanically and needs no change level of its own: normally onto the highest version its
+members declare, so nothing is published for a change it did not make, but by a patch increment of
+the whole group where that alignment would rewrite a requirement inside a member that otherwise
+kept an already-published version. A package the release baseline has never published takes the
+first-publication path rather than an increment. The [`increment-versions`
+skill](../skills/increment-versions/SKILL.md) carries out this policy and owns the procedure,
+and [`docs/release-versioning.md`](../../docs/release-versioning.md) is the chapter that
+governs it.
+
+Two consequences of a package's manifest are checked directly rather than left to that review.
+Every requirement on another workspace package names the exact version its target declares, so a
+released manifest describes the combination the workspace built rather than a range it never
+resolved; between members of one version group the requirement is an exact `=` pin, because those
+members are one package split for Cargo's sake and must never be resolved at differing versions.
+Incrementing a package therefore also increments its in-workspace dependents, whose manifests the
+rewrite changes. And a package whose public API exposes another workspace package must release a
+breaking change whenever that package does, because an incompatible release changes the identity
+of the exposed types for consumers. Which dependencies are public is read from the
+`allowed_external_types` allow-list that the external-types check already verifies, so this rests
+on a declaration the repository maintains rather than on a second inference of the public API.
+
+A requirement of the wrong form is a manifest defect rather than a missing increment, so it is
+corrected by editing the requirement.
+
+## Required checks fan-in
+
+Validation posts a fan-in job whose GitHub check name is the ruleset string. GitHub's
+required-checks field is a string match on that name: it cannot express "this matrix
+job, but only the legs that actually ran", and it cannot see a check that was skipped
+rather than posted. A job with both `strategy.matrix` and a job-level `if:` that evaluates
+false never expands the matrix, so contexts such as `test-x64 (ubuntu-latest)` stay on
+Expected — Waiting for status to be reported forever if they are listed as required.
+
+A ruleset that requires merge-blocking Validation therefore lists only this fan-in. The
+job is `if: always()`, `needs:` every merge-blocking job in Validation (including
+`validate-versions` and `semver-checks`), succeeds when every dependency reports `success` or an
+allowed `skipped`, and fails on `failure`, `cancelled`, or any other result.
+Unconditional gates may not skip. Advisory jobs stay off that list. `alert` stays off it
+— it files issues on a failed push to `main`, it is not a merge gate.
+
+When a new merge-blocking job is added to Validation it is added to this `needs:` list; it
+is never added to the GitHub ruleset. Unconditional gates are also named in the fan-in's
+must-succeed list. Matrix jobs that can skip via a job-level `if:` can only be made
+required through this fan-in.
+
+`alert` keeps a `needs:` list of its own, which also names the advisory jobs the fan-in excludes,
+so a new job joins both. The two lists answer different questions — what blocks a merge, and what
+is worth an issue after a push to `main` — and folding `alert` onto the fan-in would tie issue
+filing to the fan-in's skip policy and begin filing issues for cancelled runs.
 
 ## Published user guides
 
@@ -181,6 +279,9 @@ Two managed identities exist, each registered with exactly the subjects its even
 | pull request | `…:pull_request` | prod | `pr-bench-history.yml` |
 | push to `main` | `…:ref:refs/heads/main` | test | `test-azure` backend tests |
 | pull request | `…:pull_request` | test | `test-azure` backend tests |
+
+`merge_group` is not a trusted subject. Queue runs skip `test-azure` and `test-azure-gh`
+rather than attempting an exchange that cannot succeed.
 
 The **prod** identity backs history collection and the PR benchmark workflow; the **test**
 identity backs the Azure-backend test jobs against a throwaway account. Both trust `main` and
@@ -427,7 +528,8 @@ file nothing.
 Publishing changed crates to crates.io and attaching cargo-binstall prebuilt binaries is
 fully automated after the single manual version-bump step. Its full design — single-workflow
 structure, crates.io Trusted Publishing, dynamic derivation of which crates receive GitHub
-releases, and the self-healing reconciliation that rebuilds only missing binary assets —
+releases, repair of a missing release after a manual or partial publish, and self-healing
+reconciliation of incomplete archive/checksum pairs —
 lives in [`docs/release-automation.md`](../../docs/release-automation.md).
 
 ## Cache warmup

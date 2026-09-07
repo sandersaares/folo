@@ -29,15 +29,15 @@ Describe 'Get-OpenIssueByTitle (mocked gh issue list)' {
         }
 
         It 'returns that issue' {
-            $issue = Get-OpenIssueByTitle -Title 'Benchmark regressions detected' -Label 'bench-history'
+            $issue = Get-OpenIssueByTitle -Title 'Benchmark regressions detected' -Label 'regression'
             $issue.number | Should -Be 42
             $issue.url | Should -Be 'https://github.com/o/r/issues/42'
         }
 
         It 'narrows the list to the given label and open state' {
-            Get-OpenIssueByTitle -Title 'Benchmark regressions detected' -Label 'bench-history' | Out-Null
+            Get-OpenIssueByTitle -Title 'Benchmark regressions detected' -Label 'regression' | Out-Null
             Should -Invoke gh -ModuleName BenchHistoryIssue -ParameterFilter {
-                ($args -contains '--label') -and ($args -contains 'bench-history') -and
+                ($args -contains '--label') -and ($args -contains 'regression') -and
                 ($args -contains '--state') -and ($args -contains 'open')
             }
         }
@@ -52,7 +52,7 @@ Describe 'Get-OpenIssueByTitle (mocked gh issue list)' {
         }
 
         It 'returns null' {
-            Get-OpenIssueByTitle -Title 'Benchmark regressions detected' -Label 'bench-history' | Should -BeNullOrEmpty
+            Get-OpenIssueByTitle -Title 'Benchmark regressions detected' -Label 'regression' | Should -BeNullOrEmpty
         }
     }
 
@@ -62,7 +62,7 @@ Describe 'Get-OpenIssueByTitle (mocked gh issue list)' {
         }
 
         It 'returns null' {
-            Get-OpenIssueByTitle -Title 'Benchmark regressions detected' -Label 'bench-history' | Should -BeNullOrEmpty
+            Get-OpenIssueByTitle -Title 'Benchmark regressions detected' -Label 'regression' | Should -BeNullOrEmpty
         }
     }
 
@@ -73,7 +73,7 @@ Describe 'Get-OpenIssueByTitle (mocked gh issue list)' {
         }
 
         It 'throws, surfacing the gh output' {
-            { Get-OpenIssueByTitle -Title 'Benchmark regressions detected' -Label 'bench-history' } |
+            { Get-OpenIssueByTitle -Title 'Benchmark regressions detected' -Label 'regression' } |
                 Should -Throw '*503*'
         }
     }
@@ -94,7 +94,7 @@ Describe 'Get-OpenIssueByTitle (mocked gh issue list)' {
         }
 
         It 'ignores the stderr note and still parses the issue from stdout' {
-            $issue = Get-OpenIssueByTitle -Title 'Benchmark regressions detected' -Label 'bench-history'
+            $issue = Get-OpenIssueByTitle -Title 'Benchmark regressions detected' -Label 'regression'
             $issue.number | Should -Be 42
         }
     }
@@ -109,7 +109,7 @@ Describe 'Get-OpenIssueByTitle (mocked gh issue list)' {
         }
 
         It 'surfaces the stderr text in the thrown error' {
-            { Get-OpenIssueByTitle -Title 'Benchmark regressions detected' -Label 'bench-history' } |
+            { Get-OpenIssueByTitle -Title 'Benchmark regressions detected' -Label 'regression' } |
                 Should -Throw '*rate limit exceeded*'
         }
     }
@@ -132,13 +132,13 @@ Describe 'Publish-RollingIssue (mocked gh)' {
         }
 
         It 'updates the existing issue instead of creating a duplicate' {
-            Publish-RollingIssue -Title 'Benchmark regressions detected' -Label 'bench-history,regression' -BodyFile $script:BodyFile | Out-Null
+            Publish-RollingIssue -Title 'Benchmark regressions detected' -Label 'regression' -BodyFile $script:BodyFile | Out-Null
             Should -Invoke gh -ModuleName BenchHistoryIssue -ParameterFilter { $args[1] -eq 'edit' }
             Should -Invoke gh -ModuleName BenchHistoryIssue -ParameterFilter { $args[1] -eq 'create' } -Times 0 -Exactly
         }
 
         It 'edits the matched issue number and passes the body file' {
-            Publish-RollingIssue -Title 'Benchmark regressions detected' -Label 'bench-history,regression' -BodyFile $script:BodyFile | Out-Null
+            Publish-RollingIssue -Title 'Benchmark regressions detected' -Label 'regression' -BodyFile $script:BodyFile | Out-Null
             Should -Invoke gh -ModuleName BenchHistoryIssue -ParameterFilter {
                 ($args[1] -eq 'edit') -and ($args -contains 42) -and
                 ($args -contains '--body-file') -and ($args -contains $script:BodyFile)
@@ -146,7 +146,7 @@ Describe 'Publish-RollingIssue (mocked gh)' {
         }
 
         It 'returns the existing issue url' {
-            Publish-RollingIssue -Title 'Benchmark regressions detected' -Label 'bench-history,regression' -BodyFile $script:BodyFile |
+            Publish-RollingIssue -Title 'Benchmark regressions detected' -Label 'regression' -BodyFile $script:BodyFile |
                 Should -Be 'https://github.com/o/r/issues/42'
         }
     }
@@ -162,25 +162,25 @@ Describe 'Publish-RollingIssue (mocked gh)' {
             }
         }
 
-        It 'creates a new issue with the given title and full label list' {
-            Publish-RollingIssue -Title 'Benchmark regressions detected' -Label 'bench-history,regression' -BodyFile $script:BodyFile | Out-Null
+        It 'creates a new issue with the given title and label' {
+            Publish-RollingIssue -Title 'Benchmark regressions detected' -Label 'regression' -BodyFile $script:BodyFile | Out-Null
             Should -Invoke gh -ModuleName BenchHistoryIssue -ParameterFilter {
                 ($args[1] -eq 'create') -and
                 ($args -contains '--title') -and ($args -contains 'Benchmark regressions detected') -and
-                ($args -contains '--label') -and ($args -contains 'bench-history,regression') -and
+                ($args -contains '--label') -and ($args -contains 'regression') -and
                 ($args -contains '--body-file') -and ($args -contains $script:BodyFile)
             }
         }
 
-        It 'narrows the dedup search to the first label only' {
-            Publish-RollingIssue -Title 'Benchmark regressions detected' -Label 'bench-history,regression' -BodyFile $script:BodyFile | Out-Null
+        It 'narrows the dedup search to the same label it files under' {
+            Publish-RollingIssue -Title 'Benchmark regressions detected' -Label 'regression' -BodyFile $script:BodyFile | Out-Null
             Should -Invoke gh -ModuleName BenchHistoryIssue -ParameterFilter {
-                ($args[1] -eq 'list') -and ($args -contains '--label') -and ($args -contains 'bench-history')
+                ($args[1] -eq 'list') -and ($args -contains '--label') -and ($args -contains 'regression')
             }
         }
 
         It 'returns the created issue url' {
-            Publish-RollingIssue -Title 'Benchmark regressions detected' -Label 'bench-history,regression' -BodyFile $script:BodyFile |
+            Publish-RollingIssue -Title 'Benchmark regressions detected' -Label 'regression' -BodyFile $script:BodyFile |
                 Should -Be 'https://github.com/o/r/issues/99'
         }
     }
@@ -188,7 +188,7 @@ Describe 'Publish-RollingIssue (mocked gh)' {
     Context 'error handling' {
         It 'throws when the body file does not exist' {
             $missing = Join-Path ([System.IO.Path]::GetTempPath()) "bh-missing-$([guid]::NewGuid().ToString('n')).md"
-            { Publish-RollingIssue -Title 'Benchmark regressions detected' -Label 'bench-history' -BodyFile $missing } |
+            { Publish-RollingIssue -Title 'Benchmark regressions detected' -Label 'regression' -BodyFile $missing } |
                 Should -Throw '*does not exist*'
         }
 
@@ -200,7 +200,7 @@ Describe 'Publish-RollingIssue (mocked gh)' {
                     default { $global:LASTEXITCODE = 1; "unexpected: $args" }
                 }
             }
-            { Publish-RollingIssue -Title 'Benchmark regressions detected' -Label 'bench-history' -BodyFile $script:BodyFile } |
+            { Publish-RollingIssue -Title 'Benchmark regressions detected' -Label 'regression' -BodyFile $script:BodyFile } |
                 Should -Throw '*could not create issue*'
         }
 
@@ -215,7 +215,7 @@ Describe 'Publish-RollingIssue (mocked gh)' {
                     default { $global:LASTEXITCODE = 1; "unexpected: $args" }
                 }
             }
-            { Publish-RollingIssue -Title 'Benchmark regressions detected' -Label 'bench-history' -BodyFile $script:BodyFile } |
+            { Publish-RollingIssue -Title 'Benchmark regressions detected' -Label 'regression' -BodyFile $script:BodyFile } |
                 Should -Throw '*could not edit issue*'
         }
     }

@@ -52,6 +52,76 @@ The tool determines whether an increment is required and records the evidence.
 It does not infer API compatibility or choose an increment level. A maintainer or
 automation with knowledge of the package's promises makes that judgement.
 
+### Consumer contracts
+
+A published package does not necessarily offer an API for consumers to use. An
+implementation partition exists to serve the public package in front of it, and
+some packages are published only because Cargo requires a dependency to be
+published. Both still have `pub` items, so nothing in the code distinguishes
+them from a package meant for direct use: it is a promise the publisher makes,
+and the package declares it.
+
+```toml
+[package.metadata.release-plan]
+private-api = true
+```
+
+A package is public unless it declares itself private, and a package with no
+library target presents no contract either way. That direction is chosen for its
+failure mode rather than its frequency: a package wrongly treated as public
+produces a finding a maintainer can act on, while one wrongly treated as private
+produces nothing at all. A malformed declaration is an error for the same reason.
+
+This bears on API-compatibility assessment, which is a consumer of the report
+rather than part of it. Assessing an implementation partition directly would
+measure a surface no consumer can reach, and demand version increases of the
+public package for changes its consumers cannot observe. Assessing the public
+package instead loses nothing, because a re-exported item appears in the public
+package's own documented API.
+
+### Public dependencies
+
+A dependency is **public** when the dependent's own public API exposes types
+from it, whether by re-exporting them or by naming them in a signature. The
+distinction matters because a public dependency's compatibility is part of the
+dependent's own contract.
+
+Which dependencies are public is read from the dependent's
+`allowed_external_types` allow-list rather than inferred from source. That
+allow-list names every type outside the crate that its public API may expose,
+and `check-external-types` fails the build when the API exposes one the list
+omits, so in a passing workspace the list is a superset of what is genuinely
+exposed. Reading a declaration the repository already verifies keeps this
+offline and avoids a second, weaker inference of the public API.
+
+The allow-list names the crate that *defines* a type, which is not always the
+dependency that supplies it: a package usually reaches an implementation crate's
+types re-exported through the public crate in front of it. The re-exporting
+crate closes that gap, because it must declare the crate it re-exports in its
+own allow-list. Following those declarations transitively attributes a named
+crate to the direct dependency that actually supplies it. Only a normal
+dependency qualifies, since a build or development dependency cannot supply
+types to a library's public API.
+
+Two consequences follow, and the tool enforces both:
+
+* An intra-workspace requirement names the exact version its target declares.
+  A requirement that merely admits the target's version lets a consumer resolve
+  a combination the workspace never built. Between members of one version group
+  the requirement is additionally an exact `=` pin, because those members are
+  one package split for Cargo's sake and a compatible requirement would let a
+  consumer resolve two of them at versions never released together. This covers
+  every edge that survives packaging, development edges included; a path-only
+  dependency escapes packaging and is not assessed at all.
+* A package whose public dependency releases a semver-incompatible version
+  must release one as well. Such a release changes the identity of the exposed
+  types, so a consumer holding the older dependency can no longer hand its
+  types to the dependent. This follows from the version move alone, however
+  unrelated the dependency's breaking change was to the items actually exposed.
+
+Only the second is a release decision. A requirement whose form is wrong is
+corrected by editing the requirement, not by incrementing anything.
+
 ### The release decision is offline and reproducible
 
 The normal assessment path uses only repository history, the work tree, and
@@ -83,8 +153,11 @@ it does not propagate a release decision.
 ### Protect a release with `check`
 
 `check` is intended for a merge gate. It fails while any package needs an
-increment or a version group disagrees with itself, and points the maintainer to
-the `increment-versions` skill that prepares a plan.
+increment, a version group disagrees with itself, an intra-workspace
+requirement does not name the version its target declares, a version-group
+member does not pin its siblings exactly, or a package that exposes a public
+dependency stays compatible while that dependency releases a breaking change.
+It points the maintainer to the `increment-versions` skill that prepares a plan.
 
 `--format github` additionally emits GitHub Actions error annotations. These are
 structured log records that attach each failure to the affected package
@@ -99,15 +172,60 @@ dependency resolution and Cargo's package preparation work, which the normal
 offline assessment deliberately avoids. A mismatch on a clean tree is evidence
 that the artifact model needs correction.
 
+### Planning stages
+
+A plan exists in two stages, and they carry different guarantees about the
+packages a document names.
+
+A **proposed plan** is what a planner writes. Its entries may name a version
+group, or a single member of one, and leave resolution to reach the rest, so what
+it names is a starting point rather than the full set it moves.
+
+An **expanded plan** is what `expand` writes. It names every package whose
+version the plan sets and records the version each will carry. Both halves
+matter: the first makes the reviewed set complete with respect to the release
+decision, and the second makes it stable, since an increment level would be
+resolved again against whatever the manifests say when the document is applied.
+Resolving an expanded plan must therefore reproduce it exactly.
+
+Applying a plan also rewrites the requirements that dependents declare on the
+packages it moves, which edits manifests the document does not name. Those
+dependents take no version from the plan, so naming them would claim a release
+they are not making. Their safety is a separate rule: a dependent that would
+keep an already-published version while its manifest is rewritten needs a
+change level of its own, and `check` rejects the result if one is missed.
+
+Approval is not a third stage. The expanded plan a caller approves is applied
+unchanged, so the reviewed document and the applied document are the same bytes,
+rather than one being a rendering of the other.
+
+### Preview a decision with `expand`
+
+`expand --plan <plan.json> --out <expanded.json>` resolves a proposed plan's
+version groups and increment levels into one explicit entry per package. A
+proposed plan may omit version-group members that `apply` will update; `expand`
+writes the explicit package/version set for review.
+
+That set is the packages whose versions move. Applying it also rewrites
+requirements inside their dependents, which the document does not name because
+the plan gives them no version.
+
+An expanded plan records its stage, which binds it to the package set it names:
+applying it after a version group gained a member fails rather than quietly
+editing a package that was never reviewed. Recovering from that means expanding
+the proposal again and reviewing the wider set. A proposed plan keeps the
+opposite behavior, since naming a group and letting resolution reach its members
+is how such a plan is written.
+
 ### Carry out a decision with `apply`
 
-`apply --plan <plan.json>` turns approved version choices into manifest edits. A
-plan is created after reading the report: the maintainer or the
-`increment-versions` skill records a `patch`, `minor`, or `major` level (or an
-exact target version) for each selected package or version group, using the JSON
-format documented in the package README.
+`apply --plan <plan.json>` turns approved version choices into manifest edits,
+and accepts a plan of either stage. A proposed plan is created after reading the
+report: the maintainer or the `increment-versions` skill records a `patch`,
+`minor`, or `major` level (or an exact target version) for each selected package
+or version group, using the JSON format documented in the package README.
 
-The command expands groups, calculates target versions, updates package versions
+The command resolves groups, calculates target versions, updates package versions
 and affected intra-workspace requirements, and refreshes the workspace lockfile.
 `--dry-run` reports what would change without writing.
 
@@ -288,7 +406,8 @@ distinct in reports so a case-only rename stays visible.
 | `needs-increment` | Released content changed without a version increase           |
 | `unchanged`       | Released content and version still match the anchor            |
 
-`check` fails only for `needs-increment` packages and inconsistent groups.
+Of these statuses, only `needs-increment` fails `check`; the manifest-level
+requirement and public-dependency rules fail it independently of status.
 `publish = false` packages are excluded.
 
 ## Version groups
@@ -298,6 +417,18 @@ increment, the plan expands to every member. The target starts from the highest
 declared member version and applies the highest chosen increment level. Entries
 that expand to the same group must all use increment levels or all use one
 matching exact version.
+
+`expand` exposes that resolution as a document so a caller can present the
+complete set of affected packages before approving a plan that omits packages
+`apply` will update.
+
+An inconsistent group is a check failure in its own right, independent of any
+content change. A plan entry naming any member resolves it, and expansion is
+plan-driven, so a group no entry names is left alone. An entry that carries an
+increment level raises the group's highest declared version. An entry that
+carries that highest version as an exact target instead moves lagging members up
+to it and leaves the leading member unchanged. The lagging members then become
+pending release because their declared versions advanced.
 
 Members not yet published by the baseline are exempt from the consistency check,
 which lets a new package join a group before its first release. Group
@@ -312,10 +443,15 @@ Groups are declared under `[workspace.metadata.release-plan.groups]`.
 publishable package, its status and anchor, the reasons it changed, its
 dependencies and dependents, and group consistency.
 
-Per-package patch files are a readable supplement for file changes. They use
-zero-context unified diffs, report binary changes without rendering binary
-bytes, and preserve addition, deletion, and mode information. Expensive
-line-level comparisons fall back to a whole-file replacement; this changes only
-the presentation, never the release verdict.
+Per-package patch files are a readable supplement for file changes. They cover
+every package whose released files differ from its anchor, including one whose
+version has already moved, because judging whether a pending increment still
+covers the accumulated changes needs the same evidence. Changes that are not
+file differences — inherited workspace values and locked dependency identities —
+are reported only as change entries. They use zero-context
+unified diffs, report binary changes without rendering binary bytes, and
+preserve addition, deletion, and mode information. Expensive line-level
+comparisons fall back to a whole-file replacement; this changes only the
+presentation, never the release verdict.
 
 Internal ownership is documented in the [implementation guide](implementation.md).

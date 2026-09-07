@@ -1,5 +1,10 @@
 #Requires -Modules @{ ModuleName = 'Pester'; ModuleVersion = '5.0' }
 
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
+$PSNativeCommandUseErrorActionPreference = $true
+$VerbosePreference = 'Continue'
+
 # Pester suite for ReleaseAutomation.psm1. Where it is safe on fixtures, the tests drive the
 # real external tool: Get-PublishableBinaryCrate runs an actual `cargo metadata` against a
 # fixture workspace, and New-ReleasePlzConfig / Set-GitHubOutput perform real file I/O (so
@@ -12,6 +17,7 @@ BeforeAll {
 
     $script:FixtureDir = Join-Path $PSScriptRoot 'fixtures'
     $script:MetadataManifest = Join-Path $script:FixtureDir 'metadata-workspace/Cargo.toml'
+    $script:MultiBinaryManifest = Join-Path $script:FixtureDir 'multi-binary-workspace/Cargo.toml'
     $script:SampleToml = Join-Path $script:FixtureDir 'release-plz.sample.toml'
 }
 
@@ -39,6 +45,10 @@ Describe 'Get-PublishableBinaryCrate (real cargo metadata on a fixture workspace
         ($script:Crates | Where-Object Name -EQ 'pub-bin').Version | Should -Be '0.1.0'
     }
 
+    It 'reports the actual binary target name' {
+        ($script:Crates | Where-Object Name -EQ 'demo-tool').Binary | Should -Be 'demo-bin'
+    }
+
     It 'returns crates sorted by name' {
         $script:Crates.Name | Should -Be @('demo-tool', 'pub-bin', 'win-tool')
     }
@@ -50,6 +60,10 @@ Describe 'Get-PublishableBinaryCrate (real cargo metadata on a fixture workspace
 
     It 'leaves the restriction empty for a crate that declares none' {
         @(($script:Crates | Where-Object Name -EQ 'pub-bin').ReleaseTargets).Count | Should -Be 0
+    }
+
+    It 'rejects a publishable package with several binary targets' {
+        { Get-PublishableBinaryCrate -ManifestPath $script:MultiBinaryManifest } | Should -Throw
     }
 }
 
@@ -100,13 +114,13 @@ Describe 'Add-GitReleaseEnableFlag (pure line-based injection)' {
 
     It 'preserves other keys already in the block' {
         $result = Add-GitReleaseEnableFlag -Line $script:SourceLines -CrateName 'demo-tool'
-        $result | Should -Contain 'version_group = "demo"'
+        $result | Should -Contain 'changelog_update = false'
     }
 
     It 'matches the crate name exactly so a name-prefix sibling is untouched' {
         $result = Add-GitReleaseEnableFlag -Line $script:SourceLines -CrateName 'demo-tool'
         $coreIndex = [array]::IndexOf($result, 'name = "demo-tool-core"')
-        $result[$coreIndex + 1] | Should -Be 'version_group = "demo"'
+        $result[$coreIndex + 1] | Should -Be 'changelog_update = false'
     }
 
     It 'appends a new [[package]] block for a crate with no existing entry' {
@@ -128,14 +142,14 @@ Describe 'Add-GitReleaseEnableFlag (pure line-based injection)' {
             '[[package]]'
             'name = "demo-tool"'
             'git_release_enable = false'
-            'version_group = "demo"'
+            'changelog_update = false'
         )
         $result = Add-GitReleaseEnableFlag -Line $lines -CrateName 'demo-tool'
         $result | Should -Contain 'git_release_enable = true'
         $result | Should -Not -Contain 'git_release_enable = false'
         # Replaced in place, not duplicated, and the sibling key is preserved.
         @($result | Where-Object { $_ -match '^git_release_enable' }).Count | Should -Be 1
-        $result | Should -Contain 'version_group = "demo"'
+        $result | Should -Contain 'changelog_update = false'
     }
 
     It 'enables every requested crate in one pass' {
@@ -146,7 +160,7 @@ Describe 'Add-GitReleaseEnableFlag (pure line-based injection)' {
 
 Describe 'New-ReleasePlzConfig (real file write)' {
     BeforeEach {
-        $script:OutPath = Join-Path ([System.IO.Path]::GetTempPath()) ("rp-" + [guid]::NewGuid() + ".toml")
+        $script:OutPath = Join-Path $TestDrive ("rp-" + [guid]::NewGuid() + ".toml")
     }
 
     AfterEach {
@@ -307,12 +321,131 @@ Describe 'Get-ReleaseTarget' {
     }
 }
 
+Describe 'New-MissingBinaryRelease' {
+    BeforeEach {
+        Mock Get-BinaryReleaseAsset -ModuleName ReleaseAutomation {
+            if ($Tag -eq 'present-v1.0.0') { @('existing-asset') } else { $null }
+        }
+        Mock gh -ModuleName ReleaseAutomation {}
+    }
+
+    It 'creates a missing release at the requested version anchor' {
+        $crate = [pscustomobject]@{ Name = 'missing'; Version = '2.0.0' }
+        New-MissingBinaryRelease -Crate $crate -TargetCommitByName @{ missing = 'abc123' }
+
+        Should -Invoke gh -ModuleName ReleaseAutomation -Times 1 -Exactly -ParameterFilter {
+            $args[0] -eq 'release' -and
+            $args[1] -eq 'create' -and
+            $args[2] -eq 'missing-v2.0.0' -and
+            $args[3] -eq '--target' -and
+            $args[4] -eq 'abc123'
+        }
+    }
+
+    It 'does not recreate an existing release' {
+        $crate = [pscustomobject]@{ Name = 'present'; Version = '1.0.0' }
+        New-MissingBinaryRelease -Crate $crate -TargetCommitByName @{}
+
+        Should -Invoke gh -ModuleName ReleaseAutomation -Times 0 -Exactly
+    }
+
+    It 'does not recreate an existing empty release' {
+        Mock Get-BinaryReleaseAsset -ModuleName ReleaseAutomation {
+            return , @()
+        }
+        $crate = [pscustomobject]@{ Name = 'empty'; Version = '1.0.0' }
+        New-MissingBinaryRelease -Crate $crate -TargetCommitByName @{}
+
+        Should -Invoke gh -ModuleName ReleaseAutomation -Times 0 -Exactly
+    }
+
+    It 'rejects a missing version-anchor commit before creating a release' {
+        $crate = [pscustomobject]@{ Name = 'missing'; Version = '2.0.0' }
+        { New-MissingBinaryRelease -Crate $crate -TargetCommitByName @{} } | Should -Throw
+
+        Should -Invoke gh -ModuleName ReleaseAutomation -Times 0 -Exactly
+    }
+}
+
+Describe 'Invoke-BinaryReleaseReconciliation' {
+    BeforeEach {
+        Mock Get-BinaryReleaseAsset -ModuleName ReleaseAutomation { $null }
+        Mock gh -ModuleName ReleaseAutomation {}
+    }
+
+    It 'creates a missing release at the package version anchor' {
+        $cargo = {
+            param([string[]] $Argument)
+
+            $outDirIndex = [array]::IndexOf($Argument, '--out-dir')
+            $report = [ordered]@{
+                schema_version = 2
+                head           = 'current'
+                packages       = @(
+                    [ordered]@{
+                        name             = 'missing'
+                        declared_version = '2.0.0'
+                        status           = 'unchanged'
+                        anchor           = [ordered]@{
+                            commit  = 'version-anchor'
+                            version = '2.0.0'
+                        }
+                        changed          = @()
+                        dependencies     = @()
+                    }
+                )
+                groups         = [ordered]@{}
+            }
+            $report |
+                ConvertTo-Json -Depth 5 |
+                Set-Content -LiteralPath (Join-Path $Argument[$outDirIndex + 1] 'report.json')
+            $global:LASTEXITCODE = 0
+        }
+        $crate = [pscustomobject]@{ Name = 'missing'; Version = '2.0.0' }
+
+        Invoke-BinaryReleaseReconciliation -Crate $crate -Base 'current' -Cargo $cargo
+
+        Should -Invoke gh -ModuleName ReleaseAutomation -Times 1 -Exactly -ParameterFilter {
+            $args[3] -eq '--target' -and $args[4] -eq 'version-anchor'
+        }
+    }
+
+    It 'rejects a missing checked-out commit before invoking cargo' {
+        $calls = [System.Collections.Generic.List[object]]::new()
+        $cargo = {
+            param([string[]] $Argument)
+            $calls.Add($Argument)
+        }
+        $crate = [pscustomobject]@{ Name = 'missing'; Version = '2.0.0' }
+
+        { Invoke-BinaryReleaseReconciliation -Crate $crate -Base '' -Cargo $cargo } |
+            Should -Throw
+
+        $calls.Count | Should -Be 0
+    }
+}
+
 Describe 'Get-MissingBinaryMatrix (mocked gh release view)' {
     BeforeAll {
         $script:TwoTargets = @(
             [pscustomobject]@{ Triple = 'x86_64-unknown-linux-gnu'; Os = 'ubuntu-latest' }
             [pscustomobject]@{ Triple = 'aarch64-apple-darwin'; Os = 'macos-latest' }
         )
+
+        function Get-TestBinaryCrate {
+            param(
+                [Parameter(Mandatory)][string] $Name,
+                [Parameter(Mandatory)][string] $Version,
+                [string[]] $ReleaseTargets = @()
+            )
+
+            [pscustomobject]@{
+                Name           = $Name
+                Binary         = $Name
+                Version        = $Version
+                ReleaseTargets = $ReleaseTargets
+            }
+        }
     }
 
     BeforeEach {
@@ -321,11 +454,16 @@ Describe 'Get-MissingBinaryMatrix (mocked gh release view)' {
             switch ($tag) {
                 'have-all-v1.0.0' {
                     $global:LASTEXITCODE = 0
-                    '{"assets":[{"name":"have-all-v1.0.0-x86_64-unknown-linux-gnu.zip"},{"name":"have-all-v1.0.0-aarch64-apple-darwin.zip"}]}'
+                    # Asset names mirror the live cargo-freeze-deps-v0.1.9 release.
+                    '{"assets":[{"name":"have-all-v1.0.0-x86_64-unknown-linux-gnu.zip"},{"name":"have-all-v1.0.0-x86_64-unknown-linux-gnu.sha256"},{"name":"have-all-v1.0.0-aarch64-apple-darwin.zip"},{"name":"have-all-v1.0.0-aarch64-apple-darwin.sha256"}]}'
                 }
                 'have-some-v2.0.0' {
                     $global:LASTEXITCODE = 0
-                    '{"assets":[{"name":"have-some-v2.0.0-x86_64-unknown-linux-gnu.zip"}]}'
+                    '{"assets":[{"name":"have-some-v2.0.0-x86_64-unknown-linux-gnu.zip"},{"name":"have-some-v2.0.0-x86_64-unknown-linux-gnu.sha256"}]}'
+                }
+                'missing-checksum-v2.1.0' {
+                    $global:LASTEXITCODE = 0
+                    '{"assets":[{"name":"missing-checksum-v2.1.0-x86_64-unknown-linux-gnu.zip"},{"name":"missing-checksum-v2.1.0-aarch64-apple-darwin.zip"},{"name":"missing-checksum-v2.1.0-aarch64-apple-darwin.sha256"}]}'
                 }
                 'empty-release-v4.0.0' {
                     $global:LASTEXITCODE = 0
@@ -353,53 +491,65 @@ Describe 'Get-MissingBinaryMatrix (mocked gh release view)' {
         }
     }
 
-    It 'emits nothing when every target archive is already uploaded' {
-        $crate = [pscustomobject]@{ Name = 'have-all'; Version = '1.0.0' }
-        $rows = Get-MissingBinaryMatrix -Crate $crate -Target $script:TwoTargets
+    It 'emits nothing when every target asset pair is already uploaded' {
+        $crate = Get-TestBinaryCrate -Name 'have-all' -Version '1.0.0'
+        $rows = @(Get-MissingBinaryMatrix -Crate $crate -Target $script:TwoTargets)
         $rows.Count | Should -Be 0
     }
 
     It 'emits only the missing (crate, target) pairs' {
-        $crate = [pscustomobject]@{ Name = 'have-some'; Version = '2.0.0' }
+        $crate = Get-TestBinaryCrate -Name 'have-some' -Version '2.0.0'
         $rows = Get-MissingBinaryMatrix -Crate $crate -Target $script:TwoTargets
         $rows.Count | Should -Be 1
         $rows[0].triple | Should -Be 'aarch64-apple-darwin'
         $rows[0].os | Should -Be 'macos-latest'
         $rows[0].tag | Should -Be 'have-some-v2.0.0'
         $rows[0].name | Should -Be 'have-some'
+        $rows[0].bin | Should -Be 'have-some'
         $rows[0].version | Should -Be '2.0.0'
+        ConvertTo-MatrixJson -Row $rows | Should -Not -Match '^\[\['
     }
 
-    It 'skips crates whose release does not exist yet' {
-        $crate = [pscustomobject]@{ Name = 'no-release'; Version = '3.0.0' }
+    It 'fails when release reconciliation did not create the release' {
+        $crate = Get-TestBinaryCrate -Name 'no-release' -Version '3.0.0'
+        { Get-MissingBinaryMatrix -Crate $crate -Target $script:TwoTargets } | Should -Throw
+    }
+
+    It 'rebuilds a target whose checksum is missing' {
+        $crate = [pscustomobject]@{
+            Name = 'missing-checksum'
+            Binary = 'custom-binary'
+            Version = '2.1.0'
+        }
         $rows = Get-MissingBinaryMatrix -Crate $crate -Target $script:TwoTargets
-        $rows.Count | Should -Be 0
+        $rows.Count | Should -Be 1
+        $rows[0].triple | Should -Be 'x86_64-unknown-linux-gnu'
+        $rows[0].bin | Should -Be 'custom-binary'
     }
 
     It 'rethrows a gh failure that is not a missing release' {
         # An auth/network/API error must propagate, not be treated as "no release" - otherwise
         # the workflow could build an empty matrix and look successful while binaries are missing.
-        $crate = [pscustomobject]@{ Name = 'api-error'; Version = '5.0.0' }
+        $crate = Get-TestBinaryCrate -Name 'api-error' -Version '5.0.0'
         { Get-MissingBinaryMatrix -Crate $crate -Target $script:TwoTargets } | Should -Throw '*503*'
     }
 
     It 'emits one row per target when the release exists but has no assets' {
-        $crate = [pscustomobject]@{ Name = 'empty-release'; Version = '4.0.0' }
+        $crate = Get-TestBinaryCrate -Name 'empty-release' -Version '4.0.0'
         $rows = Get-MissingBinaryMatrix -Crate $crate -Target $script:TwoTargets
         $rows.Count | Should -Be 2
     }
 
     It 'defaults to the full target set from Get-ReleaseTarget' {
-        $crate = [pscustomobject]@{ Name = 'empty-release'; Version = '4.0.0' }
+        $crate = Get-TestBinaryCrate -Name 'empty-release' -Version '4.0.0'
         $rows = Get-MissingBinaryMatrix -Crate $crate
         @($rows).Count | Should -Be @(Get-ReleaseTarget).Count
     }
 
     It 'reconciles several crates in one pass' {
         $crates = @(
-            [pscustomobject]@{ Name = 'have-all'; Version = '1.0.0' }
-            [pscustomobject]@{ Name = 'have-some'; Version = '2.0.0' }
-            [pscustomobject]@{ Name = 'no-release'; Version = '3.0.0' }
+            Get-TestBinaryCrate -Name 'have-all' -Version '1.0.0'
+            Get-TestBinaryCrate -Name 'have-some' -Version '2.0.0'
         )
         $rows = Get-MissingBinaryMatrix -Crate $crates -Target $script:TwoTargets
         $rows.Count | Should -Be 1
@@ -412,8 +562,8 @@ Describe 'Get-MissingBinaryMatrix (mocked gh release view)' {
         # against a single leftover target instead of all of them. Put the empty release LAST so a
         # per-crate loop that lost its targets would emit one row (the last target) instead of two.
         $crates = @(
-            [pscustomobject]@{ Name = 'have-all'; Version = '1.0.0' }
-            [pscustomobject]@{ Name = 'empty-release'; Version = '4.0.0' }
+            Get-TestBinaryCrate -Name 'have-all' -Version '1.0.0'
+            Get-TestBinaryCrate -Name 'empty-release' -Version '4.0.0'
         )
         $rows = Get-MissingBinaryMatrix -Crate $crates -Target $script:TwoTargets
         $emptyRows = @($rows | Where-Object { $_.name -eq 'empty-release' })
@@ -424,11 +574,8 @@ Describe 'Get-MissingBinaryMatrix (mocked gh release view)' {
 
     Context 'per-crate release-target restriction' {
         It 'reconciles a restricted crate against only the targets it declares' {
-            $crate = [pscustomobject]@{
-                Name           = 'restricted'
-                Version        = '6.0.0'
-                ReleaseTargets = @('aarch64-apple-darwin')
-            }
+            $crate = Get-TestBinaryCrate -Name 'restricted' -Version '6.0.0' `
+                -ReleaseTargets 'aarch64-apple-darwin'
             $rows = Get-MissingBinaryMatrix -Crate $crate -Target $script:TwoTargets
             $rows.Count | Should -Be 1
             $rows[0].triple | Should -Be 'aarch64-apple-darwin'
@@ -436,7 +583,7 @@ Describe 'Get-MissingBinaryMatrix (mocked gh release view)' {
         }
 
         It 'treats an empty restriction as the full target set' {
-            $crate = [pscustomobject]@{ Name = 'restricted'; Version = '6.0.0'; ReleaseTargets = @() }
+            $crate = Get-TestBinaryCrate -Name 'restricted' -Version '6.0.0'
             $rows = Get-MissingBinaryMatrix -Crate $crate -Target $script:TwoTargets
             $rows.Count | Should -Be $script:TwoTargets.Count
         }
@@ -446,6 +593,7 @@ Describe 'Get-MissingBinaryMatrix (mocked gh release view)' {
             # with no failure anywhere, so a typo must be loud.
             $crate = [pscustomobject]@{
                 Name           = 'restricted'
+                Binary         = 'restricted'
                 Version        = '6.0.0'
                 ReleaseTargets = @('aarch64-apple-darwin', 's390x-unknown-linux-gnu')
             }
@@ -455,8 +603,9 @@ Describe 'Get-MissingBinaryMatrix (mocked gh release view)' {
 
         It 'restricts only the declaring crate, leaving its neighbours on the full set' {
             $crates = @(
-                [pscustomobject]@{ Name = 'restricted'; Version = '6.0.0'; ReleaseTargets = @('aarch64-apple-darwin') }
-                [pscustomobject]@{ Name = 'empty-release'; Version = '4.0.0' }
+                Get-TestBinaryCrate -Name 'restricted' -Version '6.0.0' `
+                    -ReleaseTargets 'aarch64-apple-darwin'
+                Get-TestBinaryCrate -Name 'empty-release' -Version '4.0.0'
             )
             $rows = Get-MissingBinaryMatrix -Crate $crates -Target $script:TwoTargets
             @($rows | Where-Object { $_.name -eq 'restricted' }).Count | Should -Be 1
@@ -477,32 +626,38 @@ Describe 'Get-MissingBinaryMatrix (mocked gh release view)' {
         }
 
         It 'is silent on the verbose stream without -Verbose' {
-            $crate = [pscustomobject]@{ Name = 'have-some'; Version = '2.0.0' }
-            $verbose = Get-MissingBinaryMatrix -Crate $crate -Target $script:TwoTargets 4>&1 |
-                Where-Object { $_ -is [System.Management.Automation.VerboseRecord] }
+            $crate = Get-TestBinaryCrate -Name 'have-some' -Version '2.0.0'
+            $previousVerbosePreference = $VerbosePreference
+            try {
+                $VerbosePreference = 'SilentlyContinue'
+                $verbose = Get-MissingBinaryMatrix -Crate $crate -Target $script:TwoTargets 4>&1 |
+                    Where-Object { $_ -is [System.Management.Automation.VerboseRecord] }
+            } finally {
+                $VerbosePreference = $previousVerbosePreference
+            }
             $verbose | Should -BeNullOrEmpty
         }
 
         It 'logs the expected tag, the present verdict and the missing verdict for a partial release' {
-            $messages = Get-VerboseMessage -Crate ([pscustomobject]@{ Name = 'have-some'; Version = '2.0.0' })
+            $messages = Get-VerboseMessage -Crate (
+                Get-TestBinaryCrate -Name 'have-some' -Version '2.0.0'
+            )
             ($messages -join "`n") | Should -Match "expected release tag 'have-some-v2.0.0'"
             ($messages -join "`n") | Should -Match 'x86_64-unknown-linux-gnu.*already uploaded'
             ($messages -join "`n") | Should -Match 'aarch64-apple-darwin.*missing.*macos-latest'
         }
 
-        It 'explains why a crate with no release yet is skipped' {
-            $messages = Get-VerboseMessage -Crate ([pscustomobject]@{ Name = 'no-release'; Version = '3.0.0' })
-            ($messages -join "`n") | Should -Match "No GitHub release 'no-release-v3.0.0' found yet"
-        }
-
-        It 'reports the final missing-archive count' {
-            $messages = Get-VerboseMessage -Crate ([pscustomobject]@{ Name = 'empty-release'; Version = '4.0.0' })
-            ($messages -join "`n") | Should -Match 'Reconciliation complete: 2 missing \(crate, target\) archives'
+        It 'reports the final incomplete-pair count' {
+            $messages = Get-VerboseMessage -Crate (
+                Get-TestBinaryCrate -Name 'empty-release' -Version '4.0.0'
+            )
+            ($messages -join "`n") | Should -Match 'Reconciliation complete: 2 incomplete \(crate, target\) asset pairs'
         }
 
         It 'names both the declared and the skipped targets of a restricted crate' {
             $crate = [pscustomobject]@{
                 Name           = 'restricted'
+                Binary         = 'restricted'
                 Version        = '6.0.0'
                 ReleaseTargets = @('aarch64-apple-darwin')
             }
@@ -511,9 +666,11 @@ Describe 'Get-MissingBinaryMatrix (mocked gh release view)' {
             ($messages -join "`n") | Should -Match 'not built for it: x86_64-unknown-linux-gnu'
         }
 
-        It 'uses the singular noun for a single missing archive' {
-            $messages = Get-VerboseMessage -Crate ([pscustomobject]@{ Name = 'have-some'; Version = '2.0.0' })
-            ($messages -join "`n") | Should -Match 'Reconciliation complete: 1 missing \(crate, target\) archive queued to build\.'
+        It 'uses the singular noun for one incomplete asset pair' {
+            $messages = Get-VerboseMessage -Crate (
+                Get-TestBinaryCrate -Name 'have-some' -Version '2.0.0'
+            )
+            ($messages -join "`n") | Should -Match 'Reconciliation complete: 1 incomplete \(crate, target\) asset pair queued to build\.'
         }
     }
 }
@@ -544,25 +701,28 @@ Describe 'ConvertTo-MatrixJson' {
 
 Describe 'Invoke-ReleasePublish (mocked release-plz)' {
     It 'invokes release-plz once with the composed config on success' {
+        $configPath = Join-Path $TestDrive 'ci.toml'
         Mock release-plz -ModuleName ReleaseAutomation { $global:LASTEXITCODE = 0 }
-        Invoke-ReleasePublish -ConfigPath '/tmp/ci.toml' -Attempt 3 -DelaySeconds 0
+        Invoke-ReleasePublish -ConfigPath $configPath -Attempt 3 -DelaySeconds 0
         Should -Invoke release-plz -ModuleName ReleaseAutomation -Times 1 -Exactly `
-            -ParameterFilter { ($args -contains 'release') -and ($args -contains '--config') -and ($args -contains '/tmp/ci.toml') }
+            -ParameterFilter { ($args -contains 'release') -and ($args -contains '--config') -and ($args -contains $configPath) }
     }
 
     It 'retries on a non-zero exit and then succeeds' {
+        $configPath = Join-Path $TestDrive 'ci.toml'
         $script:attempts = 0
         Mock release-plz -ModuleName ReleaseAutomation {
             $script:attempts++
             $global:LASTEXITCODE = if ($script:attempts -lt 2) { 1 } else { 0 }
         }
-        Invoke-ReleasePublish -ConfigPath '/tmp/ci.toml' -Attempt 3 -DelaySeconds 0
+        Invoke-ReleasePublish -ConfigPath $configPath -Attempt 3 -DelaySeconds 0
         Should -Invoke release-plz -ModuleName ReleaseAutomation -Times 2 -Exactly
     }
 
     It 'throws after every attempt fails' {
+        $configPath = Join-Path $TestDrive 'ci.toml'
         Mock release-plz -ModuleName ReleaseAutomation { $global:LASTEXITCODE = 1 }
-        { Invoke-ReleasePublish -ConfigPath '/tmp/ci.toml' -Attempt 3 -DelaySeconds 0 } | Should -Throw
+        { Invoke-ReleasePublish -ConfigPath $configPath -Attempt 3 -DelaySeconds 0 } | Should -Throw
         Should -Invoke release-plz -ModuleName ReleaseAutomation -Times 3 -Exactly
     }
 }
@@ -570,7 +730,7 @@ Describe 'Invoke-ReleasePublish (mocked release-plz)' {
 Describe 'Set-GitHubOutput' {
     It 'appends name=value to the GITHUB_OUTPUT file when it is set' {
         $original = $env:GITHUB_OUTPUT
-        $file = Join-Path ([System.IO.Path]::GetTempPath()) ("out-" + [guid]::NewGuid())
+        $file = Join-Path $TestDrive ("out-" + [guid]::NewGuid())
         try {
             $env:GITHUB_OUTPUT = $file
             Set-GitHubOutput -Name 'matrix' -Value '[]'
@@ -591,6 +751,24 @@ Describe 'Set-GitHubOutput' {
             { Set-GitHubOutput -Name 'matrix' -Value '[]' } | Should -Not -Throw
         } finally {
             if ($null -ne $original) { $env:GITHUB_OUTPUT = $original }
+        }
+    }
+
+    It 'rejects an empty release-asset output before writing it' {
+        $original = $env:GITHUB_OUTPUT
+        $file = Join-Path $TestDrive 'empty-output'
+        New-Item -ItemType File -Path $file | Out-Null
+        try {
+            $env:GITHUB_OUTPUT = $file
+            { Set-GitHubOutput -Name 'matrix' -Value '' } |
+                Should -Throw "*GitHub output 'matrix' must not be empty*"
+            @(Get-Content -LiteralPath $file).Count | Should -Be 0
+        } finally {
+            if ($null -ne $original) {
+                $env:GITHUB_OUTPUT = $original
+            } else {
+                Remove-Item Env:GITHUB_OUTPUT -ErrorAction SilentlyContinue
+            }
         }
     }
 }

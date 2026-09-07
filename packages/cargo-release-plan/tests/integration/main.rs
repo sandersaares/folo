@@ -12,6 +12,7 @@
 mod apply;
 mod baseline;
 mod cli_binary;
+mod expand;
 mod fixture;
 mod groups;
 mod harness;
@@ -21,4 +22,3 @@ mod nesting;
 mod packaging;
 mod report;
 mod status;
-mod version_groups;

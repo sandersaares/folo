@@ -119,6 +119,16 @@ must be `path = "../foo"` references.
 `Cargo.toml`; taking a dev-dependency on another workspace crate; deciding
 whether to enable default features.
 
+### [docs/packaging.md](docs/packaging.md)
+
+What a published crate archive contains: the `include` allow-list every
+publishable package declares, the compile-time inputs that justify shipping a
+file outside `src/`, and the inputs Cargo adds regardless.
+
+**Open this when**: adding a publishable package; changing what a package ships;
+embedding a file into the crate at compile time; wondering whether a README,
+diagram, or design document belongs in the archive.
+
 ### [docs/feature-flags.md](docs/feature-flags.md)
 
 Conditional compilation: gating test-only code with `#[cfg(test)]`, gating
@@ -288,12 +298,20 @@ dev-dependencies for tests or benches that need internal surface.
 
 ### [docs/git-workflow.md](docs/git-workflow.md)
 
-Conventions for PRs and the release process from the contributor side: using
-`--body-file` with `gh pr create`, replying to and resolving review comment
-threads, and the no-version-bumps-on-feature-branches rule.
+Conventions for PRs: using `--body-file` with `gh pr create`, and replying to
+and resolving review comment threads.
 
-**Open this when**: creating a pull request; addressing review comments;
-tempted to edit a `Cargo.toml` version field on a feature branch.
+**Open this when**: creating a pull request; addressing review comments.
+
+### [docs/release-versioning.md](docs/release-versioning.md)
+
+How crate version numbers are decided and enforced: a pull request that changes
+released content increments the affected packages, `validate-versions` gates
+merge, and the `increment-versions` skill applies the plan. Merge publishes.
+
+**Open this when**: preparing a pull request that touches a published package;
+deciding a version increment; debugging `validate-versions`, `cargo-release-plan`,
+or the `increment-versions` skill.
 
 ### [docs/release-automation.md](docs/release-automation.md)
 

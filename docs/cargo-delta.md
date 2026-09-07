@@ -7,9 +7,9 @@ Mostly this is used in GitHub workflows, as on local PC it tends to be obvious w
 
 ## How it works
 
-`cargo-delta` analyzes the current branch and compares it against `origin/main` to determine
-which packages are directly modified and which are indirectly affected (via dependency chains).
-Only those packages are validated.
+`cargo-delta` analyzes the current branch and compares it against the baseline revision chosen
+for the current environment. It determines which packages are directly modified and which are
+indirectly affected (via dependency chains). Only those packages are validated.
 
 Certain files are designated as "trip wires" (see `delta.toml`). If any trip wire file is
 changed, all packages are validated regardless. The list is deliberately small - only files that
@@ -30,6 +30,17 @@ workspace on each one would defeat delta scoping. Genuinely cross-cutting manife
 still caught by the push-to-main backstop, which always validates the full workspace. (Per-package
 `Cargo.toml` files were never trip wires - the pattern only matched the root manifest - and
 continue to scope to their own package.)
+
+## Baseline selection
+
+The comparison anchor depends on the environment:
+
+* Local `just delta*` recipes and pull request builds use `origin/main`.
+* Merge-queue builds use `merge_group.base_sha`, the commit the queue rebased onto.
+* Push-to-main builds validate the full workspace rather than deriving an affected package set.
+
+Command-level validation, fetch policy mechanics and cargo-delta parameter wiring live in
+`scripts/build/Delta.psm1`.
 
 ## Local usage
 
@@ -56,6 +67,7 @@ just package="events_once infinity_pool" validate-local
 
 ## CI behavior
 
-Pull request builds use delta to validate only impacted packages. Push-to-main builds act as a
-backstop and always validate the full workspace. If the backstop catches something that the delta
-build missed, the `delta.toml` configuration should be updated to prevent recurrence.
+Pull request and merge-queue builds use delta to validate only impacted packages. Push-to-main
+builds act as a backstop and always validate the full workspace. If the backstop catches something
+that the delta build missed, the `delta.toml` configuration should be updated to prevent
+recurrence.

@@ -740,6 +740,23 @@ fn directory_of(manifest_path: &str) -> String {
     }
 }
 
+/// Whether a requirement names exactly `version` rather than a range containing it.
+///
+/// This is the workspace's intra-workspace requirement convention in one place,
+/// because `check` validates it and `apply` maintains it: if the two disagreed,
+/// `apply` would either rewrite a requirement `check` accepts, editing a
+/// published manifest for no reason, or leave one `check` rejects.
+///
+/// All three accepted spellings name the version. `cargo metadata` normalizes a
+/// bare requirement to the caret form before `check` sees it, while `apply`
+/// reads the manifest text, so both forms reach this predicate.
+/// Ref: docs/dependencies.md, "Intra-workspace requirements name the declared version".
+pub(crate) fn requirement_names_version(requirement: &str, version: &Version) -> bool {
+    let trimmed = requirement.trim();
+    let bare = version.to_string();
+    trimmed == bare || trimmed == format!("^{bare}") || trimmed == format!("={bare}")
+}
+
 /// Workspace-relative form of a work-tree path.
 ///
 /// A member may be outside the workspace root while remaining inside the same
@@ -784,6 +801,29 @@ pub(crate) fn workspace_relative_path(workspace_root: &Path, path: &Path) -> Opt
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
+
+    /// A requirement names a version only when it pins exactly that version.
+    ///
+    /// All three spellings that name it are accepted: `apply` reads the manifest text, where a
+    /// bare requirement stays bare, while `cargo metadata` normalizes the same requirement to
+    /// the caret form before `check` sees it. A partial requirement names a range, not a
+    /// version, so it is not accepted however close it looks.
+    #[test]
+    fn a_requirement_names_a_version_only_when_it_pins_exactly_that_version() {
+        let version = Version::new(1, 2, 3);
+        assert!(requirement_names_version("1.2.3", &version));
+        assert!(requirement_names_version("^1.2.3", &version));
+        assert!(requirement_names_version("=1.2.3", &version));
+        assert!(requirement_names_version(" ^1.2.3 ", &version));
+
+        assert!(!requirement_names_version("^1.2", &version));
+        assert!(!requirement_names_version("^1", &version));
+        assert!(!requirement_names_version("=1.2", &version));
+        assert!(!requirement_names_version(">=1.2.3", &version));
+        assert!(!requirement_names_version("^1.2.4", &version));
+        assert!(!requirement_names_version("*", &version));
+        assert!(!requirement_names_version("", &version));
+    }
 
     fn members(patterns: &[&str]) -> WorkspaceMembers {
         cased_members(patterns, PathCase::Sensitive)

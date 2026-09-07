@@ -5,6 +5,15 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Merge-queue runs must execute this workflow: a required check that never fires as
+  # merge_group is a failed check, and the queue never merges. Queue entries use the same
+  # pruned job set as pull_request because every full-matrix guard keys on
+  # `github.event_name == 'push'`, which is false here. Push to main remains the full
+  # backstop. The concurrency group (`github.head_ref || github.ref`) already distinguishes
+  # queue refs: head_ref is empty and github.ref is unique. cancel-validation.yml stays
+  # pull-request-only.
+  merge_group:
+    branches: [main]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
@@ -20,9 +29,17 @@ concurrency:
 env:
   RUST_BACKTRACE: "1"
 
+# Least privilege by default, so pull-request and merge-queue validation do not inherit whatever
+# the repository's default token scope happens to be. Jobs needing more declare it themselves; a
+# job-level block replaces this default rather than adding to it.
+permissions:
+  contents: read
+
 jobs:
   # Determines which packages are impacted by changes in a PR branch compared
-  # to origin/main. On push to main (backstop), all packages are validated.
+  # to origin/main. On a merge-queue run the baseline is merge_group.base_sha (the
+  # commit the queue rebased onto) so scoping cannot drift from validate-versions.
+  # On push to main (backstop), all packages are validated.
   delta:
     runs-on: ubuntu-latest
     outputs:
@@ -48,6 +65,9 @@ jobs:
       - name: Compute delta
         id: compute
         shell: pwsh
+        env:
+          # Empty on pull_request and push; the SHA the queue rebased onto on merge_group.
+          DELTA_BASELINE: ${{ github.event.merge_group.base_sha }}
         run: |
           Set-StrictMode -Version Latest
           $ErrorActionPreference = 'Stop'
@@ -57,33 +77,16 @@ jobs:
           # `just delta` recipe so the two cannot drift. See scripts/build/Delta.psm1.
           Import-Module ./scripts/build/Delta.psm1 -Force
 
-          if ($env:GITHUB_EVENT_NAME -eq 'push') {
-            Write-Host 'Push to main detected, running full workspace validation.'
-            @(
-              'packages='
-              'packages_json=[]'
-              'skip_all=false'
-            ) | Add-Content -Path $env:GITHUB_OUTPUT -Encoding utf8
-            exit 0
-          }
-
-          # Full history is already checked out (fetch-depth: 0), so -SkipFetch avoids a redundant
-          # fetch; the module analyzes origin/main in a throwaway worktree and cleans up after
-          # itself (no artifacts land in the checkout to dirty the tree).
-          $affected = @(Invoke-CargoDelta -SkipFetch)
-          $output = Get-DeltaOutput -Affected $affected
-
-          if ($affected.Count -eq 0) {
-            Write-Host 'No packages affected by changes.'
-          } else {
-            Write-Host "Affected packages: $($output.Packages)"
-          }
-
-          @(
-            "packages=$($output.Packages)"
-            "packages_json=$($output.PackagesJson)"
-            "skip_all=$($output.SkipAll)"
-          ) | Add-Content -Path $env:GITHUB_OUTPUT -Encoding utf8
+          # Full workspace only on push to main. merge_group must not take this path: a queue
+          # run uses the same pruned job set as a pull request.
+          # Full history is already checked out (fetch-depth: 0), so the workflow wrapper skips a
+          # redundant fetch. Pull requests analyze origin/main; merge-queue runs pass
+          # merge_group.base_sha so the baseline revision matches validate-versions. The module
+          # cleans up after itself (no artifacts land in the checkout to dirty the tree).
+          Get-DeltaWorkflowOutput `
+            -EventName $env:GITHUB_EVENT_NAME `
+            -BaselineRevision $env:DELTA_BASELINE |
+            Add-Content -Path $env:GITHUB_OUTPUT -Encoding utf8
 
   # PowerShell test suite for the standalone scripts under scripts/ (the release-automation and
   # binstall-validation modules), plus PSScriptAnalyzer static analysis of those scripts and the
@@ -126,6 +129,68 @@ jobs:
 
       - name: Validate workflows
         run: just validate-workflows
+
+  # Workspace-wide release-plan generation: every publishable package's released content
+  # versus its version anchor. Delta cannot narrow that set, so this job is not gated on
+  # skip_all. Failure text names the increment-versions skill. Expected to stay red until
+  # include allow-lists and reconciliation increments land; do not continue-on-error.
+  validate-versions:
+    runs-on: ubuntu-latest
+    outputs:
+      semver_targets: ${{ steps.check.outputs.semver_targets }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          # cargo-release-plan resolves the release baseline and each package's version anchor
+          # from the release branch's first-parent history, so a truncated clone can hide the
+          # commit that last changed a version and report that package as unchanged.
+          fetch-depth: 0
+
+      - name: Setup environment
+        uses: ./.github/actions/setup-environment
+
+      - name: Check package versions
+        id: check
+        env:
+          # The release baseline is the tip of the branch releases are made from, which is
+          # not the branch a pull request targets: a stacked pull request targets an
+          # unreleased parent, and anchoring on it would treat that parent's pending
+          # increment as a release. A queue run is the exception, because the queue rebased
+          # the entry onto the named release-branch commit and must be scoped to it.
+          RELEASE_PLAN_BASE: ${{ github.event.merge_group.base_sha || format('origin/{0}', github.event.repository.default_branch) }}
+        run: just validate-versions
+        shell: pwsh
+
+  # cargo-semver-checks scoped to the consumer-contract package set. `semver_targets`
+  # holds that selection: the packages carrying unreleased content changes that declare a
+  # consumer contract, which is narrower than the set this pull request will publish, because
+  # implementation and test-support packages declare they have none. An unreleased
+  # change in any version-group member selects the contract members of that group.
+  # `--all-features` because gated API is still public API. An empty `semver_targets` output is a
+  # successful skip. Parallel with the rest of validation; does not gate other jobs.
+  # `!cancelled()` rather than `always()` so a failing version check still surfaces an
+  # insufficient increment in the same round trip, while a cancelled run stops here instead of
+  # holding a runner. The canary runs first so a broken cargo-semver-checks cannot be
+  # read as "no breaking changes".
+  semver-checks:
+    needs: [validate-versions]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup environment
+        uses: ./.github/actions/setup-environment
+
+      - name: Verify cargo-semver-checks can run
+        run: just verify-semver-checks
+        shell: pwsh
+
+      - name: Run cargo-semver-checks on releasing packages
+        run: just package="${{ needs.validate-versions.outputs.semver_targets }}" semver-checks
+        shell: pwsh
 
   # Formatting is platform-agnostic, so run only on Ubuntu for efficiency.
   format-check:
@@ -769,10 +834,12 @@ jobs:
   # fresh blob container and deletes it when it finishes (even on panic); the final
   # `if: always()` sweep is a backstop for a container a crashed run might leave.
   #
-  # Gated two ways so it only runs when it can succeed:
+  # Gated so it only runs when federation can succeed:
   #   * package-gated to cargo-bench-history (same gate as test-azurite);
   #   * same-repo only - a fork PR cannot mint an OIDC token for our tenant, so it
-  #     would fail federation; the condition lets fork PRs skip cleanly instead.
+  #     would fail federation; the condition lets fork PRs skip cleanly instead;
+  #   * not merge_group - the test identity's federated subjects are pull_request and
+  #     the main branch ref, so a queue OIDC token cannot exchange.
   # The Azure identifiers it needs are committed (non-secret) in constants.env, the
   # same source `just test-azure` reads locally, so local and CI target the same
   # account. The `just test-azure` recipe sets ENABLE_AZURE=1, which is what actually
@@ -793,6 +860,7 @@ jobs:
     if: >-
       needs.delta.outputs.skip_all != 'true'
       && (needs.delta.outputs.packages == '' || contains(fromJson(needs.delta.outputs.packages_json), 'cargo-bench-history'))
+      && github.event_name != 'merge_group'
       && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     # `id-token: write` lets the job mint a short-lived GitHub OIDC token (a signed
@@ -862,13 +930,16 @@ jobs:
     if: >-
       needs.delta.outputs.skip_all != 'true'
       && (needs.delta.outputs.packages == '' || contains(fromJson(needs.delta.outputs.packages_json), 'cargo-bench-history'))
+      && github.event_name != 'merge_group'
       && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     # `id-token: write` injects the ACTIONS_ID_TOKEN_REQUEST_URL/TOKEN values that the
     # tool itself reads to mint OIDC assertions on demand (the prod-critical path), and
     # the test identity's `pull_request` federated credential lets same-repo PR runs
     # federate in. Fork PRs cannot get an OIDC token for our tenant, hence the same-repo
-    # gate above. `contents: read` is the minimum the checkout needs.
+    # gate above. merge_group is skipped for the same reason as test-azure: the
+    # federated subjects do not cover queue refs. `contents: read` is the minimum the
+    # checkout needs.
     permissions:
       id-token: write
       contents: read
@@ -964,6 +1035,68 @@ jobs:
           run_command: send-notifications
           fail_ci_if_error: true
 
+  # Fan-in for merge-blocking Validation jobs. GitHub's required-checks field is a string
+  # match on this job's name, so matrix legs that never ran cannot be listed there.
+  # Succeeds when every dependency succeeded, or skipped if that job is allowed to skip;
+  # fails on failure, cancelled, or any other result. Advisory jobs (`coverage-notify`)
+  # and `alert` stay off this list. When adding a merge-blocking job, add it here - never
+  # to the GitHub ruleset. Unconditional gates also go on MUST_SUCCEED_JOBS below.
+  required-checks:
+    name: required-checks
+    if: always()
+    needs:
+      - delta
+      - test-scripts
+      - validate-workflows
+      - validate-versions
+      - semver-checks
+      - format-check
+      - default-features-check
+      - check-external-types
+      - clippy-dev
+      - test-x64
+      - test-docs
+      - docs
+      - miri-x64
+      - test-arm
+      - miri-arm
+      - miri-harder-events-once
+      - miri-harder-events
+      - miri-harder-awaiter-set
+      - miri-harder-nm-impl
+      - machete
+      - clippy-release
+      - build-release
+      - check-frozen
+      - mutants
+      - run-examples
+      - hack
+      - careful
+      - test-azurite
+      - test-azure
+      - test-azure-gh
+    runs-on: ubuntu-latest
+    steps:
+      # No setup-environment: this job only classifies `needs` results. Installing the
+      # toolchain after every Validation run would add work for no benefit. PowerShell is
+      # preinstalled on ubuntu-latest; the module comes from the checkout.
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Evaluate merge-blocking jobs
+        shell: pwsh
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+          MUST_SUCCEED_JOBS: delta test-scripts validate-workflows validate-versions semver-checks
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+
+          Import-Module ./scripts/build/RequiredChecks.psm1 -Force
+          $mustSucceed = @($env:MUST_SUCCEED_JOBS -split '\s+' | Where-Object { $_ })
+          Assert-RequiredCheck -NeedsJson $env:NEEDS_JSON -MustSucceedJob $mustSucceed
+
   # File a GitHub issue whenever any job above fails on a push to `main`, so a push-to-main
   # failure is tracked rather than lost. PR runs surface a failure as the red check and need
   # no issue - and this workflow now leans more heavily on push-to-main as the backstop for
@@ -973,13 +1106,19 @@ jobs:
   # A fresh issue is filed per failing run - no dedup, no auto-close - mirroring the release
   # workflow's per-run alert: each failure is investigated and closed individually, and a
   # later green run does not touch prior issues. `failure()` fires only on a real failure, so
-  # a fully-green (or skipped-only) run files nothing. `needs` lists every job so a failure in
-  # any of them reaches this gate.
+  # a fully-green (or skipped-only) run files nothing. `needs` lists every merge-blocking and
+  # advisory job directly, so a failure in any of them reaches this gate. `required-checks` is
+  # deliberately NOT among them: it converts a cancelled dependency into a failure, so
+  # depending on it would turn a cancelled push-to-main run into a filed issue about a failure
+  # that never happened. `alert` also stays off the fan-in's own `needs:` - it files issues,
+  # it is not a merge gate.
   alert:
     needs:
       - delta
       - test-scripts
       - validate-workflows
+      - validate-versions
+      - semver-checks
       - format-check
       - default-features-check
       - check-external-types

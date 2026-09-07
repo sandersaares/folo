@@ -2,10 +2,11 @@
 name = "nm_impl"
 description = "Implementation crate for nm; do not depend on it directly"
 publish = true
-version = "0.1.46"
+version = "0.1.47"
 
 authors.workspace = true
 edition.workspace = true
+include.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
@@ -18,6 +19,11 @@ all-features = true
 # Ref: docs/external-types.md.
 [package.metadata.cargo_check_external_types]
 allowed_external_types = ["num_traits::cast::AsPrimitive"]
+
+[package.metadata.release-plan]
+# Implementation partition of `nm`; consumers reach this surface through that
+# package, which is where its compatibility is assessed.
+private-api = true
 
 [lib]
 # nm_impl exists only to host the implementation of `nm` and to expose internal

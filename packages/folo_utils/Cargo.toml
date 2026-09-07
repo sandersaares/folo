@@ -2,16 +2,22 @@
 name = "folo_utils"
 description = "Utilities for internal use in Folo packages; no stable API surface"
 publish = true
-version = "0.1.11"
+version = "0.1.13"
 
 authors.workspace = true
 edition.workspace = true
+include.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 
 [package.metadata.docs.rs]
 all-features = true
+
+[package.metadata.release-plan]
+# Published only so other Folo packages can depend on it; it offers no stable API
+# surface of its own.
+private-api = true
 
 [lib]
 doc = false

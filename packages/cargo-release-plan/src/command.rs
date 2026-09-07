@@ -113,6 +113,19 @@ fn failure_status(status: ExitStatus) -> String {
         .map_or_else(|| "signal".to_string(), |code| code.to_string())
 }
 
+/// Directory passed to `Command::current_dir`.
+///
+/// `Path::parent()` of a relative file such as `Cargo.toml` is the empty path.
+/// `Command::current_dir` rejects that empty path (Windows `ERROR_INVALID_NAME`,
+/// Unix `chdir("")`), so use the process current directory instead.
+fn subprocess_cwd(cwd: &Path) -> &Path {
+    if cwd.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        cwd
+    }
+}
+
 // Mutations of the spawn arguments cannot be caught without asserting on a real
 // child process, which is impractical in unit tests.
 #[cfg_attr(test, mutants::skip)]
@@ -136,7 +149,7 @@ fn spawn(
     // variable settles it.
     Command::new(program)
         .args(args)
-        .current_dir(cwd)
+        .current_dir(subprocess_cwd(cwd))
         .env("CARGO_TERM_COLOR", "never")
         .env("LC_ALL", "C")
         .output()
@@ -151,6 +164,13 @@ mod tests {
 
     use super::*;
     use crate::CommandSpawnError;
+
+    #[test]
+    fn empty_cwd_uses_process_current_directory() {
+        assert_eq!(subprocess_cwd(Path::new("")), Path::new("."));
+        assert_eq!(subprocess_cwd(Path::new(".")), Path::new("."));
+        assert_eq!(subprocess_cwd(Path::new("packages")), Path::new("packages"));
+    }
 
     #[cfg_attr(miri, ignore)] // Process spawn uses host APIs Miri cannot emulate.
     #[test]

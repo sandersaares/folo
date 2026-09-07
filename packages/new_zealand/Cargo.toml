@@ -2,19 +2,17 @@
 name = "new_zealand"
 description = "Utilities for working with non-zero integers"
 publish = true
-version = "1.0.8"
+version = "1.0.9"
 
 authors.workspace = true
 edition.workspace = true
+include.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 
 [package.metadata.docs.rs]
 all-features = true
-
-[lib]
-doc = false
 
 [features]
 default = []

@@ -156,6 +156,9 @@ test FILTER="":
     $PSNativeCommandUseErrorActionPreference = $true
 
     $env:CBH_FAKER = just _faker-path | Select-Object -Last 1
+    if ($IsWindows) {
+        $env:DURE_TEST_HELPER = just _dure-test-helper-path | Select-Object -Last 1
+    }
     cargo +$env:RUST_MSRV nextest run {{ target_package }} --all-features {{ FILTER }} --locked --no-fail-fast
 
 # Run the PowerShell test suites for the standalone scripts under scripts/ (currently the
@@ -196,7 +199,7 @@ _faker-path:
     $ErrorActionPreference = "Stop"
     $PSNativeCommandUseErrorActionPreference = $true
 
-    Import-Module "{{ justfile_directory() }}/scripts/build/Faker.psm1" -Force
+    Import-Module "{{ justfile_directory() }}/scripts/build/CargoExecutable.psm1" -Force
 
     # Nest under the ambient CARGO_TARGET_DIR (e.g. a coverage run's tree) when set, else the
     # workspace `target/`, so the isolated tree stays git-ignored and cached like everything
@@ -204,7 +207,23 @@ _faker-path:
     # on-demand build resolve to the very same isolated binary.
     $fakerTargetDir = Join-Path ($env:CARGO_TARGET_DIR ?? "target") "faker"
     $messages = cargo +$env:RUST_MSRV build -p cargo-bench-history-faker --target-dir $fakerTargetDir --message-format=json-render-diagnostics --locked
-    Write-Output (Resolve-FakerExecutable -CargoMessage $messages)
+    Write-Output (Resolve-CargoExecutable -CargoMessage $messages -TargetName "cargo-bench-history-faker")
+
+# Build the Windows integration-test helper before the test runner starts and
+# print its path. This avoids running a nested Cargo build alongside the ConPTY
+# scenarios that consume the helper.
+[group('testing')]
+[script]
+_dure-test-helper-path:
+    Set-StrictMode -Version Latest
+    $ErrorActionPreference = "Stop"
+    $PSNativeCommandUseErrorActionPreference = $true
+
+    Import-Module "{{ justfile_directory() }}/scripts/build/CargoExecutable.psm1" -Force
+
+    $targetDir = Join-Path ($env:CARGO_TARGET_DIR ?? "target") "dure-test-helper"
+    $messages = cargo +$env:RUST_MSRV build -p dure-test-helper --target-dir $targetDir --message-format=json-render-diagnostics --locked
+    Write-Output (Resolve-CargoExecutable -CargoMessage $messages -TargetName "dure-test-helper")
 
 # Run the cargo-bench-history "stress analyze" harness against LOCAL filesystem
 # storage: it seeds a giant synthetic benchmark history (default 1000 benchmarks ×

@@ -4,10 +4,11 @@
 name = "cargo-bench-history-faker"
 description = "Unsupported synthetic benchmark-output generator for validating cargo-bench-history end to end; no stable API or CLI"
 publish = true
-version = "0.2.3"
+version = "0.2.5"
 
 authors.workspace = true
 edition.workspace = true
+include.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
@@ -20,6 +21,11 @@ rust-version.workspace = true
 pkg-url = "{ repo }/releases/download/{ name }-v{ version }/{ name }-v{ version }-{ target }.zip"
 bin-dir = "{ bin }{ binary-ext }"
 pkg-fmt = "zip"
+
+[package.metadata.release-plan]
+# Unsupported synthetic generator for validating `cargo-bench-history` end to end;
+# it offers no stable API or CLI.
+private-api = true
 
 [lib]
 name = "cargo_bench_history_faker"

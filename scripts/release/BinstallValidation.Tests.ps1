@@ -17,6 +17,7 @@ BeforeAll {
     # A hand-built package mirroring the shape of `cargo metadata` output for a compliant crate.
     $script:CompliantPackage = [pscustomobject]@{
         name     = 'crafted'
+        targets  = @([pscustomobject]@{ name = 'crafted-bin'; kind = @('bin') })
         metadata = [pscustomobject]@{
             binstall = [pscustomobject]@{
                 'pkg-url' = '{ repo }/releases/download/{ name }-v{ version }/{ name }-v{ version }-{ target }.zip'
@@ -107,6 +108,32 @@ Describe 'Test-ReleaseTargetMetadata' {
     }
 }
 
+Describe 'Test-BinaryTargetMetadata' {
+    It 'accepts one binary target even when its name differs from the package' {
+        @(Test-BinaryTargetMetadata -Package $script:CompliantPackage).Count | Should -Be 0
+    }
+
+    It 'rejects a package with several binary targets' {
+        $pkg = [pscustomobject]@{
+            name = 'crafted'
+            targets = @(
+                [pscustomobject]@{ name = 'first'; kind = @('bin') }
+                [pscustomobject]@{ name = 'second'; kind = @('bin') }
+            )
+        }
+        $problems = @(Test-BinaryTargetMetadata -Package $pkg)
+        $problems.Count | Should -Be 1
+        ($problems[0] -is [string]) | Should -BeTrue
+    }
+
+    It 'rejects a package with no target metadata' {
+        $problems =
+            @(Test-BinaryTargetMetadata -Package ([pscustomobject]@{ name = 'crafted' }))
+        $problems.Count | Should -Be 1
+        ($problems[0] -is [string]) | Should -BeTrue
+    }
+}
+
 Describe 'Invoke-BinstallValidation' {
     It 'throws and names every non-compliant crate when run against the fixture' {
         $err = { Invoke-BinstallValidation -ManifestPath $script:FixtureManifest } | Should -Throw -PassThru
@@ -122,6 +149,7 @@ Describe 'Invoke-BinstallValidation' {
         Mock Get-PublishableBinaryPackage -ModuleName BinstallValidation {
             @([pscustomobject]@{
                     name     = 'crafted'
+                    targets  = @([pscustomobject]@{ name = 'crafted-bin'; kind = @('bin') })
                     metadata = [pscustomobject]@{
                         binstall = [pscustomobject]@{
                             'pkg-url' = '{ repo }/releases/download/{ name }-v{ version }/{ name }-v{ version }-{ target }.zip'

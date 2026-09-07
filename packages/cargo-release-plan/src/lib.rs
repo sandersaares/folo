@@ -25,6 +25,7 @@ mod cli;
 mod command;
 mod diff;
 mod errors;
+mod expand;
 mod git;
 mod groups;
 mod inherited;

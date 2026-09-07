@@ -1,4 +1,4 @@
-// `check` command: fail on a needed increment or an inconsistent group.
+// `check` command: fail on a release the workspace's manifests cannot support.
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
@@ -14,6 +14,7 @@ use crate::classify::{
 use crate::command::run_capture;
 use crate::git::os_path;
 use crate::groups::GroupVerdict;
+use crate::manifest::requirement_names_version;
 use crate::verbose::Verbose;
 use crate::{quote_path, short_commit};
 
@@ -45,6 +46,9 @@ pub(crate) fn run_check(
     verbose: Verbose,
 ) -> Result<(bool, String, String), AppError> {
     let classification = classify(manifest_path, base, verbose)?;
+    // Every gating defect appends at least one diagnostic line, so the verdict is read back from
+    // the rendered diagnostics. Recomputing it from the classification instead would let a rule
+    // added to the rendering below be reported without ever failing the check.
     let mut message = render_diagnostics(
         &classification.packages,
         &classification.groups,
@@ -58,14 +62,7 @@ pub(crate) fn run_check(
         String::new()
     };
 
-    let passed = classification
-        .packages
-        .iter()
-        .all(|package| package.status() != PackageStatus::NeedsIncrement)
-        && classification
-            .groups
-            .values()
-            .all(GroupVerdict::is_consistent);
+    let passed = message.is_empty();
 
     if let Some(success) = default_success_message(passed, &message) {
         message = success.to_string();
@@ -97,6 +94,10 @@ fn render_diagnostics(
     let declared: BTreeMap<&str, &Version> = packages
         .iter()
         .map(|package| (package.name.as_str(), &package.declared_version))
+        .collect();
+    let by_name: BTreeMap<&str, &PackageClass> = packages
+        .iter()
+        .map(|package| (package.name.as_str(), package))
         .collect();
     let mut lines = Vec::new();
     for package in packages {
@@ -176,7 +177,156 @@ fn render_diagnostics(
         lines.push(text);
     }
 
+    for package in packages {
+        for dependency in &package.dependencies {
+            let Some(dependency_version) = declared.get(dependency.name.as_str()) else {
+                continue;
+            };
+            // Version-group members release as one version, so a member must pin its siblings
+            // exactly: a compatible requirement would let a consumer resolve two members at
+            // versions that were never released together, which is the split the group exists to
+            // hide. Every edge reaching here already survives packaging, development edges
+            // included, so each one can carry that mismatch into a published manifest.
+            // Ref: docs/dependencies.md, "Version groups and exact-pin cross-references".
+            let sibling = package.group.is_some()
+                && package.group
+                    == by_name
+                        .get(dependency.name.as_str())
+                        .and_then(|dep| dep.group.clone());
+            if sibling {
+                if dependency.req == format!("={dependency_version}") {
+                    continue;
+                }
+                let group = package
+                    .group
+                    .as_deref()
+                    .expect("a sibling edge was found only when this package has a group");
+                let text = format!(
+                    "{}: requires {} {}, but they share version group {}, whose members pin each other exactly. Change the requirement to {}. {}",
+                    quote_path(&package.name),
+                    quote_path(&dependency.name),
+                    quote_path(&dependency.req),
+                    quote_path(group),
+                    quote_path(&format!("={dependency_version}")),
+                    remedy(base)
+                );
+                if format == CheckFormat::Github {
+                    let file = os_path(&package.manifest_path);
+                    lines.push(format!(
+                        "::error file={},title=inexact-group-requirement::{}",
+                        escape_property(&file),
+                        escape_data(&text)
+                    ));
+                }
+                lines.push(text);
+                continue;
+            }
+            if requirement_names_version(&dependency.req, dependency_version) {
+                continue;
+            }
+            // The requirement Cargo would publish must name the version the workspace builds and
+            // tests against. A wider requirement lets a consumer resolve a combination this
+            // workspace never validated, and it makes the release decision depend on requirement
+            // arithmetic rather than on the declared versions alone.
+            // Ref: docs/dependencies.md, "Intra-workspace requirements name the declared version".
+            let expected = if dependency.exact_pin {
+                format!("={dependency_version}")
+            } else {
+                dependency_version.to_string()
+            };
+            let text = format!(
+                "{}: requires {} {}, which does not name the version it declares ({dependency_version}). Change the requirement to {}. {}",
+                quote_path(&package.name),
+                quote_path(&dependency.name),
+                quote_path(&dependency.req),
+                quote_path(&expected),
+                remedy(base)
+            );
+            if format == CheckFormat::Github {
+                let file = os_path(&package.manifest_path);
+                lines.push(format!(
+                    "::error file={},title=stale-workspace-requirement::{}",
+                    escape_property(&file),
+                    escape_data(&text)
+                ));
+            }
+            lines.push(text);
+        }
+    }
+
+    for package in packages {
+        // A package the baseline has never published has no consumer contract to break, so it
+        // cannot owe a breaking release. It also has no anchor to move away from, which means
+        // this rule could never be satisfied by changing its version: reporting it would demand
+        // an increment that does not exist. It takes the first-publication path instead.
+        if package.anchor().is_none() || releases_breaking_change(package) {
+            continue;
+        }
+        for dependency in &package.dependencies {
+            if !dependency.public {
+                continue;
+            }
+            let Some(broken) = by_name.get(dependency.name.as_str()) else {
+                continue;
+            };
+            if !releases_breaking_change(broken) {
+                continue;
+            }
+            // A semver-incompatible release changes the identity of the dependency's types for
+            // consumers, so a package re-exporting them cannot stay compatible: a consumer
+            // holding the older dependency can no longer hand its types to this package. That
+            // holds however unrelated the dependency's own breaking change was to the exposed
+            // items, so it is decided from the version move rather than from the diff.
+            // Ref: docs/design.md, "Public dependencies".
+            let anchor = broken.anchor().expect(
+                "only a package that releases a breaking change reaches here, which requires an anchor to compare against",
+            );
+            let text = format!(
+                "{}: exposes {} in its public API and must release a breaking change of its own, because {} moves from {} to an incompatible {}. {}",
+                quote_path(&package.name),
+                quote_path(&dependency.name),
+                quote_path(&dependency.name),
+                anchor.version,
+                broken.declared_version,
+                remedy(base)
+            );
+            if format == CheckFormat::Github {
+                let file = os_path(&package.manifest_path);
+                lines.push(format!(
+                    "::error file={},title=unpropagated-breaking-change::{}",
+                    escape_property(&file),
+                    escape_data(&text)
+                ));
+            }
+            lines.push(text);
+        }
+    }
+
     lines.join("\n")
+}
+
+/// Whether the package's declared version is a semver-incompatible move from its last release.
+///
+/// Cargo treats the leftmost non-zero component as the major component, so this
+/// is the comparison that decides whether a consumer of the last release
+/// resolves the next one.
+fn releases_breaking_change(package: &PackageClass) -> bool {
+    let Some(anchor) = package.anchor() else {
+        // Never released, so there is no consumer contract to break.
+        return false;
+    };
+    compatibility_key(&anchor.version) != compatibility_key(&package.declared_version)
+}
+
+/// The components that must agree for two versions to be semver-compatible.
+fn compatibility_key(version: &Version) -> (u64, u64, u64) {
+    if version.major > 0 {
+        return (version.major, 0, 0);
+    }
+    if version.minor > 0 {
+        return (0, version.minor, 0);
+    }
+    (0, 0, version.patch)
 }
 
 /// Escapes the message body of a GitHub workflow command.
@@ -345,6 +495,7 @@ mod tests {
 
     use super::*;
     use crate::anchor::Anchor;
+    use crate::metadata::{DepKind, ReportedDep};
 
     assert_impl_all!(CheckFormat: UnwindSafe, RefUnwindSafe);
 
@@ -395,6 +546,456 @@ mod tests {
         assert!(default_success_message(true, "diagnostic").is_none());
         assert!(default_success_message(false, "").is_none());
         assert!(default_success_message(false, "fail").is_none());
+    }
+
+    /// Compatibility follows Cargo's leftmost-non-zero rule rather than the major component.
+    #[test]
+    fn compatibility_is_decided_by_the_leftmost_non_zero_component() {
+        // A 1.x line breaks on the major component.
+        assert_eq!(
+            compatibility_key(&Version::new(1, 2, 3)),
+            compatibility_key(&Version::new(1, 9, 0))
+        );
+        assert_ne!(
+            compatibility_key(&Version::new(1, 2, 3)),
+            compatibility_key(&Version::new(2, 0, 0))
+        );
+
+        // A 0.x line breaks on the minor component.
+        assert_eq!(
+            compatibility_key(&Version::new(0, 1, 2)),
+            compatibility_key(&Version::new(0, 1, 9))
+        );
+        assert_ne!(
+            compatibility_key(&Version::new(0, 1, 2)),
+            compatibility_key(&Version::new(0, 2, 0))
+        );
+
+        // A 0.0.x line admits no compatible change at all.
+        assert_ne!(
+            compatibility_key(&Version::new(0, 0, 1)),
+            compatibility_key(&Version::new(0, 0, 2))
+        );
+    }
+
+    /// A compatible move is not a breaking release.
+    #[test]
+    fn a_compatible_move_releases_no_breaking_change() {
+        let package = with_dependencies(
+            "demo",
+            Version::new(0, 1, 3),
+            Version::new(0, 1, 0),
+            Vec::new(),
+        );
+
+        assert!(!releases_breaking_change(&package));
+    }
+
+    /// Builds an unchanged package carrying the given intra-workspace dependencies.
+    fn with_dependencies(
+        name: &str,
+        declared: Version,
+        anchor: Version,
+        dependencies: Vec<ReportedDep>,
+    ) -> PackageClass {
+        let mut package = PackageClass::unchanged(
+            name,
+            declared,
+            Anchor {
+                commit: "0123456789abcdef0123456789abcdef01234567".to_string(),
+                version: anchor,
+            },
+            PathBuf::from(format!("packages/{name}/Cargo.toml")),
+        );
+        package.dependencies = dependencies;
+        package
+    }
+
+    fn dependency(name: &str, req: &str, public: bool) -> ReportedDep {
+        ReportedDep {
+            name: name.to_string(),
+            req: req.to_string(),
+            exact_pin: req.starts_with('='),
+            kind: DepKind::Normal,
+            public,
+        }
+    }
+
+    /// Builds an unchanged package in a version group, carrying the given dependencies.
+    fn grouped(
+        name: &str,
+        group: &str,
+        declared: Version,
+        dependencies: Vec<ReportedDep>,
+    ) -> PackageClass {
+        let mut package = with_dependencies(name, declared.clone(), declared, dependencies);
+        package.group = Some(group.to_string());
+        package
+    }
+
+    /// A version-group member must pin its siblings exactly.
+    ///
+    /// The group exists because the members are one package split for Cargo's sake, so a
+    /// compatible requirement would let a consumer resolve two members that were never released
+    /// together.
+    #[test]
+    fn a_compatible_requirement_between_group_members_is_reported() {
+        let library = grouped("lib_impl", "lib", Version::new(1, 1, 0), vec![]);
+        let shell = grouped(
+            "lib",
+            "lib",
+            Version::new(1, 1, 0),
+            vec![dependency("lib_impl", "^1.1.0", true)],
+        );
+
+        let text = render_diagnostics(&[shell, library], &BTreeMap::new(), BASE, CheckFormat::Text);
+
+        assert!(text.contains("pin each other exactly"), "{text}");
+        assert!(text.contains("=1.1.0"), "{text}");
+    }
+
+    /// The same edge passes once it is pinned exactly.
+    #[test]
+    fn an_exact_requirement_between_group_members_is_accepted() {
+        let library = grouped("lib_impl", "lib", Version::new(1, 1, 0), vec![]);
+        let shell = grouped(
+            "lib",
+            "lib",
+            Version::new(1, 1, 0),
+            vec![dependency("lib_impl", "=1.1.0", true)],
+        );
+
+        let text = render_diagnostics(&[shell, library], &BTreeMap::new(), BASE, CheckFormat::Text);
+
+        assert_eq!(text, "");
+    }
+
+    /// A development dependency between group members is not exempt.
+    ///
+    /// Only a path-only development dependency escapes packaging, and one of those never
+    /// reaches the report at all. A retained development edge is published, so it can carry a
+    /// mismatched group pairing into a consumer's resolution just as a normal edge can.
+    #[test]
+    fn a_development_requirement_between_group_members_is_reported() {
+        let library = grouped("lib_impl", "lib", Version::new(1, 1, 0), vec![]);
+        let mut development = dependency("lib_impl", "^1.1.0", false);
+        development.kind = DepKind::Dev;
+        let shell = grouped("lib", "lib", Version::new(1, 1, 0), vec![development]);
+
+        let text = render_diagnostics(&[shell, library], &BTreeMap::new(), BASE, CheckFormat::Text);
+
+        assert!(text.contains("pin each other exactly"), "{text}");
+    }
+
+    /// Packages in different groups may reference each other compatibly.
+    #[test]
+    fn a_compatible_requirement_across_groups_is_accepted() {
+        let library = grouped("lib", "lib", Version::new(1, 1, 0), vec![]);
+        let consumer = grouped(
+            "app",
+            "app",
+            Version::new(0, 1, 0),
+            vec![dependency("lib", "^1.1.0", false)],
+        );
+
+        let text = render_diagnostics(
+            &[consumer, library],
+            &BTreeMap::new(),
+            BASE,
+            CheckFormat::Text,
+        );
+
+        assert_eq!(text, "");
+    }
+
+    /// An ungrouped package may reference a group member compatibly.
+    #[test]
+    fn a_compatible_requirement_from_outside_a_group_is_accepted() {
+        let library = grouped("lib", "lib", Version::new(1, 1, 0), vec![]);
+        let consumer = with_dependencies(
+            "app",
+            Version::new(0, 1, 0),
+            Version::new(0, 1, 0),
+            vec![dependency("lib", "^1.1.0", false)],
+        );
+
+        let text = render_diagnostics(
+            &[consumer, library],
+            &BTreeMap::new(),
+            BASE,
+            CheckFormat::Text,
+        );
+
+        assert_eq!(text, "");
+    }
+
+    /// A requirement that does not name the version its target declares is rejected.
+    #[test]
+    fn a_requirement_that_does_not_name_the_declared_version_is_reported() {
+        let library =
+            with_dependencies("lib", Version::new(1, 1, 0), Version::new(1, 1, 0), vec![]);
+        let dependent = with_dependencies(
+            "app",
+            Version::new(0, 1, 0),
+            Version::new(0, 1, 0),
+            vec![dependency("lib", "^1.0.0", false)],
+        );
+
+        let text = render_diagnostics(
+            &[dependent, library],
+            &BTreeMap::new(),
+            BASE,
+            CheckFormat::Text,
+        );
+
+        assert!(
+            text.contains("does not name the version it declares"),
+            "{text}"
+        );
+        assert!(text.contains("1.1.0"), "{text}");
+    }
+
+    /// A requirement naming the declared version passes in either accepted spelling.
+    #[test]
+    fn a_requirement_naming_the_declared_version_is_accepted() {
+        let library =
+            with_dependencies("lib", Version::new(1, 1, 0), Version::new(1, 1, 0), vec![]);
+        for req in ["^1.1.0", "=1.1.0"] {
+            let dependent = with_dependencies(
+                "app",
+                Version::new(0, 1, 0),
+                Version::new(0, 1, 0),
+                vec![dependency("lib", req, false)],
+            );
+
+            let text = render_diagnostics(
+                &[dependent, library.clone()],
+                &BTreeMap::new(),
+                BASE,
+                CheckFormat::Text,
+            );
+
+            assert_eq!(text, "", "requirement {req} was rejected");
+        }
+    }
+
+    /// A package exposing a dependency that breaks must break too.
+    ///
+    /// The dependency's incompatible release changes the identity of the types this package
+    /// re-exports, so staying on a compatible version would publish a contract its consumers
+    /// cannot satisfy.
+    #[test]
+    fn a_public_dependency_releasing_a_breaking_change_forces_one_on_its_dependent() {
+        // `lib` moves 1.1.0 -> 2.0.0, which is incompatible.
+        let library =
+            with_dependencies("lib", Version::new(2, 0, 0), Version::new(1, 1, 0), vec![]);
+        let dependent = with_dependencies(
+            "app",
+            Version::new(0, 1, 1),
+            Version::new(0, 1, 0),
+            vec![dependency("lib", "^2.0.0", true)],
+        );
+
+        let text = render_diagnostics(
+            &[dependent, library],
+            &BTreeMap::new(),
+            BASE,
+            CheckFormat::Text,
+        );
+
+        assert!(
+            text.contains("must release a breaking change of its own"),
+            "{text}"
+        );
+    }
+
+    /// The same dependency does not force anything when it is not publicly exposed.
+    #[test]
+    fn a_private_dependency_releasing_a_breaking_change_forces_nothing() {
+        let library =
+            with_dependencies("lib", Version::new(2, 0, 0), Version::new(1, 1, 0), vec![]);
+        let dependent = with_dependencies(
+            "app",
+            Version::new(0, 1, 1),
+            Version::new(0, 1, 0),
+            vec![dependency("lib", "^2.0.0", false)],
+        );
+
+        let text = render_diagnostics(
+            &[dependent, library],
+            &BTreeMap::new(),
+            BASE,
+            CheckFormat::Text,
+        );
+
+        assert_eq!(text, "");
+    }
+
+    /// Each manifest-level diagnostic carries a workflow annotation naming its manifest.
+    ///
+    /// The annotation is what attaches a failure to the offending file in the pull-request
+    /// view, so a wrong title or an unescaped body would leave CI reporting into the void
+    /// while the text form still looked correct.
+    #[test]
+    fn github_format_annotates_each_manifest_diagnostic() {
+        // A drifted requirement, from a package in no group.
+        let stale = render_diagnostics(
+            &[
+                with_dependencies(
+                    "app",
+                    Version::new(0, 1, 0),
+                    Version::new(0, 1, 0),
+                    vec![dependency("lib", "^1.0.0", false)],
+                ),
+                with_dependencies("lib", Version::new(1, 1, 0), Version::new(1, 1, 0), vec![]),
+            ],
+            &BTreeMap::new(),
+            BASE,
+            CheckFormat::Github,
+        );
+        assert!(
+            stale.contains(
+                "::error file=packages/app/Cargo.toml,title=stale-workspace-requirement::"
+            ),
+            "{stale}"
+        );
+
+        // A compatible requirement between two members of one group.
+        let inexact = render_diagnostics(
+            &[
+                grouped(
+                    "lib",
+                    "lib",
+                    Version::new(1, 1, 0),
+                    vec![dependency("lib_impl", "^1.1.0", true)],
+                ),
+                grouped("lib_impl", "lib", Version::new(1, 1, 0), vec![]),
+            ],
+            &BTreeMap::new(),
+            BASE,
+            CheckFormat::Github,
+        );
+        assert!(
+            inexact
+                .contains("::error file=packages/lib/Cargo.toml,title=inexact-group-requirement::"),
+            "{inexact}"
+        );
+
+        // A public dependency that breaks while its dependent stays compatible.
+        let unpropagated = render_diagnostics(
+            &[
+                with_dependencies(
+                    "app",
+                    Version::new(0, 1, 1),
+                    Version::new(0, 1, 0),
+                    vec![dependency("lib", "=2.0.0", true)],
+                ),
+                with_dependencies("lib", Version::new(2, 0, 0), Version::new(1, 1, 0), vec![]),
+            ],
+            &BTreeMap::new(),
+            BASE,
+            CheckFormat::Github,
+        );
+        assert!(
+            unpropagated.contains(
+                "::error file=packages/app/Cargo.toml,title=unpropagated-breaking-change::"
+            ),
+            "{unpropagated}"
+        );
+    }
+
+    /// A drifted exact pin is corrected to an exact pin, not to a bare version.
+    ///
+    /// The suggested spelling has to keep the lockstep the author asked for, otherwise
+    /// following the diagnostic would silently widen the requirement.
+    #[test]
+    fn a_drifted_exact_pin_is_corrected_to_an_exact_pin() {
+        let text = render_diagnostics(
+            &[
+                with_dependencies(
+                    "app",
+                    Version::new(0, 1, 0),
+                    Version::new(0, 1, 0),
+                    vec![dependency("lib", "=1.0.0", false)],
+                ),
+                with_dependencies("lib", Version::new(1, 1, 0), Version::new(1, 1, 0), vec![]),
+            ],
+            &BTreeMap::new(),
+            BASE,
+            CheckFormat::Text,
+        );
+
+        assert!(text.contains("Change the requirement to =1.1.0"), "{text}");
+    }
+
+    /// A dependency on a package outside the assessed set is not judged.
+    ///
+    /// Only publishable, Git-tracked packages carry a declared version here, so an edge whose
+    /// target is absent has nothing to compare against.
+    #[test]
+    fn a_dependency_on_an_unassessed_package_is_skipped() {
+        let text = render_diagnostics(
+            &[with_dependencies(
+                "app",
+                Version::new(0, 1, 0),
+                Version::new(0, 1, 0),
+                vec![dependency("absent", "^1.0.0", true)],
+            )],
+            &BTreeMap::new(),
+            BASE,
+            CheckFormat::Text,
+        );
+
+        assert_eq!(text, "");
+    }
+
+    /// A never-published dependent owes no breaking release.
+    ///
+    /// It has no consumer contract to break, and no anchor to move away from, so demanding one
+    /// would be a diagnostic it could never satisfy: no version it declares would clear the
+    /// rule. It takes the first-publication path instead.
+    #[test]
+    fn a_never_published_dependent_exposing_a_breaking_dependency_is_accepted() {
+        let library =
+            with_dependencies("lib", Version::new(2, 0, 0), Version::new(1, 1, 0), vec![]);
+        let mut newcomer = PackageClass::new_package(
+            "app",
+            Version::new(0, 1, 0),
+            PathBuf::from("packages/app/Cargo.toml"),
+        );
+        newcomer.dependencies = vec![dependency("lib", "=2.0.0", true)];
+
+        let text = render_diagnostics(
+            &[newcomer, library],
+            &BTreeMap::new(),
+            BASE,
+            CheckFormat::Text,
+        );
+
+        assert_eq!(text, "");
+    }
+
+    /// A dependent that already releases a breaking change of its own satisfies the rule.
+    #[test]
+    fn a_dependent_already_releasing_a_breaking_change_is_accepted() {
+        let library =
+            with_dependencies("lib", Version::new(2, 0, 0), Version::new(1, 1, 0), vec![]);
+        // 0.1.0 -> 0.2.0 is incompatible on a 0.x line.
+        let dependent = with_dependencies(
+            "app",
+            Version::new(0, 2, 0),
+            Version::new(0, 1, 0),
+            vec![dependency("lib", "^2.0.0", true)],
+        );
+
+        let text = render_diagnostics(
+            &[dependent, library],
+            &BTreeMap::new(),
+            BASE,
+            CheckFormat::Text,
+        );
+
+        assert_eq!(text, "");
     }
 
     /// Builds a package that renders a diagnostic, with the rest left inert.

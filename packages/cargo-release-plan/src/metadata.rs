@@ -28,9 +28,9 @@ use crate::manifest::{
 use crate::packaging::PackagingRules;
 use crate::packaging::relativize;
 use crate::{
-    GroupNameCollisionError, InvalidVersionError, MalformedVersionGroupError,
-    MalformedVersionGroupsError, NonPublishableGroupMemberError, ParseMetadataError, ReadFileError,
-    UnknownGroupMemberError,
+    GroupNameCollisionError, InvalidVersionError, MalformedPrivateApiError,
+    MalformedVersionGroupError, MalformedVersionGroupsError, NonPublishableGroupMemberError,
+    ParseMetadataError, ReadFileError, UnknownGroupMemberError,
 };
 
 /// Work-tree snapshot from `cargo metadata --no-deps`.
@@ -52,12 +52,40 @@ pub(crate) struct WorkTree {
     pub(crate) groups: Groups,
 }
 
+impl WorkTree {
+    /// Returns declared versions for Git-tracked publishable packages.
+    pub(crate) fn publishable_versions(&self) -> BTreeMap<String, Version> {
+        self.packages
+            .iter()
+            .map(|package| {
+                (
+                    package.manifest.name.clone(),
+                    package.manifest.version.clone(),
+                )
+            })
+            .collect()
+    }
+}
+
 /// One publishable workspace member in the work tree.
 #[derive(Clone, Debug)]
 pub(crate) struct WorkPackage {
     pub(crate) manifest: PackageManifest,
     pub(crate) manifest_path: PathBuf,
     pub(crate) dependencies: Vec<ReportedDep>,
+    /// Whether the package presents a library API contract to consumers.
+    ///
+    /// True when the package has a library target and has not declared
+    /// `[package.metadata.release-plan] private-api = true`. A package
+    /// declares itself private to say that its library exists to serve another
+    /// package rather than to be depended on directly, which is a release-policy
+    /// statement the package makes about itself rather than something derivable
+    /// from its code.
+    ///
+    /// This is reported as evidence; what to do with it is the consumer's
+    /// decision.
+    /// Ref: docs/design.md, "Consumer contracts".
+    pub(crate) consumer_contract: bool,
     /// Whether the package builds a target that makes its locked closure relevant.
     ///
     /// Ref: docs/design.md, "Relevant lockfile closures".
@@ -77,6 +105,47 @@ pub(crate) struct ReportedDep {
     pub(crate) name: String,
     pub(crate) req: String,
     pub(crate) exact_pin: bool,
+    /// Which dependency table declares this edge.
+    ///
+    /// Not reported: it decides how the edge is judged here, and the release
+    /// decision reads the judgement rather than repeating it.
+    #[serde(skip)]
+    pub(crate) kind: DepKind,
+    /// Whether the dependent's public API exposes types from this dependency.
+    ///
+    /// Read from the dependent's `allowed_external_types` allow-list, which
+    /// names every type outside the crate that its public API may expose. The
+    /// allow-list is a declaration rather than an observation, but
+    /// `check-external-types` fails on an exposed type the list omits, so a
+    /// passing workspace makes it a superset of what is genuinely exposed.
+    /// Erring wide is the safe direction here: a dependency wrongly called
+    /// public over-states a change level, while a missed one would publish a
+    /// broken contract.
+    /// Ref: docs/external-types.md; docs/design.md, "Public dependencies".
+    pub(crate) public: bool,
+}
+
+/// The dependency kinds Cargo distinguishes, as they matter to a release.
+///
+/// Only a normal dependency can supply types to a library's public API. A
+/// development dependency additionally does not survive packaging when it is
+/// declared without a version, so it reaches no published manifest at all.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum DepKind {
+    #[default]
+    Normal,
+    Build,
+    Dev,
+}
+
+impl DepKind {
+    fn from_metadata(kind: Option<&str>) -> Self {
+        match kind {
+            Some("dev") => Self::Dev,
+            Some("build") => Self::Build,
+            _ => Self::Normal,
+        }
+    }
 }
 
 /// Raw `cargo metadata` document before conversion to [`WorkTree`].
@@ -100,6 +169,18 @@ struct MetadataPackage {
     publish: Option<Vec<String>>,
     #[serde(default)]
     dependencies: Vec<MetadataDep>,
+    #[serde(default)]
+    targets: Vec<MetadataTarget>,
+    #[serde(default)]
+    metadata: Value,
+}
+
+/// One build target from the metadata document.
+#[derive(Debug, Deserialize)]
+struct MetadataTarget {
+    name: String,
+    #[serde(default)]
+    kind: Vec<String>,
 }
 
 /// One declared dependency from the metadata document.
@@ -246,7 +327,7 @@ fn work_tree_from_metadata(
     // Apply visits every member Cargo can see so an untracked or ignored
     // dependent cannot retain a stale exact pin. This set is deliberately wider
     // than the tracked package set accepted as plan targets.
-    // Ref: docs/implementation.md, "Plan application".
+    // Ref: docs/implementation.md, "Plan resolution and application".
     let members_by_dir: BTreeMap<PathBuf, String> = metadata
         .packages
         .iter()
@@ -257,12 +338,22 @@ fn work_tree_from_metadata(
                 .map(|dir| (dir.to_path_buf(), package.name.clone()))
         })
         .collect();
+    // The identifier a Rust path uses for a package is its library target name, which the
+    // allow-list patterns are written in. Reading it from the target rather than deriving it
+    // from the package name keeps a `[lib] name` override from silently breaking the match.
+    let library_crate_names: BTreeMap<&str, String> = metadata
+        .packages
+        .iter()
+        .filter(|package| cargo_member_ids.contains(package.id.as_str()))
+        .filter_map(|package| library_crate_name(package).map(|lib| (package.name.as_str(), lib)))
+        .collect();
     let root_manifest_path = workspace_root.join("Cargo.toml");
     let root_manifest = fs::read_to_string(&root_manifest_path)
         .map_err(|error| ReadFileError::caused_by(&root_manifest_path, error))?;
     let root_manifest = parse_document(&root_manifest_path, &root_manifest)?;
     let workspace = WorkspaceInherit::from_root(&root_manifest);
     let mut packages = Vec::new();
+    let mut exposed_crates_by_package: BTreeMap<String, Vec<String>> = BTreeMap::new();
 
     for package in &metadata.packages {
         if !selected_member_ids.contains(package.id.as_str()) {
@@ -291,6 +382,7 @@ fn work_tree_from_metadata(
         })?;
         manifest.name.clone_from(&package.name);
 
+        let exposed_crates = allowed_external_crates(&package.metadata);
         let dependencies = package
             .dependencies
             .iter()
@@ -306,11 +398,17 @@ fn work_tree_from_metadata(
                 name: dep.name.clone(),
                 req: dep.req.clone(),
                 exact_pin: dep.req.starts_with('='),
+                kind: DepKind::from_metadata(dep.kind.as_deref()),
+                // Resolved once every package's allow-list is known, below.
+                public: false,
             })
             .collect();
 
+        exposed_crates_by_package.insert(package.name.clone(), exposed_crates);
+
         packages.push(WorkPackage {
             has_lockfile_target: tracked.has_lockfile_target(&manifest)?,
+            consumer_contract: is_consumer_contract(package)?,
             manifest,
             manifest_path: path,
             dependencies,
@@ -333,6 +431,12 @@ fn work_tree_from_metadata(
         .map(|package| package.manifest.name.as_str())
         .collect();
     let groups = groups_from_metadata(&metadata.metadata, &workspace_names, &publishable_names)?;
+
+    mark_public_dependencies(
+        &mut packages,
+        &exposed_crates_by_package,
+        &library_crate_names,
+    );
 
     Ok(WorkTree {
         workspace_root,
@@ -397,6 +501,250 @@ fn groups_from_metadata(
 /// survives packaging only when its manifest declaration supplies a version
 /// requirement; Cargo reports both an explicit wildcard and no requirement as
 /// `*`, so metadata alone cannot distinguish them.
+/// Whether the package presents a library API contract to consumers.
+///
+/// Two facts combine. A package with no library target has no library API at
+/// all. A package that declares
+/// `[package.metadata.release-plan] private-api = true` has one but states that
+/// it is private: an implementation partition behind a public package, or a
+/// crate published only because Cargo requires a dependency to be published.
+///
+/// The declaration is read from the package rather than inferred, because no
+/// property of the code distinguishes a library meant for consumers from one
+/// meant for a sibling crate. Adjacent facts such as `[lib] doc = false`
+/// correlate in some workspaces but mean something else, so keying release
+/// policy on them would silently mis-classify a package whose author changed
+/// one for an unrelated reason.
+///
+/// A package is public unless it declares otherwise. The safe direction: a new
+/// package is assessed by default, and a package wrongly assessed reports a
+/// finding a maintainer can see, while a package wrongly skipped reports
+/// nothing at all.
+fn is_consumer_contract(package: &MetadataPackage) -> Result<bool, AppError> {
+    let has_library = package.targets.iter().any(|target| {
+        target
+            .kind
+            .iter()
+            .any(|kind| LIBRARY_TARGET_KINDS.contains(&kind.as_str()))
+    });
+    if !has_library {
+        return Ok(false);
+    }
+    let Some(declared) = package
+        .metadata
+        .get("release-plan")
+        .and_then(|value| value.get("private-api"))
+    else {
+        return Ok(true);
+    };
+    declared
+        .as_bool()
+        .map(|private| !private)
+        .ok_or_else(|| MalformedPrivateApiError::new(&package.name, declared.to_string()).into())
+}
+
+/// The identifier a Rust path uses for a package's library, if it has one.
+///
+/// A package without a library target exposes no API for another crate to
+/// re-export, so it can never be a public dependency.
+fn library_crate_name(package: &MetadataPackage) -> Option<String> {
+    package
+        .targets
+        .iter()
+        .find(|target| {
+            target
+                .kind
+                .iter()
+                .any(|kind| LIBRARY_TARGET_KINDS.contains(&kind.as_str()))
+        })
+        // Cargo already applies this substitution when deriving a target name from a package
+        // name, but a `[lib] name` written with hyphens would not be a legal path segment.
+        .map(|target| target.name.replace('-', "_"))
+}
+
+/// Target kinds that produce a library another crate can name in a path.
+const LIBRARY_TARGET_KINDS: &[&str] =
+    &["lib", "rlib", "dylib", "cdylib", "staticlib", "proc-macro"];
+
+/// Leading path segments of a package's `allowed_external_types` allow-list.
+///
+/// Each entry is a `::`-separated type path whose first segment names the crate
+/// the type comes from, so the leading segments are the crates this package's
+/// public API is permitted to expose. A pattern may glob, as `cbh_*::*` does.
+/// Ref: docs/external-types.md.
+fn allowed_external_crates(metadata: &Value) -> Vec<String> {
+    let Some(patterns) = metadata
+        .get("cargo_check_external_types")
+        .and_then(|value| value.get("allowed_external_types"))
+        .and_then(Value::as_array)
+    else {
+        // An absent allow-list is not an absent opinion: cargo-check-external-types then permits
+        // no external type at all, so the package exposes none.
+        return Vec::new();
+    };
+    patterns
+        .iter()
+        .filter_map(Value::as_str)
+        .filter_map(|pattern| {
+            let segment = pattern.split("::").next().unwrap_or_default().trim();
+            (!segment.is_empty()).then(|| segment.to_string())
+        })
+        .collect()
+}
+
+/// Whether `candidate` matches a `wildmatch` pattern, where `*` spans any run
+/// of characters and `?` matches exactly one.
+///
+/// cargo-check-external-types matches `allowed_external_types` entries with
+/// `wildmatch`, so a pattern it accepts has to reach the same crates here.
+/// Matching walks characters rather than bytes, so a multi-byte character is
+/// one `?`, as `wildmatch` treats it.
+fn glob_matches(pattern: &str, candidate: &str) -> bool {
+    let pattern: Vec<char> = pattern.chars().collect();
+    let candidate: Vec<char> = candidate.chars().collect();
+    // Position in each, plus the last `*` seen and where the candidate had reached then, which
+    // is what a failed match backtracks to instead of recursing.
+    let (mut p, mut c) = (0_usize, 0_usize);
+    let mut star: Option<(usize, usize)> = None;
+    while c < candidate.len() {
+        let current = candidate.get(c).copied();
+        match pattern.get(p) {
+            Some('*') => {
+                star = Some((p, c));
+                p = p.saturating_add(1);
+            }
+            Some('?') => {
+                p = p.saturating_add(1);
+                c = c.saturating_add(1);
+            }
+            Some(literal) if Some(*literal) == current => {
+                p = p.saturating_add(1);
+                c = c.saturating_add(1);
+            }
+            _ => {
+                // Let the most recent `*` absorb one more character and try again.
+                let Some((star_p, star_c)) = star else {
+                    return false;
+                };
+                p = star_p.saturating_add(1);
+                c = star_c.saturating_add(1);
+                star = Some((star_p, c));
+            }
+        }
+    }
+    pattern
+        .get(p..)
+        .is_some_and(|rest| rest.iter().all(|entry| *entry == '*'))
+}
+
+/// Marks the dependency edges through which each package exposes another crate's types.
+///
+/// A package names the crates its public API may expose, but it does not
+/// necessarily depend on them directly: an implementation crate's types
+/// normally reach consumers re-exported through the public crate in front of
+/// it, so `region_local` names `many_cpus_impl` while depending on `many_cpus`.
+/// The re-exporting crate closes that gap, because it must itself declare the
+/// crate it re-exports. Following those declarations transitively is what
+/// attributes a named crate to the direct dependency that actually supplies it.
+///
+/// Only a normal dependency can supply types to a library's public API, so a
+/// build or development dependency is never public however the allow-lists read.
+/// Ref: docs/design.md, "Public dependencies".
+fn mark_public_dependencies(
+    packages: &mut [WorkPackage],
+    exposed_crates_by_package: &BTreeMap<String, Vec<String>>,
+    library_crate_names: &BTreeMap<&str, String>,
+) {
+    // The workspace packages each package's allow-list names outright.
+    let mut named: BTreeMap<String, HashSet<String>> = BTreeMap::new();
+    for (package, patterns) in exposed_crates_by_package {
+        let matched = library_crate_names
+            .iter()
+            .filter(|(_, library)| {
+                patterns
+                    .iter()
+                    .any(|pattern| glob_matches(pattern, library))
+            })
+            .map(|(name, _)| (*name).to_string())
+            .collect();
+        named.insert(package.clone(), matched);
+    }
+
+    let normal_dependencies: BTreeMap<String, Vec<String>> = packages
+        .iter()
+        .map(|package| {
+            (
+                package.manifest.name.clone(),
+                package
+                    .dependencies
+                    .iter()
+                    .filter(|dependency| dependency.kind == DepKind::Normal)
+                    .map(|dependency| dependency.name.clone())
+                    .collect(),
+            )
+        })
+        .collect();
+
+    // What each package publicly exposes, including what it re-exports from further down. A
+    // package exposes itself, so a direct dependency is caught by the same intersection test.
+    let mut exposes: BTreeMap<String, HashSet<String>> = normal_dependencies
+        .keys()
+        .map(|name| {
+            let mut own: HashSet<String> = named.get(name).cloned().unwrap_or_default();
+            own.insert(name.clone());
+            (name.clone(), own)
+        })
+        .collect();
+
+    // An edge admitted in one pass can widen what its dependent exposes, which can admit a
+    // further edge, so the sets are grown until they stop changing. They only ever grow and are
+    // bounded by the workspace, so this settles; the bound is asserted rather than assumed.
+    let mut remaining_passes = normal_dependencies.len().saturating_add(1);
+    let mut settled = false;
+    while !settled {
+        assert!(
+            remaining_passes > 0,
+            "public-dependency closure did not settle; this is a defect in the exposure model"
+        );
+        remaining_passes = remaining_passes.saturating_sub(1);
+        settled = true;
+        for (name, dependencies) in &normal_dependencies {
+            let wanted = named.get(name).cloned().unwrap_or_default();
+            let mut added: HashSet<String> = HashSet::new();
+            for dependency in dependencies {
+                let Some(reachable) = exposes.get(dependency) else {
+                    continue;
+                };
+                if reachable.is_disjoint(&wanted) {
+                    continue;
+                }
+                added.extend(reachable.iter().cloned());
+            }
+            let own = exposes
+                .get_mut(name)
+                .expect("every package was seeded above");
+            let before = own.len();
+            own.extend(added);
+            if own.len() != before {
+                settled = false;
+            }
+        }
+    }
+
+    for package in packages.iter_mut() {
+        let wanted = named
+            .get(&package.manifest.name)
+            .cloned()
+            .unwrap_or_default();
+        for dependency in &mut package.dependencies {
+            dependency.public = dependency.kind == DepKind::Normal
+                && exposes
+                    .get(&dependency.name)
+                    .is_some_and(|reachable| !reachable.is_disjoint(&wanted));
+        }
+    }
+}
+
 fn is_intra_workspace_released(
     dep: &MetadataDep,
     members_by_dir: &BTreeMap<PathBuf, String>,
@@ -752,6 +1100,293 @@ mod tests {
         ));
     }
 
+    /// A pattern matches the crates cargo-check-external-types would allow.
+    ///
+    /// The tool matches these with `wildmatch`, where `*` spans any run of characters and `?`
+    /// matches exactly one, so a pattern it accepts has to reach the same crates here.
+    #[test]
+    fn a_glob_pattern_matches_the_crates_it_covers() {
+        assert!(glob_matches("cbh_*", "cbh_model"));
+        assert!(glob_matches("cbh_*", "cbh_"));
+        assert!(glob_matches("*", "anything"));
+        assert!(glob_matches("*", ""));
+        assert!(glob_matches("nm_impl", "nm_impl"));
+        assert!(glob_matches("a*c", "abc"));
+        assert!(glob_matches("a*c", "ac"));
+        assert!(glob_matches("", ""));
+
+        assert!(!glob_matches("cbh_*", "nm_impl"));
+        assert!(!glob_matches("nm_impl", "nm"));
+        assert!(!glob_matches("nm", "nm_impl"));
+        assert!(!glob_matches("a*c", "abd"));
+        assert!(!glob_matches("", "nm"));
+
+        // A `*` must be able to give characters back to a later literal.
+        assert!(glob_matches("a*bc", "abxbc"));
+        assert!(glob_matches("*a*b*", "xaybz"));
+        assert!(!glob_matches("a*bc", "abxb"));
+
+        // `?` matches exactly one character.
+        assert!(glob_matches("cbh_?", "cbh_a"));
+        assert!(!glob_matches("cbh_?", "cbh_"));
+        assert!(!glob_matches("cbh_?", "cbh_ab"));
+
+        // A multi-byte character is one character, not one byte.
+        assert!(glob_matches("?", "é"));
+        assert!(glob_matches("a*é", "abcé"));
+    }
+
+    /// Exposure follows re-exports to the dependency that actually supplies the named crate.
+    ///
+    /// `outer` names `impl` in its allow-list but depends on `facade`, which re-exports it. The
+    /// edge that must be marked is `outer -> facade`, because that is the requirement whose
+    /// version moves when `impl` breaks. A crate no one names stays private, and a build or
+    /// development edge never counts because neither can supply types to a library's API.
+    #[test]
+    fn exposure_follows_re_exports_to_the_supplying_dependency() {
+        fn work_package(name: &str, dependencies: Vec<ReportedDep>) -> WorkPackage {
+            WorkPackage {
+                manifest: PackageManifest {
+                    name: name.to_string(),
+                    version: "0.1.0".parse().unwrap(),
+                    directory: format!("packages/{name}"),
+                    packaging: PackagingRules::default(),
+                    inherited: InheritedKeys::default(),
+                    publish: true,
+                    path_dependencies: Vec::new(),
+                    inherited_path_dependencies: Vec::new(),
+                    resource_paths: Vec::new(),
+                    inherited_resource_paths: Vec::new(),
+                    auto_readme: false,
+                    targets: TargetDiscovery::default(),
+                },
+                manifest_path: PathBuf::from(format!("packages/{name}/Cargo.toml")),
+                dependencies,
+                has_lockfile_target: false,
+                consumer_contract: true,
+                resources: BTreeMap::new(),
+            }
+        }
+        fn edge(name: &str, kind: DepKind) -> ReportedDep {
+            ReportedDep {
+                name: name.to_string(),
+                req: "0.1.0".to_string(),
+                exact_pin: false,
+                kind,
+                public: false,
+            }
+        }
+        fn is_public(packages: &[WorkPackage], from: &str, to: &str) -> bool {
+            packages
+                .iter()
+                .find(|package| package.manifest.name == from)
+                .and_then(|package| {
+                    package
+                        .dependencies
+                        .iter()
+                        .find(|dependency| dependency.name == to)
+                })
+                .is_some_and(|dependency| dependency.public)
+        }
+
+        let mut packages = vec![
+            work_package(
+                "outer",
+                vec![
+                    edge("facade", DepKind::Normal),
+                    edge("private", DepKind::Normal),
+                    edge("tool", DepKind::Build),
+                    edge("harness", DepKind::Dev),
+                ],
+            ),
+            work_package("facade", vec![edge("implementation", DepKind::Normal)]),
+            work_package("implementation", Vec::new()),
+            work_package("private", Vec::new()),
+            work_package("tool", Vec::new()),
+            work_package("harness", Vec::new()),
+        ];
+        // `outer` and `harness` name the defining crate; `facade` names what it re-exports.
+        let exposed = BTreeMap::from([
+            ("outer".to_string(), vec!["implementation".to_string()]),
+            ("facade".to_string(), vec!["implementation".to_string()]),
+            ("harness".to_string(), vec!["implementation".to_string()]),
+        ]);
+        let libraries = BTreeMap::from([
+            ("facade", "facade".to_string()),
+            ("implementation", "implementation".to_string()),
+            ("private", "private".to_string()),
+            ("tool", "tool".to_string()),
+            ("harness", "harness".to_string()),
+        ]);
+
+        mark_public_dependencies(&mut packages, &exposed, &libraries);
+
+        // The re-export chain is public at every hop.
+        assert!(is_public(&packages, "outer", "facade"));
+        assert!(is_public(&packages, "facade", "implementation"));
+
+        // A crate `outer` never names is private even though it is a normal dependency.
+        assert!(!is_public(&packages, "outer", "private"));
+
+        // Neither non-normal kind can supply types to a library's public API, so neither is
+        // public even though both reach a package naming the exposed crate.
+        assert!(!is_public(&packages, "outer", "tool"));
+        assert!(!is_public(&packages, "outer", "harness"));
+    }
+
+    /// An absent allow-list permits no external type, so it exposes no crate.
+    #[test]
+    fn an_absent_allow_list_exposes_no_crate() {
+        assert!(allowed_external_crates(&Value::Null).is_empty());
+        assert!(allowed_external_crates(&serde_json::json!({})).is_empty());
+        assert!(
+            allowed_external_crates(&serde_json::json!({ "cargo_check_external_types": {} }))
+                .is_empty()
+        );
+    }
+
+    /// Only the leading path segment of each entry names a crate.
+    #[test]
+    fn an_allow_list_yields_the_leading_segment_of_each_entry() {
+        let metadata = serde_json::json!({
+            "cargo_check_external_types": {
+                "allowed_external_types": [
+                    "many_cpus_impl::system_hardware::SystemHardware",
+                    "cbh_*::*",
+                    "linked::family::Family",
+                ]
+            }
+        });
+
+        assert_eq!(
+            allowed_external_crates(&metadata),
+            vec![
+                "many_cpus_impl".to_string(),
+                "cbh_*".to_string(),
+                "linked".to_string()
+            ]
+        );
+    }
+
+    /// A package's library target names the crate a path refers to.
+    #[test]
+    fn a_library_target_name_is_the_crate_name_in_a_path() {
+        fn metadata_package(targets: Vec<MetadataTarget>) -> MetadataPackage {
+            MetadataPackage {
+                name: "demo-package".to_string(),
+                version: "0.1.0".to_string(),
+                id: "demo".to_string(),
+                manifest_path: "packages/demo/Cargo.toml".to_string(),
+                publish: None,
+                dependencies: Vec::new(),
+                targets,
+                metadata: Value::Null,
+            }
+        }
+        fn target(name: &str, kind: &str) -> MetadataTarget {
+            MetadataTarget {
+                name: name.to_string(),
+                kind: vec![kind.to_string()],
+            }
+        }
+
+        // A hyphenated package name becomes an underscored crate name.
+        assert_eq!(
+            library_crate_name(&metadata_package(vec![target("demo-package", "lib")])),
+            Some("demo_package".to_string())
+        );
+        // A proc-macro crate is still nameable in a path.
+        assert_eq!(
+            library_crate_name(&metadata_package(vec![target("macros", "proc-macro")])),
+            Some("macros".to_string())
+        );
+        // A binary-only package exposes no library to re-export.
+        assert_eq!(
+            library_crate_name(&metadata_package(vec![target("demo", "bin")])),
+            None
+        );
+        assert_eq!(library_crate_name(&metadata_package(Vec::new())), None);
+    }
+
+    /// A package declares whether its library is private.
+    ///
+    /// No property of the code distinguishes a library meant for consumers from one meant for a
+    /// sibling crate, so the package states it. Absent means public, which keeps a new package
+    /// assessed rather than silently skipped.
+    #[test]
+    fn a_package_declares_whether_its_library_is_private() {
+        fn metadata_package(kinds: &[&str], metadata: Value) -> MetadataPackage {
+            MetadataPackage {
+                name: "demo".to_string(),
+                version: "0.1.0".to_string(),
+                id: "demo".to_string(),
+                manifest_path: "packages/demo/Cargo.toml".to_string(),
+                publish: None,
+                dependencies: Vec::new(),
+                targets: kinds
+                    .iter()
+                    .map(|kind| MetadataTarget {
+                        name: "demo".to_string(),
+                        kind: vec![(*kind).to_string()],
+                    })
+                    .collect(),
+                metadata,
+            }
+        }
+        fn declaring(value: bool) -> Value {
+            serde_json::json!({ "release-plan": { "private-api": value } })
+        }
+
+        // A library is a contract unless the package declares itself private.
+        assert!(is_consumer_contract(&metadata_package(&["lib"], Value::Null)).unwrap());
+        assert!(is_consumer_contract(&metadata_package(&["proc-macro"], Value::Null)).unwrap());
+        assert!(is_consumer_contract(&metadata_package(&["lib"], declaring(false))).unwrap());
+
+        // A private library is not, and neither is a package with no library at all.
+        assert!(!is_consumer_contract(&metadata_package(&["lib"], declaring(true))).unwrap());
+        assert!(!is_consumer_contract(&metadata_package(&["bin"], Value::Null)).unwrap());
+        assert!(!is_consumer_contract(&metadata_package(&[], Value::Null)).unwrap());
+
+        // Unrelated package metadata leaves the default alone.
+        assert!(
+            is_consumer_contract(&metadata_package(
+                &["lib"],
+                serde_json::json!({ "binstall": { "pkg-fmt": "zip" } })
+            ))
+            .unwrap()
+        );
+    }
+
+    /// A malformed declaration fails rather than falling back to the default.
+    ///
+    /// Defaulting would let a typo silently decide whether the package is assessed at all.
+    #[test]
+    fn a_malformed_private_api_declaration_is_an_error() {
+        let package = MetadataPackage {
+            name: "demo".to_string(),
+            version: "0.1.0".to_string(),
+            id: "demo".to_string(),
+            manifest_path: "packages/demo/Cargo.toml".to_string(),
+            publish: None,
+            dependencies: Vec::new(),
+            targets: vec![MetadataTarget {
+                name: "demo".to_string(),
+                kind: vec!["lib".to_string()],
+            }],
+            metadata: serde_json::json!({ "release-plan": { "private-api": "true" } }),
+        };
+
+        let error = is_consumer_contract(&package).unwrap_err();
+
+        assert_eq!(
+            error
+                .find_source::<MalformedPrivateApiError>()
+                .unwrap()
+                .package(),
+            "demo"
+        );
+    }
+
     #[test]
     fn dependents_of_lists_packages_that_depend_on_the_name() {
         fn package(name: &str, dependencies: Vec<ReportedDep>) -> WorkPackage {
@@ -773,6 +1408,7 @@ mod tests {
                 manifest_path: PathBuf::from(format!("packages/{name}/Cargo.toml")),
                 dependencies,
                 has_lockfile_target: false,
+                consumer_contract: true,
                 resources: BTreeMap::new(),
             }
         }
@@ -783,6 +1419,8 @@ mod tests {
                 name: "foo".to_string(),
                 req: "0.1.0".to_string(),
                 exact_pin: false,
+                kind: DepKind::Normal,
+                public: false,
             }],
         );
         let foo = package("foo", Vec::new());

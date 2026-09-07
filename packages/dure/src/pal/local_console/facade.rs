@@ -5,9 +5,11 @@ use std::fmt;
 use std::sync::Arc;
 
 use crate::pal::error::PalError;
+use crate::pal::ids::RelayLeaseId;
+use crate::pal::local_console::LocalConsole;
 #[cfg(test)]
 use crate::pal::local_console::MockLocalConsole;
-use crate::pal::local_console::{BuildTargetConsole, ConsoleInput, LocalConsole};
+use crate::pal::local_console::windows::BuildTargetConsole;
 use crate::pal::pseudoconsole::WindowSize;
 
 /// Dispatches console operations to the real PAL or a test mock.
@@ -66,27 +68,19 @@ impl LocalConsole for LocalConsoleFacade {
         }
     }
 
-    fn disable_ctrl_c_handler(&self) -> Result<(), PalError> {
+    fn begin_raw_relay(&self) -> Result<RelayLeaseId, PalError> {
         match self {
-            Self::Target(inner) => inner.disable_ctrl_c_handler(),
+            Self::Target(inner) => inner.begin_raw_relay(),
             #[cfg(test)]
-            Self::Mock(inner) => inner.disable_ctrl_c_handler(),
+            Self::Mock(inner) => inner.begin_raw_relay(),
         }
     }
 
-    fn enter_raw_relay(&self) -> Result<(), PalError> {
+    fn end_raw_relay(&self, lease: RelayLeaseId) -> Result<(), PalError> {
         match self {
-            Self::Target(inner) => inner.enter_raw_relay(),
+            Self::Target(inner) => inner.end_raw_relay(lease),
             #[cfg(test)]
-            Self::Mock(inner) => inner.enter_raw_relay(),
-        }
-    }
-
-    fn leave_raw_relay(&self) -> Result<(), PalError> {
-        match self {
-            Self::Target(inner) => inner.leave_raw_relay(),
-            #[cfg(test)]
-            Self::Mock(inner) => inner.leave_raw_relay(),
+            Self::Mock(inner) => inner.end_raw_relay(lease),
         }
     }
 
@@ -98,11 +92,19 @@ impl LocalConsole for LocalConsoleFacade {
         }
     }
 
-    fn read_input(&self) -> Result<ConsoleInput, PalError> {
+    fn read_input(&self) -> Result<Vec<u8>, PalError> {
         match self {
             Self::Target(inner) => inner.read_input(),
             #[cfg(test)]
             Self::Mock(inner) => inner.read_input(),
+        }
+    }
+
+    fn cancel_input(&self) -> Result<(), PalError> {
+        match self {
+            Self::Target(inner) => inner.cancel_input(),
+            #[cfg(test)]
+            Self::Mock(inner) => inner.cancel_input(),
         }
     }
 

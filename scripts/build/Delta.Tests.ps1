@@ -1,11 +1,12 @@
 #Requires -Modules @{ ModuleName = 'Pester'; ModuleVersion = '5.0' }
 
-# Pester suite for Delta.psm1. The two pure functions carry the parsing/shaping logic both the
-# `just delta*` recipes and the CI `delta` job depend on, so they are exercised directly here:
-# Read-DeltaAffectedPackage against realistic `cargo delta run` JSON (including the "nothing
-# affected" and malformed-but-tolerated shapes that must not throw under strict mode), and
-# Get-DeltaOutput against the three CI step outputs it produces. Invoke-CargoDelta drives real
-# cargo/git, so it is covered by the recipes running in CI rather than unit-tested here.
+# Pester suite for Delta.psm1. The parsing, shaping, and workflow-output logic used by the
+# `just delta*` recipes and the CI `delta` job is exercised directly here: Read-DeltaAffectedPackage
+# against realistic `cargo delta run` JSON (including the "nothing affected" and
+# malformed-but-tolerated shapes that must not throw under strict mode), Get-DeltaOutput against
+# the three CI step outputs it produces, and Get-DeltaWorkflowOutput against workflow branching.
+# Invoke-CargoDelta drives real cargo/git, so the full path is covered by the recipes running in CI
+# rather than unit-tested here.
 
 BeforeAll {
     Import-Module (Join-Path $PSScriptRoot 'Delta.psm1') -Force
@@ -60,6 +61,35 @@ Describe 'Invoke-CargoDelta empty-result composition (regression)' {
         $affected = @(Read-DeltaAffectedPackage -DeltaJson '{"Affected":[]}')
         $existing = Select-ExistingPackage -Affected $affected -WorkspacePackage @('here')
         (Get-DeltaOutput -Affected @($existing)).SkipAll | Should -Be 'true'
+    }
+}
+
+Describe 'Invoke-CargoDelta baseline revision validation' {
+    It 'names an unresolvable baseline revision before the pipeline runs' {
+        # The baseline revision can arrive from a workflow event payload, so it is rejected before
+        # any analysis runs rather than surfacing as a git worktree error minutes later.
+        $configPath = (Resolve-Path (Join-Path $PSScriptRoot '..\..\delta.toml')).Path
+        $revision = 'no-such-revision-for-delta-tests'
+        Mock git -ModuleName Delta {
+            if ($args.Count -eq 4 -and
+                $args[0] -eq 'rev-parse' -and
+                $args[1] -eq '--verify' -and
+                $args[2] -eq '--quiet' -and
+                $args[3] -eq "$revision^{commit}") {
+                return $null
+            }
+            throw "Unexpected git call while validating a baseline revision: $($args -join ' ')"
+        }
+
+        { Invoke-CargoDelta -ConfigPath $configPath -BaselineRevision $revision -SkipFetch } |
+            Should -Throw "*baseline revision '$revision' does not resolve to a commit*"
+        Should -Invoke git -ModuleName Delta -Times 1 -Exactly -ParameterFilter {
+            $args.Count -eq 4 -and
+            $args[0] -eq 'rev-parse' -and
+            $args[1] -eq '--verify' -and
+            $args[2] -eq '--quiet' -and
+            $args[3] -eq "$revision^{commit}"
+        }
     }
 }
 
@@ -136,5 +166,58 @@ Describe 'Get-DeltaOutput' {
         $json = (Get-DeltaOutput -Affected $affected).PackagesJson
         $roundTripped = @($json | ConvertFrom-Json)
         ($roundTripped -join ',') | Should -Be ($affected -join ',')
+    }
+}
+
+Describe 'Get-DeltaWorkflowOutput' {
+    It 'returns full-workspace outputs for push without running cargo-delta' {
+        $result = @(
+            Get-DeltaWorkflowOutput `
+                -EventName 'push' `
+                -BaselineRevision 'ignored-for-push' `
+                -Analyze { throw 'cargo-delta should not run for push validation.' }
+        )
+
+        $result | Should -Be @('packages=', 'packages_json=[]', 'skip_all=false')
+    }
+
+    It 'uses the default baseline revision for pull_request when the baseline is empty' {
+        $script:deltaArgs = $null
+        $result = @(
+            Get-DeltaWorkflowOutput `
+                -EventName 'pull_request' `
+                -BaselineRevision '   ' `
+                -Analyze {
+                    param([hashtable] $Argument)
+                    $script:deltaArgs = $Argument
+                    @()
+                }
+        )
+
+        $result | Should -Be @('packages=', 'packages_json=[]', 'skip_all=true')
+        $script:deltaArgs['SkipFetch'] | Should -BeTrue
+        $script:deltaArgs.ContainsKey('BaselineRevision') | Should -BeFalse
+    }
+
+    It 'passes an explicit merge_group baseline revision through to cargo-delta' {
+        $script:deltaArgs = $null
+        $result = @(
+            Get-DeltaWorkflowOutput `
+                -EventName 'merge_group' `
+                -BaselineRevision 'abc123' `
+                -Analyze {
+                    param([hashtable] $Argument)
+                    $script:deltaArgs = $Argument
+                    @('events_once')
+                }
+        )
+
+        $result | Should -Be @(
+            'packages=events_once'
+            'packages_json=["events_once"]'
+            'skip_all=false'
+        )
+        $script:deltaArgs['SkipFetch'] | Should -BeTrue
+        $script:deltaArgs['BaselineRevision'] | Should -Be 'abc123'
     }
 }

@@ -2,10 +2,11 @@
 name = "alloc_tracker"
 description = "Memory allocation tracking utilities for benchmarks and performance analysis"
 publish = true
-version = "0.7.2"
+version = "0.7.4"
 
 authors.workspace = true
 edition.workspace = true
+include.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
@@ -31,6 +32,11 @@ criterion = { workspace = true }
 mutants = { workspace = true }
 static_assertions = { workspace = true }
 tempfile = { workspace = true }
+testing = { path = "../testing" }
+
+# Gungraun drives Valgrind-based Callgrind benchmarks; Linux-only.
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+gungraun = { workspace = true, features = ["default"] }
 
 [[bench]]
 name = "alloc_tracker_example"
@@ -42,6 +48,10 @@ harness = false
 
 [[bench]]
 name = "alloc_tracker_tracking_overhead"
+harness = false
+
+[[bench]]
+name = "alloc_tracker_tracking_overhead_cg"
 harness = false
 
 [lints]

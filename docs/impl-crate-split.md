@@ -92,30 +92,24 @@ together on every release. Two mechanisms enforce this:
    The `=` constraint propagates through workspace inheritance, so downstream
    consumers of `foo` are locked to exactly the matching `foo_impl` version.
 
-2. **`release-plz.toml` puts both packages in the same `version_group`**, which
-   makes release-plz bump them in lockstep on every release cycle:
+2. **`[workspace.metadata.release-plan.groups]` puts both packages in the same
+   group**, which makes `cargo-release-plan` expand an increment across them:
 
    ```toml
-   # release-plz.toml
-   [[package]]
-   name = "foo"
-   version_group = "foo"
-
-   [[package]]
-   name = "foo_impl"
-   version_group = "foo"
+   # Cargo.toml (workspace)
+   [workspace.metadata.release-plan.groups]
+   foo = ["foo", "foo_impl"]
    ```
 
-   `version_group` is a release-plz feature, not a Cargo feature. It acts at
-   release time. The `=` pin in `[workspace.dependencies]` is the Cargo-level
-   complement: even if a future change to `release-plz.toml` dropped the group,
-   the published `foo` would still refuse to install with a different
-   `foo_impl` version.
+   The `=` pin in `[workspace.dependencies]` is the Cargo-level complement:
+   even if a future change dropped the group, the published `foo` would still
+   refuse to install with a different `foo_impl` version. See
+   [release-versioning.md](release-versioning.md).
 
-When a release happens, release-plz updates the `=X.Y.Z` constraint
-automatically — there is no manual maintenance step. The pair is initialized at
-the same version on the day of the split (typically the current version of
-`foo`), and they bump together from there.
+When a pull request increments the pair, the `increment-versions` skill rewrites
+the `=X.Y.Z` constraint with the new version. The pair is initialized at the
+same version on the day of the split (typically the current version of `foo`),
+and they bump together from there.
 
 ## When to apply this pattern
 
@@ -175,9 +169,9 @@ opt into those markings — to discourage external dependents on crates.io — a
   without a public feature gate, since the package is not a surface anyone is
   expected to depend on directly.
 - Lockstep versioning, **if** the `-core` package is published and the shell
-  pins it: the `version_group` in `release-plz.toml` plus the `=X.Y.Z` pin in
-  `[workspace.dependencies]` keep the pair from ever drifting apart, exactly as
-  for a `foo`/`foo_impl` pair (see "Versioning" above).
+  pins it: the group in `[workspace.metadata.release-plan.groups]` plus the
+  `=X.Y.Z` pin in `[workspace.dependencies]` keep the pair from ever drifting
+  apart, exactly as for a `foo`/`foo_impl` pair (see "Versioning" above).
 
 See the `cbh_*` crates under "Canonical examples" for a worked instance.
 
@@ -385,21 +379,17 @@ unreachable from `foo` and stay in the impl crate's internal scope.
 
    Forward any functional features of `foo` to `foo_impl` 1:1 in `[features]`.
 
-6. Add `version_group` entries for both packages to `release-plz.toml`:
+6. Add both packages to `[workspace.metadata.release-plan.groups]` in the root
+   `Cargo.toml`:
 
    ```toml
-   [[package]]
-   name = "foo"
-   version_group = "foo"
-
-   [[package]]
-   name = "foo_impl"
-   version_group = "foo"
+   [workspace.metadata.release-plan.groups]
+   foo = ["foo", "foo_impl"]
    ```
 
-   This makes release-plz bump both packages to the same version on every
-   release cycle, and update the `=X.Y.Z` pin in `[workspace.dependencies]`
-   automatically so it always points at the just-released `foo_impl`.
+   This makes `cargo-release-plan` expand an increment across both packages, and
+   the `increment-versions` skill rewrites the `=X.Y.Z` pin in
+   `[workspace.dependencies]` so it always points at the matching `foo_impl`.
 
 7. Inside `foo_impl/src/lib.rs`:
    - Put `#![cfg_attr(docsrs, doc(hidden))]` at the top.
@@ -480,7 +470,8 @@ The original worked example. Concrete files to study:
   `#[cfg(any(test, feature = "private-test-util"))] #[doc(hidden)] pub fn fake(...)`
   constructors on `Report`, `EventMetrics`, and `Histogram`.
 - `packages/nm_impl/README.md` — "do not depend on this directly" notice.
-- `release-plz.toml` — `version_group = "nm"` entries for `nm` and `nm_impl`.
+- `Cargo.toml` (workspace) — `nm = ["nm", "nm_impl"]` in
+  `[workspace.metadata.release-plan.groups]`.
 
 ### `nm_otel` / `nm_otel_impl`
 
@@ -502,8 +493,8 @@ The second worked example. Concrete files to study:
   the public-API subset for the shell crate plus feature-gated `EventState` for
   the alloc-tracking integration test.
 - `packages/nm_otel_impl/README.md` — "do not depend on this directly" notice.
-- `release-plz.toml` — `version_group = "nm_otel"` entries for `nm_otel` and
-  `nm_otel_impl`.
+- `Cargo.toml` (workspace) — `nm_otel = ["nm_otel", "nm_otel_impl"]` in
+  `[workspace.metadata.release-plan.groups]`.
 
 ### `many_cpus` / `many_cpus_impl`
 
@@ -544,8 +535,8 @@ Concrete files to study:
   docs.rs).
 - `packages/many_cpus_impl/README.md` — "do not depend on this directly"
   notice.
-- `release-plz.toml` — `version_group = "many_cpus"` entries for `many_cpus`
-  and `many_cpus_impl`.
+- `Cargo.toml` (workspace) — `many_cpus = ["many_cpus", "many_cpus_impl"]` in
+  `[workspace.metadata.release-plan.groups]`.
 
 ### `cbh_*` (private-use impl crates, no shell)
 
@@ -580,7 +571,8 @@ deferring their documentation. Concrete files to study:
   `[dev-dependencies]` entries with `features = ["private-test-util"]` (on
   `cbh_git`, `cbh_storage`, `cbh_diag`) activate it for the shell's own
   tests.
-- `Cargo.toml` (workspace) + `release-plz.toml` — the lockstep machinery applies
-  to every crate in the family: each `cbh_*` package is pinned `=0.0.3` in
-  `[workspace.dependencies]` and shares `version_group = "cargo-bench-history"`
-  with the CLI, so the published set can never drift to mismatched versions.
+- `Cargo.toml` (workspace) — the lockstep machinery applies to every crate in
+  the family: each `cbh_*` package is pinned with an exact `=` version in
+  `[workspace.dependencies]` and shares the `cargo-bench-history` group in
+  `[workspace.metadata.release-plan.groups]` with the CLI, so the published set
+  can never drift to mismatched versions.

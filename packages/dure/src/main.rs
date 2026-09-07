@@ -6,6 +6,8 @@
 #[cfg(windows)]
 use std::env;
 #[cfg(windows)]
+use std::io::{self, Write};
+#[cfg(windows)]
 use std::process::{self, ExitCode};
 
 #[cfg(windows)]
@@ -21,7 +23,7 @@ use dure::{Cli, Outcome, run};
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 /// `dure` drives Windows consoles and has no meaning elsewhere
-/// (implementation.md, "Platform gate"), so the binary refuses to run rather
+/// (docs/implementation.md, "Platform gate"), so the binary refuses to run rather
 /// than reporting a success it did not deliver.
 // Mutation testing runs on Windows, where this stub is not compiled and no test
 // can observe a mutation of it.
@@ -41,7 +43,10 @@ fn main() -> ExitCode {
     else {
         // The app is launched with the argv given here, so mangling it into
         // something the shell did not ask for is worse than refusing.
-        eprintln!("Error: every argument must be valid Unicode.");
+        write_line(
+            &mut io::stderr(),
+            "Error: every argument must be valid Unicode.",
+        );
         return ExitCode::FAILURE;
     };
     let str_args: Vec<&str> = env_args.iter().map(String::as_str).collect();
@@ -52,18 +57,26 @@ fn main() -> ExitCode {
         Err(early_exit) => {
             return match early_exit.status {
                 Ok(()) => {
-                    println!("{}", early_exit.output);
+                    write_line(&mut io::stdout(), &early_exit.output);
                     ExitCode::SUCCESS
                 }
                 Err(()) => {
-                    eprintln!("{}", early_exit.output);
+                    write_line(&mut io::stderr(), &early_exit.output);
                     ExitCode::FAILURE
                 }
             };
         }
     };
 
-    match run(&cli.into_input()) {
+    let invocation = match cli.into_invocation() {
+        Ok(invocation) => invocation,
+        Err(early_exit) => {
+            write_line(&mut io::stderr(), &early_exit.output);
+            return ExitCode::FAILURE;
+        }
+    };
+
+    match run(&invocation) {
         Ok(Outcome::Success) => ExitCode::SUCCESS,
         Ok(Outcome::AppExit(status)) => {
             if status == 0 {
@@ -77,8 +90,19 @@ fn main() -> ExitCode {
             }
         }
         Err(error) => {
-            eprintln!("Error: {error}");
+            write_line(&mut io::stderr(), &format!("Error: {error}"));
             ExitCode::FAILURE
         }
     }
+}
+
+/// Writes one line, giving up quietly if the stream will not take it.
+///
+/// The exit status is what a caller acts on, and a consumer that closed the
+/// pipe has already stopped reading, so a failed write is not worth unwinding
+/// the way the `print!` family would.
+#[cfg(windows)]
+fn write_line(stream: &mut impl Write, message: &str) {
+    _ = writeln!(stream, "{message}");
+    _ = stream.flush();
 }

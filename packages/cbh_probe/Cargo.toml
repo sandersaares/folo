@@ -4,10 +4,11 @@
 name = "cbh_probe"
 description = "Implementation crate for cargo-bench-history - do not reference directly"
 publish = true
-version = "0.2.3"
+version = "0.2.5"
 
 authors.workspace = true
 edition.workspace = true
+include.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
@@ -17,6 +18,11 @@ rust-version.workspace = true
 # Ref: docs/external-types.md.
 [package.metadata.cargo_check_external_types]
 allowed_external_types = ["cbh_model::context::GitInfo"]
+
+[package.metadata.release-plan]
+# Implementation partition of `cargo-bench-history`; consumers reach this surface
+# through that package, which is where its compatibility is assessed.
+private-api = true
 
 [lib]
 # This is an implementation crate whose surface is documented on `cargo-bench-history`.

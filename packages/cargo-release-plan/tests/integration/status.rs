@@ -18,6 +18,10 @@ fn increment_early_in_a_branch_with_later_changes_is_pending_release() {
     let fixture = seeded_package();
     let base = fixture.sha("HEAD");
     write_package(&fixture, "demo", "0.1.1", "");
+    fixture.write(
+        "packages/demo/src/released_during_bump.rs",
+        "pub fn released_during_bump() {}\n",
+    );
     fixture.commit("bump version");
     fixture.write("packages/demo/src/lib.rs", "pub fn f() { let _ = 1; }\n");
     fixture.commit("later content");
@@ -26,6 +30,12 @@ fn increment_early_in_a_branch_with_later_changes_is_pending_release() {
     assert!(passed, "{message}");
     let report = report_json(&fixture, &base);
     assert!(report.contains("\"status\": \"pending-release\""));
+    // Judging whether the pending increment still covers the accumulated changes
+    // needs the same evidence as deciding one from scratch, so the patch is emitted.
+    assert!(report.contains("\"diff_path\": \"diffs/demo.patch\""));
+    let patch = fs::read_to_string(fixture.path().join("out/diffs/demo.patch")).unwrap();
+    assert!(patch.contains("pub fn released_during_bump() {}"));
+    assert!(patch.contains("pub fn f() { let _ = 1; }"));
 }
 
 #[cfg_attr(miri, ignore)] // Spawns git and cargo, which Miri cannot emulate.

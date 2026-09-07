@@ -3,10 +3,11 @@
 name = "cargo-bench-history"
 description = "A Cargo tool that maintains a long-lived history of benchmark results and analyzes it for trends"
 publish = true
-version = "0.2.3"
+version = "0.2.5"
 
 authors.workspace = true
 edition.workspace = true
+include.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true

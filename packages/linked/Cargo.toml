@@ -2,13 +2,17 @@
 name = "linked"
 description = "Create families of linked objects that can collaborate across threads while being internally single-threaded"
 publish = true
-version = "1.0.20"
+version = "1.0.21"
 
 authors.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
+
+# The diagrams are embedded into the rendered documentation at compile time.
+# Ref: docs/packaging.md.
+include = ["src/**/*", "doc/**/*"]
 
 [package.metadata.docs.rs]
 all-features = true

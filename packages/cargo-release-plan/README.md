@@ -19,6 +19,8 @@ elsewhere), or `cargo install cargo-release-plan` to always build from source. T
 ```text
 cargo release-plan report --out-dir <dir> [--base <rev>] [--manifest-path <path>] [--verbose]
 cargo release-plan check [--base <rev>] [--manifest-path <path>] [--format text|github] [--verify-packaging] [--verbose]
+cargo release-plan expand --plan <plan.json> --out <expanded.json>
+    [--manifest-path <path>] [--verbose]
 cargo release-plan apply --plan <plan.json> [--dry-run] [--manifest-path <path>] [--verbose]
 ```
 
@@ -30,22 +32,28 @@ remote advertises, falling back to `origin/main`. `--manifest-path` defaults to
 
 ### `report`
 
-Writes `<dir>/report.json` plus a `<dir>/diffs/<package>.patch` for each package
-that needs an increment on account of a file difference. The JSON names each
-package's status, anchor, changed paths, inherited workspace fields,
-intra-workspace dependencies, and version groups, and is the complete verdict.
+Writes `<dir>/report.json` plus a `<dir>/diffs/<package>.patch` for every package
+whose released files differ from its anchor, whether or not its version has
+already moved. The JSON names each package's status, anchor, changed paths,
+inherited workspace fields, intra-workspace dependencies, and version groups,
+and is the complete verdict.
 
 Each `.patch` is a zero-context unified diff in the shape `diff -U0` produces,
-so it can be piped into standard tooling. Inherited workspace value changes are
-not diffs and appear only as `changed` entries with `source: "inherited"`, so a
-package that fails on an inherited value alone has no patch. Enumerate `status`
+so it can be piped into standard tooling. Only `source: "package"` changes are
+file differences: inherited workspace values and locked dependency identities
+are not, so a package whose `changed` entries are all `inherited` or `lockfile`
+has no patch. Enumerate `status`
 in `report.json` rather than the `diffs/` directory to find every package that
 needs an increment.
 
 ### `check`
 
-Exits non-zero when any publishable package needs an increment or any version
-group declares inconsistent versions. Failure text describes the
+Exits non-zero when any publishable package needs an increment, any version
+group declares inconsistent versions, any intra-workspace requirement does not
+name the version its target declares, any version-group member does not pin its
+siblings with an exact `=` requirement, or any package that exposes a public
+dependency stays compatible while that dependency releases a breaking change.
+Failure text describes the
 self-contained recovery workflow: run `report`, prepare a plan, and run `apply`.
 It additionally reserves the `increment-versions` agent-skill name for the
 automated workflow supplied by the release-versioning stack's separate skill
@@ -60,6 +68,25 @@ appear only in Cargo's list. It also resolves the dependency graph and performs
 Cargo's package-preparation work, so gating on it would give up the normal
 offline, no-resolve path. A divergence on a clean tree is evidence that the
 rules need fixing.
+
+### `expand`
+
+Resolves a plan's version groups and increment levels into one explicit entry
+per package, written to `--out`.
+
+An input plan may omit version-group members that `apply` will update. `expand`
+writes the explicit package/version set for review, naming every package whose
+version the plan sets, including group members the input plan did not mention,
+at the version each will carry. Applying it also rewrites requirements inside
+those packages' dependents, which take no version from the plan and so are not
+named.
+
+The output is itself a plan, so the expanded document is the one passed to
+`apply` after review. Every entry carries an explicit `version`.
+
+Re-expand after changing the input plan. Editing an expanded plan by hand risks
+giving one group's members different versions, which both `expand` and `apply`
+reject.
 
 ### `apply`
 
@@ -89,7 +116,7 @@ The plan schema is:
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "increments": [
     { "name": "nm", "level": "patch" },
     { "name": "events", "version": "0.7.14" }
@@ -104,15 +131,37 @@ Each increment must supply exactly one of `level` or `version`. Entries that
 expand to the same target must use the same choice: levels combine by taking the
 highest, while explicit versions must match.
 
+An optional top-level `expanded` records which planning stage a document belongs to. A **proposed
+plan** leaves it absent: its entries may name a version group and let resolution reach the
+members, and may carry an increment level resolved when the plan is applied, so what it names is
+a starting point rather than the full set it moves. An **expanded plan**, written by `expand`,
+sets it, names every package whose version the plan sets, and gives each an explicit `version`.
+Both are
+required of it: an entry left at a level would be resolved against the manifests as they stand
+when it is applied, so the same document could apply a version other than the reviewed one.
+Resolving an expanded plan must reproduce exactly the set it names; reaching any other package
+means the workspace's version groups changed after the document was written, and is rejected
+rather than applied. Requirement rewrites inside those packages' dependents are not part of that
+set, because the plan gives a dependent no version of its own.
+
 ### Plan and report schema
 
 `report.json` uses the same schema revision. Top-level fields are
 `schema_version`, `head`, `packages`, and `groups`. Each package object includes
 `name`, `declared_version`, `status` (`pending-release` / `needs-increment` /
-`unchanged`), `changed`, `stat`, `dependencies`, and `dependents`, plus omitted
+`unchanged`), `changed`, `stat`, `dependencies`, `dependents`, and
+`consumer_contract`, plus omitted
 when empty: `group`, `anchor`, `diff_path`, `untracked`. A change is one of
 `{"path","change","source":"package"}`, `{"field","source":"inherited"}`, or
 `{"dependency","change","source":"lockfile"}`.
+A dependency is `{"name","req","exact_pin","public"}`. `public` marks a
+dependency that supplies types the dependent's own public API exposes, derived
+from the dependent's `allowed_external_types` allow-list and followed
+transitively through re-exports, so a package exposing an implementation crate
+marks the public crate it actually depends on. Only normal dependencies qualify.
+`consumer_contract` is true when the package has a library target and has not
+declared `[package.metadata.release-plan] private-api = true`, which is how a
+package states that its library serves another package rather than consumers.
 `diff_path` is relative to the report directory. Plan and report formats
 advance this revision together: an incompatible field, enum, or path-layout
 change increments it.

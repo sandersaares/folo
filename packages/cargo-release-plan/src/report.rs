@@ -41,6 +41,11 @@ struct ReportPackage {
     diff_path: Option<String>,
     dependencies: Vec<ReportedDep>,
     dependents: Vec<String>,
+    /// Whether the package's library is what consumers are meant to use.
+    ///
+    /// False for a package with no library target, and for one declaring
+    /// `[package.metadata.release-plan] private-api = true`.
+    consumer_contract: bool,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     untracked: Vec<String>,
 }
@@ -150,7 +155,7 @@ pub(crate) fn write_report(
 }
 
 fn diff_file_name(package: &PackageClass) -> Option<String> {
-    // Patches are emitted only for `needs-increment`; classify clears others.
+    // Patches accompany a file difference; inherited-only and unchanged packages have none.
     if package.patch().is_empty() {
         return None;
     }
@@ -188,6 +193,7 @@ fn report_package(package: &PackageClass, diff_path: Option<String>) -> ReportPa
         diff_path,
         dependencies: package.dependencies.clone(),
         dependents: package.dependents.clone(),
+        consumer_contract: package.consumer_contract,
         untracked: package.untracked.clone(),
     }
 }

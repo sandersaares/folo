@@ -34,4 +34,31 @@ high-level design in `design.md` and per-job mechanics in inline YAML comments.
 - A job whose inputs are not Cargo packages (the workflow files, or anything under
   `scripts/`) must run unconditionally - do not gate it on the `delta` job or `skip_all`, or
   a change touching only those files would be validated by nothing. Package-scoped jobs gate
-  on `delta`.
+  on `delta`. `validate-versions` is in this class: it generates release state for every publishable
+  package's released content against its version anchor, so delta's changed-package set
+  cannot skip a package that already needed an increment.
+- Azure OIDC jobs (`test-azure`, `test-azure-gh`) must not run on `merge_group`. The test
+  identity's federated subjects are `pull_request` and the `main` branch ref only.
+- A workflow edit must consume the consumer-contract package set from the release-plan report
+  rather than restating it in YAML. A package states this in its own manifest by declaring
+  a private API, described in
+  [the release validation guide](implementation.md#release-validation).
+
+## Required-checks fan-in
+
+- When adding a merge-blocking job to `validation.yml`, add it to the `required-checks`
+  job's `needs:` list. Never add it to the GitHub ruleset. Matrix jobs with a job-level
+  `if:` that can be false can only be required through this fan-in. Advisory jobs
+  (`coverage-notify`) and `alert` stay off that list. If the new job has no skip
+  condition, also add its id to `MUST_SUCCEED_JOBS` in that job so a skipped result cannot
+  green the fan-in.
+- Add the new job to the `alert` job's `needs:` list as well. That list covers everything worth
+  an issue after a failed push to `main`, including the advisory jobs the fan-in excludes, so the
+  two lists are maintained together rather than derived from each other. Never add
+  `required-checks` itself to `alert`: the fan-in reports a cancelled dependency as a failure, so
+  depending on it would file an issue about a cancelled run.
+- The job's GitHub check name is the literal `required-checks` (`name: required-checks`).
+  Do not rename it.
+- Merge-queue runs use the same pruned job set as pull requests. A `github.event_name ==
+  'push'` guard that means "full matrix" must stay keyed on `push`, not on
+  `!= 'pull_request'`, or a `merge_group` run would take the full matrix.
