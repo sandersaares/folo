@@ -5,10 +5,11 @@
 # derive that non-standard tag layout on its own, so each binary crate must spell the contract out
 # in its manifest; a binary crate that forgets it (or lets the block drift) would ship with no
 # installable binaries and only be noticed by a user reporting a broken `cargo binstall`. The
-# optional per-crate release-target restriction is checked here too, for the same reason: a triple
-# the workflow does not offer would quietly produce no archive at all. This check is run in CI (see
-# the `just validate-binstall` recipe) and covered by a Pester suite (BinstallValidation.Tests.ps1)
-# so it can be exercised locally against fixtures rather than only in CI.
+# optional per-crate release-target restriction and the one-binary-per-package archive shape are
+# checked here too, for the same reason: an unsupported target or ambiguous binary set would
+# quietly produce an incomplete release. This check is run in CI (see the `just
+# validate-binstall` recipe) and covered by a Pester suite (BinstallValidation.Tests.ps1) so it can
+# be exercised locally against fixtures rather than only in CI.
 
 Set-StrictMode -Version Latest
 
@@ -111,6 +112,24 @@ function Test-ReleaseTargetMetadata {
     $problems.ToArray()
 }
 
+function Test-BinaryTargetMetadata {
+    # Validates the archive shape expected by release automation. One package release maps to one
+    # prebuilt binary path; accepting several Cargo binary targets would make the workflow choose
+    # one implicitly and silently omit the others.
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseSingularNouns', '',
+        Justification = '"Metadata" is a mass noun (the cargo term), not a plural of "metadatum".')]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][object] $Package
+    )
+
+    $binaryTargets = @(Get-BinaryTarget -Package $Package)
+    if ($binaryTargets.Count -eq 1) {
+        return @()
+    }
+    , @("declares $($binaryTargets.Count) binary targets; exactly one is required")
+}
+
 function Invoke-BinstallValidation {
     # Validates the release metadata of every publishable binary crate in the workspace, printing
     # a line per crate. Throws (so the `just validate-binstall` recipe exits non-zero and CI fails)
@@ -125,7 +144,10 @@ function Invoke-BinstallValidation {
     $failures = [System.Collections.Generic.List[string]]::new()
 
     foreach ($pkg in $packages) {
-        $problems = @(Test-BinstallMetadata -Package $pkg) + @(Test-ReleaseTargetMetadata -Package $pkg)
+        $problems =
+            @(Test-BinstallMetadata -Package $pkg) +
+            @(Test-ReleaseTargetMetadata -Package $pkg) +
+            @(Test-BinaryTargetMetadata -Package $pkg)
         if ($problems.Count -eq 0) {
             Write-Host "  OK    $($pkg.name)"
         } else {
@@ -146,4 +168,5 @@ Export-ModuleMember -Function `
     Get-PublishableBinaryPackage, `
     Test-BinstallMetadata, `
     Test-ReleaseTargetMetadata, `
+    Test-BinaryTargetMetadata, `
     Invoke-BinstallValidation

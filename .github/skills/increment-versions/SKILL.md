@@ -30,11 +30,6 @@ stages mix commands run from the caller's own working directory with `just` reci
 resolve a relative path against the repository root, so one relative working directory would name
 two different places.
 
-**Temporary rule.** [`docs/git-workflow.md`](../../../docs/git-workflow.md) keeps version
-increments off feature branches. While it does, a run stops after Stage 5 and reports the
-approved change levels. Stages 6 and 7 apply once that rule permits increments inside a pull
-request.
-
 # Working files
 
 Every stage reads and writes files under `{{WORK_DIR}}`, one untracked directory chosen for the
@@ -65,14 +60,19 @@ Commit none of them.
 | `CHANGE_LEVEL` | A decided change level: `breaking`, `nonbreaking`, or `patch`. |
 | `NEW_VERSION` | A package's resolved version from `expanded.json`. |
 
-# Stage 1: Verify the SemVer checker
+# Stage 1: Run preflight checks
 
-Prove that `cargo-semver-checks` can execute before using its output as evidence:
+Prove that `cargo-semver-checks` can execute before using its output as evidence, then check for
+publishable crates that still need their one-time manual first publication:
 
 > just verify-semver-checks
+>
+> just check-never-published
 
-Stop and report if the command exits non-zero. A checker that cannot execute must not be
-interpreted as an absence of a required increment.
+Stop and report if either command exits non-zero. A checker that cannot execute must not be
+interpreted as an absence of a required increment. `check-never-published` is an advisory scan of
+the whole workspace: report its warnings, then continue. Stage 6 performs the exact fail-closed
+check over the packages the approved plan will edit.
 
 # Stage 2: Collect evidence
 
@@ -296,8 +296,6 @@ floors in Stage 4: report the conflict rather than recording a level below one. 
 adjustment, edit `decisions.json` and repeat this stage from `create-release-plan`. Never edit
 `plan.json` or `expanded.json` directly; a hand-edited expansion can give one group's members
 different versions, which the tool rejects. Do not continue until the caller approves.
-
-Stop here and report the approved change levels while the temporary rule in Scope applies.
 
 # Stage 6: Apply approved changes
 

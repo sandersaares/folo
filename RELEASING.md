@@ -24,11 +24,14 @@ so a brand-new crate's first version must be published manually:
 1. `cargo publish -p <crate>` (with a crates.io token login).
 1. Configure Trusted Publishing for the crate on crates.io (owner `folo-rs`, repo
    `folo`, workflow `release.yml`).
-1. Subsequent releases then go through `release.yml` automatically.
+1. Re-run `release.yml`. For a binary crate, the workflow creates the missing tag
+   and GitHub release at the package's version anchor before uploading its prebuilt binaries.
+   Subsequent releases then go through `release.yml` automatically.
 
-The `increment-versions` skill's preflight (`just check-never-published`) stops if a
-crate in the increment set has never been published, so first-publish is not folded
-into `apply`.
+The `increment-versions` skill runs `just check-never-published` as an early,
+workspace-wide advisory. Before applying an approved plan,
+`just check-increment-published` fails unless every package the plan reaches has
+already completed this first-publication procedure.
 
 ## Emergency manual publish
 

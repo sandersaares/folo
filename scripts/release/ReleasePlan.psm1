@@ -148,6 +148,41 @@ function Get-PackageByName {
     return $byName
 }
 
+function Get-ReleasePlanPackageAnchor {
+    # Returns the version-anchor commit for each requested package in a release-plan report.
+    # Binary-release recovery uses this commit so a reconstructed tag identifies the source
+    # revision that introduced the published version rather than whichever main commit happens
+    # to trigger recovery later.
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string] $ReportPath,
+        [Parameter(Mandatory)][string[]] $Name
+    )
+
+    $report = Read-ReleasePlanReport -ReportPath $ReportPath
+    $byName = Get-PackageByName -Report $report
+    foreach ($packageName in $Name) {
+        $package = $byName[$packageName]
+        if ($null -eq $package) {
+            throw "release-plan report at '$ReportPath' does not contain package '$packageName'."
+        }
+        $packageField = @($package.PSObject.Properties.Name)
+        if ($packageField -notcontains 'anchor' -or
+            $null -eq $package.anchor -or
+            $package.anchor.PSObject.Properties.Name -notcontains 'commit' -or
+            [string]::IsNullOrWhiteSpace([string] $package.anchor.commit)) {
+            throw (
+                "release-plan report at '$ReportPath' package '$packageName' has no version " +
+                'anchor commit.'
+            )
+        }
+        [pscustomobject]@{
+            Name   = $packageName
+            Commit = [string] $package.anchor.commit
+        }
+    }
+}
+
 function Test-PackageIsConsumerContract {
     # Whether the named package presents a library API contract to consumers.
     #
@@ -1824,6 +1859,7 @@ Export-ModuleMember -Function `
     Invoke-VerifySemverCheck, `
     Invoke-ReleaseReport, `
     Invoke-SemverCheck, `
+    Get-ReleasePlanPackageAnchor, `
     Get-ReleasePlanAnalysisBatchJson, `
     Assert-IncrementPackagePublished, `
     New-ReleasePlanFile, `

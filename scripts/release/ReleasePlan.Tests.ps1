@@ -160,6 +160,29 @@ BeforeAll {
     }
 }
 
+Describe 'Get-ReleasePlanPackageAnchor' {
+    It 'returns the package version-anchor commit' {
+        $path = Join-Path $TestDrive 'anchor-report.json'
+        Write-TestReport -Path $path -Package @(
+            Get-TestPackage -Name 'demo' -AnchorVersion '1.0.0'
+        )
+
+        $anchor = Get-ReleasePlanPackageAnchor -ReportPath $path -Name 'demo'
+
+        $anchor.Name | Should -Be 'demo'
+        $anchor.Commit | Should -Be 'abc123'
+    }
+
+    It 'rejects a package without a version anchor' {
+        $path = Join-Path $TestDrive 'anchorless-report.json'
+        Write-TestReport -Path $path -Package @(
+            Get-TestPackage -Name 'demo'
+        )
+
+        { Get-ReleasePlanPackageAnchor -ReportPath $path -Name 'demo' } | Should -Throw
+    }
+}
+
 Describe 'Get-ReleasePlanCargoArgument' {
     It 'forwards --base when a release baseline is set' {
         $argument =
