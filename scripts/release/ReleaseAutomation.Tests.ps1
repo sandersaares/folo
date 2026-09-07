@@ -105,13 +105,13 @@ Describe 'Add-GitReleaseEnableFlag (pure line-based injection)' {
 
     It 'preserves other keys already in the block' {
         $result = Add-GitReleaseEnableFlag -Line $script:SourceLines -CrateName 'demo-tool'
-        $result | Should -Contain 'version_group = "demo"'
+        $result | Should -Contain 'changelog_update = false'
     }
 
     It 'matches the crate name exactly so a name-prefix sibling is untouched' {
         $result = Add-GitReleaseEnableFlag -Line $script:SourceLines -CrateName 'demo-tool'
         $coreIndex = [array]::IndexOf($result, 'name = "demo-tool-core"')
-        $result[$coreIndex + 1] | Should -Be 'version_group = "demo"'
+        $result[$coreIndex + 1] | Should -Be 'changelog_update = false'
     }
 
     It 'appends a new [[package]] block for a crate with no existing entry' {
@@ -133,14 +133,14 @@ Describe 'Add-GitReleaseEnableFlag (pure line-based injection)' {
             '[[package]]'
             'name = "demo-tool"'
             'git_release_enable = false'
-            'version_group = "demo"'
+            'changelog_update = false'
         )
         $result = Add-GitReleaseEnableFlag -Line $lines -CrateName 'demo-tool'
         $result | Should -Contain 'git_release_enable = true'
         $result | Should -Not -Contain 'git_release_enable = false'
         # Replaced in place, not duplicated, and the sibling key is preserved.
         @($result | Where-Object { $_ -match '^git_release_enable' }).Count | Should -Be 1
-        $result | Should -Contain 'version_group = "demo"'
+        $result | Should -Contain 'changelog_update = false'
     }
 
     It 'enables every requested crate in one pass' {

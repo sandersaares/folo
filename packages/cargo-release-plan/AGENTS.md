@@ -44,14 +44,14 @@ tests (packaging rules, group verdicts, plan expansion, inherited-value
 comparison, anchor resolution over a synthetic timeline) must keep running
 under Miri.
 
-## Version groups live in two declarations
+## Version groups live in the workspace manifest
 
 Group membership is `[workspace.metadata.release-plan.groups]` in the repo-root
-`Cargo.toml`. `release-plz.toml` `version_group` keys also participate in
-release automation. When adding or moving a grouped package, update both.
+`Cargo.toml`. `release-plz.toml` does not declare version groups. When adding a
+grouped crate, update that table. See `docs/release-versioning.md`.
 
 ## Release-process ownership
 
-`docs/git-workflow.md`, `RELEASING.md`, Validation workflows, and
-`just gh-release` own the remaining release workflow. Do not change them from
-this package.
+`docs/release-versioning.md`, `docs/git-workflow.md`, `RELEASING.md`, Validation
+workflows, and `just gh-release` own the surrounding release process. Do not
+change them from this package.

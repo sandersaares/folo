@@ -1,9 +1,9 @@
 name: Release
 
 # Automated crates.io publishing + cargo-binstall prebuilt binaries, driven from
-# every push to `main`. Version bumping is the only manual step (`just prepare-release`
-# then push); everything here is automatic. See docs/release-automation.md for the
-# full design.
+# every push to `main`. Version increments land in the pull request that causes
+# them; merge publishes. See docs/release-versioning.md and
+# docs/release-automation.md.
 #
 # Publishing and the binary jobs live in ONE workflow run on purpose: a tag/release
 # created with the default GITHUB_TOKEN does not trigger downstream `on: release` /

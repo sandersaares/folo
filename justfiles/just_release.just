@@ -1,30 +1,19 @@
 [group('release')]
 audit:
     cargo audit
-    
-[group('release')]
-[script]
-prepare-release: verify-semver-checks && check-never-published
-    Set-StrictMode -Version Latest
-    $ErrorActionPreference = "Stop"
-    $PSNativeCommandUseErrorActionPreference = $true
 
-    Import-Module "{{ justfile_directory() }}/scripts/release/ReleasePlan.psm1" -Force
-    Write-Verbose "Bumping versions and changelogs via 'release-plz update'" -Verbose
-    Invoke-ReleasePlzUpdate
-
-# Preflight for `just prepare-release`: proves that `cargo semver-checks` can actually run on
-# this machine before `release-plz update` starts trusting it. release-plz runs
-# cargo-semver-checks to decide whether a bumped version needs to be a *major* bump, but when the
+# Canary for the `increment-versions` skill and the CI `semver-checks` job: proves that
+# `cargo semver-checks` can actually run on this machine before either trusts its output. When the
 # tool fails to *run* - most commonly because the installed cargo-semver-checks is too old for the
 # current toolchain's rustdoc JSON format (e.g. "unsupported rustdoc format v57 ... supported
-# formats are v53, v55, v56") - release-plz silently swallows the error and treats it as "no
-# breaking changes". That turns a broken tool into an undetected breaking release. This canary
-# runs cargo-semver-checks on one small, fast-to-build package, comparing it against its own `HEAD`
-# so the two sides are byte-identical and the *only* way the check can fail is the tool itself
-# failing to run. A non-zero exit therefore means "cargo-semver-checks is broken", not "a real
-# breaking change was found", so we abort the release before anything is changed. Runnable on its
-# own to sanity-check a fresh toolchain/tool combination.
+# formats are v53, v55, v56") - a broken tool must never be read as "no breaking changes". This
+# canary runs cargo-semver-checks on one small, fast-to-build package against its own `HEAD` as
+# the baseline. `--baseline-rev` fixes only the baseline: the candidate is still built from the
+# work tree, so the two sides are identical exactly when the work tree has not touched that
+# package - which is the normal case, since it is not a package a release change would edit. A
+# non-zero exit therefore means "cargo-semver-checks is broken" unless the canary package itself
+# was edited, which the diagnostic calls out. Runnable on its own to sanity-check a fresh
+# toolchain/tool combination.
 [group('release')]
 [script]
 verify-semver-checks:
@@ -79,8 +68,9 @@ verify-lockfile:
 # perform a crate's first-ever publish (it can only be configured on a crate that already
 # exists), so a brand-new crate's first release must be done by hand (cargo publish), after
 # which Trusted Publishing is configured and subsequent releases flow through the workflow.
-# Run as a post-step of `prepare-release`, so the warning surfaces while a release is being
-# prepared instead of failing the CI publish job later. Best-effort, never a gate: a transient
+# Run as a preflight by the `increment-versions` skill, so the warning surfaces while the
+# increment is being prepared instead of failing the CI publish job later. Best-effort, never a
+# gate: a transient
 # crates.io failure degrades to a warning and continues. See docs/release-automation.md.
 [group('release')]
 [script]

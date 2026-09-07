@@ -1,7 +1,7 @@
 #requires -Version 7
 
 # Release-automation logic for the `Release` GitHub workflow (.github/workflows/release.yml)
-# and the local `just prepare-release` / `just check-never-published` recipes.
+# and the local `just check-never-published` recipe.
 #
 # The workflow steps and release recipes are thin `just` wrappers (in justfiles/just_automation.just
 # and justfiles/just_release.just) that import this module and call its functions, so the
@@ -392,11 +392,12 @@ function Get-CratePublishStatus {
 }
 
 function Test-NeverPublishedCrate {
-    # Preflight for `just prepare-release`: warns about publishable crates that crates.io has never
-    # seen. Trusted Publishing cannot perform a crate's first-ever publish (the crate must already
-    # exist so a trusted publisher can be configured on it), so a brand-new crate's first release
-    # must be done by hand. Best-effort and never a gate: a status that cannot be confirmed
-    # degrades to a warning and continues, so a transient failure never blocks preparing a release.
+    # Preflight for the `increment-versions` skill: warns about publishable crates that crates.io
+    # has never seen. Trusted Publishing cannot perform a crate's first-ever publish (the crate
+    # must already exist so a trusted publisher can be configured on it), so a brand-new crate's
+    # first release must be done by hand. Best-effort and never a gate: a status that cannot be
+    # confirmed degrades to a warning and continues. The skill treats a never-published crate in
+    # the increment set as a stop.
     [CmdletBinding()]
     param(
         [string] $ManifestPath

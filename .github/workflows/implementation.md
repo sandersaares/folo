@@ -43,8 +43,8 @@ analyzed incompletely several times in review — once per release state that re
 checked as an outcome, where an incomplete analysis fails whatever form it takes. A scenario
 passes either by refusing to generate a plan or by generating one that holds every property.
 
-On Windows, the module scopes `CARGO_TARGET_DIR` for direct `cargo-semver-checks` and
-`release-plz update` invocations to a stable, workspace-specific directory beneath the user
+On Windows, the module scopes `CARGO_TARGET_DIR` for direct `cargo-semver-checks`
+invocations to a stable, workspace-specific directory beneath the user
 temporary directory. This keeps the SemVer tool's nested placeholder builds independent of
 checkout depth without changing target-directory behavior for unrelated Cargo commands or
 non-Windows validation. The override can be reassessed when

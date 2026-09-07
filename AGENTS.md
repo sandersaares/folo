@@ -298,12 +298,20 @@ dev-dependencies for tests or benches that need internal surface.
 
 ### [docs/git-workflow.md](docs/git-workflow.md)
 
-Conventions for PRs and the release process from the contributor side: using
-`--body-file` with `gh pr create`, replying to and resolving review comment
-threads, and the no-version-bumps-on-feature-branches rule.
+Conventions for PRs: using `--body-file` with `gh pr create`, and replying to
+and resolving review comment threads.
 
-**Open this when**: creating a pull request; addressing review comments;
-tempted to edit a `Cargo.toml` version field on a feature branch.
+**Open this when**: creating a pull request; addressing review comments.
+
+### [docs/release-versioning.md](docs/release-versioning.md)
+
+How crate version numbers are decided and enforced: a pull request that changes
+released content increments the affected packages, `validate-versions` gates
+merge, and the `increment-versions` skill applies the plan. Merge publishes.
+
+**Open this when**: preparing a pull request that touches a published package;
+deciding a version increment; debugging `validate-versions`, `cargo-release-plan`,
+or the `increment-versions` skill.
 
 ### [docs/release-automation.md](docs/release-automation.md)
 

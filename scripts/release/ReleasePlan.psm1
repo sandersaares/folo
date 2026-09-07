@@ -359,8 +359,9 @@ function Invoke-VerifySemverCheck {
         [scriptblock] $Cargo = { param([string[]] $Argument) & cargo @Argument }
     )
 
-    # A tiny published crate keeps the canary cheap; its API is irrelevant because both sides use
-    # the same revision.
+    # A tiny published crate keeps the canary cheap. `--baseline-rev` fixes only the baseline, so
+    # the candidate still comes from the work tree; the two sides agree exactly when the work tree
+    # has not edited this package, which is why a package unrelated to release tooling is chosen.
     $package = 'folo_utils'
     Write-Verbose (
         "Verifying that cargo-semver-checks can run (canary package '$package', " +
@@ -383,33 +384,14 @@ function Invoke-VerifySemverCheck {
             'breaking changes.'
         ) -ForegroundColor Red
         Write-Host (
-            "Update the tool with 'cargo install cargo-semver-checks --locked' " +
+            "If this work tree has edited '$package', this may instead be a genuine finding " +
+            'against its own HEAD baseline; check that before concluding the tool is broken.'
+        ) -ForegroundColor Red
+        Write-Host (
+            "Otherwise update the tool with 'cargo install cargo-semver-checks --locked' " +
             "(or 'just install-tools'), then re-run the command."
         ) -ForegroundColor Red
         throw
-    }
-}
-
-function Invoke-ReleasePlzUpdate {
-    # release-plz invokes cargo-semver-checks internally, so it must share the same Windows path
-    # mitigation as direct checks.
-    [CmdletBinding()]
-    param(
-        [scriptblock] $ReleasePlz = {
-            param([string[]] $Argument)
-            & release-plz @Argument
-        },
-        [AllowNull()][string] $TargetDirectory
-    )
-
-    $argument = @('update')
-    $action = { & $ReleasePlz $argument }
-    if ($PSBoundParameters.ContainsKey('TargetDirectory')) {
-        Invoke-WithSemverCheckTargetDirectory `
-            -Action $action `
-            -TargetDirectory $TargetDirectory
-    } else {
-        Invoke-WithSemverCheckTargetDirectory -Action $action
     }
 }
 
@@ -1840,7 +1822,6 @@ function New-ReleasePlanFile {
 Export-ModuleMember -Function `
     Invoke-ValidateVersions, `
     Invoke-VerifySemverCheck, `
-    Invoke-ReleasePlzUpdate, `
     Invoke-ReleaseReport, `
     Invoke-SemverCheck, `
     Get-ReleasePlanAnalysisBatchJson, `
