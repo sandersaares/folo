@@ -817,8 +817,9 @@ fn config_error(message: impl Into<String>) -> StorageError {
 mod tests {
     use std::io;
 
-    use azure_core::http::Method;
     use azure_core::http::headers::Headers;
+    use azure_core::http::policies::{RetryHeaders, RetryPolicy};
+    use azure_core::http::{Method, RetryOptions};
     use futures::executor::block_on;
     use ohno::ErrorExt as _;
 
@@ -1062,8 +1063,10 @@ mod tests {
     /// The result exposed by a simulated conditional-create ownership probe.
     #[derive(Clone, Copy, Debug)]
     enum CollisionProbe {
-        /// The object was committed by the request whose response reports a collision.
+        /// The object was committed by this upload before its collision response.
         ThisUpload,
+        /// The first request committed but lost its response, so its retry collides.
+        RetriedThisUpload,
         /// The object was committed by another request.
         OtherUpload,
         /// The object predates request identities or was written by another tool.
@@ -1072,25 +1075,29 @@ mod tests {
         Failure,
     }
 
-    /// An HTTP client that models the final response of a retried conditional
-    /// create, followed by the ownership probe.
+    /// An HTTP client that models a conditional-create response sequence and its
+    /// ownership probe.
     ///
-    /// The upload always returns `BlobAlreadyExists`. A subsequent properties
-    /// request exposes the configured identity outcome or a probe failure, allowing
-    /// the real SDK pipeline to exercise every interpretation without a transport
-    /// retry delay.
+    /// Uploads normally return `BlobAlreadyExists`. The retry scenario first
+    /// returns a retryable transport error and then the collision. A subsequent
+    /// properties request exposes the configured identity outcome or a probe
+    /// failure.
     #[derive(Debug)]
     struct ConditionalCreateCollisionHttpClient {
         probe: CollisionProbe,
-        create_id: futures::lock::Mutex<Option<String>>,
+        create_ids: futures::lock::Mutex<Vec<String>>,
     }
 
     impl ConditionalCreateCollisionHttpClient {
         fn new(probe: CollisionProbe) -> Self {
             Self {
                 probe,
-                create_id: futures::lock::Mutex::new(None),
+                create_ids: futures::lock::Mutex::new(Vec::new()),
             }
+        }
+
+        async fn create_ids(&self) -> Vec<String> {
+            self.create_ids.lock().await.clone()
         }
     }
 
@@ -1110,7 +1117,24 @@ mod tests {
                             name.as_str().eq_ignore_ascii_case(metadata_header.as_str())
                         })
                         .map(|(_, value)| value.as_str().to_owned());
-                    *self.create_id.lock().await = create_id;
+                    let Some(create_id) = create_id else {
+                        return Err(azure_core::Error::with_message(
+                            ErrorKind::Other,
+                            "the conditional create request carried no request identity",
+                        ));
+                    };
+                    let attempt_count = {
+                        let mut create_ids = self.create_ids.lock().await;
+                        create_ids.push(create_id);
+                        create_ids.len()
+                    };
+                    if matches!(self.probe, CollisionProbe::RetriedThisUpload) && attempt_count == 1
+                    {
+                        return Err(azure_core::Error::with_message(
+                            ErrorKind::Io,
+                            "the first upload response was lost after commit",
+                        ));
+                    }
 
                     let mut headers = Headers::new();
                     headers.insert(
@@ -1126,13 +1150,30 @@ mod tests {
                 Method::Head => {
                     let create_id = match self.probe {
                         CollisionProbe::ThisUpload => {
-                            let Some(create_id) = self.create_id.lock().await.clone() else {
+                            let Some(create_id) = self.create_ids.lock().await.last().cloned()
+                            else {
                                 return Err(azure_core::Error::with_message(
                                     ErrorKind::Other,
                                     "the conditional create request carried no request identity",
                                 ));
                             };
                             Some(create_id)
+                        }
+                        CollisionProbe::RetriedThisUpload => {
+                            let create_ids = self.create_ids.lock().await;
+                            let [first, second] = create_ids.as_slice() else {
+                                return Err(azure_core::Error::with_message(
+                                    ErrorKind::Other,
+                                    "the retry scenario did not issue exactly two upload attempts",
+                                ));
+                            };
+                            if first != second {
+                                return Err(azure_core::Error::with_message(
+                                    ErrorKind::Other,
+                                    "the upload retry did not reuse its request identity",
+                                ));
+                            }
+                            Some(first.clone())
                         }
                         CollisionProbe::OtherUpload => Some("other-upload".to_owned()),
                         CollisionProbe::NoIdentity => None,
@@ -1157,6 +1198,58 @@ mod tests {
                 method => panic!("unexpected HTTP method {method:?}"),
             }
         }
+    }
+
+    /// A retry policy that permits one immediate retry.
+    ///
+    /// The collision regression presents one transport failure to exercise the
+    /// SDK retry pipeline without introducing a real-time delay.
+    #[derive(Debug)]
+    struct ImmediateSingleRetryPolicy;
+
+    #[async_trait::async_trait]
+    impl RetryPolicy for ImmediateSingleRetryPolicy {
+        fn is_expired(&self, _time_since_start: Duration, retry_count: u32) -> bool {
+            const MAX_RETRIES: u32 = 1;
+
+            retry_count >= MAX_RETRIES
+        }
+
+        fn retry_headers(&self) -> Option<&RetryHeaders> {
+            None
+        }
+
+        fn retry_status_codes(&self) -> &[StatusCode] {
+            // The fake returns no retryable status. An empty slice delegates to the
+            // SDK defaults while the one-retry limit still bounds the policy.
+            &[]
+        }
+
+        fn sleep_duration(&self, _retry_count: u32) -> Duration {
+            // `wait` is overridden below, so the trait-required duration is never slept.
+            Duration::ZERO
+        }
+
+        async fn wait(&self, _retry_count: u32, _retry_after: Option<Duration>) {}
+    }
+
+    /// Builds a blob client whose SDK pipeline retries one transport failure
+    /// immediately through the injected HTTP client.
+    fn retrying_collision_blob_client(
+        key: &str,
+        http_client: Arc<ConditionalCreateCollisionHttpClient>,
+    ) -> BlobClient {
+        let options = BlobClientOptions {
+            client_options: ClientOptions {
+                retry: RetryOptions::custom(Arc::new(ImmediateSingleRetryPolicy)),
+                transport: Some(Transport::new(http_client)),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut url = Url::parse("https://acct.blob.core.windows.net/history").unwrap();
+        url.path_segments_mut().unwrap().extend(key.split('/'));
+        BlobClient::new(url, Some(fake_credential()), Some(options)).unwrap()
     }
 
     /// Builds an Entra backend from fake parts (fake credential, unused transport)
@@ -1315,6 +1408,32 @@ mod tests {
         .unwrap();
 
         storage.put("v1/proj/object.json", b"body").await.unwrap();
+    }
+
+    #[tokio::test]
+    #[cfg_attr(
+        miri,
+        ignore = "drives the Azure SDK request pipeline, which Miri cannot run"
+    )]
+    async fn conditional_create_accepts_a_collision_from_its_own_retried_upload() {
+        let key = "v1/proj/object.json";
+        let http_client = Arc::new(ConditionalCreateCollisionHttpClient::new(
+            CollisionProbe::RetriedThisUpload,
+        ));
+        let client = retrying_collision_blob_client(key, Arc::clone(&http_client));
+        let mode = UploadMode::conditional_create();
+
+        let error = upload(&client, b"body", &mode).await.unwrap_err();
+        resolve_upload_error(&client, error, key, &mode)
+            .await
+            .unwrap();
+
+        let create_ids = http_client.create_ids().await;
+        // The fix relies on the SDK retaining this metadata on its transport retry.
+        assert!(matches!(
+            create_ids.as_slice(),
+            [first, second] if first == second
+        ));
     }
 
     #[tokio::test]
