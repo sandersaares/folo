@@ -2,10 +2,11 @@
 name = "fast_time"
 description = "An efficient low-precision timestamp source suitable for high-frequency querying"
 publish = true
-version = "0.1.28"
+version = "0.1.29"
 
 authors.workspace = true
 edition.workspace = true
+include.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true

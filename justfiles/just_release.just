@@ -9,8 +9,9 @@ prepare-release: verify-semver-checks && check-never-published
     $ErrorActionPreference = "Stop"
     $PSNativeCommandUseErrorActionPreference = $true
 
+    Import-Module "{{ justfile_directory() }}/scripts/release/ReleasePlan.psm1" -Force
     Write-Verbose "Bumping versions and changelogs via 'release-plz update'" -Verbose
-    release-plz update
+    Invoke-ReleasePlzUpdate
 
 # Preflight for `just prepare-release`: proves that `cargo semver-checks` can actually run on
 # this machine before `release-plz update` starts trusting it. release-plz runs
@@ -31,30 +32,8 @@ verify-semver-checks:
     $ErrorActionPreference = "Stop"
     $PSNativeCommandUseErrorActionPreference = $true
 
-    # A tiny published crate that builds quickly, keeping this preflight cheap. Its own API is
-    # irrelevant here - it is only a vehicle for exercising the rustdoc build+parse path that
-    # release-plz relies on.
-    $package = "folo_utils"
-
-    Write-Verbose "Verifying that cargo-semver-checks can run (canary package '$package', compared against its own HEAD)" -Verbose
-
-    try {
-        cargo semver-checks --baseline-rev HEAD -p $package
-    }
-    catch {
-        Write-Host ""
-        Write-Host "ERROR: cargo-semver-checks failed to run on the canary package '$package' (see the error above)." -ForegroundColor Red
-        Write-Host ""
-        Write-Host "This most likely means the installed cargo-semver-checks is too old for the current" -ForegroundColor Red
-        Write-Host "toolchain's rustdoc JSON format (look for an 'unsupported rustdoc format' message above)." -ForegroundColor Red
-        Write-Host "release-plz silently treats a cargo-semver-checks *failure* as 'no breaking changes', so" -ForegroundColor Red
-        Write-Host "releasing now could ship an undetected breaking change. The release has been aborted before" -ForegroundColor Red
-        Write-Host "any versions or changelogs were touched." -ForegroundColor Red
-        Write-Host ""
-        Write-Host "Fix: update the tool with 'cargo install cargo-semver-checks --locked' (or 'just install-tools')" -ForegroundColor Red
-        Write-Host "and re-run 'just prepare-release'." -ForegroundColor Red
-        exit 1
-    }
+    Import-Module "{{ justfile_directory() }}/scripts/release/ReleasePlan.psm1" -Force
+    Invoke-VerifySemverCheck
 
 # Verifies the checked-in Cargo.lock is consistent with the workspace manifests, WITHOUT
 # modifying it. `cargo metadata --locked` resolves the dependency graph against the committed

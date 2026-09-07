@@ -262,6 +262,157 @@ function Get-SemverCheckCargoArgument {
     return $argument
 }
 
+function Get-SemverCheckTargetDirectory {
+    # cargo-semver-checks nests generated placeholder workspaces below Cargo's target directory.
+    # Keep the Windows target root independent of the checkout depth so MSVC tools do not encounter
+    # the legacy MAX_PATH boundary. A workspace-specific name avoids collisions between worktrees.
+    # Reassess this override when cargo-semver-checks shortens those generated paths:
+    # https://github.com/obi1kenobi/cargo-semver-checks/issues/1725
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [string] $WorkspaceRoot = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path,
+        [string] $TempRoot = [IO.Path]::GetTempPath()
+    )
+
+    $workspacePath = [IO.Path]::GetFullPath($WorkspaceRoot)
+    $hash = [Security.Cryptography.SHA256]::HashData(
+        [Text.Encoding]::UTF8.GetBytes($workspacePath)
+    )
+    # Local cache names need collision resistance, not a full cryptographic identity; preserving
+    # path budget is the purpose of this directory.
+    $workspaceIdLength = 16
+    $workspaceId = [Convert]::ToHexString($hash).Substring(0, $workspaceIdLength).ToLowerInvariant()
+    $candidate = Join-Path ([IO.Path]::GetFullPath($TempRoot)) "fsc-$workspaceId"
+
+    $configured = [Environment]::GetEnvironmentVariable('CARGO_TARGET_DIR', 'Process')
+    if (-not [string]::IsNullOrWhiteSpace($configured)) {
+        $configuredPath = [IO.Path]::GetFullPath($configured)
+        if ($configuredPath.Length -lt $candidate.Length) {
+            return $configuredPath
+        }
+    }
+    return $candidate
+}
+
+function Invoke-WithSemverCheckTargetDirectory {
+    # Scopes the short target directory to commands that run cargo-semver-checks. Other Cargo
+    # commands keep the workspace target directory and its normal cache behavior.
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][scriptblock] $Action,
+        [AllowNull()][string] $TargetDirectory
+    )
+
+    if (-not $PSBoundParameters.ContainsKey('TargetDirectory') -and $IsWindows) {
+        $TargetDirectory = Get-SemverCheckTargetDirectory
+    }
+    if ([string]::IsNullOrWhiteSpace($TargetDirectory)) {
+        & $Action
+        return
+    }
+
+    $previousTargetDirectory =
+        [Environment]::GetEnvironmentVariable('CARGO_TARGET_DIR', 'Process')
+    try {
+        Write-Verbose (
+            "Using CARGO_TARGET_DIR=$TargetDirectory for cargo-semver-checks because its " +
+            'generated build paths can exceed the Windows path limit.'
+        ) -Verbose
+        [Environment]::SetEnvironmentVariable(
+            'CARGO_TARGET_DIR',
+            $TargetDirectory,
+            'Process'
+        )
+        & $Action
+    } finally {
+        [Environment]::SetEnvironmentVariable(
+            'CARGO_TARGET_DIR',
+            $previousTargetDirectory,
+            'Process'
+        )
+    }
+}
+
+function Invoke-SemverCheckCargo {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string[]] $Argument,
+        [scriptblock] $Cargo = { param([string[]] $CargoArgument) & cargo @CargoArgument },
+        [AllowNull()][string] $TargetDirectory
+    )
+
+    $action = { & $Cargo $Argument }
+    if ($PSBoundParameters.ContainsKey('TargetDirectory')) {
+        Invoke-WithSemverCheckTargetDirectory `
+            -Action $action `
+            -TargetDirectory $TargetDirectory
+    } else {
+        Invoke-WithSemverCheckTargetDirectory -Action $action
+    }
+}
+
+function Invoke-VerifySemverCheck {
+    # Proves the installed tool can build rustdoc JSON before release decisions trust its output.
+    [CmdletBinding()]
+    param(
+        [scriptblock] $Cargo = { param([string[]] $Argument) & cargo @Argument }
+    )
+
+    # A tiny published crate keeps the canary cheap; its API is irrelevant because both sides use
+    # the same revision.
+    $package = 'folo_utils'
+    Write-Verbose (
+        "Verifying that cargo-semver-checks can run (canary package '$package', " +
+        'compared against its own HEAD).'
+    ) -Verbose
+
+    try {
+        Invoke-SemverCheckCargo `
+            -Argument @('semver-checks', '--baseline-rev', 'HEAD', '-p', $package) `
+            -Cargo $Cargo
+    } catch {
+        Write-Host ''
+        Write-Host (
+            "ERROR: cargo-semver-checks failed to run on the canary package '$package' " +
+            '(see the error above).'
+        ) -ForegroundColor Red
+        Write-Host ''
+        Write-Host (
+            'A broken cargo-semver-checks must not be interpreted as an absence of ' +
+            'breaking changes.'
+        ) -ForegroundColor Red
+        Write-Host (
+            "Update the tool with 'cargo install cargo-semver-checks --locked' " +
+            "(or 'just install-tools'), then re-run the command."
+        ) -ForegroundColor Red
+        throw
+    }
+}
+
+function Invoke-ReleasePlzUpdate {
+    # release-plz invokes cargo-semver-checks internally, so it must share the same Windows path
+    # mitigation as direct checks.
+    [CmdletBinding()]
+    param(
+        [scriptblock] $ReleasePlz = {
+            param([string[]] $Argument)
+            & release-plz @Argument
+        },
+        [AllowNull()][string] $TargetDirectory
+    )
+
+    $argument = @('update')
+    $action = { & $ReleasePlz $argument }
+    if ($PSBoundParameters.ContainsKey('TargetDirectory')) {
+        Invoke-WithSemverCheckTargetDirectory `
+            -Action $action `
+            -TargetDirectory $TargetDirectory
+    } else {
+        Invoke-WithSemverCheckTargetDirectory -Action $action
+    }
+}
+
 function Assert-SemverCheckExitCode {
     # Both completed cargo-semver-checks outcomes are retained as evidence because a finding exit
     # still means the comparison ran successfully and produced the log the skill needs.
@@ -324,7 +475,8 @@ function Invoke-ReleaseReport {
     # restores the caller's native-command error behavior.
     $PSNativeCommandUseErrorActionPreference = $false
     try {
-        & $Cargo $argument 2>&1 | Tee-Object -FilePath $logPath
+        Invoke-SemverCheckCargo -Argument $argument -Cargo $Cargo 2>&1 |
+            Tee-Object -FilePath $logPath
         $exitCode = $LASTEXITCODE
     } finally {
         $PSNativeCommandUseErrorActionPreference = $previousPreference
@@ -348,7 +500,7 @@ function Invoke-SemverCheck {
 
     $argument = Get-SemverCheckCargoArgument -Package $targets
     Write-Verbose "Running cargo $($argument -join ' ')" -Verbose
-    & $Cargo $argument
+    Invoke-SemverCheckCargo -Argument $argument -Cargo $Cargo
 }
 
 function Invoke-ExpandReleasePlan {
@@ -1687,6 +1839,8 @@ function New-ReleasePlanFile {
 
 Export-ModuleMember -Function `
     Invoke-ValidateVersions, `
+    Invoke-VerifySemverCheck, `
+    Invoke-ReleasePlzUpdate, `
     Invoke-ReleaseReport, `
     Invoke-SemverCheck, `
     Get-ReleasePlanAnalysisBatchJson, `

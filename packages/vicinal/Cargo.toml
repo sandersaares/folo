@@ -2,10 +2,11 @@
 name = "vicinal"
 description = "Processor-local worker pool that schedules tasks in the vicinity of the caller"
 publish = true
-version = "0.1.37"
+version = "0.1.38"
 
 authors.workspace = true
 edition.workspace = true
+include.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true

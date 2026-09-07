@@ -4,13 +4,18 @@
 name = "cbh_engines"
 description = "Implementation crate for cargo-bench-history - do not reference directly"
 publish = true
-version = "0.2.3"
+version = "0.2.4"
 
 authors.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
+
+# The fixtures are embedded by `src/testing.rs` at compile time under the
+# `private-test-util` feature, which cannot compile without them.
+# Ref: docs/packaging.md.
+include = ["src/**/*", "tests/fixtures/**/*"]
 
 # Baseline of external types intentionally exposed in the public API. Any new
 # external type must be reviewed and added explicitly.
