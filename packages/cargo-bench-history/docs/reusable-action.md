@@ -760,6 +760,21 @@ Claiming otherwise would overstate the reach of the default path: the collapse t
 lines is real for repos whose benchmarks build from a plain checkout plus a toolchain, and the
 `setup-action` hook stretches that to most of the rest, but not to every repository.
 
+**`pr.yml` handles the PR's whole life, including its close.** A benchmark run takes hours, so
+a PR closed or merged mid-run leaves one in flight producing a result nobody will read — a real
+cost when each leg occupies a runner. GitHub cancels a superseded run when a *new* run joins the
+same concurrency group, so reclaiming that time needs some workflow to start on the close event.
+The obvious shape is a second, tiny workflow that does nothing but join the group; the monorepo
+has exactly that today.
+
+The action does not export that second file. `pr.yml` accepts the `closed` event itself and
+skips every job when it fires: the workflow still starts, still joins the concurrency group, and
+the in-flight run is still evicted — the mechanism is identical, but the consumer's surface
+stays one `uses:` block instead of two files. The cost is one gate expression inside `pr.yml`,
+paid once by us; the alternative charges every consumer an extra file whose purpose is
+non-obvious and which is easy to omit, silently losing the cancellation. Trading our complexity
+for theirs is the whole point of the layer.
+
 ### 4.8 The densification flow (`backfill`)
 
 Analysis needs *neighbouring* points, not just the commit under test: a lone measurement on
@@ -1021,37 +1036,49 @@ it is:
   action exposes, as an `allowed-associations` input defaulting to those first three.
 * **Availability of credentials** is a platform fact that association cannot change. A
   `pull_request` event from a fork gets a read-only token, no secrets, and — decisively — **no
-  OIDC**, no matter who opened it. So "trusted author" alone does not produce a working run.
+  OIDC token at all**, no matter who opened it: `id-token: write` cannot be granted to a fork
+  PR. There is therefore **no identity to give a fork run**, trusted author or not. Any design
+  that says "run forks under a reduced identity" is wrong on the platform's own terms.
 
 `pull_request_target` is the usual workaround and is **categorically rejected here**: it runs
 in the base repo's context with full credentials, and this workflow's entire purpose is to
 execute the PR's code. That combination is the textbook privilege-escalation shape, and
 benchmarking is its worst case.
 
-Two mechanisms close the gap honestly, and the design supports both:
+Since no identity is obtainable, the only honest question is **whether the run can work
+without one**. It can, because of an asymmetry already established elsewhere in this design:
+a PR run needs to **read** the baseline, and its own measurements are disposable (§4.5). So
+the requirement is not "credentials" but "read access to the baseline", and there are two
+ways to have that:
 
-* **Reduce what a PR run needs to a read.** A PR's own measurements are discarded on merge
-  anyway (§4.5), so the PR flow does not need *write* access to the shared store — only the
-  ability to read the baseline and keep its own points somewhere temporary. Running PRs
-  against a **read-only identity** with a scratch store for this run's own data shrinks the
-  blast radius to "can read benchmark history", which is a far smaller thing to extend to a
-  trusted fork. This is the preferred answer and the one that makes fork support cheap.
-* **Approval-gated credentials** for anything that still needs them. Routing the
-  credential-holding job through a deployment **environment with required reviewers** means a
-  maintainer explicitly approves the run before secrets exist. It costs a click, which is the
-  correct price for handing credentials to code from outside the repository.
+* **A publicly readable history store** — the recommended answer for open-source projects.
+  Benchmark history is not sensitive: it is timing and allocation numbers for code that is
+  already public. A container configured for anonymous read lets a fork PR collect, analyze
+  against the real baseline, and report, using **no credentials whatsoever** — nothing to
+  leak, so nothing to gate. The write side stays identity-only, so a fork still cannot store
+  anything. This is a consumer configuration choice, not an action feature: the action simply
+  works when the backend it is pointed at is readable without auth.
+* **A trusted second stage** for repos whose history must stay private. The untrusted half
+  (`pull_request`, fork code, no credentials) collects and uploads its results as an artifact;
+  a second workflow triggered on its completion — running the **base repository's** code with
+  credentials, never the fork's — analyzes and posts. This preserves the safety property that
+  matters: credentials exist only in a job whose code the repository owns. It is meaningfully
+  more machinery than the rest of this design, so it is offered as a documented pattern rather
+  than a default.
 
 The resulting behaviour is tiered: a **same-repo PR** gets the full experience unchanged; a
-**fork PR from a trusted association** gets it too, via read-only access (or after approval);
-and a **fork PR from anyone else** runs no benchmarks at all. The last case is silent by
+**fork PR from a trusted association** gets it too when the store is publicly readable, and
+otherwise only via the two-stage pattern; and a **fork PR from anyone else** runs no
+benchmarks at all. The last case is silent by
 default rather than misleading, but §9's diagnosability rules apply — a reader should be able
 to discover *why* nothing ran.
 
-**PR analysis reads the same production store as `main`.** Branch mode compares the PR head
-against `main`'s recorded baseline, so the PR flow must read the very store that holds it — a
-separate PR store is rejected because it would have no baseline to compare against. Read
+**PR analysis reads the same production store as the trunk.** Branch mode compares the PR head
+against the trunk's recorded baseline, so the PR flow must read the very store that holds it —
+a separate PR store is rejected because it would have no baseline to compare against. Read
 access to that baseline is therefore unavoidable for any PR run that reports anything; what
-the tiering above removes is the *write* half.
+the disposability of PR points removes is the *write* half, and that is what makes the
+credential-free fork path above possible at all.
 
 **Bring-your-own infrastructure.** The action does **not** bundle the Azure provisioning
 (`infra/azure-bench-history-prod/`); that stays in the monorepo as a *referenced example* the
@@ -1091,7 +1118,8 @@ sees only the inputs their flow actually varies.
 **Common inputs:** `command` (`collect` | `analyze-history` | `analyze-pr` | `backfill` |
 `pr-comment-preflight` | `pr-comment-cleanup` | `pr-comment-finalize` | `alert` |
 `resolve-alert`, required);
-`install-method` (`binstall` | `cargo-install` | `path` | `none`, default `binstall`);
+`install-method` (`binstall` | `install` | `path` | `none`, default `binstall`; applies to
+every binary the command needs, §3);
 `tool-version` (package version to install; defaults to the version named in the action
 release's manifest; `latest` opts into the newest published release; ignored for
 `install-method: none`; the companion is pinned by the release and is not overridable, §3);
@@ -1129,7 +1157,9 @@ unconditionally in branch mode, so there is no direction input.
 
 **Lifecycle-command inputs:** `pr-comment-preflight` / `pr-comment-cleanup` /
 `pr-comment-finalize` take `pr-number` and `comment-marker`, plus (preflight) the `packages`
-scope to disclose and (finalize) the failed run's URL; `alert` / `resolve-alert` take
+scope to disclose and (finalize) the failed run's URL; `issue-preflight` / `issue-cleanup` take
+`issue-title` and `issue-labels`, and `issue-cleanup` additionally takes **`auto-close`**
+(default `false`, §4.4); `alert` / `resolve-alert` take
 `issue-title` and `issue-labels`.
 
 **`backfill` inputs:** the same scope inputs as `collect` (`packages`, `exclude`, `bench`,
@@ -1168,29 +1198,38 @@ forgoes the placeholder/staleness/failure states or reproduces them.
   pinned, tested tool by default, while a caller can override it (or set `latest`) without
   waiting for a new action release. A new *tool* release therefore never forces a new *action*
   release; the baked-in default advances only when we deliberately cut one (§8.1).
-* **README leads with the reusable workflows and keeps the hand-assembled recipes as
-  reference.** The headline examples are the three `uses:` snippets of §4.7 — history, PR,
-  and nightly backfill — because that is the whole consumer surface for the default path.
-  Below them, for repos assembling their own graph, the README documents what those workflows
-  expand to:
+* **README is a quick start; the book is the reference.** Two documents describing the same
+  action drift, and the one that drifts is always the one a maintainer forgets — so they get
+  clearly different jobs rather than overlapping scopes. The **README** answers "what is this
+  and how do I switch it on": a sentence on what the action does, the three `uses:` snippets of
+  §4.7 (history, PR, nightly densification), the permissions each needs, and a link onward for
+  everything else. It stops there deliberately; a reader who needs more is a reader the book
+  serves better. The **book's GitHub-automation section** (§11) is the reference: the input
+  surface, the hand-assembled recipes for repos whose job graph differs, the deployment
+  profiles, and how to read a report. It is also where the action's material sits next to the
+  tool concepts it depends on — engines, comparability, analysis modes — which is the context a
+  reader configuring a pipeline actually needs, and which a README cannot supply without
+  restating the whole guide.
+
+  The hand-assembled recipes the book carries are the expansions of the three workflows:
   * A **per-push history** workflow — a `fail-fast: false` matrix `collect` job across the
     platforms (each `on-existing: skip`, uploading its `machine-key` output as a per-platform
     artifact), then an `analyze-history` job (`needs: collect`, `fetch-depth: 0`, downloading
     the key artifacts into the `machine-keys` dir **with an explicit `github-token`** so
     partial re-runs resolve, §4.6, an `actions/cache` step feeding `cache`,
-    `issue-on-regression: true`), plus `alert`/`resolve-alert` jobs.
+    `issue-on-regression: true`), plus the `issue-preflight` / `issue-cleanup` upkeep and the
+    `alert` / `resolve-alert` failure lifecycle.
   * A **per-PR branch** workflow — a delta preflight computing the touched benchmarkable
     packages, a `pr-comment-preflight` job (in parallel with collect), a matrix `collect` job
     scoped by `packages`, an `analyze-pr` job (checkout `head.sha`, `fetch-depth: 0`,
     restore-only cache, gated `!cancelled()` so a superseded run never posts) posting the
-    comment, and a `pr-comment-cleanup` path for the empty-scope case — all gated on the
-    same-repo fork check (§6).
+    comment, plus the `pr-comment-cleanup` and `pr-comment-finalize` paths — all behind the
+    fork trust gate (§6).
   * A **nightly densification** workflow (§4.8) — a matrix `backfill` job over the same
     platforms and window, with no analyze job and no sink.
-  * The README also shows the **concurrency + cancel-on-close** pattern: PR-driven runs
-    cancel superseded runs keyed on the ref, and a tiny companion workflow triggered on PR
-    close joins the same concurrency group to reclaim a run left in flight by the close
-    (`cancel-pr-bench-history.yml`); the push flow deduplicates the same commit instead.
+  * The **concurrency** pattern: PR-driven runs
+    cancel superseded runs keyed on the ref, and the close event is handled by `pr.yml` itself
+    (§4.7) rather than a second workflow; the push flow deduplicates the same commit instead.
   These mirror Folo's own bench-history workflows, lifted to consume the published action.
 * **Marketplace publish** from the action repo's release UI (root `action.yml` + branding)
   once a `vX.Y.Z` release exists. Only the composite action is listed; the reusable workflows
@@ -1260,7 +1299,7 @@ through unrendered.
 **Layer 2 — local-storage end-to-end on the CI matrix (every push, minutes, no secrets,
 fork-safe).** `test.yml` runs the *real* action against **local filesystem storage**
 (`local-path` under `${RUNNER_TEMP}`) across the platform matrix and across *each* real
-`install-method` (`binstall`, `cargo-install`, `path`, and `none` against a pre-seeded `PATH`),
+`install-method` (`binstall`, `install`, `path`, and `none` against a pre-seeded `PATH`),
 so both the install branching and the actual installs are exercised, not just mocked:
 
 1. A tiny checked-in throwaway Rust project with one fast Criterion benchmark.
@@ -1294,40 +1333,60 @@ never sees a *long* history — the two things Layer 1 could only mock.
 that needs (a) a benchmark history long enough to make analysis "notable" and (b) the action
 actually writing to GitHub. The tool already ships the two enablers this needs — the hidden
 `cargo-bench-history import` command and the published `cargo-bench-history-faker` engine
-(§11) — so none of the options below requires new tooling. Three options, roughly increasing in
-fidelity and cost. The design adopts **A + B**; C is a cheaper fallback if a sandbox repo proves
-impractical.
+(§11) — so none of the options below requires new tooling, and none requires a credential we
+would have to create or maintain. Three options, roughly increasing in
+fidelity and cost. The design adopts **A + B**; C is a cheaper fallback if the real-repository
+runs prove impractical.
 
-* **Option A — synthetic history in a sandbox repo (highest fidelity).** `cargo-bench-history-faker`
+* **Option A — synthetic history driven against a real repository (highest fidelity).**
+  `cargo-bench-history-faker`
   writes curated per-engine output into a `target/`-shaped tree (inventing nothing — every value
   comes from its flags), and `cargo bench-history import --target-dir <tree>` stores that output
   through the exact `collect` finalize-and-store path *without running `cargo bench`*. Crucially,
   `import --commit <ancestor>` keys a stored point to any existing commit **without checking it
   out**, so a single HEAD position can fabricate a whole multi-commit series (a planted
   regression, a planted improvement) by looping faker→import over real ancestor SHAs. Both
-  binaries are published and `binstall`-able, so the sandbox needs **no vendoring and no
-  workspace checkout** — it installs `cargo-bench-history` and `cargo-bench-history-faker` like
-  any consumer. The action then runs for real against a dedicated **sandbox repository** (a
-  scratch repo with its own bot token): `analyze-history` files and later updates the rolling
-  *issue*; `analyze-pr` against a scratch PR posts the comment, re-posts on a second run, applies
-  the staleness banner, and finally cleans up — each asserted back by reading the live repo
-  (issue exists with
-  the expected title/body, comment updated in place not duplicated, banner present, comment
-  removed on cleanup). Because it needs a token and mutates a real repo, this runs on a schedule
-  and pre-release rather than on every push.
-* **Option B — compose-only assertions against a faked transport (fast, no repo).** Reuse the
+  binaries are published and `binstall`-able, so the test needs **no vendoring and no
+  workspace checkout** — it installs them like any consumer.
+
+  **The repository under test is the action repo itself, not a separate sandbox**, and that
+  choice is what keeps the credentials problem from existing. A workflow's built-in
+  `GITHUB_TOKEN` is minted per run, expires with the job, is scoped to the repository it runs
+  in, and needs no setup or rotation — so a job in the action repo that grants itself
+  `issues: write` and `pull-requests: write` can exercise every write path the companion has:
+  open a scratch issue, update it, resolve it to all-clear, open a throwaway PR, post the
+  comment, re-post to prove in-place update, apply the staleness banner, finalize, clean up —
+  each asserted by reading the live repository back. A *separate* sandbox repository is what
+  would force a long-lived credential, because cross-repository access needs either a personal
+  access token or a GitHub App private key, both of which are exactly the maintained secret we
+  refuse to introduce. Testing in-place removes the requirement rather than managing it.
+  Because these runs mutate real issues and PRs (in a repo whose purpose is to host them), they
+  are scheduled and pre-release rather than on every push, and their artefacts are namespaced
+  by `instance` (§5) so they cannot collide with anything real.
+* **Option B — compose-only assertions against a faked transport (fast, no writes).** Reuse the
   Option A
   faker→`import` history into local storage, run `analyze-history` / `analyze-pr`, and assert the
   *exact* issue/comment body the action *would* post against a **faked GitHub transport** — no
   live posting.
-  This catches body/marker/banner regressions with a realistic multi-commit trend but without a
-  sandbox repo or a token, so it can run on every push. (It is Layer 1's body assertions, but fed
+  This catches body/marker/banner regressions with a realistic multi-commit trend without
+  touching a real issue or PR, so it can run on every push, including from forks. (It is
+  Layer 1's body assertions, but fed
   a real long history instead of a one-off fixture.)
 * **Option C — checked-in storage fixtures (cheapest, least fresh).** Commit a small
   pre-built store (a handful of result sets across synthetic commits) and replay it through
   `analyze-history` / `analyze-pr`, asserting `notable` and the reports. It skips faker/`import`
   entirely, but the fixtures are opaque and must be regenerated by hand when the storage format
   changes — so it is only a stopgap where the faker→`import` path is unavailable.
+
+**Dogfooding is the fourth layer, and in practice the most valuable one.** Folo runs these
+flows on every push and every PR against a real repository with a real multi-year history
+(§10), which is precisely the condition the layers above simulate. It exercises the write
+paths continuously, on data no fixture can imitate, and it does so with no extra credentials
+because it is the repository's own `GITHUB_TOKEN` doing the writing. Its limitation is that it
+only ever tests **one** configuration — the one Folo happens to use — so it can confirm the
+common path works while saying nothing about the rest of the input surface. That is exactly
+the gap Options A and B fill: they cover the configurations nobody's production repo happens
+to have, and dogfooding covers the realism no test fixture can.
 
 The Azure auth branches stay covered by the monorepo's Azure-backend test jobs (`DESIGN.md` §6),
 so none of these layers needs to reach the cloud.
@@ -1353,10 +1412,20 @@ tool and their transport logic into the companion binary (§5.1). Anything that 
 deletion is a signal that some behaviour was repo-specific after all, and belongs in the
 action's input surface.
 
-If `install-method: path` proves awkward to host in a *separate* action repo (it needs the
-tool's source on disk), the fallback is a **single internal thin composite action kept in the
-monorepo** (`.github/actions/bench-history`) that shares its implementation with the published
-action — the published action stays the source of truth for external consumers.
+**What `install-method: path` requires, concretely.** The action executes inside the *caller's*
+job, so the workspace it builds from is the caller's own checkout — nothing needs to be shared
+between the two repositories, and the action being hosted elsewhere costs nothing here. Two
+real constraints do apply, and both are properties of the input rather than obstacles:
+
+* **The path names the package directory**, because no layout is universal. Folo keeps packages
+  under `packages/<name>`, which is a convention, not a rule, so the input must not assume it.
+* **All binaries come from the same checkout, or none do.** A HEAD-built tool paired with a
+  released companion is a version mix nobody tested; since `path` exists precisely to exercise
+  unreleased code, it applies to every binary the command needs (§3).
+
+The cost is a source build in the job, which for Folo is already paid — the workspace is being
+compiled to benchmark it. The payoff is that a tool change is exercised by the same push that
+lands it, rather than waiting for a release.
 
 ## 11. Tool / repo changes this design implies
 
@@ -1392,7 +1461,8 @@ binary** that owns the GitHub-shaped half (§5.1):
   `cargo bench-history import` command (`collect`'s finalize-and-store path minus the `cargo
   bench` run; `--target-dir` required, `--commit`/`--target-triple`/`--dirty` overrides —
   `DESIGN.md` §7.9) and the published-but-unsupported `cargo-bench-history-faker`
-  engine together let a sandbox repo fabricate a realistic multi-commit history from published
+  engine — **both already published** — together let a test job fabricate a realistic
+  multi-commit history from published
   binaries alone. No new command is needed for even the highest-fidelity testing option.
 * **No fake-engine handling needed** — the fake engine is its own separate package
   (`cargo-bench-history-faker`) with its own binary, so the published `cargo-bench-history`
@@ -1400,54 +1470,84 @@ binary** that owns the GitHub-shaped half (§5.1):
 * **The monorepo's own shell layer becomes redundant.** Folo's
   `scripts/bench-history/*.psm1` modules exist because nothing else could compose or post;
   once the tool and the companion can, they are replaced by the action rather than generalized
-  into it, and Folo's four bench-history workflows collapse into calls to the reusable
-  workflows (§4.7, §10).
-* **Docs — the book gains a "Continuous integration" section.** The user guide currently
+  into it, and Folo's bench-history workflows collapse into calls to the reusable
+  workflows (§4.7, §10) — including `cancel-pr-bench-history.yml`, whose whole job `pr.yml`
+  now absorbs (§4.7).
+* **Docs — the book gains a "GitHub automation" section.** The user guide currently
   documents the tool as something you run by hand (Installation, Commands, Concepts,
   Appendix), which leaves its most common *real* deployment undocumented. Running
-  `cargo-bench-history` in CI is not a footnote to local use; it is the primary use, and it
-  raises questions that have no local analogue. The book therefore gains a section covering:
+  `cargo-bench-history` from automation is not a footnote to local use; it is the primary use,
+  and it raises questions that have no local analogue. The book therefore gains a section
+  covering:
   * **The three flows** — per-push history, per-PR branch, nightly densification — and why a
     useful setup runs all three rather than just the first.
-  * **Adopting the action**, pointing at the published action for the mechanics.
+  * **Adopting the action** — the full input surface and the hand-assembled recipes, with the
+    action's README reduced to a quick start that links here (§8).
   * **Deployment profiles** — the shared, rotating, ephemeral runner pool versus dedicated
     self-hosted benchmark machines. These differ in almost every way that matters (machine-key
     stability, noise floor, whether densification is needed at all, useful `best-of` values),
     and a reader choosing hardware needs that comparison before they build a pipeline around
     one of them.
-  * **What CI data means** — that PR measurements are keyed to branch commits and are
-    discarded by squash- and rebase-merges (§4.5), so the trunk series is fed by the history
+  * **What automated measurements mean** — that PR measurements are keyed to branch commits and
+    are discarded by squash- and rebase-merges (§4.5), so the trunk series is fed by the history
     and densification flows alone.
-  * **Reading a CI report** — in particular telling apart "no findings", "not enough baseline
-    yet", and "nothing benchmarkable changed" (§9).
+  * **Reading a report** — in particular telling apart "no findings", "not enough baseline
+    yet", "some platforms did not report", and "nothing benchmarkable changed" (§4.2).
 
-  The division of labour stays as it was: the **book** owns tool-level concepts and the
-  deployment thinking, and the action repo's **README** owns only the action's own mechanics
-  (inputs, workflow recipes, install methods) and links to the book rather than restating it.
-  This file and the pointer from `DESIGN.md` §7.3 remain the design record.
+  The section is titled **GitHub automation** rather than "Continuous integration": the latter
+  is a vague umbrella that says nothing about what the section contains, while this section is
+  specifically about driving the tool from GitHub — the flows, the action, the reports it
+  posts. A reader looking for it will be looking for GitHub, and a future reader adding, say,
+  a self-hosted-runner chapter will know whether it belongs here.
+
+  The division of labour: the **book** owns tool-level concepts, the deployment thinking, and
+  the action's reference material; the action repo's **README** is a quick start that links
+  here. This file and the pointer from `DESIGN.md` §7.3 remain the design record until it is
+  dismantled into those homes.
 
 ## 12. Open questions
 
-* **Whether the benchmarkable-delta filter belongs in the companion.** The PR flow needs to
-  reduce a touched-package set to the packages that actually carry benches, and §5.1 rules out
-  doing it in shell. Folding it into the companion avoids a third installed binary; wrapping
-  the existing `cargo-detect-package` reuses working code but adds another versioned
-  dependency to the manifest (§3). Until this is settled, `pr.yml` is specified but not fully
-  designed.
-* **Machine-key artifact plumbing.** Whether `collect` and the analyze commands bundle the
-  `actions/upload-artifact` / `download-artifact` steps for the machine-key handoff (§4.6),
-  or leave the upload/download to the caller and only exchange the `machine-key` output and
-  `machine-keys` directory input. The reusable workflows (§4.7) make this invisible to most
-  consumers either way; it matters only for hand-assembled graphs. Bundling hard-codes
-  artifact names and adds bundled action dependencies.
-* **Whether the PR close-cancellation workflow can be folded into `pr.yml`.** Today it is a
-  separate tiny companion workflow joining the same concurrency group (§8), which sits awkwardly
-  with the claim that a consumer adopts the PR flow with one `uses:` block. Having `pr.yml`
-  itself accept the `closed` event and skip straight to cancellation would keep the whole PR
-  story in one entry point.
-* **How far to take real-GitHub testing (§9).** Whether to stand up a dedicated sandbox
-  repository (with its own bot token) for Option A's end-to-end issue/PR-comment validation, or
-  start with the no-repo Option B (compose-only assertions over a faker→`import` history) and add
-  the sandbox later. The tooling for both — the `import` command and the published faker — already
-  exists, so this is purely a cost/fidelity call about the sandbox repo, not about building
-  anything.
+* **How much of the PR scope preflight the action should own.** The PR flow needs the set of
+  benchmarkable packages a PR touches, and that decomposes into two steps which are easy to
+  conflate:
+  1. **Changed files → owning packages** (plus their dependents, since a change to a dependency
+     can move a dependent's numbers). This is the harder half, and it is what
+     `cargo-detect-package` addresses — it maps a *file* to its owning package. Note it answers
+     only the file-to-package question; the dependent closure is a separate walk.
+  2. **Of those packages, which carry benchmarks.** This half is not hard at all: `cargo
+     metadata` already lists every target with its kind, so "has a target of kind `bench`" is a
+     filter over data Cargo hands us. No new tool is needed, and no bespoke walk — which is why
+     it would be wrong to reach for a package-detection binary to answer *this* part.
+
+  The open question is **scope, not implementation**: whether the action offers a preflight
+  command that does this at all, or whether `packages` stays a caller-supplied input and the
+  consumer runs whatever delta tooling they already have. Owning it makes the PR flow adoptable
+  in one step; not owning it keeps the action out of the business of guessing what "affected"
+  means, which is a question repositories answer differently (some include dev-dependencies,
+  some treat workspace-wide config changes as touching everything). If we do own it, taking a
+  versioned dependency on `cargo-detect-package` for step 1 is fine and preferable to
+  reimplementing it; step 2 should just read `cargo metadata`.
+* **Whether the action bundles the machine-key artifact steps.** The handoff (§4.6) needs the
+  per-platform keys uploaded by each collect leg and downloaded by the single analyze job. The
+  choice is who calls `actions/upload-artifact` / `download-artifact`:
+
+  | | Action bundles the steps | Caller wires the artifacts |
+  | --- | --- | --- |
+  | Hand-assembled caller | Two fewer steps to write | Two steps to write, names are theirs |
+  | Reusable-workflow caller | No difference — hidden either way | No difference — hidden either way |
+  | Action's dependencies | Takes a dependency on two first-party actions, pinned and updated by us | Stays dependency-free |
+  | Artifact naming | Fixed by us; a second instance needs the `instance` namespace to avoid collisions | Caller's choice, collisions are theirs to avoid |
+  | Failure modes | Cross-attempt `github-token` handling, retention, and 404s become ours to get right | Caller owns them, and can debug them in their own YAML |
+
+  The decisive observation is the second row: the reusable workflows already hide this from
+  everyone on the default path, so bundling would buy nothing for the majority and would spend
+  the action's dependency budget to save two steps for the minority who deliberately chose to
+  hand-assemble. That argues for **not bundling**, but it is worth a deliberate decision rather
+  than drift.
+* **How far to take dedicated benchmark hardware in our own testing.** Everything else about
+  the testing strategy is settled (§9): unit tests, local-storage end-to-end, faker-driven
+  history, in-repo real-GitHub runs on the repository's own token, and dogfooding. What none of
+  those cover is the **dedicated self-hosted profile** the book will document (§11) — stable
+  machine keys, a low noise floor, densification largely unnecessary. Folo runs on shared public
+  runners, so that profile is currently designed but never exercised. Whether to stand up a
+  self-hosted runner to validate it, or to document it as untested-by-us, is unresolved.
