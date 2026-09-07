@@ -17,6 +17,7 @@ use std::error::Error;
 use std::sync::Arc;
 use std::{env, fmt};
 
+use azure_core::Uuid;
 use azure_core::credentials::{AccessToken, TokenCredential, TokenRequestOptions};
 use azure_core::error::ErrorKind;
 use azure_core::http::{
@@ -26,7 +27,8 @@ use azure_core::http::{
 use azure_core::time::{Duration, OffsetDateTime};
 use azure_identity::DeveloperToolsCredential;
 use azure_storage_blob::models::{
-    BlobClientUploadOptions, BlobContainerClientListBlobsOptions, StorageErrorCode,
+    BlobClientGetPropertiesResultHeaders as _, BlobClientUploadOptions,
+    BlobContainerClientListBlobsOptions, StorageErrorCode,
 };
 use azure_storage_blob::{
     BlobClient, BlobClientOptions, BlobContainerClient, BlobContainerClientOptions,
@@ -47,6 +49,14 @@ use crate::{
 /// inflates on [`get`](AzureBlobStorage::get) itself rather than relying on the
 /// service to decode).
 const GZIP_CONTENT_ENCODING: &str = "gzip";
+
+/// The blob metadata key that associates a committed conditional create with the
+/// request that wrote it.
+///
+/// The SDK can retry a request after Azure committed it but the response was lost.
+/// Persisting the request identity atomically with the body lets the resulting
+/// collision be distinguished from an object written by another request.
+const CONDITIONAL_CREATE_ID_METADATA_KEY: &str = "cbh_create_id";
 
 /// A [`Storage`] that persists objects as blobs in an Azure Blob container.
 #[derive(Clone)]
@@ -249,17 +259,20 @@ impl AzureBlobStorage {
         key: &str,
         mode: UploadMode,
     ) -> Result<(), StorageError> {
-        match upload(client, bytes, mode).await {
-            Ok(()) => Ok(()),
+        let error = match upload(client, bytes, &mode).await {
+            Ok(()) => return Ok(()),
             Err(error) if matches!(classify(&error), Fault::ContainerMissing) => {
                 // The container does not exist yet; create it and retry once.
                 self.ensure_container().await?;
-                upload(client, bytes, mode)
-                    .await
-                    .map_err(|error| map_upload_error(error, key, mode))
+                match upload(client, bytes, &mode).await {
+                    Ok(()) => return Ok(()),
+                    Err(error) => error,
+                }
             }
-            Err(error) => Err(map_upload_error(error, key, mode)),
-        }
+            Err(error) => error,
+        };
+
+        resolve_upload_error(client, error, key, &mode).await
     }
 
     /// Writes a fresh cache-invalidation marker for `project` if this backend has
@@ -301,7 +314,7 @@ impl Storage for AzureBlobStorage {
         validate_key(key)?;
         let client = self.blob_client(key)?;
         let compressed = cbh_codec::compress(bytes);
-        self.upload_with_retry(&client, &compressed, key, UploadMode::ConditionalCreate)
+        self.upload_with_retry(&client, &compressed, key, UploadMode::conditional_create())
             .await
     }
 
@@ -317,7 +330,7 @@ impl Storage for AzureBlobStorage {
         // leave a stale cached copy, so only that path arms the flag a later flush
         // consults to bump this project's cache-invalidation marker.
         match self
-            .upload_with_retry(&client, &compressed, key, UploadMode::ConditionalCreate)
+            .upload_with_retry(&client, &compressed, key, UploadMode::conditional_create())
             .await
         {
             Ok(()) => Ok(()),
@@ -567,10 +580,11 @@ fn token_is_fresh(token: &AccessToken, now: OffsetDateTime) -> bool {
 }
 
 /// How an upload participates in the storage protocol.
-#[derive(Clone, Copy, Debug)]
+#[derive(Debug)]
 enum UploadMode {
-    /// Creates a blob only when its key is unoccupied.
-    ConditionalCreate,
+    /// Creates a blob only when its key is unoccupied, carrying a unique identity
+    /// that remains stable across every retry of this logical upload.
+    ConditionalCreate { create_id: String },
     /// Replaces the object stored at a key.
     Overwrite,
     /// Replaces a project's cache-invalidation marker.
@@ -578,15 +592,40 @@ enum UploadMode {
 }
 
 impl UploadMode {
+    /// Starts one logical conditional-create upload.
+    fn conditional_create() -> Self {
+        Self::ConditionalCreate {
+            create_id: Uuid::new_v4().to_string(),
+        }
+    }
+
     /// Whether the upload must carry the conditional-create request option.
-    fn is_conditional_create(self) -> bool {
-        matches!(self, Self::ConditionalCreate)
+    fn is_conditional_create(&self) -> bool {
+        matches!(self, Self::ConditionalCreate { .. })
+    }
+
+    /// Returns the request identity persisted by a conditional create.
+    fn conditional_create_id(&self) -> Option<&str> {
+        match self {
+            Self::ConditionalCreate { create_id } => Some(create_id),
+            Self::Overwrite | Self::InvalidationMarker => None,
+        }
+    }
+
+    /// Returns the metadata that must be persisted with this upload.
+    fn metadata(&self) -> Option<HashMap<String, String>> {
+        self.conditional_create_id().map(|create_id| {
+            HashMap::from([(
+                CONDITIONAL_CREATE_ID_METADATA_KEY.to_owned(),
+                create_id.to_owned(),
+            )])
+        })
     }
 
     /// Describes the attempted upload while retaining its mode and key.
-    fn operation(self, key: &str) -> String {
+    fn operation(&self, key: &str) -> String {
         match self {
-            Self::ConditionalCreate => {
+            Self::ConditionalCreate { .. } => {
                 format!("could not conditionally create Azure blob {key:?}")
             }
             Self::Overwrite => format!("could not overwrite Azure blob {key:?}"),
@@ -599,11 +638,12 @@ impl UploadMode {
 
 /// Uploads `bytes` to `client` using `mode`'s request precondition.
 #[cfg_attr(test, mutants::skip)] // Delegates to the Azure SDK; verified by the Azurite round-trip tests, which mutation testing cannot run.
-async fn upload(client: &BlobClient, bytes: &[u8], mode: UploadMode) -> azure_core::Result<()> {
+async fn upload(client: &BlobClient, bytes: &[u8], mode: &UploadMode) -> azure_core::Result<()> {
     let mut options = BlobClientUploadOptions {
         // The body is always gzip, so declare it: a non-SDK reader can then
         // inflate the blob with standard tooling.
         blob_content_encoding: Some(GZIP_CONTENT_ENCODING.to_owned()),
+        metadata: mode.metadata(),
         ..Default::default()
     };
     if mode.is_conditional_create() {
@@ -707,21 +747,57 @@ fn classify(error: &azure_core::Error) -> Fault {
     }
 }
 
-/// Maps an upload failure using the request mode that produced it.
-fn map_upload_error(error: azure_core::Error, key: &str, mode: UploadMode) -> StorageError {
-    // Only conditional-create mode paired with the exact BlobAlreadyExists code proves ordinary
-    // key occupancy. That decision authorizes put_overwrite to perform an unconditional overwrite
-    // and arm cache invalidation. Every other conflict or precondition failure — including leases,
-    // missing containers, service conditions, and failures in overwrite or marker modes — must
-    // remain an operation error carrying its SDK source. Broadening either side of this guard
-    // would convert operational failures into normal collisions.
-    if mode.is_conditional_create()
-        && has_storage_error_code(&error, &StorageErrorCode::BlobAlreadyExists)
-    {
-        return ObjectAlreadyExistsError::caused_by(key.to_owned(), error).into();
+/// Resolves an upload failure using the request mode that produced it.
+async fn resolve_upload_error(
+    client: &BlobClient,
+    error: azure_core::Error,
+    key: &str,
+    mode: &UploadMode,
+) -> Result<(), StorageError> {
+    let Some(create_id) = mode.conditional_create_id() else {
+        return Err(map_upload_error(error, key, mode));
+    };
+    if !has_storage_error_code(&error, &StorageErrorCode::BlobAlreadyExists) {
+        return Err(map_upload_error(error, key, mode));
     }
 
+    // A transport retry can receive BlobAlreadyExists after its own first attempt
+    // committed. Only an identity persisted by this logical upload proves that the
+    // collision is the successful result of that attempt. A different or absent
+    // identity remains an ordinary write-once collision.
+    // If a concurrent mutation removes the blob before this probe, the resulting
+    // operation error preserves the uncertainty instead of guessing success.
+    let properties = client
+        .get_properties(None)
+        .await
+        .map_err(|verification_error| collision_verification_error(key, verification_error))?;
+    let metadata = properties
+        .metadata()
+        .map_err(|verification_error| collision_verification_error(key, verification_error))?;
+    if metadata
+        .get(CONDITIONAL_CREATE_ID_METADATA_KEY)
+        .is_some_and(|stored_id| stored_id == create_id)
+    {
+        return Ok(());
+    }
+
+    Err(ObjectAlreadyExistsError::caused_by(key.to_owned(), error).into())
+}
+
+/// Maps a definitive upload failure using the request mode that produced it.
+fn map_upload_error(error: azure_core::Error, key: &str, mode: &UploadMode) -> StorageError {
     azure_io(mode.operation(key), error)
+}
+
+/// Adds operation context to an error encountered while verifying a collision.
+fn collision_verification_error(key: &str, error: azure_core::Error) -> StorageError {
+    azure_io(
+        format!(
+            "could not verify whether conditional creation of Azure blob {key:?} had already \
+             succeeded"
+        ),
+        error,
+    )
 }
 
 /// Adds operation context to an Azure error.
@@ -742,6 +818,8 @@ mod tests {
     use std::io;
 
     use azure_core::http::headers::Headers;
+    use azure_core::http::policies::{RetryHeaders, RetryPolicy};
+    use azure_core::http::{Method, RetryOptions};
     use futures::executor::block_on;
     use ohno::ErrorExt as _;
 
@@ -819,22 +897,6 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn conditional_create_blob_collision_is_already_exists() {
-        let key = "object";
-        let error = http_error(
-            StatusCode::Conflict,
-            Some(StorageErrorCode::BlobAlreadyExists.as_ref()),
-        );
-
-        let error = map_upload_error(error, key, UploadMode::ConditionalCreate);
-
-        assert_eq!(error.already_existing_key(), Some(key));
-        let leaf = error.find_source::<ObjectAlreadyExistsError>().unwrap();
-        assert_eq!(leaf.key, key);
-        assert!(error.find_source::<azure_core::Error>().is_some());
-    }
-
     fn assert_azure_upload_operation(error: &StorageError, key: &str) {
         assert!(!error.is_not_found());
         assert_eq!(error.already_existing_key(), None);
@@ -848,7 +910,7 @@ mod tests {
     fn other_upload_conflicts_remain_operation_errors() {
         for (mode, status, code) in [
             (
-                UploadMode::ConditionalCreate,
+                UploadMode::conditional_create(),
                 StatusCode::Conflict,
                 StorageErrorCode::LeaseAlreadyPresent,
             ),
@@ -864,7 +926,7 @@ mod tests {
             ),
         ] {
             let error = http_error(status, Some(code.as_ref()));
-            let error = map_upload_error(error, "object", mode);
+            let error = map_upload_error(error, "object", &mode);
 
             assert_azure_upload_operation(&error, "object");
         }
@@ -877,10 +939,29 @@ mod tests {
             StorageErrorCode::ContainerNotFound,
         ] {
             let error = http_error(StatusCode::NotFound, Some(code.as_ref()));
-            let error = map_upload_error(error, "object", UploadMode::ConditionalCreate);
+            let mode = UploadMode::conditional_create();
+            let error = map_upload_error(error, "object", &mode);
 
             assert_azure_upload_operation(&error, "object");
         }
+    }
+
+    #[test]
+    fn only_conditional_create_carries_request_identity_metadata() {
+        let conditional = UploadMode::conditional_create();
+        assert!(conditional.is_conditional_create());
+        let create_id = conditional.conditional_create_id().unwrap();
+        let metadata = conditional.metadata().unwrap();
+        assert_eq!(
+            metadata
+                .get(CONDITIONAL_CREATE_ID_METADATA_KEY)
+                .map(String::as_str),
+            Some(create_id)
+        );
+        assert!(!UploadMode::Overwrite.is_conditional_create());
+        assert!(!UploadMode::InvalidationMarker.is_conditional_create());
+        assert!(UploadMode::Overwrite.metadata().is_none());
+        assert!(UploadMode::InvalidationMarker.metadata().is_none());
     }
 
     #[test]
@@ -977,6 +1058,198 @@ mod tests {
                 azure_core::Bytes::new(),
             ))
         }
+    }
+
+    /// The result exposed by a simulated conditional-create ownership probe.
+    #[derive(Clone, Copy, Debug)]
+    enum CollisionProbe {
+        /// The object was committed by this upload before its collision response.
+        ThisUpload,
+        /// The first request committed but lost its response, so its retry collides.
+        RetriedThisUpload,
+        /// The object was committed by another request.
+        OtherUpload,
+        /// The object predates request identities or was written by another tool.
+        NoIdentity,
+        /// Inspecting the colliding object fails.
+        Failure,
+    }
+
+    /// An HTTP client that models a conditional-create response sequence and its
+    /// ownership probe.
+    ///
+    /// Uploads normally return `BlobAlreadyExists`. The retry scenario first
+    /// returns a retryable transport error and then the collision. A subsequent
+    /// properties request exposes the configured identity outcome or a probe
+    /// failure.
+    #[derive(Debug)]
+    struct ConditionalCreateCollisionHttpClient {
+        probe: CollisionProbe,
+        create_ids: futures::lock::Mutex<Vec<String>>,
+    }
+
+    impl ConditionalCreateCollisionHttpClient {
+        fn new(probe: CollisionProbe) -> Self {
+            Self {
+                probe,
+                create_ids: futures::lock::Mutex::new(Vec::new()),
+            }
+        }
+
+        async fn create_ids(&self) -> Vec<String> {
+            self.create_ids.lock().await.clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl HttpClient for ConditionalCreateCollisionHttpClient {
+        async fn execute_request(
+            &self,
+            request: &azure_core::http::Request,
+        ) -> azure_core::Result<azure_core::http::AsyncRawResponse> {
+            let metadata_header = format!("x-ms-meta-{CONDITIONAL_CREATE_ID_METADATA_KEY}");
+            match request.method() {
+                Method::Put => {
+                    let create_id = request
+                        .headers()
+                        .iter()
+                        .find(|(name, _)| {
+                            name.as_str().eq_ignore_ascii_case(metadata_header.as_str())
+                        })
+                        .map(|(_, value)| value.as_str().to_owned());
+                    let Some(create_id) = create_id else {
+                        return Err(azure_core::Error::with_message(
+                            ErrorKind::Other,
+                            "the conditional create request carried no request identity",
+                        ));
+                    };
+                    let attempt_count = {
+                        let mut create_ids = self.create_ids.lock().await;
+                        create_ids.push(create_id);
+                        create_ids.len()
+                    };
+                    if matches!(self.probe, CollisionProbe::RetriedThisUpload) && attempt_count == 1
+                    {
+                        return Err(azure_core::Error::with_message(
+                            ErrorKind::Io,
+                            "the first upload response was lost after commit",
+                        ));
+                    }
+
+                    let mut headers = Headers::new();
+                    headers.insert(
+                        "x-ms-error-code",
+                        StorageErrorCode::BlobAlreadyExists.as_ref(),
+                    );
+                    Ok(azure_core::http::AsyncRawResponse::from_bytes(
+                        StatusCode::Conflict,
+                        headers,
+                        azure_core::Bytes::new(),
+                    ))
+                }
+                Method::Head => {
+                    let create_id = match self.probe {
+                        CollisionProbe::ThisUpload => {
+                            let Some(create_id) = self.create_ids.lock().await.last().cloned()
+                            else {
+                                return Err(azure_core::Error::with_message(
+                                    ErrorKind::Other,
+                                    "the conditional create request carried no request identity",
+                                ));
+                            };
+                            Some(create_id)
+                        }
+                        CollisionProbe::RetriedThisUpload => {
+                            let create_ids = self.create_ids.lock().await;
+                            let [first, second] = create_ids.as_slice() else {
+                                return Err(azure_core::Error::with_message(
+                                    ErrorKind::Other,
+                                    "the retry scenario did not issue exactly two upload attempts",
+                                ));
+                            };
+                            if first != second {
+                                return Err(azure_core::Error::with_message(
+                                    ErrorKind::Other,
+                                    "the upload retry did not reuse its request identity",
+                                ));
+                            }
+                            Some(first.clone())
+                        }
+                        CollisionProbe::OtherUpload => Some("other-upload".to_owned()),
+                        CollisionProbe::NoIdentity => None,
+                        CollisionProbe::Failure => {
+                            return Ok(azure_core::http::AsyncRawResponse::from_bytes(
+                                StatusCode::NotFound,
+                                Headers::new(),
+                                azure_core::Bytes::new(),
+                            ));
+                        }
+                    };
+                    let mut headers = Headers::new();
+                    if let Some(create_id) = create_id {
+                        headers.insert(metadata_header, create_id);
+                    }
+                    Ok(azure_core::http::AsyncRawResponse::from_bytes(
+                        StatusCode::Ok,
+                        headers,
+                        azure_core::Bytes::new(),
+                    ))
+                }
+                method => panic!("unexpected HTTP method {method:?}"),
+            }
+        }
+    }
+
+    /// A retry policy that permits one immediate retry.
+    ///
+    /// The collision regression presents one transport failure to exercise the
+    /// SDK retry pipeline without introducing a real-time delay.
+    #[derive(Debug)]
+    struct ImmediateSingleRetryPolicy;
+
+    #[async_trait::async_trait]
+    impl RetryPolicy for ImmediateSingleRetryPolicy {
+        fn is_expired(&self, _time_since_start: Duration, retry_count: u32) -> bool {
+            const MAX_RETRIES: u32 = 1;
+
+            retry_count >= MAX_RETRIES
+        }
+
+        fn retry_headers(&self) -> Option<&RetryHeaders> {
+            None
+        }
+
+        fn retry_status_codes(&self) -> &[StatusCode] {
+            // The fake returns no retryable status. An empty slice delegates to the
+            // SDK defaults while the one-retry limit still bounds the policy.
+            &[]
+        }
+
+        fn sleep_duration(&self, _retry_count: u32) -> Duration {
+            // `wait` is overridden below, so the trait-required duration is never slept.
+            Duration::ZERO
+        }
+
+        async fn wait(&self, _retry_count: u32, _retry_after: Option<Duration>) {}
+    }
+
+    /// Builds a blob client whose SDK pipeline retries one transport failure
+    /// immediately through the injected HTTP client.
+    fn retrying_collision_blob_client(
+        key: &str,
+        http_client: Arc<ConditionalCreateCollisionHttpClient>,
+    ) -> BlobClient {
+        let options = BlobClientOptions {
+            client_options: ClientOptions {
+                retry: RetryOptions::custom(Arc::new(ImmediateSingleRetryPolicy)),
+                transport: Some(Transport::new(http_client)),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut url = Url::parse("https://acct.blob.core.windows.net/history").unwrap();
+        url.path_segments_mut().unwrap().extend(key.split('/'));
+        BlobClient::new(url, Some(fake_credential()), Some(options)).unwrap()
     }
 
     /// Builds an Entra backend from fake parts (fake credential, unused transport)
@@ -1115,6 +1388,107 @@ mod tests {
         assert!(put.find_source::<InvalidStorageKeyError>().is_some());
         let get = block_on(storage.get("../bad")).unwrap_err();
         assert!(get.find_source::<InvalidStorageKeyError>().is_some());
+    }
+
+    #[tokio::test]
+    #[cfg_attr(
+        miri,
+        ignore = "drives the Azure SDK request pipeline, which Miri cannot run"
+    )]
+    async fn conditional_create_accepts_a_collision_from_its_own_committed_upload() {
+        let storage = AzureBlobStorage::from_parts(
+            "acct",
+            "history",
+            None,
+            fake_credential(),
+            Arc::new(ConditionalCreateCollisionHttpClient::new(
+                CollisionProbe::ThisUpload,
+            )),
+        )
+        .unwrap();
+
+        storage.put("v1/proj/object.json", b"body").await.unwrap();
+    }
+
+    #[tokio::test]
+    #[cfg_attr(
+        miri,
+        ignore = "drives the Azure SDK request pipeline, which Miri cannot run"
+    )]
+    async fn conditional_create_accepts_a_collision_from_its_own_retried_upload() {
+        let key = "v1/proj/object.json";
+        let http_client = Arc::new(ConditionalCreateCollisionHttpClient::new(
+            CollisionProbe::RetriedThisUpload,
+        ));
+        let client = retrying_collision_blob_client(key, Arc::clone(&http_client));
+        let mode = UploadMode::conditional_create();
+
+        let error = upload(&client, b"body", &mode).await.unwrap_err();
+        resolve_upload_error(&client, error, key, &mode)
+            .await
+            .unwrap();
+
+        let create_ids = http_client.create_ids().await;
+        // The fix relies on the SDK retaining this metadata on its transport retry.
+        assert!(matches!(
+            create_ids.as_slice(),
+            [first, second] if first == second
+        ));
+    }
+
+    #[tokio::test]
+    #[cfg_attr(
+        miri,
+        ignore = "drives the Azure SDK request pipeline, which Miri cannot run"
+    )]
+    async fn conditional_create_rejects_collisions_not_owned_by_this_upload() {
+        let key = "v1/proj/object.json";
+        for probe in [CollisionProbe::OtherUpload, CollisionProbe::NoIdentity] {
+            let storage = AzureBlobStorage::from_parts(
+                "acct",
+                "history",
+                None,
+                fake_credential(),
+                Arc::new(ConditionalCreateCollisionHttpClient::new(probe)),
+            )
+            .unwrap();
+
+            let error = storage.put(key, b"body").await.unwrap_err();
+
+            assert_eq!(error.already_existing_key(), Some(key));
+            let leaf = error.find_source::<ObjectAlreadyExistsError>().unwrap();
+            assert_eq!(leaf.key, key);
+            let source = error.find_source::<azure_core::Error>().unwrap();
+            assert_eq!(source.http_status(), Some(StatusCode::Conflict));
+        }
+    }
+
+    #[tokio::test]
+    #[cfg_attr(
+        miri,
+        ignore = "drives the Azure SDK request pipeline, which Miri cannot run"
+    )]
+    async fn conditional_create_probe_failure_remains_an_operation_error() {
+        let key = "v1/proj/object.json";
+        let storage = AzureBlobStorage::from_parts(
+            "acct",
+            "history",
+            None,
+            fake_credential(),
+            Arc::new(ConditionalCreateCollisionHttpClient::new(
+                CollisionProbe::Failure,
+            )),
+        )
+        .unwrap();
+
+        let error = storage.put(key, b"body").await.unwrap_err();
+
+        assert_azure_upload_operation(&error, key);
+        assert!(error.find_source::<ObjectAlreadyExistsError>().is_none());
+        let operation = error.find_source::<AzureBlobOperationError>().unwrap();
+        assert!(operation.operation.contains("verify"));
+        let source = error.find_source::<azure_core::Error>().unwrap();
+        assert_eq!(source.http_status(), Some(StatusCode::NotFound));
     }
 
     // =======================================================================
