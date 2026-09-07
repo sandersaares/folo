@@ -389,8 +389,9 @@ PR, whose points are transient.
      was *intended* — and the difference is invisible in the findings themselves. The action
      knows both sides (the intended platform list is an input; the contributing set is the
      machine-key artifacts that arrived), so when they differ the report says which platforms
-     are missing, and the run's outcome is **partial** rather than clean. On a fully successful
-     run this adds nothing, so the common case stays quiet. Without it, a Windows leg dying
+     are missing and carries a **partial-platform-coverage** qualifier beside the analysis
+     outcome. On a fully successful run this adds nothing, so the common case stays quiet.
+     Without it, a Windows leg dying
      would leave "no regressions" standing as an unqualified claim about a platform nobody
      measured — which is the failure mode that makes silent partial coverage worse than an
      outright failed run.
@@ -401,17 +402,18 @@ PR, whose points are transient.
    * A single pass emits all three machine-readable artefacts via the per-format output
      toggles: the full Markdown report, the full JSON report, and the **condensed
      top-findings Markdown summary** (`--markdown-summary`) sized to fit an issue body.
-5. **Surface the run's outcome**, not merely a boolean. Analysis ends in one of a small set of
-   named states — findings, clean, insufficient baseline, nothing in scope, partial coverage,
-   failed — and that **`outcome`** is what the flow carries forward, alongside the report paths
-   and a regression count (§7). A single `notable` boolean collapses states that need different
-   handling: "clean" and "we could not judge anything" are both *not notable*, yet only one of
-   them is good news. Naming the state serves two consumers. It is the key the companion
-   selects a message with (§5.2), so the choice is made once and explicitly rather than
-   re-derived from scattered checks; and it lets the test canaries (§9) assert what actually
-   happened, where an assertion on `notable == false` would pass equally for a clean run and
-   for a broken fixture that analyzed nothing. Callers may branch on it too, but that is a
-   side benefit, not the justification.
+5. **Surface the analysis outcome**, not merely a boolean. A successful analysis ends in one
+   of `findings`, `clean`, `insufficient_baseline`, `nothing_in_scope` or `partial`, and that
+   **`outcome`** is what the flow carries forward alongside the report paths and regression
+   count (§7). A single `notable` boolean collapses states that need different handling:
+   "clean" and "we could not judge anything" are both *not notable*, yet only one of them is
+   good news. Naming the state serves two consumers. It is the key the companion selects a
+   message with (§5.2), so the choice is made once and explicitly rather than re-derived from
+   scattered checks; and it lets the test canaries (§9) assert what actually happened, where
+   an assertion on `notable == false` would pass equally for a clean run and for a broken
+   fixture that analyzed nothing. Callers may branch on it too, but that is a side benefit,
+   not the justification. Execution failure and partial platform coverage stay separate
+   workflow facts, because both can coexist with any analysis verdict.
 6. **File the rolling issue** when `issue-on-regression: true` *and* the outcome is
    **findings**. The
    full Markdown + JSON reports are uploaded as a single run **artifact** (they can exceed
@@ -1204,9 +1206,11 @@ built-in posting off entirely for a consumer who wants to publish their own repo
 outputs below; with `sink: none` the analyze commands compute and emit, and post nothing.
 
 **Outputs (from `analyze-history` / `analyze-pr`):** `outcome` (`findings` | `clean` |
-`insufficient-baseline` | `nothing-in-scope` | `partial` | `failed` — the named end state, §4.2);
+`insufficient_baseline` | `nothing_in_scope` | `partial` — the successful analysis verdict,
+§4.2; a non-zero process result becomes `failed` in the workflow);
 `notable` (`true`/`false`, retained as the convenience boolean for simple gating, and defined
 as `outcome == findings`);
+`partial-platform-coverage` (`true`/`false`, orthogonal to `outcome`);
 `regressions` (count); `report-markdown` (full report path); `report-json`; `report-summary`
 (condensed top-findings Markdown); `report-schema` (the JSON report's schema version). The
 reusable workflows re-export these as workflow outputs, so a caller on the default path can
@@ -1558,10 +1562,23 @@ working, first unchanged, then progressively rewired.
 **Phase 0 — Manual preparation (you).** Detailed in §12.1; the only phase requiring repository
 administration. Phases 1–3 do not depend on it, so it can happen in parallel.
 
-**Phase 1 — Tool-side rendering.** Add the coverage verdict in prose and the named `outcome`
-to `analyze` (§4.2, §5.1). Pure additions to an existing command, testable as ordinary Rust
-unit tests beside the renderer, with no GitHub or workflow involvement. Independently valuable:
-the verdict improves local `analyze` output immediately.
+**Phase 1 — Tool-side outcome.** The coverage verdict in prose already lives in
+`cbh_render::Coverage` and is shared by text, Markdown, summary and JSON output, so this phase
+does not add a second rendering. It adds the missing **named analysis outcome** to `analyze`:
+`findings`, `clean`, `insufficient_baseline`, `nothing_in_scope` or `partial`. The value is
+carried in the JSON report and, when `--outcome <path>` is requested, written as that one stable
+wire name so automation does not have to parse JSON merely to select a message. `notable`
+remains for compatibility and is exactly `outcome == findings`.
+
+The outcome is the primary verdict of a **successful analysis**. Execution failure cannot be
+written by a command that did not complete, so the workflow synthesises `failed` from the
+non-zero exit. Likewise, a missing matrix leg is orthogonal to what the surviving analysis
+found: the workflow carries that platform shortfall separately and the companion qualifies the
+message (§4.2). A run may therefore have `outcome: findings` and partial platform coverage;
+collapsing both dimensions into one enum would hide one of them.
+
+These are pure additions to an existing command, testable as ordinary Rust unit tests beside
+the renderer and output writer, with no GitHub or workflow involvement.
 
 **Phase 2 — The companion binary.** Create `cargo-bench-history-github` (§5.1) with its GitHub
 transport behind a port trait and an in-memory fake, following the package's existing ports-and-
