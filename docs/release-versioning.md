@@ -8,7 +8,8 @@ it. Publication itself belongs to [`release-automation.md`](release-automation.m
 
 * **Open this when**: implementing this design; a pull request is about the versioning process
   itself.
-* **In force**: contributors follow [`git-workflow.md`](git-workflow.md) and
+* **In force**: nothing described here is. This chapter is the design of a process that does not
+  yet exist; contributors follow [`git-workflow.md`](git-workflow.md) and
   [`RELEASING.md`](../RELEASING.md) until the work described here lands.
 * **Cross-links**: [`release-automation.md`](release-automation.md) (the publish half),
   [`git-workflow.md`](git-workflow.md) (contributor rules for pull requests),
@@ -65,7 +66,9 @@ The rule is read in both directions, and both are needed:
 * **The version increased on this branch.** The package is being released, and everything on the
   branch ships under the new version. Where in the branch the increment sits is irrelevant, and
   so is how much changes after it — which is what keeps the check stable across review
-  iterations.
+  iterations. The decision *evidence* is held to a stricter standard, because a later change can
+  outdate a judgement even when it cannot outdate the increment; see "Evidence stays bound to the
+  content it describes".
 * **The version did not increase.** The package is not being released, so no released content
   may sit past its anchor. This catches the branch's own unaccompanied changes
   *and* content already sitting unreleased on the base branch, which is what makes the check
@@ -213,10 +216,14 @@ changed between the anchor and the work tree:
 
 * **`[workspace.package]`** — `rust-version`, `edition`, `license`, `repository` and the rest.
   A raised `rust-version` is a consumer-visible change to every inheriting crate.
-* **`[workspace.dependencies]`** — a changed requirement alters what an inheriting package
-  builds against, when the package inherits it as a normal or build dependency. A requirement
-  inherited only as a dev-dependency is not attributed: a consumer never builds dev-dependencies,
-  which is the same downstream-effect test that excludes lints below.
+* **`[workspace.dependencies]`** — the inherited entry as a whole, not only its version
+  requirement. The requirement, `features` and `default-features` are all resolved into the
+  published manifest and all change what an inheriting package builds against; the root manifest
+  sets `default-features` on every entry and `features` on many, so attributing only the
+  requirement would let a feature edit merge unreleased. Attribution covers entries the package
+  inherits as a normal or build dependency. An entry inherited only as a dev-dependency is not
+  attributed: a consumer never builds dev-dependencies, which is the same downstream-effect test
+  that excludes lints below.
 
 Attribution is per package: the tool reads which keys each package inherits (`.workspace = true`
 in its manifest, resolved values from `cargo metadata --no-deps`) and marks only those packages.
@@ -254,7 +261,7 @@ repository-wide failing check until it finished.
 their own. Otherwise the group's versions diverge the first time only part of it changes.
 `nm_impl` has unreleased changes today and `nm` does not, so incrementing `nm_impl` obliges `nm`.
 The set of packages the check requires an increment for is therefore the changed set closed under
-grouping.
+grouping — the **increment set**, the packages a release run publishes.
 
 **The new version is the highest version declared by any member, raised by the highest level any
 member requires.** Members are consistent by the first rule, so this is normally unambiguous;
@@ -291,18 +298,19 @@ have unreleased changes *and* belong to an inconsistent group, and both are repo
 
 Packages with `publish = false` are excluded entirely.
 
-Whether a crate has ever reached crates.io is answered by the existing `check-never-published`
-recipe, not by any package status. crates.io Trusted Publishing cannot create a crate — a trusted
-publisher can only be configured on a crate that already exists — so a new crate's first version
+Whether a crate has ever reached crates.io is answered by a registry query rather than by any
+package status, and it is asked only of the crates a run is about to publish. crates.io Trusted
+Publishing cannot create a crate — a trusted publisher can only be configured on a crate that
+already exists — so a new crate's first version
 is published by an authenticated manual `cargo publish` as documented in
 [`RELEASING.md`](../RELEASING.md), and every later version uses the workflow's short-lived OIDC
 credentials. That bootstrap is a crates.io platform limitation and the one gap in this design's
 short-lived-credential model, recorded as such rather than as an intended credential workflow; if
 crates.io gains OAuth or another federated path for crate creation, the bootstrap moves to it.
-The skill's preflight runs the recipe and **stops** if any crate in the increment set has never
-been published — first publish is not folded into `apply`, because the OIDC publisher cannot
-perform it. The version check itself does not change: a never-published crate with a version
-increment is `releasing`.
+The skill therefore gates on that answer once its increment set exists, as described below, and
+**stops** rather than bumping; first publish is not folded into `apply`, because the OIDC
+publisher cannot perform it. The version check itself does not change: a never-published crate
+with a version increment is `releasing`.
 
 The check fails closed on a shallow or truncated history: if the anchor walk for a package that
 exists on the base branch reaches the end of available history without finding a version change,
@@ -318,7 +326,8 @@ A new Cargo subcommand in `packages/cargo-release-plan`.
 `report`, `check` and `apply` are the interface other consumers — the skill, CI recipes, other
 workspaces — depend on: their arguments, exit semantics, artifact paths, the fields of
 `report.json` and of a plan file, the variants a change record may take, and the meaning of
-`schema_version`. `schema_version` is incremented when a field's meaning changes or a field is
+`schema_version`. Both artifacts are specified below, `report.json` under `report` and the plan
+under `apply`. `schema_version` is incremented when a field's meaning changes or a field is
 removed; adding an optional field does not increment it. Everything below the contract — crate
 layout, the git adapter, the TOML editor, the fixture harness — is implementation detail and may
 change without a schema change. That boundary is what makes the tool safely reusable while its
@@ -350,13 +359,21 @@ behaviour is caught by CI rather than by a missed release.
 cargo release-plan report --out-dir <dir> [--base <rev>] [--manifest-path <p>] [--verbose]
 ```
 
-Writes `<dir>/report.json` plus one `<dir>/diffs/<package>.patch` per package with unreleased
-changes — a unified diff from the anchor to the work tree, which is literally "everything in this
-package that is not yet released".
+Writes `<dir>/report.json` plus one `<dir>/diffs/<package>.patch` for every package whose released
+content differs between its anchor and the work tree — a unified diff from the anchor to the work
+tree, which is everything in the package that the anchor's version does not already carry.
+
+That set is deliberately not limited to `unreleased-changes`. A `releasing` package needs the same
+diff, because the level chosen for it is judged from exactly that content, and the version may
+already have been raised — by an earlier `apply`, by a rerun on a branch under review, or by hand.
+Withholding the diff from those packages would leave the skill unable to evaluate the very
+decisions it is responsible for. Only an `unchanged` package has no diff, and its `diff_path` is
+absent.
 
 ```json
 {
   "schema_version": 1,
+  "base": "7d10…",
   "head": "9f3c…",
   "packages": [
     {
@@ -368,16 +385,36 @@ package that is not yet released".
       "changed": [
         { "path": "src/hashing.rs", "change": "modified", "source": "package" },
         { "path": "Cargo.toml", "change": "modified", "source": "package" },
-        { "field": "workspace.dependencies.folo_utils.version", "source": "inherited" }
+        { "field": "workspace.dependencies.folo_utils.version", "source": "inherited" },
+        { "field": "workspace.dependencies.folo_utils.features", "source": "inherited" }
       ],
       "stat": { "files": 4, "insertions": 26, "deletions": 10 },
       "diff_path": "diffs/nm_impl.patch",
+      "content_digest": "b41f…",
       "dependencies": [{ "name": "folo_utils", "req": "0.1.10", "exact_pin": false }],
       "dependents": ["nm"]
+    },
+    {
+      "name": "many_cpus",
+      "declared_version": "2.4.16",
+      "group": "many_cpus",
+      "status": "releasing",
+      "anchor": { "commit": "3c4d…", "version": "2.4.15" },
+      "changed": [{ "path": "src/lib.rs", "change": "modified", "source": "package" }],
+      "stat": { "files": 2, "insertions": 8, "deletions": 1 },
+      "diff_path": "diffs/many_cpus.patch",
+      "content_digest": "0ae7…",
+      "dependencies": [{ "name": "many_cpus_impl", "req": "=2.4.16", "exact_pin": true }],
+      "dependents": []
     }
   ],
   "groups": {
-    "nm": { "members": ["nm", "nm_impl"], "consistent": true, "version": "0.1.43" }
+    "nm": { "members": ["nm", "nm_impl"], "consistent": true, "version": "0.1.43" },
+    "many_cpus": {
+      "members": ["many_cpus", "many_cpus_impl"],
+      "consistent": true,
+      "version": "2.4.16"
+    }
   }
 }
 ```
@@ -385,6 +422,13 @@ package that is not yet released".
 A change record is tagged by `source` and carries only that variant's fields: a `package` record
 has `path` and `change`, an `inherited` record has `field`. No record carries both, and a
 consumer selects on `source` rather than probing for present keys.
+
+`content_digest` is a digest over the package's released content in the work tree — the
+release-relevant paths and their contents, plus the inherited values the package resolves — and it
+is what lets a decision be bound to the material it was judged from. It is derived from the same
+relevance rules as the diff, so it moves exactly when a republish-worthy change does and stays put
+for unrelated edits elsewhere in the workspace. It is reported for every package, including
+`unchanged` ones.
 
 `dependencies` and `dependents` are present because version decisions **cascade**. A package's own
 diff identifies only the roots; the increment set grows from there. `many_cpus` pins
@@ -413,12 +457,66 @@ cargo release-plan apply --plan <plan.json> [--dry-run]
 Applies an approved plan: sets each package's `version`, rewrites every intra-workspace dependency
 requirement that must follow — in particular the `=` pins — and expands group members.
 
-A parsed plan is not yet an applicable plan. `apply` accepts one only after every named package
-resolves to a workspace member, every version move is an increase from that member's declared
-version, group closure and `=`-pin rewrites are complete, and the full edit set has been computed.
-A plan failing any of those is rejected before a byte is written, so an invalid or partial plan
-cannot reach the filesystem. Manifests are then edited structurally with `toml_edit`, preserving
-comments and layout, exactly as `cargo-freeze-deps` does. A filesystem failure part-way through
+#### The plan file
+
+The plan is part of the command contract, so its shape is normative rather than an internal
+detail. It states absolute target versions and records what the decision was made against.
+
+```json
+{
+  "schema_version": 1,
+  "report": {
+    "base": "7d10…",
+    "head": "9f3c…",
+    "digests": { "nm": "d92c…", "nm_impl": "b41f…" }
+  },
+  "packages": [
+    {
+      "name": "nm_impl",
+      "from": "0.1.43",
+      "to": "0.1.44",
+      "level": "minor",
+      "origin": "judgement",
+      "justification": "New public `Hasher` constructor; semver-checks floor was patch."
+    },
+    {
+      "name": "nm",
+      "from": "0.1.43",
+      "to": "0.1.44",
+      "level": "minor",
+      "origin": "group-closure"
+    }
+  ]
+}
+```
+
+`origin` distinguishes a level a human approved (`judgement`) from one that follows mechanically
+(`group-closure`, `pin-propagation`), so the evidence shows which entries were decided and which
+were derived. `justification` is present on `judgement` entries and carries the reason the level
+was chosen; the mechanical origins do not need one.
+
+`report.digests` maps each planned package to the `content_digest` the report gave it when the
+plan was produced. Together with `report.base` it is the plan's applicability statement: it says
+which content this plan is a decision about.
+
+A parsed plan is not yet an applicable plan. `apply` accepts one only after the following hold,
+and rejects it before a byte is written otherwise, so an invalid, stale or partial plan cannot
+reach the filesystem:
+
+* `schema_version` is one this binary understands.
+* Every named package resolves to a publishable workspace member, and its `from` equals that
+  member's currently declared version.
+* Every `to` is an increase from the corresponding `from` under semver ordering.
+* Every version group that any named package belongs to is named in full, at one common `to`.
+* `=`-pin rewrites and the resulting dependent edits are complete, and the full edit set has been
+  computed.
+* `report.base` is the base the plan was derived against, and every digest in `report.digests`
+  matches the work tree's current `content_digest` for that package. A mismatch means the released
+  content moved after the decision, so the plan no longer describes what would be published, and
+  the correct response is a fresh skill run rather than a forced apply.
+
+Manifests are then edited structurally with `toml_edit`, preserving comments and layout, exactly
+as `cargo-freeze-deps` does. A filesystem failure part-way through
 the writes is reported with the files already written; re-running `apply` with the same plan is
 safe, because a plan states absolute target versions rather than relative increments. The
 workspace lockfile is refreshed afterwards, because `--locked` builds and the `check-frozen` job
@@ -432,8 +530,9 @@ that motivated the redesign live, and the plan file becomes a reviewable, testab
 ### Testing
 
 Unit tests cover anchor resolution, group verdicts, packaging-rule matching, inherited-value
-attribution and plan expansion. Integration tests build fixture repositories in
-`tempfile::tempdir()` and drive `run()` directly, using the hermetic `run_git` helper pattern from
+attribution, content-digest stability, and plan expansion and applicability. Integration tests
+build fixture repositories in `tempfile::tempdir()` and drive `run()` directly, using the hermetic
+`run_git` helper pattern from
 `cargo-bench-history`'s test harness (pinned identity, no signing, no autogc). Fixtures exercise
 representative branch histories, packaging and package-layout variations, group and dependency
 propagation, inherited-metadata attribution, and incomplete history — that is, one fixture per
@@ -452,11 +551,11 @@ lockfile refresh, `just verify-lockfile` — is applied without a second questio
 group member diverges the group, skipping a pin leaves a stale `=` requirement, and skipping
 the lockfile fails `--locked` builds.
 
-1. **Preflight.** Run the `cargo-semver-checks` canary and `just check-never-published`. A
-   `cargo-semver-checks` that fails to *run* — classically one too old for the toolchain's rustdoc
-   JSON format — must never be read as "no breaking changes". This is the failure mode the
-   current `verify-semver-checks` recipe guards against, and the guard survives the removal of
-   `release-plz update`. A never-published crate in the increment set is a stop, not a bump.
+1. **Preflight the analysis.** Run the `cargo-semver-checks` canary. A `cargo-semver-checks` that
+   fails to *run* — classically one too old for the toolchain's rustdoc JSON format — must never
+   be read as "no breaking changes". This is the failure mode the current `verify-semver-checks`
+   recipe guards against, and the guard survives the removal of `release-plz update`. Registry
+   state is not consulted here; there is nothing yet to consult it about.
 2. **Collect.** `just release-report <dir>` runs `cargo release-plan report` and then
    `cargo semver-checks --workspace --all-features`, capturing both.
 
@@ -470,26 +569,73 @@ the lockfile fails `--locked` builds.
    change requiring an increment.
 3. **Propose.** Walk the workspace dependency graph in topological order and, per package: take
    the `cargo-semver-checks` floor, read the package's diff, and decide a level. Expand version
-   groups, propagate `=` pins, and re-check that the expansion did not create new work. Every
-   crate here is `0.x` or `1.x`, so under Cargo's semantics a breaking change to a `0.x` crate is
-   a *minor* increment.
-4. **Present.** One table for the human, **one row per version group and per ungrouped
+   groups, propagate `=` pins, and re-check that the expansion did not create new work. The result
+   is this run's increment set.
+
+   How a level becomes a version follows Cargo's compatibility rules, which depend on the
+   package's current major version: for a `0.x` package a breaking change is a *minor* increment,
+   while for a package at `1.0.0` or above it is a *major* one. The workspace holds packages of
+   both kinds — `many_cpus` and its impl crate are `2.x` — so the mapping is read from each
+   package's declared version rather than assumed.
+4. **Gate on registry presence.** With the increment set known, query crates.io for each package
+   in it. This step cannot run earlier: before collection and proposal there is no set to scope
+   the query to, and a workspace-wide sweep answers a different question.
+
+   A package in the set that has never been published is a **stop**, not a bump, because the OIDC
+   publisher cannot create a crate. An inconclusive lookup is also a stop: anything that is not a
+   definite "this crate exists" or "this crate does not exist" — a network failure, an
+   unexpected response, a rate-limited query — is an error, because treating it as "probably
+   published" would carry the run into an `apply` whose publish cannot happen. The existing
+   workspace-wide never-published sweep is advisory and warns rather than stops, so it does not
+   serve as this gate. The query lives in the recipe layer, not in `cargo-release-plan`, which
+   never contacts the network.
+
+   The stop is cleared by the manual first publish described above, after which the run starts
+   again.
+5. **Present.** One table for the human, **one row per version group and per ungrouped
    package** — not one row per crate. A version group is one decision, regardless of how many
    members it has. Each row shows current version, proposed version, level, the floor
    `cargo-semver-checks` reported, the members the level will apply to, and a one-line
    justification citing the actual change.
    Where the proposal exceeds the floor, the reason is stated explicitly — that is the entire
    point of the exercise. Diffs stay on disk and are cited by path rather than pasted, since one
-   package's unreleased changes can run to thousands of lines.
-5. **Apply, on approval.** `cargo release-plan apply`, then `just verify-lockfile`, then re-run
+   package's diff can run to thousands of lines.
+6. **Apply, on approval.** `cargo release-plan apply`, then `just verify-lockfile`, then re-run
    `check` and the scoped `cargo semver-checks` to confirm the result, and write the summary into
    the pull request description. The summary persists the decision evidence, not just the
    outcome: the approved per-group and per-package levels, the `cargo-semver-checks` floor for
    each and the stated reason wherever judgement raised it, the group expansion and `=`-pin
    rewrites that followed, and the result of each post-apply verification command. That is what
-   lets a reviewer reconstruct the version decision after the interactive run has ended. Further
-   changes may follow the increment without invalidating it. The plan is not committed: the check
-   verifies manifest state, not intent, so a plan file in the repository would be inert churn.
+   lets a reviewer reconstruct the version decision after the interactive run has ended. The plan
+   is not committed: the check verifies manifest state, not intent, so a plan file in the
+   repository would be inert churn.
+
+### Evidence stays bound to the content it describes
+
+An approved level is a judgement about a specific body of released content. Left unbound, it goes
+stale the moment that content moves: a behavioural break added after approval — one
+`cargo-semver-checks` cannot see, which is exactly the case this design exists to catch — would
+merge under a level approved before it existed, while `cargo release-plan check` passed because
+*some* increment had happened. The check detects that a version increased; it does not and cannot
+judge whether the increase was large enough.
+
+The binding is the `content_digest` the report computes. The summary records it per releasing
+package, in a machine-readable block, alongside the approved levels, floors and reasons, and the
+plan carries the same digests as its applicability statement. A change to a releasing package's
+released content changes the digest, so the recorded evidence no longer describes what would
+merge, and the skill is run again. A rerun is cheap and usually confirms the level, refreshing the
+digest and the summary rather than moving the version — which is why the stability property above
+survives: what a late edit invalidates is the evidence, not the increment.
+
+Freshness is enforced mechanically rather than by convention. A step in `validate-versions`
+recomputes each releasing package's digest from the checkout and compares it with the block in the
+pull request description; a missing block for a releasing package, or a digest that does not
+match, fails the job and names the skill. That step runs on `pull_request` events, where the pull
+request body is unambiguous. The merge queue needs no equivalent: content reaches `main` only with
+its own increment, so a base that moved a releasing package's released content also moved that
+package's anchor, and the version rule itself then demands a fresh increment and therefore a fresh
+run. The recomputed digests and `report.json` are written to the job summary and uploaded as an
+artifact, so a mismatch is diagnosable from the run alone rather than by reproducing it locally.
 
 ## The GitHub check
 
@@ -513,6 +659,9 @@ touch.
 ```yaml
 validate-versions:
   runs-on: ubuntu-latest
+  permissions:
+    contents: read
+    pull-requests: read   # the evidence step reads the pull request description
   outputs:
     releasing: ${{ steps.check.outputs.releasing }}
   steps:
@@ -525,14 +674,23 @@ validate-versions:
         RELEASE_PLAN_BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
       run: just validate-versions
       shell: pwsh
+    - id: evidence
+      if: github.event_name == 'pull_request'
+      env:
+        GH_TOKEN: ${{ github.token }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+      run: just validate-release-evidence
+      shell: pwsh
 ```
 
 The recipe is a thin wrapper over `cargo release-plan check --base <sha> --format github`, which
 also emits the set of packages this pull request releases, for the next job. On a push to `main`
 `RELEASE_PLAN_BASE` is empty and the tool falls through to `origin/main`, which is the branch
 under test: the checkout is the base branch itself, so the default is the fresh base the anchor
-walk requires. No PowerShell module is introduced: the classification logic is the Rust tool's job
-and is tested there. The job joins `alert`'s `needs:` list and the `required-checks` fan-in.
+walk requires. The evidence recipe is a comparison of two digest lists — the tool's and the pull
+request's — and no classification logic moves into PowerShell: deciding statuses and computing
+digests is the Rust tool's job and is tested there. The job joins `alert`'s `needs:` list and the
+`required-checks` fan-in.
 
 A failing check prints one actionable line per offence and names the skill. That is the entire
 recovery path — the author does not have to reconstruct a plan from this chapter. Copilot is
@@ -609,10 +767,11 @@ the author who wrote them.
 flowchart TD
     A["Author finishes changes"] --> B["increment-versions: report + semver-checks"]
     B --> C["Proposed plan with per-group justification"]
-    C --> D{"Human approves?"}
+    C --> R["Registry gate on the increment set"]
+    R --> D{"Human approves?"}
     D -- adjust --> C
     D -- yes --> E["apply: versions, pins, groups, lockfile"]
-    E --> F["validate-versions + scoped semver-checks"]
+    E --> F["validate-versions + evidence + scoped semver-checks"]
     F --> G["required-checks fan-in"]
     G --> H["Merge queue rebases onto main"]
     H --> I["release.yml publishes every unpublished version"]
@@ -668,9 +827,9 @@ crates.io throttles publishing with a per-user token bucket, and the applicable 
 for **new versions of existing crates**: a burst of 30 with one token refilled per minute. (The
 much tighter new-crate limit — burst 5, one per ten minutes — does not apply here, because
 Trusted Publishing cannot create a crate, so bootstrapping a new crate is a manual step outside
-this flow.) These are server-side values that crates.io controls: they are the `PublishExisting`
-and `PublishNew` defaults in
-[`src/config/rate_limits.rs`](https://github.com/rust-lang/crates.io/blob/main/src/config/rate_limits.rs)
+this flow.) These are server-side values that crates.io controls: they are the
+`LimitedAction::PublishUpdate` and `LimitedAction::PublishNew` defaults in
+[`src/rate_limiter.rs`](https://github.com/rust-lang/crates.io/blob/main/src/rate_limiter.rs)
 of `rust-lang/crates.io`, overridable there by deployment configuration, and a live rejection
 reports the applicable limit in its error response. Both are checkable without privileged access,
 and the budget below must be recomputed from them if either changes. A full-workspace
