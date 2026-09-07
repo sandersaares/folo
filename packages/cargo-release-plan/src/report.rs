@@ -43,8 +43,8 @@ struct ReportPackage {
     dependents: Vec<String>,
     /// Whether the package's library is what consumers are meant to use.
     ///
-    /// False for a library the manifest opts out of documentation with
-    /// `[lib] doc = false`, and for a package with no library at all.
+    /// False for a package with no library target, and for one declaring
+    /// `[package.metadata.release-plan] private-api = true`.
     consumer_contract: bool,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     untracked: Vec<String>,
