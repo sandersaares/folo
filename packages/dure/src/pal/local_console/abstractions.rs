@@ -6,22 +6,6 @@ use crate::pal::error::PalError;
 use crate::pal::ids::RelayLeaseId;
 use crate::pal::pseudoconsole::WindowSize;
 
-/// One console event observed while a client is attached.
-///
-/// The relay reads these for the whole life of the attached session, not just
-/// during the handshake. Keys that are not characters — arrows, function keys,
-/// modifier chords — are encoded by the console as VT sequences, so they arrive
-/// in the same byte stream as typed text; a window change is the one event that
-/// is not bytes at all.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum ConsoleInput {
-    /// The forwarded input byte stream, relayed as
-    /// [`crate::protocol::Message::Input`].
-    Bytes(Vec<u8>),
-    /// Window size changed; forward as [`crate::protocol::Message::Resize`].
-    Resize(WindowSize),
-}
-
 /// Detect a console, take it over for a relay, and exchange bytes.
 ///
 /// Ref: docs/implementation.md, "PAL slicing"; docs/console.md.
@@ -56,8 +40,8 @@ pub(crate) trait LocalConsole: Send + Sync + fmt::Debug + 'static {
     /// Current console size.
     fn window_size(&self) -> Result<WindowSize, PalError>;
 
-    /// Blocking read of console input bytes or a window-size change.
-    fn read_input(&self) -> Result<ConsoleInput, PalError>;
+    /// Blocking read of console input bytes.
+    fn read_input(&self) -> Result<Vec<u8>, PalError>;
 
     /// Wake a blocked [`LocalConsole::read_input`] so its reader can stop.
     ///

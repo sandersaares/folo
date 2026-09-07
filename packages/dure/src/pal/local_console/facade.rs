@@ -6,10 +6,10 @@ use std::sync::Arc;
 
 use crate::pal::error::PalError;
 use crate::pal::ids::RelayLeaseId;
+use crate::pal::local_console::LocalConsole;
 #[cfg(test)]
 use crate::pal::local_console::MockLocalConsole;
 use crate::pal::local_console::windows::BuildTargetConsole;
-use crate::pal::local_console::{ConsoleInput, LocalConsole};
 use crate::pal::pseudoconsole::WindowSize;
 
 /// Dispatches console operations to the real PAL or a test mock.
@@ -92,7 +92,7 @@ impl LocalConsole for LocalConsoleFacade {
         }
     }
 
-    fn read_input(&self) -> Result<ConsoleInput, PalError> {
+    fn read_input(&self) -> Result<Vec<u8>, PalError> {
         match self {
             Self::Target(inner) => inner.read_input(),
             #[cfg(test)]
