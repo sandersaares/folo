@@ -987,6 +987,26 @@ design previously relied on:
   abandoned the moment a consumer edited `issue-title`, and could hijack an unrelated issue
   that happened to match.
 
+  The ambiguous-create case is not hypothetical, and the storage backend already solves its
+  own version of it: a conditional create can commit and then lose its response, so the SDK's
+  automatic retry sees "already exists" for an object *it* just wrote. The fix there was to
+  carry an opaque request identity on the object and reconcile against it — a matching identity
+  proves this writer committed, anything else is a genuine collision. The sink layer faces the
+  same shape with the same answer: the hidden marker *is* that identity, so a create that
+  cannot confirm its outcome reconciles by reading rather than by guessing.
+
+**Configured labels must exist, and the failure is unforgiving.** `gh issue create` rejects an
+unknown label outright rather than warning and continuing, so a label named in configuration
+but absent from the repository fails the whole filing — and it fails at exactly the wrong
+moment, since the paths that file issues are the paths reporting that something is already
+wrong. This has bitten the monorepo in production: a label referenced only by the workflow, and
+never created in the repository, took down both the regression filing and the failure alert
+that would have reported it. The companion therefore **validates configured labels up front and
+files successfully regardless** — creating a missing label where it has permission, and
+otherwise filing without it and saying so — because a report that arrives unlabelled is
+strictly better than one that does not arrive. The consumer's triage convention is worth
+serving, but never at the cost of the report itself.
+
 ### 5.2 Standard reports, with narrow overrides
 
 Once the message catalogue lives in one binary (§5.1), standardisation is nearly free: there
@@ -1445,9 +1465,12 @@ binary** that owns the GitHub-shaped half (§5.1):
   published beside the faker and installed by the same layer (§3). It is the only new
   *package* this design requires, and the only one a consumer installs beyond the tool itself.
 * **The release pipeline needs the companion added to it.** The automated publish flow itself
-  needs no new logic, but the new package must be entered into the version-group configuration
-  and set up as a crates.io trusted publisher, exactly as any other published package is —
-  plus the pre-tag resolvability gate of §8.1, which is new.
+  needs no new logic, but the new package joins the `cargo-bench-history` version group in
+  `[workspace.metadata.release-plan.groups]` — so it moves in lockstep with the tool, exactly
+  as the faker already does — and needs its crates.io trusted-publisher setup like any other
+  published package. Its version increment then rides the ordinary process: the pull request
+  that changes released content carries the increment, and merging publishes. The one genuinely
+  new piece is the pre-tag resolvability gate of §8.1, which lives in the action repo.
 * **The existing CLI covers everything else.** `--config`, `--local`, `--cache`,
   `--skip-existing` / `--overwrite`, `--best-of`, `--context` / `--base`, `--machine-key`, the
   scope flags, and `backfill` (both the densification pass, §4.8, and `--overwrite` recollect)
@@ -1503,3 +1526,77 @@ binary** that owns the GitHub-shaped half (§5.1):
   the action's reference material; the action repo's **README** is a quick start that links
   here. This file and the pointer from `DESIGN.md` §7.3 remain the design record until it is
   dismantled into those homes.
+
+## 12. Implementation plan
+
+The work splits into phases that each **land independently, prove themselves, and leave the
+system working**. Two properties drive the ordering. First, every phase before the last is
+invisible to consumers, so a stalled effort never leaves a half-published action in the
+Marketplace. Second, the risky, hard-to-test parts are pulled early and validated *inside the
+monorepo*, where the existing workflows already exercise them against real data — so by the
+time anything is published, its behaviour has been running in production for weeks.
+
+The phases are ordered so that each is testable by the layer below it, and the monorepo's own
+bench-history workflows act as the integration test throughout: at every phase they keep
+working, first unchanged, then progressively rewired.
+
+**Phase 0 — Manual preparation (you).** Detailed in §12.1; the only phase requiring repository
+administration. Phases 1–3 do not depend on it, so it can happen in parallel.
+
+**Phase 1 — Tool-side rendering.** Add the coverage verdict in prose and the named `outcome`
+to `analyze` (§4.2, §5.1). Pure additions to an existing command, testable as ordinary Rust
+unit tests beside the renderer, with no GitHub or workflow involvement. Independently valuable:
+the verdict improves local `analyze` output immediately.
+
+**Phase 2 — The companion binary.** Create `cargo-bench-history-github` (§5.1) with its GitHub
+transport behind a port trait and an in-memory fake, following the package's existing ports-and-
+fakes convention. This phase covers the whole message catalogue and every lifecycle command,
+and is where the bulk of the logic lands — all of it unit-testable against the fake with no
+network. Add it to the version group. Nothing consumes it yet.
+
+**Phase 3 — Cut the monorepo over to the companion.** Replace `scripts/bench-history/*.psm1`
+with calls to the companion, keeping the existing workflow structure. This is the highest-value
+validation in the plan: the monorepo's real push and PR flows start exercising the companion
+against real issues, real comments, and real history, while the workflows around them are
+unchanged and can be reverted in one commit. Deleting the PowerShell modules and their Pester
+suites is the phase's completion signal. The new lifecycle commands (`issue-preflight`,
+`issue-cleanup`, `pr-comment-finalize`) land here too, so their behaviour is observed on a real
+repository before anyone else can adopt them.
+
+**Phase 4 — The composite action.** Stand up the action repo with `action.yml` and the
+`command` surface (§4, §7), implemented as thin wiring over the binaries from phases 1–3. Its
+own CI runs Layers 1 and 2 (§9). Still unpublished, and still consumed by nobody.
+
+**Phase 5 — The reusable workflows.** Add `history.yml`, `pr.yml`, and `backfill.yml` (§4.7),
+including the scope preflight and the matrix. Validated by the caller canaries (§9), which are
+the only test of this layer.
+
+**Phase 6 — Dogfood.** Point the monorepo's workflows at the reusable workflows with
+`install-method: path` (§10). Folo's ~1,200 lines of workflow YAML collapse to three `uses:`
+blocks. This is the last chance to find interface problems while we are the only consumer, and
+the phase where the design's central claim is either demonstrated or falsified.
+
+**Phase 7 — Publish.** Cut `v1`, list on the Marketplace (§8.1), and write the book's
+GitHub-automation section and the action README (§11). Documentation lands with the release
+rather than before it, since it describes behaviour the previous phases have by then proven.
+
+### 12.1 Phase 0 — what needs your hands
+
+None of this can be done from a pull request, and everything else can proceed while it is
+pending. In rough order of when it is needed:
+
+| # | Action | Needed by | Notes |
+| --- | --- | --- | --- |
+| 1 | **Create the label(s)** the bench-history flows file issues under, in every repository that runs them | Phase 3 | `gh issue create` rejects an unknown label outright, and this has already broken the monorepo's issue filing once (§5.1). The companion degrades gracefully, but the labels existing is what makes the triage convention work. |
+| 2 | **Create the repository** `folo-rs/cargo-bench-history-action` (public, empty) | Phase 4 | The action must live at a repository root to be Marketplace-listable (§2). |
+| 3 | **Configure it like the monorepo**: protected `main`, required checks, whatever merge policy you prefer | Phase 4 | Same rationale as the monorepo's own settings; nothing action-specific. |
+| 4 | **Add `cargo-bench-history-github` as a crates.io trusted publisher** | Phase 2 (before its first publish) | Same one-time setup every published package here needs. Cannot be scripted from a PR. |
+| 5 | **Enable Marketplace publishing** on the action repo — accept the agreement, choose a category, verify the listing | Phase 7 | A one-time UI flow tied to the account, not to a release run (§8.1). |
+| 6 | **Decide the `v1` promise** — when the floating major tag starts moving, its consumers inherit whatever it points at | Phase 7 | Worth an explicit decision rather than discovering it after the first breaking change. |
+
+Two things I want to flag as **not** needed, because they would be reasonable to assume:
+
+* **No new secrets or tokens.** Every phase runs on the per-run `GITHUB_TOKEN` (§9) or the
+  existing Azure federation. Nothing here introduces a credential to create or rotate.
+* **No separate test repository.** Testing happens in the repository that runs it (§9), which
+  is what removes the cross-repository credential problem entirely.
