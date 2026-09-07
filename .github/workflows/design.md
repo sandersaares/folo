@@ -528,7 +528,8 @@ file nothing.
 Publishing changed crates to crates.io and attaching cargo-binstall prebuilt binaries is
 fully automated after the single manual version-bump step. Its full design — single-workflow
 structure, crates.io Trusted Publishing, dynamic derivation of which crates receive GitHub
-releases, and the self-healing reconciliation that rebuilds only missing binary assets —
+releases, repair of a missing release after a manual or partial publish, and self-healing
+reconciliation of incomplete archive/checksum pairs —
 lives in [`docs/release-automation.md`](../../docs/release-automation.md).
 
 ## Cache warmup

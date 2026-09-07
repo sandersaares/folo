@@ -97,8 +97,9 @@ jobs:
     timeout-minutes: 120
 
     permissions:
-      # `gh release view` reads releases; checkout needs read.
-      contents: read
+      # Reconciliation reads existing releases and creates any release/tag that a manual
+      # crates.io publish or partial release-plz run left absent.
+      contents: write
 
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
@@ -107,9 +108,24 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
+        with:
+          # Missing-release repair resolves each package's version anchor from first-parent
+          # history, so a shallow checkout cannot identify the correct tag target.
+          fetch-depth: 0
 
       - name: Setup environment
         uses: ./.github/actions/setup-environment
+
+      - name: Create missing binary GitHub releases
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # release-plz skips versions already present on crates.io, so it cannot repair a missing
+        # tag/release after a manual publish or a partial failure. Create that release at the
+        # package's version anchor before asset reconciliation. GITHUB_SHA is the exact
+        # release-branch commit checked out by this main-only workflow, so anchor resolution
+        # cannot drift to a later ref or accidentally use feature-branch manifest versions.
+        run: just gh-create-missing-binary-releases "$env:GITHUB_SHA"
 
       - name: Reconcile missing binary assets
         id: plan
@@ -117,7 +133,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         # The recipe always emits its Write-Verbose decision history, so the step log records how
-        # the missing-archive plan was derived per crate and target - not just the final count.
+        # the incomplete-asset plan was derived per crate and target - not just the final count.
         run: just gh-plan-release-binaries
 
   build-binaries:
@@ -128,7 +144,8 @@ jobs:
       # in plan-binaries means the next run rebuilds only whatever is still missing.
       fail-fast: false
       matrix:
-        # One entry per missing (crate, target) pair: {name, version, tag, triple, os}.
+        # One entry per incomplete (crate, target) pair:
+        # {name, bin, version, tag, triple, os}.
         include: ${{ fromJSON(needs.plan-binaries.outputs.matrix) }}
     runs-on: ${{ matrix.os }}
     # Release build/package/upload budget plus up to 90 min for a cold-cache setup-environment.
@@ -151,7 +168,7 @@ jobs:
       - name: Build, package, checksum and upload
         uses: taiki-e/upload-rust-binary-action@v1
         with:
-          bin: ${{ matrix.name }}
+          bin: ${{ matrix.bin }}
           package: ${{ matrix.name }}
           target: ${{ matrix.triple }}
           # `$target` is expanded by the action. Archives are `.zip` on every platform

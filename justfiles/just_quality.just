@@ -255,7 +255,7 @@ import 'just_quality_mutants.just'
 # Skips some potentially very lengthy validation, which you can run separately via `validate-extra`.
 # We assume this is executed on Windows, and will also perform the full validation on Linux.
 [group('quality')]
-validate: validate-local validate-linux
+validate: validate-local validate-linux validate-versions
 
 # Performs the part of the `validate` recipe that must run on Linux, when commanded from Windows.
 [group('quality')]

@@ -86,14 +86,14 @@ textual diff of the manifest, so reformatting, key reordering and line moves do 
 increments. And a package's creation commit counts as a version change (absent → present), so a
 package added and released in one pull request needs no special handling.
 
-The base revision defaults to `origin/main`. CI passes an explicit SHA: the pull request's
-base on a `pull_request` run, the commit the queue rebased onto (`merge_group.base_sha`) on a
-merge-queue run. Using the original pull-request base inside the queue would let two branches
-that both incremented `0.6.1 → 0.6.2` both look valid. A stale base is otherwise safe rather
-than unsound: it can only move the anchor further back, which reports more, never less. The
-check needs full history (`fetch-depth: 0`) and that base SHA, and nothing else — no tags, no
-merge ref, no network. Tags are not consulted, because tagging is atomic with neither the
-merge nor the publish, so an absent tag proves nothing.
+The base revision defaults to `origin/main`. CI passes the release branch's remote-tracking
+revision on a `pull_request` or `push` run, and the commit the queue rebased onto
+(`merge_group.base_sha`) on a merge-queue run. Using the original pull-request target inside the
+queue would let two branches that both incremented `0.6.1 → 0.6.2` both look valid. A stale base
+is otherwise safe rather than unsound: it can only move the anchor further back, which reports
+more, never less. The check needs full history (`fetch-depth: 0`) and that base revision, and
+nothing else — no tags, no merge ref, no network. Tags are not consulted, because tagging is
+atomic with neither the merge nor the publish, so an absent tag proves nothing.
 
 ### Concurrent pull requests
 
@@ -198,10 +198,10 @@ narrow away.
 Everything else in the root manifest is out of scope, including **`[workspace.lints]`**. This is
 the answer to "how are lints excluded": they are not part of the inherited-value set, so they are
 never attributed to any package. Lints are inlined into every published manifest — a thirty-line
-source manifest becomes a 260-line published one, almost entirely lint configuration — but Cargo
-builds registry dependencies with `--cap-lints allow`, so a dependency's lint configuration
-cannot affect a consumer's build. Republishing forty-four crates for a lint tweak is not a trade
-worth making.
+source manifest becomes a much larger published one, almost entirely lint configuration — but
+Cargo builds registry dependencies with `--cap-lints allow`, so a dependency's lint configuration
+cannot affect a consumer's build. Republishing every publishable crate for a lint tweak is not a
+trade worth making.
 
 ## Version groups
 
@@ -241,10 +241,11 @@ published is a separate question with its own preflight, described under
 
 Adding a package to a group therefore has an order. The new member declares the group's current
 version, which keeps it consistent the moment it stops being exempt. It is published by hand
-once, because Trusted Publishing cannot perform a first publish, and the skill's preflight stops
-on a never-published package for exactly that reason. Only then can a later pull request increment
-the group as a whole. Adding a member and incrementing the group in one pull request would need
-that manual first publish to happen in between, so those are separate pull requests.
+once, because Trusted Publishing cannot perform a first publish, and the skill's exact pre-apply
+gate stops on a never-published package for exactly that reason. Only then can a later pull
+request increment the group as a whole. Adding a member and incrementing the group in one pull
+request would need that manual first publish to happen in between, so those are separate pull
+requests.
 
 Group membership lives in `[workspace.metadata.release-plan]` in the root `Cargo.toml`.
 `release-plz.toml` does not declare version groups.
@@ -268,10 +269,11 @@ Packages with `publish = false` are excluded entirely.
 Whether a crate has ever reached crates.io is a different question, answered by the existing
 `check-never-published` recipe. crates.io Trusted Publishing cannot perform a crate's first
 publish, so a new crate needs one manual `cargo publish` as documented in
-[`RELEASING.md`](../RELEASING.md). The skill's preflight runs that recipe and **stops** if any
-crate in the increment set has never been published — first-publish is not folded into
-`apply`, because the OIDC publisher cannot perform it. The version check itself does not
-change: a never-published crate with a version increment is `pending-release`.
+[`RELEASING.md`](../RELEASING.md). The skill's preflight runs that recipe as a best-effort,
+workspace-wide advisory. After the plan is expanded, `check-increment-published` fails closed
+unless every package the plan reaches is already published; first-publish is not folded into
+`apply`, because the OIDC publisher cannot perform it. The version check itself does not change:
+a never-published crate with a version increment is `pending-release`.
 
 The check fails closed on a shallow or truncated history: if the anchor walk reaches the end of
 available history without finding a version change, that is an error, not a pass. Otherwise a
@@ -297,7 +299,7 @@ A non-gating `--verify-packaging` mode cross-checks the tool's relevance rules a
 `cargo package --list` on a clean tree, so a divergence between the tool's rules and Cargo's real
 behaviour is caught by CI rather than by a missed release.
 
-It offers three commands to the process.
+It offers four commands to the process.
 
 **`report`** writes `report.json` plus a unified diff per package with unreleased changes —
 literally "everything in this package that is not yet released". The skill reads it to propose
@@ -314,6 +316,10 @@ independently in one pass is wrong; the graph makes the required ordering explic
 printing one actionable line per offence: what changed, what the anchor was, which group members
 are dragged along, and how to run the skill. `--format github` adds workflow annotations. This is
 what `validate-versions` runs.
+
+**`expand`** resolves a proposed plan into the explicit package/version set it reaches. The skill
+presents that expanded document for approval so version-group members cannot appear only when the
+plan is applied.
 
 **`apply`** takes an approved plan, sets each package's version, rewrites every intra-workspace
 requirement that must follow — in particular the `=` pins — and expands group members. Manifests
@@ -349,22 +355,23 @@ lockfile refresh, `just verify-lockfile` — is applied without a second questio
 group member diverges the group, skipping a pin leaves a stale `=` requirement, and skipping
 the lockfile fails `--locked` builds.
 
-1. **Preflight.** Run the `cargo-semver-checks` canary and `just check-never-published`. When
-   cargo-semver-checks fails to *run* — classically an installed copy too old for the toolchain's
-   rustdoc JSON format — the result must never be read as "no breaking changes".
-   `verify-semver-checks` is the canary for the skill and for the CI `semver-checks` job. A
-   never-published crate in the increment set is a stop, not an increment.
+1. **Preflight.** Run the `cargo-semver-checks` canary and the workspace-wide,
+   best-effort `just check-never-published` advisory. When cargo-semver-checks fails to *run* —
+   classically an installed copy too old for the toolchain's rustdoc JSON format — the result must
+   never be read as "no breaking changes". `verify-semver-checks` is the canary for the skill and
+   for the CI `semver-checks` job. After approval, `check-increment-published` performs the exact
+   fail-closed publication check over the expanded plan before anything is applied.
 2. **Collect.** `just release-report <dir>` runs `cargo release-plan report` and then
-   `cargo semver-checks --workspace --all-features`, capturing both.
+   `cargo semver-checks --all-features` for the affected packages that declare a consumer
+   contract, capturing both.
 
    `--all-features` is used because gated API is still public API, and a breaking change behind a
    feature flag is invisible to a default-feature run.
 
-   Semver checking is workspace-wide, not restricted to changed packages, and the reason is worth
-   stating so nobody later "optimises" it away: a package's public API can break without any of
-   its own files changing. If `bar` makes a breaking change and `foo` re-exports a `bar` type,
-   `foo`'s API breaks too, and `foo`'s requirement on `bar` must move — which is itself a manifest
-   change requiring an increment.
+   Target selection matches CI: a changed private implementation package selects the public
+   consumer-contract member of its version group, while packages with no consumer contract are
+   omitted. The plan separately propagates a breaking change through public workspace
+   dependencies, including packages whose own files did not initially change.
 3. **Propose.** Walk the workspace dependency graph in topological order and, per package: take
    the `cargo-semver-checks` floor, read the package's diff, and decide a level. Expand version
    groups, propagate `=` pins, and re-check that the expansion did not create new work. Levels
@@ -387,11 +394,12 @@ the lockfile fails `--locked` builds.
    Where the proposal exceeds the floor, the reason is stated explicitly — that is the entire
    point of the exercise. Diffs stay on disk and are cited by path rather than pasted, since one
    package's unreleased changes can run to thousands of lines.
-5. **Apply, on approval.** `just apply-release-plan`, then `just verify-lockfile`, then re-run
-   `check` and the scoped `cargo semver-checks` to confirm the result, and write the summary into
-   the pull request description. Further changes may follow the increment without invalidating
-   it. The plan is not committed: the check verifies manifest state, not intent, so a plan file
-   in the repository would be inert churn.
+5. **Apply, on approval.** `just check-increment-published <expanded>`, then
+   `just apply-release-plan <expanded>`, then `just verify-lockfile`, then re-run `check` and the
+   scoped `cargo semver-checks` to confirm the result, and write the summary into the pull request
+   description. Further changes may follow the increment without invalidating it. The plan is not
+   committed: the check verifies manifest state, not intent, so a plan file in the repository
+   would be inert churn.
 
 ## The GitHub check
 
@@ -478,15 +486,16 @@ carry the maintenance rule.
 ### `semver-checks`
 
 `cargo-semver-checks` is too expensive to run workspace-wide on every pull request — a full run
-means rustdoc for both baseline and current across forty-four packages, and the `cbh_*` family is
-slow to build. In CI it is therefore scoped to `semver_targets`: the packages with a supported
-consumer contract that carry unreleased content changes. That set is narrower than what a merge
-publishes, because published implementation and test-support packages declare themselves private
-and have no consumer contract to compare, and it is not limited to the current pull request,
-because a package whose increment landed in an earlier pull request still carries unreleased
-content. It runs with `--all-features`, for the same reason the skill does. Group closure means
-this set is not always small, so the job runs in parallel with the rest of validation rather than
-gating it. An empty `semver_targets` is a successful skip, not a workspace-wide comparison.
+means rustdoc for both baseline and current across every consumer-contract package, and the
+`cbh_*` family is slow to build. In CI it is therefore scoped to `semver_targets`: the packages
+with a supported consumer contract that carry unreleased content changes. That set is narrower
+than what a merge publishes, because published implementation and test-support packages declare
+themselves private and have no consumer contract to compare, and it is not limited to the current
+pull request, because a package whose increment landed in an earlier pull request still carries
+unreleased content. It runs with `--all-features`, for the same reason the skill does. Group
+closure means this set is not always small, so the job runs in parallel with the rest of
+validation rather than gating it. An empty `semver_targets` is a successful skip, not a
+workspace-wide comparison.
 
 It runs with `if: !cancelled()` on `needs: [validate-versions]`, so a failing version check still
 surfaces insufficient-increment findings in the same round trip rather than hiding them behind a
@@ -533,11 +542,10 @@ an anomaly to be engineered away.
 
 crates.io throttles publishing with a per-user token bucket, and the applicable limit is the one
 for **new versions of existing crates**: a burst of 30 with one token refilled per minute. (The
-much tighter new-crate limit — burst 5, one per ten minutes — does not apply here, because
-Trusted Publishing cannot perform a crate's first publish, so bootstrapping a new crate is a
-manual step outside this flow.) A full-workspace reconciliation of 44 crates against a fully
-drained bucket therefore costs at most about 44 minutes of waiting, and any single group release
-fits inside the burst.
+much tighter new-crate limit — burst 5, one per ten minutes — does not apply here, because Trusted
+Publishing cannot perform a crate's first publish, so bootstrapping a new crate is a manual step
+outside this flow.) A full-workspace reconciliation can therefore require roughly one minute per
+crate after the initial burst, while any single version-group release fits inside the burst.
 
 `release-plz release` is idempotent — it re-checks the registry and skips already-published
 versions — so a throttled run resumes rather than restarting. The retry around it is **three**

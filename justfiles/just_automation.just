@@ -545,12 +545,33 @@ gh-release config:
 
     Invoke-ReleasePublish -ConfigPath '{{config}}'
 
-# Reconciles the desired prebuilt-binary archives against what is already uploaded to each
-# published binary crate's GitHub release, and emits the matrix of missing (crate, target)
-# pairs still to build as the `matrix` / `has_binaries` step outputs (also printed). This is
-# what makes retries self-healing: a re-run rebuilds only whatever is still missing, with no
-# hardcoded crate list. Safe to run locally - with no releases yet it reports an empty
-# matrix. See .github/workflows/release.yml and docs/release-automation.md.
+# Creates any GitHub release/tag that release-plz could not create because the matching crates.io
+# version was already published manually or before a partial failure. Each tag points at the
+# package's version anchor from cargo-release-plan, so it identifies the revision that introduced
+# the published version even when recovery happens after later unrelated merges. COMMIT is the
+# exact checked-out release-branch commit: it fixes the report baseline so a feature branch or a
+# later-moving remote-tracking ref cannot pair current manifest versions with older anchors.
+[group('automation')]
+[script]
+gh-create-missing-binary-releases COMMIT:
+    Set-StrictMode -Version Latest
+    $ErrorActionPreference = "Stop"
+    $PSNativeCommandUseErrorActionPreference = $true
+    Import-Module ./scripts/release/ReleaseAutomation.psm1 -Force
+
+    $crates = @(Get-PublishableBinaryCrate)
+    Write-Verbose "Publishable binary crates: $($crates.Name -join ', ')" -Verbose
+    if ($crates.Count -gt 0) {
+        Invoke-BinaryReleaseReconciliation -Crate $crates -Base "{{ COMMIT }}" -Verbose
+    }
+
+# Reconciles the desired prebuilt-binary archive and checksum pairs against each
+# published binary crate's GitHub release, and emits the matrix of incomplete
+# (crate, target) pairs still to build as the `matrix` / `has_binaries` step outputs
+# (also printed). Missing GitHub releases are an error because the workflow creates
+# them in the preceding step. This is what makes retries self-healing: a re-run
+# rebuilds only whatever is still missing, with no hardcoded crate list. See
+# .github/workflows/release.yml and docs/release-automation.md.
 [group('automation')]
 [script]
 gh-plan-release-binaries:
@@ -567,6 +588,6 @@ gh-plan-release-binaries:
     Write-Verbose "Publishable binary crates: $($crates.Name -join ', ')" -Verbose
     $rows = if ($crates.Count -gt 0) { @(Get-MissingBinaryMatrix -Crate $crates -Verbose) } else { @() }
 
-    Write-Host "Missing (crate, target) archives: $($rows.Count)"
+    Write-Host "Incomplete (crate, target) asset pairs: $($rows.Count)"
     Set-GitHubOutput -Name 'matrix' -Value (ConvertTo-MatrixJson -Row $rows)
     Set-GitHubOutput -Name 'has_binaries' -Value $(if ($rows.Count -gt 0) { 'true' } else { 'false' })

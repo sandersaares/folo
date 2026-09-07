@@ -28,11 +28,11 @@ flowchart TD
     A["Merge of a PR that incremented"] --> B["Push to main"]
     B --> C["release.yml runs on every push to main"]
     C --> D{"release-plz detects an<br/>unpublished version?"}
-    D -- no --> Z["No-op (most pushes)"]
     D -- yes --> E["Publish changed crates to crates.io<br/>(Trusted Publishing, OIDC — no token)"]
-    E --> F["Create a git tag + GitHub release<br/>per published binary crate"]
-    F --> G["Reconcile: for every published binary crate,<br/>find (crate, target) archives missing from its release"]
-    G --> H["Matrix build only the missing<br/>(crate, target) pairs + checksums"]
+    D -- no --> F
+    E --> F["Ensure a git tag + GitHub release exists<br/>per published binary crate"]
+    F --> G["Reconcile: for every published binary crate,<br/>find incomplete archive/checksum pairs"]
+    G --> H["Matrix build only the incomplete<br/>(crate, target) pairs"]
     H --> I["Upload archives + .sha256<br/>to each crate's release"]
     I --> J["cargo binstall &lt;crate&gt; → prebuilt binary<br/>(source-build fallback otherwise)"]
     E -. any job fails .-> K["Open a per-run failure issue"]
@@ -51,15 +51,17 @@ When the tool *fails to run* — classically an installed cargo-semver-checks to
 old for the toolchain's rustdoc JSON format ("unsupported rustdoc format v…") —
 a broken tool must never be read as "no breaking changes". The canary runs
 cargo-semver-checks on one small package compared against its own `HEAD`, so the
-two sides are byte-identical and the *only* way the check can fail is the tool
-failing to run.
+two sides are byte-identical when that canary package is untouched. If the work
+tree edits the canary package, a failure can instead be a genuine SemVer finding;
+the diagnostic names that case.
 
 ## What ships a binary (derived, never hardcoded)
 
 The set of published binary crates is **derived**, so new tools are covered
 automatically and hardcoding can never let one slip through. A package is a
-publishable binary crate iff it is publishable **and** has a `bin` target. Today
-that set is:
+publishable binary crate iff it is publishable **and** has exactly one `bin`
+target. The target name is carried separately from the package name through the
+build matrix. Today that set is:
 
 | Crate                       | Binary                      | Notes                                              |
 | --------------------------- | --------------------------- | -------------------------------------------------- |
@@ -185,16 +187,17 @@ published this run), so a plain re-run or a bare `workflow_dispatch` heals binar
 without republishing.
 
 It **auto-determines** the work by reconciling desired state against actual state,
-with no hardcoded or human-supplied crate list. The `just gh-plan-release-binaries`
-recipe:
+with no hardcoded or human-supplied crate list. The job:
 
 1. Derives the publishable binary crates and their current manifest versions from
-   `cargo metadata` (the filter below). Each crate's expected release tag is
-   `{crate}-v{version}`.
-2. For each such crate whose release exists, lists the release's assets (`gh release
-   view`) and computes which of the expected per-target archives
-   (`{crate}-v{version}-{target}.zip`) are absent.
-3. Emits a matrix of exactly the missing `(crate, target)` pairs (as its `matrix` and
+   `cargo metadata` (the filter below), including each package's single binary
+   target name. Each crate's expected release tag is `{crate}-v{version}`.
+2. Creates any missing tag and GitHub release at the package's version-anchor
+   commit. This repairs manual publishes and partial release-plz runs, because
+   release-plz skips a version that crates.io already has.
+3. Lists each release's assets (`gh release view`) and computes which expected
+   per-target archive/checksum pairs are incomplete.
+4. Emits a matrix of exactly the incomplete `(crate, target)` pairs (as its `matrix` and
    `has_binaries` step outputs).
 
 The binary-crate derivation is a single filter, reused here and by the
@@ -202,14 +205,16 @@ git-release-enable injection so the two can never disagree. In
 `cargo metadata --format-version 1` the `publish` field is `null` (publishable to
 any registry), `[]` (never publish), or a non-empty registry list, so a crate is a
 release candidate when it is publishable (`publish` is `null` or a non-empty list)
-**and** owns a `bin` target.
+**and** owns exactly one `bin` target. CI rejects a package with several binary
+targets rather than silently choosing one.
 
 Against the current workspace this yields the crates tabulated above. On a normal
-push that just published, every target archive is missing → the whole matrix
-builds. On an ordinary push that changed nothing, all archives already exist → the
+push that just published, every target pair is missing → the whole matrix builds.
+On an ordinary push that changed nothing, every archive and checksum exists → the
 matrix is empty and `build-binaries` is skipped. On a re-run after a partial
-failure, only the still-missing `(crate, target)` pairs are emitted — so retries
-always operate on the correct, self-determined set.
+failure, only the incomplete `(crate, target)` pairs are emitted. The upload
+action clobbers an existing archive when only its checksum is missing, so retries
+always restore the complete pair.
 
 ### `build-binaries` — build, package, checksum, upload
 
@@ -240,8 +245,8 @@ build-binaries:
   if: needs.plan-binaries.outputs.has_binaries == 'true'
   strategy:
     fail-fast: false   # one target's failure must not abandon the others' archives
-    # The matrix is computed by plan-binaries: one entry per missing (crate, target)
-    # pair, each carrying {name, tag, version, triple, os} (os from the target table below).
+    # The matrix is computed by plan-binaries: one entry per incomplete (crate, target)
+    # pair, each carrying {name, bin, tag, version, triple, os} (os from the target table below).
     matrix:
       include: ${{ fromJSON(needs.plan-binaries.outputs.matrix) }}
   runs-on: ${{ matrix.os }}
@@ -254,7 +259,7 @@ build-binaries:
     - uses: ./.github/actions/setup-environment
     - uses: taiki-e/upload-rust-binary-action@v1
       with:
-        bin: ${{ matrix.name }}
+        bin: ${{ matrix.bin }}
         package: ${{ matrix.name }}
         target: ${{ matrix.triple }}
         archive: ${{ matrix.name }}-v${{ matrix.version }}-$target
@@ -364,15 +369,15 @@ publish step is built to ride out both without bespoke complexity:
   beyond the retry.
 * **Binaries after a partial failure — auto-reconciled, no manual crate list.**
   The binary jobs never depend on "what was published *this run*"; `plan-binaries`
-  reconciles the current published state against uploaded assets (see
+  creates any missing release/tag at the package's version anchor, then reconciles the
+  current published state against uploaded assets (see
   [`plan-binaries`](#plan-binaries--reconcile-missing-binary-assets)). So if a
-  crate published but its binaries did not upload (e.g. the run died before
-  `build-binaries`), simply re-running the workflow — or a bare
-  `workflow_dispatch` — recomputes the missing `(crate, target)` pairs across
-  *all* affected crates and builds exactly those. The recovery set is always
-  self-determined; there is no per-crate dispatch and no human-supplied tag list.
-  `taiki-e` overwrites existing assets, so re-uploading is safe and reproduces
-  identical checksummed archives.
+  crate published but its GitHub release or binaries did not complete, simply
+  re-running the workflow — or a bare `workflow_dispatch` — restores the release
+  and recomputes the incomplete `(crate, target)` pairs across *all* affected
+  crates. The recovery set is always self-determined; there is no per-crate
+  dispatch and no human-supplied tag list. `taiki-e` overwrites existing assets,
+  so re-uploading restores identical checksummed archives.
 
 (Because a GitHub Actions `uses:` step cannot be retried in place, the retry is
 implemented as a PowerShell loop inside the `gh-release` recipe that re-runs the
@@ -413,7 +418,7 @@ One convention governs both:
 | ----------------- | -------------------------------------- | -------------------------------------------------------------- |
 | Git tag / release | `{crate}-v{version}`                   | `cargo-bench-history-v0.1.0`                                    |
 | Archive           | `{crate}-v{version}-{target}.zip`      | `cargo-bench-history-v0.1.0-aarch64-apple-darwin.zip`          |
-| Checksum sidecar  | `{archive}.sha256`                     | `…-aarch64-apple-darwin.zip.sha256`                            |
+| Checksum sidecar  | `{crate}-v{version}-{target}.sha256`    | `…-aarch64-apple-darwin.sha256`                                |
 | Binary in archive | at archive root, `{bin}` (`+ .exe`)    | `cargo-bench-history` / `cargo-bench-history.exe`              |
 
 * The **tag** comes from release-plz (`git_tag_name` pinned above).
@@ -439,7 +444,8 @@ pkg-fmt = "zip"
 
 `bin-dir` is `{ bin }{ binary-ext }` because `taiki-e` places the binary at the
 archive root (`leading-dir` defaults to false); `{ binary-ext }` adds `.exe` on
-Windows. The `.sha256` sidecar is picked up for verification automatically.
+Windows. The `.sha256` sidecar supports explicit or manual verification; current
+`cargo-binstall` versions do not discover checksum sidecars automatically.
 
 The convention table is the contract: any change to it must touch, together,
 `taiki-e`'s `archive:` input, the `git_tag_name` pin, and every crate's binstall
@@ -457,8 +463,9 @@ There is one manual publish path and no separate release recipe to maintain:
 plain `cargo publish` (per crate, in dependency order). It is used only for
 **emergencies** (CI publishing broken) and for the **bootstrap publish** of a
 brand-new crate (below). For real releases the expectation is that a manual
-bootstrap is immediately followed by a normal CI publish, so the automated path
-stays the single source of truth for versions that ship binaries.
+publish is immediately followed by a normal release-workflow run. For a binary
+crate, that run creates the tag and GitHub release that release-plz skips once
+crates.io already has the version, then uploads the prebuilt assets.
 
 ### First publish of a new crate
 
@@ -466,7 +473,8 @@ crates.io does not allow Trusted Publishing for a crate that has never been
 published (its trusted publisher can only be configured on an existing crate). So
 a brand-new crate's **first** version must be published manually with `cargo
 publish` (a token login), after which its trusted publisher is configured on
-crates.io and subsequent releases go through CI.
+crates.io. Re-run `release.yml` after configuring it; binary crates receive their
+GitHub release and prebuilt assets in that run. Subsequent releases go through CI.
 
 `just check-never-published` (the `increment-versions` skill's preflight) checks
 each publishable crate against the crates.io sparse index and, for any that does
