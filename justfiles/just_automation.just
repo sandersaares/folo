@@ -519,8 +519,9 @@ gh-compose-release-config output:
     Import-Module ./scripts/release/ReleaseAutomation.psm1 -Force
 
     $crates = @(Get-PublishableBinaryCrate)
-    Write-Verbose "Publishable binary crates: $($crates.Name -join ', ')" -Verbose
-    New-ReleasePlzConfig -SourcePath 'release-plz.toml' -OutputPath '{{output}}' -CrateName $crates.Name
+    $crateNames = @($crates | ForEach-Object { $_.Name })
+    Write-Verbose "Publishable binary crates: $($crateNames -join ', ')" -Verbose
+    New-ReleasePlzConfig -SourcePath 'release-plz.toml' -OutputPath '{{output}}' -CrateName $crateNames
     Write-Verbose "Wrote CI release-plz config to {{output}}." -Verbose
 
     # Print the composed config so the CI log records exactly what release-plz will run with
@@ -560,7 +561,8 @@ gh-create-missing-binary-releases COMMIT:
     Import-Module ./scripts/release/ReleaseAutomation.psm1 -Force
 
     $crates = @(Get-PublishableBinaryCrate)
-    Write-Verbose "Publishable binary crates: $($crates.Name -join ', ')" -Verbose
+    $crateNames = @($crates | ForEach-Object { $_.Name })
+    Write-Verbose "Publishable binary crates: $($crateNames -join ', ')" -Verbose
     if ($crates.Count -gt 0) {
         Invoke-BinaryReleaseReconciliation -Crate $crates -Base "{{ COMMIT }}" -Verbose
     }
@@ -585,8 +587,15 @@ gh-plan-release-binaries:
     # automation-only recipe, so always emit it: the reasoning is worth capturing in every run
     # (CI log or a local diagnostic invocation), not just the final count.
     $crates = @(Get-PublishableBinaryCrate)
-    Write-Verbose "Publishable binary crates: $($crates.Name -join ', ')" -Verbose
-    $rows = if ($crates.Count -gt 0) { @(Get-MissingBinaryMatrix -Crate $crates -Verbose) } else { @() }
+    $crateNames = @($crates | ForEach-Object { $_.Name })
+    Write-Verbose "Publishable binary crates: $($crateNames -join ', ')" -Verbose
+    # Wrap the entire conditional because PowerShell enumerates a branch-local array when the
+    # conditional writes to the pipeline, collapsing an empty result to $null under strict mode.
+    $rows = @(
+        if ($crates.Count -gt 0) {
+            Get-MissingBinaryMatrix -Crate $crates -Verbose
+        }
+    )
 
     Write-Host "Incomplete (crate, target) asset pairs: $($rows.Count)"
     Set-GitHubOutput -Name 'matrix' -Value (ConvertTo-MatrixJson -Row $rows)
