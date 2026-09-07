@@ -68,7 +68,7 @@ They are stated here because they cut across every later section:
 * **Minimal consumer surface.** Adopting the flow must cost a consumer a handful of lines,
   not a workflow. Folo's own bench-history CI is roughly **1,200 lines of YAML** across four
   workflows; none of that job wiring — the matrix, the artifact handoff, the concurrency
-  groups, the fork gate, the sink lifecycle jobs — is repo-specific in *substance*, only in
+  groups, the same-repo gate, the sink lifecycle jobs — is repo-specific in *substance*, only in
   its parameters. The action therefore ships the whole job graph as **reusable workflows**
   layered over the composite action (§4.7), so the common case is a `uses:` line and a few
   inputs, and hand-assembly from the individual commands stays available for repos that need
@@ -607,11 +607,11 @@ the very SHAs the PR flow measured: the branch commits never land on the trunk, 
 squashed commit is one nobody has benchmarked. PR-collected data therefore has a *shorter*
 useful life than history-flow data: it exists to answer "does this change move anything?"
 while the PR is open, and afterwards it is dead weight that no trunk analysis will ever
-select. This is a deliberate acceptance, not an oversight. Two consequences follow, and both
-are load-bearing elsewhere in this design: the trunk series is fed by the **history flow and
+select. This is a deliberate acceptance, not an oversight. Two consequences follow: the trunk
+series is fed by the **history flow and
 the densification pass**, never by PR runs, so nothing downstream depends on PR points
 surviving; and because those points are disposable, a PR run has no need to *write* to the
-shared store at all, which is what makes the read-only fork tiering of §6 possible.
+shared store at all — which is the property any future fork support would build on (§6).
 
 **Analysis mode is inferred by the tool, not selected by the action.** There is no `--mode`
 flag: `analyze` auto-detects **history** vs **branch** from git topology and the recorded
@@ -671,7 +671,7 @@ left to the caller is an implementation choice (§12); either way the tool stays
 The commands above are *building blocks*. Assembling them into a working setup means writing
 the same job graph every consumer needs: a matrix `collect` across platforms, the machine-key
 artifact handoff, a single `analyze` gated on the matrix, the sink lifecycle jobs, plus
-concurrency, permissions, and (for PRs) the fork gate. That graph is identical everywhere
+concurrency, permissions, and (for PRs) the same-repo gate. That graph is identical everywhere
 except for its parameters, so making each consumer retype it is exactly the repo-specific
 bulk this design set out to remove.
 
@@ -928,7 +928,7 @@ steps are one-line invocations. Three things deliberately do not move:
 * **Artifact upload/download** — `actions/upload-artifact` and `download-artifact` are
   first-party actions with their own cross-attempt semantics (§4.6); reimplementing them would
   be strictly worse.
-* **Job graph and gating** — `needs:`, `if:`, concurrency, and the fork check are workflow
+* **Job graph and gating** — `needs:`, `if:`, concurrency, and the same-repo check are workflow
   concepts. They are removed from the *consumer's* burden by the reusable workflows (§4.7),
   not by being rewritten in another language.
 
@@ -1021,64 +1021,28 @@ inputs** — and, since the tool's Azure backend is **Entra-ID-only**, there is 
   action's steps inherit the job env, so the tool sees them without the action plumbing
   anything.
 
-**Fork PRs: a trust gate, not a blanket ban.** The concern is narrow and worth stating
-precisely — a PR run *executes the contributor's code*, and that run holds credentials to the
-history store. A drive-by contributor must never reach them. But excluding *all* forks also
-excludes trusted people who simply work from a fork, which is a normal workflow for
-maintainers of many projects.
+**Fork PRs are not supported.** The PR flow is **same-repo only**. A run executes the
+contributor's code and needs credentials to reach the history store, and GitHub gives a fork PR
+neither secrets nor an OIDC token — so there is no identity such a run could use, and the ways
+around that (a publicly readable store, or splitting the credentialed half into a second
+trusted stage) each carry design and operational weight that is not worth paying before anyone
+has asked for it.
 
-Two separate things have to line up, and conflating them is what makes this look harder than
-it is:
+So the flow **detects a fork PR and stops early with a clear message** — that benchmarking is
+skipped because the PR comes from a fork, which is a supported state rather than a
+malfunction — and posts nothing. The message matters more than it looks: the failure mode
+this replaces is a workflow that silently does nothing, leaving a contributor to wonder whether
+benchmarking is broken, queued, or deliberately off. Nothing else about the design is
+fork-aware, and no input configures this.
 
-* **Trust in the person** is answered by the PR event's own `author_association`. `OWNER`,
-  `MEMBER`, and `COLLABORATOR` are people the repository already trusts to push branches and
-  run CI; `CONTRIBUTOR`, `FIRST_TIME_CONTRIBUTOR`, and `NONE` are not. This is the gate the
-  action exposes, as an `allowed-associations` input defaulting to those first three.
-* **Availability of credentials** is a platform fact that association cannot change. A
-  `pull_request` event from a fork gets a read-only token, no secrets, and — decisively — **no
-  OIDC token at all**, no matter who opened it: `id-token: write` cannot be granted to a fork
-  PR. There is therefore **no identity to give a fork run**, trusted author or not. Any design
-  that says "run forks under a reduced identity" is wrong on the platform's own terms.
-
-`pull_request_target` is the usual workaround and is **categorically rejected here**: it runs
-in the base repo's context with full credentials, and this workflow's entire purpose is to
-execute the PR's code. That combination is the textbook privilege-escalation shape, and
-benchmarking is its worst case.
-
-Since no identity is obtainable, the only honest question is **whether the run can work
-without one**. It can, because of an asymmetry already established elsewhere in this design:
-a PR run needs to **read** the baseline, and its own measurements are disposable (§4.5). So
-the requirement is not "credentials" but "read access to the baseline", and there are two
-ways to have that:
-
-* **A publicly readable history store** — the recommended answer for open-source projects.
-  Benchmark history is not sensitive: it is timing and allocation numbers for code that is
-  already public. A container configured for anonymous read lets a fork PR collect, analyze
-  against the real baseline, and report, using **no credentials whatsoever** — nothing to
-  leak, so nothing to gate. The write side stays identity-only, so a fork still cannot store
-  anything. This is a consumer configuration choice, not an action feature: the action simply
-  works when the backend it is pointed at is readable without auth.
-* **A trusted second stage** for repos whose history must stay private. The untrusted half
-  (`pull_request`, fork code, no credentials) collects and uploads its results as an artifact;
-  a second workflow triggered on its completion — running the **base repository's** code with
-  credentials, never the fork's — analyzes and posts. This preserves the safety property that
-  matters: credentials exist only in a job whose code the repository owns. It is meaningfully
-  more machinery than the rest of this design, so it is offered as a documented pattern rather
-  than a default.
-
-The resulting behaviour is tiered: a **same-repo PR** gets the full experience unchanged; a
-**fork PR from a trusted association** gets it too when the store is publicly readable, and
-otherwise only via the two-stage pattern; and a **fork PR from anyone else** runs no
-benchmarks at all. The last case is silent by
-default rather than misleading, but §9's diagnosability rules apply — a reader should be able
-to discover *why* nothing ran.
+This is a deferral, not a judgement that fork support is undesirable. Revisiting it means
+choosing between the two approaches above; nothing in the current design forecloses either,
+because the property they both rely on — that a PR run only ever *reads* the shared store,
+since its own points are disposable (§4.5) — holds regardless.
 
 **PR analysis reads the same production store as the trunk.** Branch mode compares the PR head
 against the trunk's recorded baseline, so the PR flow must read the very store that holds it —
-a separate PR store is rejected because it would have no baseline to compare against. Read
-access to that baseline is therefore unavoidable for any PR run that reports anything; what
-the disposability of PR points removes is the *write* half, and that is what makes the
-credential-free fork path above possible at all.
+a separate PR store is rejected because it would have no baseline to compare against.
 
 **Bring-your-own infrastructure.** The action does **not** bundle the Azure provisioning
 (`infra/azure-bench-history-prod/`); that stays in the monorepo as a *referenced example* the
@@ -1224,7 +1188,7 @@ forgoes the placeholder/staleness/failure states or reproduces them.
     scoped by `packages`, an `analyze-pr` job (checkout `head.sha`, `fetch-depth: 0`,
     restore-only cache, gated `!cancelled()` so a superseded run never posts) posting the
     comment, plus the `pr-comment-cleanup` and `pr-comment-finalize` paths — all behind the
-    fork trust gate (§6).
+    same-repo check (§6).
   * A **nightly densification** workflow (§4.8) — a matrix `backfill` job over the same
     platforms and window, with no analyze job and no sink.
   * The **concurrency** pattern: PR-driven runs
@@ -1296,8 +1260,7 @@ verdict, banner text), so a formatting regression fails here first — and becau
 composition sits beside the data model it renders, a newly added census reason cannot slip
 through unrendered.
 
-**Layer 2 — local-storage end-to-end on the CI matrix (every push, minutes, no secrets,
-fork-safe).** `test.yml` runs the *real* action against **local filesystem storage**
+**Layer 2 — local-storage end-to-end on the CI matrix (every push, minutes, no secrets).** `test.yml` runs the *real* action against **local filesystem storage**
 (`local-path` under `${RUNNER_TEMP}`) across the platform matrix and across *each* real
 `install-method` (`binstall`, `install`, `path`, and `none` against a pre-seeded `PATH`),
 so both the install branching and the actual installs are exercised, not just mocked:
@@ -1319,10 +1282,12 @@ so both the install branching and the actual installs are exercised, not just mo
    workflows that invoke `history.yml`, `pr.yml`, and `backfill.yml` exactly as an external
    consumer would, because none of the other levels exercise the layer that is now doing the
    most work: matrix expansion from the `platforms` input, fan-out-then-converge onto one
-   analyze, permission narrowing, the fork gate, artifact aggregation, and concurrency. The
+   analyze, permission narrowing, the same-repo check, artifact aggregation, and concurrency.
+   The
    canaries deliberately include the ugly cases — a **partially failed** matrix, a **fully
    failed** matrix, a malformed `platforms` list, an **empty package scope** (which must route
-   to cleanup, not analyze), and a cancelled run — since each is a path where the graph, not
+   to cleanup, not analyze), a **fork PR** (which must stop with the skip message, §6), and a
+   cancelled run — since each is a path where the graph, not
    the binaries, decides the outcome. The two layers' input lists are contract-tested against
    each other so a new composite input cannot silently go unexposed by the workflows.
 
@@ -1369,7 +1334,7 @@ runs prove impractical.
   *exact* issue/comment body the action *would* post against a **faked GitHub transport** — no
   live posting.
   This catches body/marker/banner regressions with a realistic multi-commit trend without
-  touching a real issue or PR, so it can run on every push, including from forks. (It is
+  touching a real issue or PR, so it can run on every push. (It is
   Layer 1's body assertions, but fed
   a real long history instead of a one-off fixture.)
 * **Option C — checked-in storage fixtures (cheapest, least fresh).** Commit a small
