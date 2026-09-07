@@ -1039,6 +1039,34 @@ mod tests {
         }
     }
 
+    /// An HTTP client that returns `BlobAlreadyExists` for an upload and rejects
+    /// any ownership probe.
+    ///
+    /// It verifies that non-conditional upload modes keep the collision as an
+    /// operation error without inspecting the existing object.
+    #[derive(Debug)]
+    struct NonConditionalCollisionHttpClient;
+
+    #[async_trait::async_trait]
+    impl HttpClient for NonConditionalCollisionHttpClient {
+        async fn execute_request(
+            &self,
+            request: &azure_core::http::Request,
+        ) -> azure_core::Result<azure_core::http::AsyncRawResponse> {
+            assert_eq!(request.method(), Method::Put);
+            let mut headers = Headers::new();
+            headers.insert(
+                "x-ms-error-code",
+                StorageErrorCode::BlobAlreadyExists.as_ref(),
+            );
+            Ok(azure_core::http::AsyncRawResponse::from_bytes(
+                StatusCode::Conflict,
+                headers,
+                azure_core::Bytes::new(),
+            ))
+        }
+    }
+
     /// An HTTP client that answers every request with `404 Not Found`, standing
     /// in for a blob (or container) that does not exist. The status is outside
     /// the SDK's retry set, so the request is issued exactly once and the test
@@ -1060,9 +1088,9 @@ mod tests {
         }
     }
 
-    /// The result exposed by a simulated conditional-create ownership probe.
+    /// A conditional-create response sequence exposed by the fake HTTP client.
     #[derive(Clone, Copy, Debug)]
-    enum CollisionProbe {
+    enum ConditionalCreateScenario {
         /// The object was committed by this upload before its collision response.
         ThisUpload,
         /// The first request committed but lost its response, so its retry collides.
@@ -1073,36 +1101,42 @@ mod tests {
         NoIdentity,
         /// Inspecting the colliding object fails.
         Failure,
+        /// Container creation succeeds but the retried blob upload fails.
+        ContainerRetryFailure,
     }
 
-    /// An HTTP client that models a conditional-create response sequence and its
-    /// ownership probe.
+    /// An HTTP client that models conditional-create response sequences.
     ///
-    /// Uploads normally return `BlobAlreadyExists`. The retry scenario first
-    /// returns a retryable transport error and then the collision. A subsequent
-    /// properties request exposes the configured identity outcome or a probe
-    /// failure.
+    /// Collision scenarios expose the configured identity outcome through a
+    /// subsequent properties request. Retry scenarios model either a lost response
+    /// or on-demand container creation without real network access.
     #[derive(Debug)]
-    struct ConditionalCreateCollisionHttpClient {
-        probe: CollisionProbe,
+    struct ConditionalCreateHttpClient {
+        scenario: ConditionalCreateScenario,
         create_ids: futures::lock::Mutex<Vec<String>>,
+        container_create_count: futures::lock::Mutex<usize>,
     }
 
-    impl ConditionalCreateCollisionHttpClient {
-        fn new(probe: CollisionProbe) -> Self {
+    impl ConditionalCreateHttpClient {
+        fn new(scenario: ConditionalCreateScenario) -> Self {
             Self {
-                probe,
+                scenario,
                 create_ids: futures::lock::Mutex::new(Vec::new()),
+                container_create_count: futures::lock::Mutex::new(0),
             }
         }
 
         async fn create_ids(&self) -> Vec<String> {
             self.create_ids.lock().await.clone()
         }
+
+        async fn container_create_count(&self) -> usize {
+            *self.container_create_count.lock().await
+        }
     }
 
     #[async_trait::async_trait]
-    impl HttpClient for ConditionalCreateCollisionHttpClient {
+    impl HttpClient for ConditionalCreateHttpClient {
         async fn execute_request(
             &self,
             request: &azure_core::http::Request,
@@ -1110,6 +1144,24 @@ mod tests {
             let metadata_header = format!("x-ms-meta-{CONDITIONAL_CREATE_ID_METADATA_KEY}");
             match request.method() {
                 Method::Put => {
+                    let is_container_create = request
+                        .url()
+                        .query_pairs()
+                        .any(|(name, value)| name == "restype" && value == "container");
+                    if is_container_create {
+                        assert!(matches!(
+                            self.scenario,
+                            ConditionalCreateScenario::ContainerRetryFailure
+                        ));
+                        let mut container_create_count = self.container_create_count.lock().await;
+                        *container_create_count = container_create_count.checked_add(1).unwrap();
+                        return Ok(azure_core::http::AsyncRawResponse::from_bytes(
+                            StatusCode::Created,
+                            Headers::new(),
+                            azure_core::Bytes::new(),
+                        ));
+                    }
+
                     let create_id = request
                         .headers()
                         .iter()
@@ -1128,11 +1180,39 @@ mod tests {
                         create_ids.push(create_id);
                         create_ids.len()
                     };
-                    if matches!(self.probe, CollisionProbe::RetriedThisUpload) && attempt_count == 1
+                    if matches!(self.scenario, ConditionalCreateScenario::RetriedThisUpload)
+                        && attempt_count == 1
                     {
                         return Err(azure_core::Error::with_message(
                             ErrorKind::Io,
                             "the first upload response was lost after commit",
+                        ));
+                    }
+                    if matches!(
+                        self.scenario,
+                        ConditionalCreateScenario::ContainerRetryFailure
+                    ) {
+                        if attempt_count == 1 {
+                            let mut headers = Headers::new();
+                            headers.insert(
+                                "x-ms-error-code",
+                                StorageErrorCode::ContainerNotFound.as_ref(),
+                            );
+                            return Ok(azure_core::http::AsyncRawResponse::from_bytes(
+                                StatusCode::NotFound,
+                                headers,
+                                azure_core::Bytes::new(),
+                            ));
+                        }
+                        let mut headers = Headers::new();
+                        headers.insert(
+                            "x-ms-error-code",
+                            StorageErrorCode::AuthorizationPermissionMismatch.as_ref(),
+                        );
+                        return Ok(azure_core::http::AsyncRawResponse::from_bytes(
+                            StatusCode::Forbidden,
+                            headers,
+                            azure_core::Bytes::new(),
                         ));
                     }
 
@@ -1148,8 +1228,8 @@ mod tests {
                     ))
                 }
                 Method::Head => {
-                    let create_id = match self.probe {
-                        CollisionProbe::ThisUpload => {
+                    let create_id = match self.scenario {
+                        ConditionalCreateScenario::ThisUpload => {
                             let Some(create_id) = self.create_ids.lock().await.last().cloned()
                             else {
                                 return Err(azure_core::Error::with_message(
@@ -1159,7 +1239,7 @@ mod tests {
                             };
                             Some(create_id)
                         }
-                        CollisionProbe::RetriedThisUpload => {
+                        ConditionalCreateScenario::RetriedThisUpload => {
                             let create_ids = self.create_ids.lock().await;
                             let [first, second] = create_ids.as_slice() else {
                                 return Err(azure_core::Error::with_message(
@@ -1175,14 +1255,17 @@ mod tests {
                             }
                             Some(first.clone())
                         }
-                        CollisionProbe::OtherUpload => Some("other-upload".to_owned()),
-                        CollisionProbe::NoIdentity => None,
-                        CollisionProbe::Failure => {
+                        ConditionalCreateScenario::OtherUpload => Some("other-upload".to_owned()),
+                        ConditionalCreateScenario::NoIdentity => None,
+                        ConditionalCreateScenario::Failure => {
                             return Ok(azure_core::http::AsyncRawResponse::from_bytes(
                                 StatusCode::NotFound,
                                 Headers::new(),
                                 azure_core::Bytes::new(),
                             ));
+                        }
+                        ConditionalCreateScenario::ContainerRetryFailure => {
+                            panic!("the failed upload must not probe object ownership")
                         }
                     };
                     let mut headers = Headers::new();
@@ -1237,7 +1320,7 @@ mod tests {
     /// immediately through the injected HTTP client.
     fn retrying_collision_blob_client(
         key: &str,
-        http_client: Arc<ConditionalCreateCollisionHttpClient>,
+        http_client: Arc<ConditionalCreateHttpClient>,
     ) -> BlobClient {
         let options = BlobClientOptions {
             client_options: ClientOptions {
@@ -1401,8 +1484,8 @@ mod tests {
             "history",
             None,
             fake_credential(),
-            Arc::new(ConditionalCreateCollisionHttpClient::new(
-                CollisionProbe::ThisUpload,
+            Arc::new(ConditionalCreateHttpClient::new(
+                ConditionalCreateScenario::ThisUpload,
             )),
         )
         .unwrap();
@@ -1417,8 +1500,8 @@ mod tests {
     )]
     async fn conditional_create_accepts_a_collision_from_its_own_retried_upload() {
         let key = "v1/proj/object.json";
-        let http_client = Arc::new(ConditionalCreateCollisionHttpClient::new(
-            CollisionProbe::RetriedThisUpload,
+        let http_client = Arc::new(ConditionalCreateHttpClient::new(
+            ConditionalCreateScenario::RetriedThisUpload,
         ));
         let client = retrying_collision_blob_client(key, Arc::clone(&http_client));
         let mode = UploadMode::conditional_create();
@@ -1443,13 +1526,16 @@ mod tests {
     )]
     async fn conditional_create_rejects_collisions_not_owned_by_this_upload() {
         let key = "v1/proj/object.json";
-        for probe in [CollisionProbe::OtherUpload, CollisionProbe::NoIdentity] {
+        for scenario in [
+            ConditionalCreateScenario::OtherUpload,
+            ConditionalCreateScenario::NoIdentity,
+        ] {
             let storage = AzureBlobStorage::from_parts(
                 "acct",
                 "history",
                 None,
                 fake_credential(),
-                Arc::new(ConditionalCreateCollisionHttpClient::new(probe)),
+                Arc::new(ConditionalCreateHttpClient::new(scenario)),
             )
             .unwrap();
 
@@ -1475,8 +1561,8 @@ mod tests {
             "history",
             None,
             fake_credential(),
-            Arc::new(ConditionalCreateCollisionHttpClient::new(
-                CollisionProbe::Failure,
+            Arc::new(ConditionalCreateHttpClient::new(
+                ConditionalCreateScenario::Failure,
             )),
         )
         .unwrap();
@@ -1489,6 +1575,69 @@ mod tests {
         assert!(operation.operation.contains("verify"));
         let source = error.find_source::<azure_core::Error>().unwrap();
         assert_eq!(source.http_status(), Some(StatusCode::NotFound));
+    }
+
+    #[tokio::test]
+    #[cfg_attr(
+        miri,
+        ignore = "drives the Azure SDK request pipeline, which Miri cannot run"
+    )]
+    async fn conditional_create_failure_after_container_creation_is_an_operation_error() {
+        let key = "v1/proj/object.json";
+        let http_client = Arc::new(ConditionalCreateHttpClient::new(
+            ConditionalCreateScenario::ContainerRetryFailure,
+        ));
+        let storage_http_client = Arc::clone(&http_client);
+        let storage = AzureBlobStorage::from_parts(
+            "acct",
+            "history",
+            None,
+            fake_credential(),
+            storage_http_client,
+        )
+        .unwrap();
+
+        let error = storage.put(key, b"body").await.unwrap_err();
+
+        assert_azure_upload_operation(&error, key);
+        assert!(error.find_source::<ObjectAlreadyExistsError>().is_none());
+        let source = error.find_source::<azure_core::Error>().unwrap();
+        assert_eq!(source.http_status(), Some(StatusCode::Forbidden));
+        let create_ids = http_client.create_ids().await;
+        assert!(matches!(
+            create_ids.as_slice(),
+            [first, second] if first == second
+        ));
+        assert_eq!(http_client.container_create_count().await, 1);
+    }
+
+    #[tokio::test]
+    #[cfg_attr(
+        miri,
+        ignore = "drives the Azure SDK request pipeline, which Miri cannot run"
+    )]
+    async fn overwrite_upload_failure_is_an_operation_error() {
+        let key = "v1/proj/object.json";
+        let storage = AzureBlobStorage::from_parts(
+            "acct",
+            "history",
+            None,
+            fake_credential(),
+            Arc::new(NonConditionalCollisionHttpClient),
+        )
+        .unwrap();
+        let client = storage.blob_client(key).unwrap();
+
+        let error = storage
+            .upload_with_retry(&client, b"body", key, UploadMode::Overwrite)
+            .await
+            .unwrap_err();
+
+        assert_azure_upload_operation(&error, key);
+        assert_eq!(error.already_existing_key(), None);
+        assert!(error.find_source::<ObjectAlreadyExistsError>().is_none());
+        let source = error.find_source::<azure_core::Error>().unwrap();
+        assert_eq!(source.http_status(), Some(StatusCode::Conflict));
     }
 
     // =======================================================================
