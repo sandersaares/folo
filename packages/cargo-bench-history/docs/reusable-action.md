@@ -748,7 +748,7 @@ Four platform constraints shape this split, and none is worked around:
   (`$/`), which resolves at the exact commit the workflow is running from — a hardcoded
   `@v1` there would let a workflow pinned to `v1.2.3` silently invoke a newer action.
 * **`workflow_call` inputs are scalars.** Only `string`, `number`, and `boolean` exist, so
-  list-shaped inputs (the platform matrix, package scopes, labels) are passed as
+  list-shaped inputs (the platform matrix, package scopes) are passed as
   **comma-separated strings** and split inside the reusable workflow. JSON-in-a-string is the
   other common encoding and is rejected here: it is fiddly to write in YAML (quoting a JSON
   array inside a YAML scalar), easy to get subtly wrong, and produces an unhelpful failure when
@@ -995,17 +995,32 @@ design previously relied on:
   same shape with the same answer: the hidden marker *is* that identity, so a create that
   cannot confirm its outcome reconciles by reading rather than by guessing.
 
-**Configured labels must exist, and the failure is unforgiving.** `gh issue create` rejects an
-unknown label outright rather than warning and continuing, so a label named in configuration
-but absent from the repository fails the whole filing — and it fails at exactly the wrong
-moment, since the paths that file issues are the paths reporting that something is already
-wrong. This has bitten the monorepo in production: a label referenced only by the workflow, and
-never created in the repository, took down both the regression filing and the failure alert
-that would have reported it. The companion therefore **validates configured labels up front and
-files successfully regardless** — creating a missing label where it has permission, and
-otherwise filing without it and saying so — because a report that arrives unlabelled is
-strictly better than one that does not arrive. The consumer's triage convention is worth
-serving, but never at the cost of the report itself.
+**No labels.** The action applies none, and offers no input to configure any. Labels look like
+free triage value, but they cost more than they return here: `gh issue create` rejects an
+unknown label outright rather than warning, so a label named in configuration but absent from
+the repository fails the whole filing — and it fails at exactly the wrong moment, since the
+paths that file issues are the paths reporting that something is already wrong. This has bitten
+the monorepo in production: a label referenced only by the workflow, and never created in the
+repository, took down both the regression filing and the failure alert that would have reported
+it. Making labels safe means creating them on demand, tolerating the permission to do so being
+absent, and exposing per-repository configuration for names that every consumer will want
+different — a chain of complexity in service of decoration. Everything works with zero labels
+on the issues, so that is what ships. Consumers who want labels can add them by hand or by
+their own automation, and label support can arrive later without breaking anyone, because
+adding labels to an issue nobody was labelling is not a behaviour change.
+
+**Rolling issues are found by author and marker, never by label or title.** Dropping labels
+removes the narrowing mechanism the monorepo's shell layer uses today — it lists issues
+carrying a known label and then matches the title client-side — so the companion needs a
+replacement, and the one it uses is better anyway. It lists **open issues authored by the
+identity it posts as**, which on any runner is the workflow's own token identity, and matches
+the **hidden marker** in the body. Author is a strong, free filter: a repository has few issues
+opened by its own automation, so the candidate set stays small without anyone configuring
+anything. The marker then decides identity exactly, which title-matching never did — a title is
+consumer-editable, so matching on it means an edited title silently abandons the issue it was
+tracking, and could adopt an unrelated issue that happens to collide. The same marker is the
+identity a create reconciles against when its outcome is uncertain (above), so one mechanism
+serves lookup, deduplication, and retry safety.
 
 ### 5.2 Standard reports, with narrow overrides
 
@@ -1033,7 +1048,7 @@ per repo are adjustable, and each is a value, not a format:
 
 | Slot | Why it varies |
 | --- | --- |
-| Issue title & labels | Must match the repo's existing triage conventions and dedup key. |
+| Issue title | Appears in the issue list, so it should read the way the repo's other issues do. |
 | A short intro line | Room to say "this is advisory" or point at team-specific context. |
 | A docs link | Consumers want to send readers to *their* runbook, not ours. |
 | Comment marker | Lets a repo run two independent instances without them fighting. |
@@ -1160,8 +1175,8 @@ backfill-and-overwrite that commit in a throwaway worktree; §4.1). **Output:** 
 **`analyze-history` inputs:** `machine-keys` (directory of collected per-platform keys →
 repeated `--machine-key`); `cache` (→ `--cache`; mutually exclusive with `local-path`);
 `since` (look-back window; default: the tool's history default); `issue-on-regression`
-(default `false`); `issue-title` (dedup key; default "Benchmark regressions detected");
-`issue-labels`.
+(default `false`); `issue-title` (the displayed title; identity comes from the hidden marker,
+not from this, §5.1).
 
 **`analyze-pr` inputs:** `pr-number` (which PR to comment on); `base` (→ `--base`; **no
 built-in branch name** — the reusable workflow passes the PR event's own base ref, and the
@@ -1174,17 +1189,17 @@ unconditionally in branch mode, so there is no direction input.
 **Lifecycle-command inputs:** `pr-comment-preflight` / `pr-comment-cleanup` /
 `pr-comment-finalize` take `pr-number` and `comment-marker`, plus (preflight) the `packages`
 scope to disclose and (finalize) the failed run's URL; `issue-preflight` / `issue-cleanup` take
-`issue-title` and `issue-labels`, and `issue-cleanup` additionally takes **`auto-close`**
-(default `false`, §4.4); `alert` / `resolve-alert` take
-`issue-title` and `issue-labels`.
+`issue-title`, and `issue-cleanup` additionally takes **`auto-close`**
+(default `false`, §4.4); `alert` / `resolve-alert` take `issue-title`.
 
 **`backfill` inputs:** the same scope inputs as `collect` (`packages`, `exclude`, `bench`,
 `best-of`), plus the history window to densify and `on-existing` (which defaults to `skip`
 here, §4.5, because densification must stay resumable).
 
 **Report-wording inputs (all commands with a sink):** the narrow override slots of §5.2 —
-`issue-title`, `issue-labels`, an intro line, a docs link, and `comment-marker`. There is
-deliberately no template input. A `sink` input (`standard` (default) | `none`) turns the
+`issue-title`, an intro line, a docs link, and `comment-marker`. There is
+deliberately no template input and no label input (§5.1). A `sink` input (`standard` (default)
+| `none`) turns the
 built-in posting off entirely for a consumer who wants to publish their own report from the
 outputs below; with `sink: none` the analyze commands compute and emit, and post nothing.
 
@@ -1587,16 +1602,43 @@ pending. In rough order of when it is needed:
 
 | # | Action | Needed by | Notes |
 | --- | --- | --- | --- |
-| 1 | **Create the label(s)** the bench-history flows file issues under, in every repository that runs them | Phase 3 | `gh issue create` rejects an unknown label outright, and this has already broken the monorepo's issue filing once (§5.1). The companion degrades gracefully, but the labels existing is what makes the triage convention work. |
-| 2 | **Create the repository** `folo-rs/cargo-bench-history-action` (public, empty) | Phase 4 | The action must live at a repository root to be Marketplace-listable (§2). |
-| 3 | **Configure it like the monorepo**: protected `main`, required checks, whatever merge policy you prefer | Phase 4 | Same rationale as the monorepo's own settings; nothing action-specific. |
-| 4 | **Add `cargo-bench-history-github` as a crates.io trusted publisher** | Phase 2 (before its first publish) | Same one-time setup every published package here needs. Cannot be scripted from a PR. |
-| 5 | **Enable Marketplace publishing** on the action repo — accept the agreement, choose a category, verify the listing | Phase 7 | A one-time UI flow tied to the account, not to a release run (§8.1). |
-| 6 | **Decide the `v1` promise** — when the floating major tag starts moving, its consumers inherit whatever it points at | Phase 7 | Worth an explicit decision rather than discovering it after the first breaking change. |
+| 1 | **Configure `folo-rs/cargo-bench-history-action`** — see §12.2 | Phase 4 | The repository exists; this is its settings. |
+| 2 | **Add `cargo-bench-history-github` as a crates.io trusted publisher** | Phase 2 (before its first publish) | Same one-time setup every published package here needs. Cannot be scripted from a PR. |
+| 3 | **Enable Marketplace publishing** on the action repo — accept the agreement, choose a category, verify the listing | Phase 7 | A one-time UI flow tied to the account, not to a release run (§8.1). |
+| 4 | **Decide the `v1` promise** — when the floating major tag starts moving, its consumers inherit whatever it points at | Phase 7 | Worth an explicit decision rather than discovering it after the first breaking change. |
 
-Two things I want to flag as **not** needed, because they would be reasonable to assume:
+Three things I want to flag as **not** needed, because they would each be reasonable to assume:
 
 * **No new secrets or tokens.** Every phase runs on the per-run `GITHUB_TOKEN` (§9) or the
   existing Azure federation. Nothing here introduces a credential to create or rotate.
 * **No separate test repository.** Testing happens in the repository that runs it (§9), which
   is what removes the cross-repository credential problem entirely.
+* **No issue labels.** The action applies none and configures none (§5.1), so no repository
+  needs labels created before it can file.
+
+### 12.2 Configuring the action repository
+
+The repository holds YAML, Markdown, and release tooling — no Rust, no published binaries
+(§2) — so its settings are about protecting the tag stream consumers depend on, not about
+build validation.
+
+* **Protect `main`**: no direct pushes, no force-pushes, no deletion. Its ref is what
+  `uses: …@v1` ultimately resolves to.
+* **Require a pull request to merge**, with the repository's CI as the required check. The
+  repo's own CI is Layers 1–2 and the caller canaries (§9); wire the required check as a single
+  fan-in job rather than naming individual matrix jobs, matching how the monorepo does it, so
+  adding a canary does not require a settings change.
+* **Allow the release workflow to move tags.** Releases are cut by pushing `vX.Y.Z` and
+  force-moving `v1` (§8.1), so whatever protection covers tags must permit the release
+  workflow — and only it — to do that. This is the one setting where getting it wrong is
+  discovered late, at the first release.
+* **Grant the release workflow permission to create releases** (`contents: write` in that
+  workflow), since publishing a GitHub Release is what refreshes the Marketplace listing.
+* **Merge policy is yours.** Squash, merge commit, or a merge queue — nothing in the design
+  depends on it. The action repo has no benchmark history, so the squash-merge consideration
+  of §4.5 does not apply here.
+
+Deferred until the repository actually has content: branch protection is worth setting now,
+but the required-check name cannot be chosen until Phase 4 creates the workflow that produces
+it. Setting protection first and adding the check requirement in Phase 4 avoids a chicken-and-egg
+block.
