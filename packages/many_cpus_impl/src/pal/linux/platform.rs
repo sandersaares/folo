@@ -848,6 +848,7 @@ mod tests {
         reason = "we need not worry in tests"
     )]
     use std::fmt::Write;
+    use std::hint::black_box;
     use std::sync::Barrier;
     use std::{io, thread};
 
@@ -871,6 +872,16 @@ mod tests {
 
     /// Speed of the processors in `GIANT_MACHINE_PROCESSORS`, which the tests do not care about.
     const GIANT_MACHINE_BOGOMIPS: [f64; 5] = [2000.0; 5];
+
+    #[test]
+    fn constructors_execute_at_runtime() {
+        let bindings = black_box(BindingsFacade::target());
+        let filesystem = black_box(FilesystemFacade::target());
+        let platform = black_box(BuildTargetPlatform::new(bindings, filesystem));
+
+        assert!(matches!(platform.bindings, BindingsFacade::Target(_)));
+        assert!(matches!(platform.fs, FilesystemFacade::Target(_)));
+    }
 
     #[test]
     fn get_all_processors_smoke_test() {

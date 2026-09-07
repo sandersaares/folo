@@ -2,7 +2,7 @@
 name = "many_cpus_impl"
 description = "Implementation crate for many_cpus - do not reference directly"
 publish = true
-version = "2.4.18"
+version = "2.4.19"
 
 authors.workspace = true
 edition.workspace = true

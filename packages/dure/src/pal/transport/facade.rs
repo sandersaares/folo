@@ -35,14 +35,15 @@ impl fmt::Debug for TransportFacade {
     }
 }
 
-#[cfg_attr(coverage_nightly, coverage(off))]
-#[cfg_attr(test, mutants::skip)]
 impl TransportFacade {
     pub(crate) const fn target() -> Self {
         Self::Target(&TARGET)
     }
 
     #[cfg(test)]
+    // Facade pass-through logic is not worth testing.
+    #[cfg_attr(coverage_nightly, coverage(off))]
+    #[cfg_attr(test, mutants::skip)]
     pub(crate) fn from_memory(transport: MemoryTransport) -> Self {
         Self::Memory(transport)
     }
@@ -135,7 +136,17 @@ impl Transport for TransportFacade {
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
+    use std::hint::black_box;
+
     use super::*;
+
+    #[test]
+    fn target_constructor_executes_at_runtime() {
+        assert!(matches!(
+            black_box(TransportFacade::target()),
+            TransportFacade::Target(_)
+        ));
+    }
 
     #[test]
     fn from_memory_dispatches_pipe_name() {

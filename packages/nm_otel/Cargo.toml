@@ -2,7 +2,7 @@
 name = "nm_otel"
 description = "OpenTelemetry bridge for nm metrics"
 publish = true
-version = "0.4.19"
+version = "0.4.20"
 
 authors.workspace = true
 edition.workspace = true

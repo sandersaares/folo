@@ -39,14 +39,15 @@ impl fmt::Debug for ProcessesFacade {
     }
 }
 
-#[cfg_attr(coverage_nightly, coverage(off))]
-#[cfg_attr(test, mutants::skip)]
 impl ProcessesFacade {
     pub(crate) const fn target() -> Self {
         Self::Target(&TARGET)
     }
 
     #[cfg(test)]
+    // Facade pass-through logic is not worth testing.
+    #[cfg_attr(coverage_nightly, coverage(off))]
+    #[cfg_attr(test, mutants::skip)]
     pub(crate) fn from_mock(mock: MockProcesses) -> Self {
         Self::Mock(Arc::new(mock))
     }
@@ -155,9 +156,19 @@ impl Processes for ProcessesFacade {
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
+    use std::hint::black_box;
+
     use super::*;
     use crate::pal::processes::ProcessLiveness;
     use crate::session_record::ProcessIdentity;
+
+    #[test]
+    fn target_constructor_executes_at_runtime() {
+        assert!(matches!(
+            black_box(ProcessesFacade::target()),
+            ProcessesFacade::Target(_)
+        ));
+    }
 
     #[test]
     fn from_mock_dispatches_probe() {

@@ -2,7 +2,7 @@
 name = "region_cached"
 description = "Adds a logical layer of caching between processor L3 cache and main memory"
 publish = true
-version = "1.0.33"
+version = "1.0.34"
 
 authors.workspace = true
 edition.workspace = true

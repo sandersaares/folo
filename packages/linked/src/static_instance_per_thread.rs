@@ -27,9 +27,6 @@ where
     /// Note: this function exists to serve the inner workings of the
     /// `linked::thread_local_rc!` macro and should not be used directly.
     /// It is not part of the public API and may be removed or changed at any time.
-    // Only ever called in const context by macros. Coverage instrumentation
-    // cannot detect const context execution.
-    #[cfg_attr(coverage_nightly, coverage(off))]
     #[doc(hidden)]
     #[must_use]
     pub const fn new(get_storage: fn() -> &'static LocalKey<Rc<T>>) -> Self {
@@ -294,7 +291,9 @@ macro_rules! thread_local_rc {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use std::cell::Cell;
+    use std::hint::black_box;
     use std::panic::{RefUnwindSafe, UnwindSafe};
+    use std::rc::Rc;
     use std::thread;
 
     use static_assertions::assert_impl_all;
@@ -325,6 +324,17 @@ mod tests {
             self.local_value
                 .set(self.local_value.get().saturating_add(1));
         }
+    }
+
+    #[test]
+    fn constructor_executes_at_runtime() {
+        thread_local! {
+            static CACHE: Rc<TokenCache> = Rc::new(TokenCache::new(1000));
+        }
+
+        let instance = black_box(StaticInstancePerThread::new(|| &CACHE));
+
+        instance.with(|cache| assert_eq!(cache.value(), 1000));
     }
 
     #[test]

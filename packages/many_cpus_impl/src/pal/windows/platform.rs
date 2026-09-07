@@ -896,6 +896,7 @@ fn check_logical_processor_info_result(
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
+    use std::hint::black_box;
     use std::mem::offset_of;
     use std::sync::Arc;
 
@@ -914,6 +915,14 @@ mod tests {
     use crate::pal::windows::{MockBindings, ProcessorIndexInGroup};
 
     const PROCESSOR_TIME_CLOSE_ENOUGH: f64 = 0.01;
+
+    #[test]
+    fn constructors_execute_at_runtime() {
+        let bindings = black_box(BindingsFacade::target());
+        let platform = black_box(BuildTargetPlatform::new(bindings));
+
+        assert!(matches!(platform.bindings, BindingsFacade::Target(_)));
+    }
 
     #[test]
     fn get_all_processors_smoke_test() {

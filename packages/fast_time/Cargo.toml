@@ -2,7 +2,7 @@
 name = "fast_time"
 description = "An efficient low-precision timestamp source suitable for high-frequency querying"
 publish = true
-version = "0.1.29"
+version = "0.1.30"
 
 authors.workspace = true
 edition.workspace = true

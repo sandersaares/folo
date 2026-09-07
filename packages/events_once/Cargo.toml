@@ -2,7 +2,7 @@
 name = "events_once"
 description = "Efficient oneshot events (channels) with support for single-threaded events, object embedding, event pools and event lakes"
 publish = true
-version = "0.5.36"
+version = "0.5.37"
 
 authors.workspace = true
 edition.workspace = true

@@ -12,8 +12,6 @@ pub(crate) struct BuildTargetPlatform {
 }
 
 impl BuildTargetPlatform {
-    // Only executed in const context.
-    #[cfg_attr(coverage_nightly, coverage(off))]
     pub(crate) const fn new(bindings: BindingsFacade) -> Self {
         Self { bindings }
     }
@@ -30,9 +28,18 @@ impl Platform for BuildTargetPlatform {
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
+    use std::hint::black_box;
     use std::panic::{RefUnwindSafe, UnwindSafe};
 
     use super::*;
 
     static_assertions::assert_impl_all!(BuildTargetPlatform: UnwindSafe, RefUnwindSafe);
+
+    #[test]
+    fn constructors_execute_at_runtime() {
+        let bindings = black_box(BindingsFacade::real());
+        let platform = black_box(BuildTargetPlatform::new(bindings));
+
+        assert!(matches!(platform.bindings, BindingsFacade::Real(_)));
+    }
 }

@@ -42,17 +42,19 @@ impl fmt::Debug for FilesystemFacade {
 /// Static instance of the real filesystem for production use.
 static BUILD_TARGET_FILESYSTEM: BuildTargetFilesystem = BuildTargetFilesystem;
 
-// Facade types are trivial pass-through layers - not worth testing.
-#[cfg_attr(coverage_nightly, coverage(off))]
-#[cfg_attr(test, mutants::skip)]
 impl FilesystemFacade {
     /// Creates a facade using the real filesystem.
+    // A default-return mutation recurses through `Default::default()` instead of failing cleanly.
+    #[cfg_attr(test, mutants::skip)]
     pub(crate) const fn target() -> Self {
         Self::Target(&BUILD_TARGET_FILESYSTEM)
     }
 
     /// Creates a facade wrapping a mock filesystem (test builds only).
     #[cfg(test)]
+    // Facade pass-through logic is not worth testing.
+    #[cfg_attr(coverage_nightly, coverage(off))]
+    #[cfg_attr(test, mutants::skip)]
     pub(crate) fn from_mock(mock: MockFilesystem) -> Self {
         Self::Mock(Arc::new(mock))
     }
@@ -117,5 +119,21 @@ impl Filesystem for FilesystemFacade {
 impl Default for FilesystemFacade {
     fn default() -> Self {
         Self::target()
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use std::hint::black_box;
+
+    use super::*;
+
+    #[test]
+    fn target_constructor_executes_at_runtime() {
+        assert!(matches!(
+            black_box(FilesystemFacade::target()),
+            FilesystemFacade::Target(_)
+        ));
     }
 }
