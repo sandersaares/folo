@@ -1121,7 +1121,7 @@ mod tests {
 
         let root = tempfile::tempdir().unwrap();
         let member = root.path().join("member");
-        fs::create_dir(&member).unwrap();
+        fs::create_dir_all(&member).unwrap();
         symlink(&member, root.path().join("alias")).unwrap();
         let members = BTreeMap::from([(member, "member".to_string())]);
 
