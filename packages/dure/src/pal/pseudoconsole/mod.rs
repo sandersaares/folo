@@ -15,7 +15,7 @@ mod memory;
 // implementation needs the raw console handle behind a `PtyId` and nothing
 // above the PAL ever does.
 #[cfg_attr(coverage_nightly, coverage(off))]
-pub(in crate::pal) mod windows;
+pub(crate) mod windows;
 
 pub(crate) use abstractions::*;
 pub(crate) use facade::*;

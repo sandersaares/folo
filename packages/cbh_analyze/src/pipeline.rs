@@ -573,6 +573,7 @@ fn note_branch_evaluation<R: Reporter + ?Sized>(reporter: &R, trace: &BranchEval
 mod tests {
     #![allow(clippy::indexing_slicing, reason = "panic is fine in tests")]
 
+    use std::future::{Future, ready};
     use std::io;
     use std::path::PathBuf;
 
@@ -609,21 +610,21 @@ mod tests {
     struct FailingProbe;
 
     impl EnvironmentProbe for FailingProbe {
-        async fn git(&self) -> io::Result<GitInfo> {
-            Ok(GitInfo::default())
+        fn git(&self) -> impl Future<Output = io::Result<GitInfo>> {
+            ready(Ok(GitInfo::default()))
         }
 
-        async fn toolchain(&self) -> io::Result<RustcInfo> {
-            Err(io::Error::other("injected toolchain failure"))
+        fn toolchain(&self) -> impl Future<Output = io::Result<RustcInfo>> {
+            ready(Err(io::Error::other("injected toolchain failure")))
         }
 
-        async fn hardware(&self) -> HardwareProfile {
-            HardwareProfile {
+        fn hardware(&self) -> impl Future<Output = HardwareProfile> {
+            ready(HardwareProfile {
                 processors: 1,
                 memory_regions: 1,
                 processor_models: Vec::new(),
                 processor_speeds: Vec::new(),
-            }
+            })
         }
     }
 

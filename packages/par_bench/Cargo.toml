@@ -2,7 +2,7 @@
 name = "par_bench"
 description = "Mechanisms for multithreaded benchmarking, designed for integration with Criterion or a similar benchmark framework"
 publish = true
-version = "0.2.55"
+version = "0.2.56"
 
 authors.workspace = true
 edition.workspace = true

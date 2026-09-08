@@ -23,7 +23,7 @@ use crate::pal::session_store::SessionStore;
 /// Ordering is what makes the delete final. An update queued before it is
 /// applied first, and one queued after cannot exist, because the delete
 /// consumes the writer.
-pub(super) struct RecordWriter {
+pub(crate) struct RecordWriter {
     updates: Sender<Command>,
     worker: JoinHandle<()>,
 }
@@ -37,7 +37,7 @@ enum Command {
 }
 
 impl RecordWriter {
-    pub(super) fn start<S: SessionStore + Clone + Send + 'static>(
+    pub(crate) fn start<S: SessionStore + Clone + Send + 'static>(
         store: &S,
         id: SessionId,
         current_generation: Arc<AtomicU64>,
@@ -55,7 +55,7 @@ impl RecordWriter {
     /// The change is published only while it is still the current ownership
     /// state, so an update that waited behind store I/O cannot overwrite a
     /// newer attach or detach.
-    pub(super) fn set_attached(&self) -> impl Fn(u64, bool) + Clone + Send + 'static {
+    pub(crate) fn set_attached(&self) -> impl Fn(u64, bool) + Clone + Send + 'static {
         let updates = self.updates.clone();
         move |generation: u64, attached: bool| {
             // A stopped writer means the record is already being deleted,
@@ -74,7 +74,7 @@ impl RecordWriter {
     /// Everything handed over before it is published; everything after it is
     /// dropped. The record can then be deleted knowing nothing will publish it
     /// again — including over a session id that has since been reused.
-    pub(super) fn finish(self) {
+    pub(crate) fn finish(self) {
         // A worker that already ended leaves nothing to wait for.
         _ = self.updates.send(Command::Stop);
         // The worker only ever publishes an already-live record, so this waits

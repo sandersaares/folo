@@ -2,7 +2,7 @@
 name = "infinity_pool"
 description = "Offers object pooling capabilities both thread-safe and single threaded, both lifetime-managed and manual, both typed and untyped"
 publish = true
-version = "0.8.27"
+version = "0.8.28"
 
 authors.workspace = true
 edition.workspace = true
