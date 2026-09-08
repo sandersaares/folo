@@ -2,7 +2,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
 
-Import-Module (Join-Path $PSScriptRoot 'ScheduledContracts.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'ScheduledContracts.psm1')
 
 # Short file transactions protect the durable protocol described in
 # docs/scheduled-validation.md. No file handle is expected to survive an App tool call.
@@ -39,7 +39,7 @@ function Assert-ScheduledLocalState {
         Assert-LocalField $attempt @('attempt_id', 'issue_number', 'finding_id', 'generation',
             'started_at', 'session_id', 'branch', 'head_sha', 'pr_number', 'phase', 'dispatch',
             'continuations', 'handled_evidence', 'check_contract_digest', 'reason', 'version_evidence',
-            'proposed_responses')
+            'proposed_responses', 'check_id', 'check_kind')
         if ($attempt.attempt_id -cne $entry.Key -or
             $attempt.phase -cnotin @('reserved', 'opening-session', 'session-registered',
                 'dispatching', 'working', 'publishing', 'pr-open', 'awaiting-review',
@@ -158,8 +158,8 @@ function Invoke-LocalStateChange {
             Assert-LocalCoordinator $State $Data $Now
             Assert-LocalAdmission $State $Policy
             Assert-LocalField $Data @('issue_number', 'finding_id', 'generation', 'check_contract_digest',
-                'check_id', 'package', 'evidence_key')
-            if ($Data.check_id -cnotin $Policy.local.allowed_checks -or
+                'check_id', 'check_kind', 'package', 'evidence_key')
+            if ($Data.check_kind -cnotin $Policy.local.allowed_checks -or
                 $Data.package -cnotin $Policy.local.allowed_packages) { throw 'Incident is outside approved scope.' }
             $attempts = @($State.attempts.Values)
             $active = @($attempts | Where-Object { $_.phase -cnotin @('resolved', 'closed-unmerged') })
@@ -182,6 +182,7 @@ function Invoke-LocalStateChange {
             $State.attempts[$id] = @{
                 attempt_id = $id; issue_number = $Data.issue_number; finding_id = $Data.finding_id
                 generation = $Data.generation; check_contract_digest = $Data.check_contract_digest
+                check_id = $Data.check_id; check_kind = $Data.check_kind
                 started_at = $stamp; session_id = $null; branch = $null; head_sha = $null
                 pr_number = $null; phase = 'reserved'; reason = $null; continuations = @()
                 handled_evidence = @(); evidence_key = $Data.evidence_key; version_evidence = $null
@@ -471,6 +472,7 @@ function Get-ScheduledWorkerRecord {
         finding_id = $attempt.finding_id; generation = $attempt.generation; attempt_id = $attempt.attempt_id
         executor_id = $State.executor_id; session_id = $attempt.session_id; branch = $attempt.branch
         head_sha = $attempt.head_sha; pr_number = $attempt.pr_number; state = $attempt.phase
+        check_id = $attempt.check_id; check_kind = $attempt.check_kind
         version_evidence = $attempt.version_evidence
     }
 }

@@ -214,7 +214,7 @@ The example identities and path are placeholders, not enrollment defaults.
 | `acquire-coordinator` | `owner_session_id`; returns current `coordinator.token`. |
 | `release-coordinator` | `coordinator_token`. |
 | `record-scan` | `coordinator_token`, `successful`, `backlog_count`, `oldest_eligible_at`, `blocked_conditions`. Failed scans do not advance successful-scan health. |
-| `reserve-attempt` | `coordinator_token` and validated descriptor's `issue_number`, `finding_id`, `generation`, `check_contract_digest`, `package`, `check_id`, `evidence_key`. |
+| `reserve-attempt` | `coordinator_token` and validated descriptor's `issue_number`, `finding_id`, `generation`, `check_contract_digest`, `package`, exact catalog `check_id`, family `check_kind`, `evidence_key`. |
 | `begin-session-open` | `coordinator_token`, `attempt_id`. |
 | `register-session` | `coordinator_token`, `attempt_id`, `session_id`, `issue_number`, `ownership_verified`, `branch`, `head_sha`. |
 | `register-branch` | Worker identity plus `expected_branch`, actual managed `branch`, unchanged `head_sha`; follows registration/acceptance and precedes source edits. |
@@ -231,6 +231,8 @@ The example identities and path are placeholders, not enrollment defaults.
 Worker identity means `attempt_id`, `session_id`, `dispatch_token`. Assertions such
 as `ownership_verified` or `hosted_confirmation` must come from the corresponding
 native/API evidence, never from an agent's claim of success.
+Check allowlists and priority use the reporter's `check_kind` family; the exact
+catalog `check_id` remains intact in evidence, descriptors and worker claims.
 
 The version evidence also carries the immutable `pre_version_sha`, canonical
 `decisions`, `expanded_plan` and `expanded_plan_digest` used by

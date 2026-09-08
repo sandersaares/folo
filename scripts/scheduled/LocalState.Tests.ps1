@@ -26,7 +26,8 @@ BeforeAll {
         $state = Invoke-TestAction reserve-attempt @{
             coordinator_token = $script:coordinator; issue_number = $Issue
             finding_id = $Finding; generation = $Generation; check_contract_digest = ('c' * 64)
-            package = 'cpulist'; check_id = 'mutants'; evidence_key = 'initial-evidence'
+            package = 'cpulist'; check_id = 'mutants-ubuntu-latest-1'; check_kind = 'mutants'
+            evidence_key = 'initial-evidence'
         }
         $attempt = @($state.attempts.Values | Where-Object {
             $_.issue_number -eq $Issue -and $_.generation -eq $Generation
@@ -300,7 +301,8 @@ Describe 'Durable local transactions' {
                 }
             }
             $data = @{ coordinator_token = $State.coordinator.token; issue_number = 1
-                finding_id = ('f' * 64); generation = 3; package = 'cpulist'; check_id = 'mutants'
+                finding_id = ('f' * 64); generation = 3; package = 'cpulist'
+                check_id = 'mutants-ubuntu-latest-1'; check_kind = 'mutants'
                 check_contract_digest = ('c' * 64); evidence_key = 'new-generation' }
             Invoke-LocalStateChange $State $Policy reserve-attempt $data $Now
             $State.attempts.Count | Should -Be 3
@@ -332,6 +334,8 @@ Describe 'Durable local transactions' {
         }
         $worker = Get-ScheduledWorkerRecord -State $state -AttemptId $script:attemptId
         $worker.version_evidence.pre_version_sha | Should -Be ('a' * 40)
+        $worker.check_id | Should -Be mutants-ubuntu-latest-1
+        $worker.check_kind | Should -Be mutants
         $worker.pr_number | Should -BeNullOrEmpty
         (Get-ScheduledRepairRecord -State $state -AttemptId $script:attemptId).head_sha | Should -Be ('b' * 40)
     }

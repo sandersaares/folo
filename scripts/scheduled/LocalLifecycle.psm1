@@ -2,7 +2,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
 
-Import-Module (Join-Path $PSScriptRoot 'ScheduledContracts.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'ScheduledContracts.psm1')
 
 # Readiness is a current-head decision. The caller supplies complete API collections and
 # canonical version evidence; issue prose and worker summaries cannot make checks pass.

@@ -7,7 +7,8 @@ BeforeAll {
         param([int] $Number, [string] $Check = 'mutants', [string] $Created = '2026-08-01T00:00:00Z')
         return @{
             schema_version = 1; repository = 'folo-rs/folo'; repository_id = 850321188
-            finding_id = ('f' * 64); generation = 1; status = 'open'; check_id = $Check
+            finding_id = ('f' * 64); generation = 1; status = 'open'
+            check_id = "$Check-ubuntu-latest-1"; check_kind = $Check
             package = 'cpulist'; platform = 'linux'; applicability = 'source'
             source_sha = ('a' * 40); controller_sha = ('a' * 40); check_contract_digest = ('c' * 64)
             issue_number = $Number; created_at = $Created; held = $false; validated_worker = $null
@@ -31,6 +32,9 @@ Describe 'Full-backlog deterministic selection' {
             -Incidents @((Get-TestIncident 3 mutants '2026-09-01T00:00:00Z'),
                 (Get-TestIncident 1 mutants), (Get-TestIncident 2 miri))
         $result.eligible.issue_number | Should -Be @(2, 1, 3)
+        $result.eligible[0].check_id | Should -Be miri-ubuntu-latest-1
+        $result.eligible[1].check_id | Should -Be mutants-ubuntu-latest-1
+        $result.eligible[1].check_kind | Should -Be mutants
         $result.oldest_eligible_at | Should -Be '2026-08-01T00:00:00Z'
         $result.blocked_conditions | Should -Contain observe
     }
@@ -46,6 +50,19 @@ Describe 'Full-backlog deterministic selection' {
         $result.deferred.reason | Should -Contain reconcile-owned-work
         $result.deferred.reason | Should -Contain outside-approved-scope
         $result.deferred.reason | Should -Contain reporter-disposition
+    }
+    It 'uses the explicit family while preserving a package-specific many-seed catalog ID' {
+        $incident = Get-TestIncident 4 miri-many
+        $incident.check_id = 'miri-many-events_once-2'
+        $incident.package = 'events_once'
+        $policy.local.allowed_packages += 'events_once'
+        $policy.local.allowed_checks += 'miri-many'
+        $result = Get-ScheduledInboxDecision -Policy $policy -State $state -Now '2026-09-08T12:00:00Z' `
+            -Incidents @($incident)
+        $result.eligible.Count | Should -Be 1
+        $result.eligible[0].check_id | Should -Be miri-many-events_once-2
+        $result.eligible[0].check_kind | Should -Be miri-many
+        $result.eligible[0].priority | Should -Be 0
     }
     It 'returns registered PR attempts even when their issue is absent from the open queue' {
         $state.attempts.a = @{ issue_number = 9; attempt_id = 'a'; phase = 'pr-open'
@@ -71,6 +88,11 @@ Describe 'Full-backlog deterministic selection' {
     }
 }
 Describe 'GitHub pagination and validated intake' {
+    It 'imports only the public entrypoint in a fresh process without unloading shared dependencies' {
+        $output = & pwsh -NoProfile -NonInteractive -File (Join-Path $PSScriptRoot 'fixtures' 'LocalImportSmoke.ps1')
+        $LASTEXITCODE | Should -Be 0
+        $output | Should -Contain 'local-import-smoke-ok'
+    }
     It 'consumes all pages rather than a fixed recent-window or maximum issue count' {
         InModuleScope LocalGitHub {
             Mock Invoke-ScheduledApi {
@@ -130,6 +152,8 @@ Describe 'GitHub pagination and validated intake' {
             Should -Invoke Invoke-ScheduledApi -Exactly 1 -ParameterFilter {
                 $Endpoint -eq 'repos/folo-rs/folo/actions/runs/17/attempts/1'
             }
+            Mock ConvertTo-ScheduledIncident { throw [InvalidOperationException]::new('Controller failure') }
+            { Invoke-ScheduledInbox -ExecutorId machine -Now '2026-09-08T12:00:00Z' } | Should -Throw
         }
     }
     It 'fails explicitly on authentication and never records successful scan output' {

@@ -2,10 +2,10 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
 
-Import-Module (Join-Path $PSScriptRoot 'ScheduledContracts.psm1') -Force
-Import-Module (Join-Path $PSScriptRoot 'LocalState.psm1') -Force
-Import-Module (Join-Path $PSScriptRoot 'LocalGitHub.psm1') -Force
-Import-Module (Join-Path $PSScriptRoot 'LocalLifecycle.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'ScheduledContracts.psm1')
+Import-Module (Join-Path $PSScriptRoot 'LocalState.psm1')
+Import-Module (Join-Path $PSScriptRoot 'LocalGitHub.psm1')
+Import-Module (Join-Path $PSScriptRoot 'LocalLifecycle.psm1')
 
 function Get-ScheduledInboxDecision {
     [CmdletBinding()]
@@ -28,18 +28,19 @@ function Get-ScheduledInboxDecision {
         elseif ($incident.held) { $reason = 'human-hold' }
         elseif ($owned.Count -gt 0 -or $null -ne $incident.validated_worker) { $reason = 'reconcile-owned-work' }
         elseif ($incident.package -cnotin $Policy.local.allowed_packages -or
-            $incident.check_id -cnotin $Policy.local.allowed_checks) { $reason = 'outside-approved-scope' }
+            $incident.check_kind -cnotin $Policy.local.allowed_checks) { $reason = 'outside-approved-scope' }
         if ($null -ne $reason) {
             $deferred.Add(@{ issue_number = $incident.issue_number; reason = $reason })
             continue
         }
         # Correctness failures precede coverage misses; age and issue number give stable
         # tie-breaking so a newly reported failure does not starve the old backlog.
-        $priority = if ($incident.check_id -ceq 'mutants' -and
+        $priority = if ($incident.check_kind -ceq 'mutants' -and
             $incident.observation.outcome -cne 'timeout') { 1 } else { 0 }
         $eligible.Add(@{
             issue_number = $incident.issue_number; finding_id = $incident.finding_id
             generation = $incident.generation; package = $incident.package; check_id = $incident.check_id
+            check_kind = $incident.check_kind
             source_sha = $incident.source_sha; check_contract_digest = $incident.check_contract_digest
             evidence_key = Get-ScheduledDigest -Value $incident.observation
             created_at = $incident.created_at; priority = $priority
@@ -105,7 +106,7 @@ function Invoke-ScheduledInbox {
             -Endpoint "repos/$($policy.repository)/issues/$($issue.number)/comments?per_page=100"
         try {
             $record = Read-ScheduledRecord -Text $issue.body -Kind reporter
-        } catch {
+        } catch [FormatException] {
             $rejected.Add(@{ issue_number = $issue.number; reason = $_.Exception.Message })
             continue
         }
@@ -123,7 +124,7 @@ function Invoke-ScheduledInbox {
             $incident.created_at = $issue.created_at
             $incident.held = @($issue.labels | Where-Object { $_.name -ceq 'scheduled-hold' }).Count -gt 0
             $incidents.Add($incident)
-        } catch {
+        } catch [FormatException] {
             $rejected.Add(@{ issue_number = $issue.number; reason = $_.Exception.Message })
         }
     }
@@ -142,11 +143,11 @@ function Invoke-ScheduledInbox {
             if ($coverage.repository -cne $policy.repository -or
                 $coverage.repository_id -ne $policy.repository_id -or
                 -not $coverage.Contains('last_plan') -or $null -eq $coverage.last_plan) {
-                throw 'Missing authoritative hosted planning identity.'
+                throw [FormatException]::new('Missing authoritative hosted planning identity.')
             }
             $null = [DateTimeOffset]$coverage.last_plan.planned_at
             $result.last_hosted_plan = $coverage.last_plan
-        } catch {
+        } catch [FormatException] {
             $result.blocked_conditions += 'hosted-planning-evidence-invalid'
         }
     } elseif ($policy.rollout.hosted_execution_enabled) {
