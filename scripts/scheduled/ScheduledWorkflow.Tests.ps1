@@ -3,6 +3,15 @@ BeforeAll {
     Import-Module (Join-Path $PSScriptRoot 'ScheduledWorkflow.psm1') -Force
 }
 Describe 'Repair gate orchestration' {
+    It 'serializes reporting without replacing pending events' {
+        $root = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
+        $workflow = Get-Content -LiteralPath (Join-Path $root '.github\workflows\scheduled-report.yml') -Raw
+        $concurrency = [regex]::Match($workflow, '(?m)^concurrency:\r?\n(?:[ \t]+[^\r\n]*\r?\n)+').Value
+        $concurrency | Should -Match '(?m)^  group: scheduled-reporting\r?$'
+        $concurrency | Should -Match '(?m)^  cancel-in-progress: false\r?$'
+        $concurrency | Should -Match '(?m)^  queue: max\r?$'
+        @([regex]::Matches($workflow, '(?m)^  queue:')).Count | Should -Be 1
+    }
     It 'rejects failed context before treating an ordinary PR as cheap success' {
         { Invoke-ScheduledGate -PlanPath absent -ResultsDirectory absent -ContextResult failure `
                 -DeepResult skipped -RunId 1 -RunAttempt 1 } | Should -Throw

@@ -1,0 +1,71 @@
+{
+  "outcomes": [
+    {
+      "scenario": "Baseline",
+      "summary": "Success",
+      "log_path": "log/baseline.log",
+      "diff_path": null,
+      "phase_results": [
+        {"phase": "Build", "duration": 0.02, "process_status": "Success", "argv": ["cargo", "test", "--no-run"]},
+        {"phase": "Test", "duration": 0.01, "process_status": "Success", "argv": ["cargo", "test"]}
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "packages/example/src/lib.rs:8:5: replace sample -> u32 with 0",
+          "package": "example",
+          "file": "packages/example/src/lib.rs",
+          "function": {
+            "function_name": "sample",
+            "return_type": "-> u32",
+            "span": {"start": {"line": 7, "column": 1}, "end": {"line": 10, "column": 2}}
+          },
+          "span": {"start": {"line": 8, "column": 5}, "end": {"line": 9, "column": 6}},
+          "replacement": "0",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "MissedMutant",
+      "log_path": "log/example_line_8_col_5.log",
+      "diff_path": "diff/example_line_8_col_5.diff",
+      "phase_results": [
+        {"phase": "Build", "duration": 0.01, "process_status": "Success", "argv": ["cargo", "test", "--no-run"]},
+        {"phase": "Test", "duration": 0.01, "process_status": "Success", "argv": ["cargo", "test"]}
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "packages/example/src/lib.rs:8:5: replace sample -> u32 with 1",
+          "package": "example",
+          "file": "packages/example/src/lib.rs",
+          "function": {
+            "function_name": "sample",
+            "return_type": "-> u32",
+            "span": {"start": {"line": 7, "column": 1}, "end": {"line": 10, "column": 2}}
+          },
+          "span": {"start": {"line": 8, "column": 5}, "end": {"line": 9, "column": 6}},
+          "replacement": "1",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "Timeout",
+      "log_path": "log/example_line_8_col_5_001.log",
+      "diff_path": "diff/example_line_8_col_5_001.diff",
+      "phase_results": [
+        {"phase": "Build", "duration": 0.01, "process_status": "Success", "argv": ["cargo", "test", "--no-run"]},
+        {"phase": "Test", "duration": 60.0, "process_status": "Timeout", "argv": ["cargo", "test"]}
+      ]
+    }
+  ],
+  "total_mutants": 2,
+  "missed": 1,
+  "caught": 0,
+  "timeout": 1,
+  "unviable": 0,
+  "success": 0,
+  "start_time": "2026-05-01T00:00:00Z",
+  "end_time": "2026-05-01T00:01:01Z",
+  "cargo_mutants_version": "27.1.0"
+}

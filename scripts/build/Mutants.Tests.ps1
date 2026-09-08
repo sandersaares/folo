@@ -1,4 +1,7 @@
 #Requires -Modules @{ ModuleName = 'Pester'; ModuleVersion = '5.0' }
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+$PSNativeCommandUseErrorActionPreference = $true
 
 # Pester suite for Mutants.psm1. Both functions are pure, so the exclusion set and the shard
 # translation are asserted directly across platforms. The exclusions are position-sensitive
@@ -112,3 +115,20 @@ Describe 'Get-MutantsShardArgument' {
     }
 }
 
+Describe 'Typed mutation arguments' {
+    It 'keeps wildcard exclusions literal on Linux when passed as argv' {
+        $values = Get-ExcludeValue (Get-MutantsExcludeArgument -IsWindowsPlatform $false -IsLinuxPlatform $true -Literal)
+        $values | Should -Contain '**/*facade.rs'
+        $values | Should -Contain 'packages/dure/**/*.rs'
+        $values | ForEach-Object { $_ | Should -Not -Match "^'" }
+    }
+
+    It 'anchors the complete mutant name without interpreting shell syntax' {
+        $name = 'src/lib.rs:1:2: replace a$();[x] -> u8 with 0'
+        $arguments = Get-MutantsReplayArgument -Mutant @{ name = $name }
+        $arguments.Count | Should -Be 2
+        $arguments[0] | Should -Be '--re'
+        $name | Should -Match $arguments[1]
+        "$name suffix" | Should -Not -Match $arguments[1]
+    }
+}

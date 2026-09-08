@@ -15,7 +15,7 @@ jobs:
     permissions:
       contents: read
       actions: read
-      issues: write
+      issues: read
     steps:
       - uses: actions/checkout@v7
         with:
@@ -31,3 +31,12 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $true
           ./scripts/scheduled/Invoke-ScheduledHealth.ps1
+      - name: Preserve independent health observation
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: scheduled-health-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .scheduled-health
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 30

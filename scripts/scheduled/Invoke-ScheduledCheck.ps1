@@ -19,5 +19,8 @@ $context = @{
     run_id = [long]$env:GITHUB_RUN_ID; run_attempt = [int]$env:GITHUB_RUN_ATTEMPT
     run_number = [long]$env:GITHUB_RUN_NUMBER
 }
-Invoke-ScheduledCheck -Check $check -SourceRoot ([IO.Path]::GetFullPath($SourceRoot)) `
-    -OutputDirectory ([IO.Path]::GetFullPath($OutputDirectory)) -Toolchain $env:RUST_NIGHTLY -RunContext $context
+$result = Invoke-ScheduledCheck -Check $check -SourceRoot ([IO.Path]::GetFullPath($SourceRoot)) `
+    -OutputDirectory ([IO.Path]::GetFullPath($OutputDirectory)) `
+    -Toolchain (Get-ScheduledToolchain -Kind $check.kind) -RunContext $context
+$result | ConvertTo-Json -Depth 100
+if ($result.outcome -cne 'passed') { exit 1 }

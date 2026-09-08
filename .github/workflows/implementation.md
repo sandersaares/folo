@@ -79,6 +79,9 @@ source, controller, run and attempt to raw replay evidence. The reusable deep wo
 the controller and candidate separately, runs with read permissions and preserves artifacts even
 on checker failure. Reporting runs only reviewed default-branch code with issue-write authority;
 candidate artifacts are data, never commands or an alternate policy.
+Source bytes, including Cargo versions, are bound by the source SHA rather than the checker
+digest. Admission policy does not change checker compatibility; changing an allowlist or applying
+a release increment must not prevent an otherwise compatible repair from confirming its finding.
 
 `ScheduledPlan.psm1` establishes full-scope completeness and compatible-success reuse.
 Before reuse, the planner also checks the execution API for unreported failures, active work and
@@ -90,6 +93,15 @@ GitHub persistence. Reporting serializes all originating workflows into one writ
 reproduction data survives the larger artifacts. Raw mutation outcomes come from `mutants.out`,
 not from a full-run `--json` option. An unmutated baseline is mandatory and a replay that matches
 no mutation is an error. Timeouts remain findings.
+Evidence ordering uses the originating attempt's API start time, with creation time and run ID
+breaking ties. An older run can have a genuinely newer rerun; neither its original run number nor
+its completion/report delivery time establishes that attempt's order. Source ancestry and incident
+generation remain separate applicability checks.
+Valid defect observations survive incomplete legs and failed workflows. Complete evidence that
+accounts for workflow failure through findings is a successful reporting operation, not a reporting
+outage. Unexplained workflow failure cannot certify passing evidence or close an incident.
+No-work verification retains the unselected catalog without inventing a global package selection.
+Invalid confirmation metadata is isolated to its incident and cannot discard unrelated findings.
 
 The Validation context reads the default-branch rollout and joins registered repair metadata.
 Queue membership uses the GitHub merge queue entries' synthetic head commits and ancestry
@@ -98,6 +110,10 @@ snapshot; an expired or ambiguous queue snapshot fails rather than guessing memb
 The selected checks execute against the actual combined candidate. Their unconditional
 `scheduled-repair-gate` rejects incomplete results and feeds the existing single required fan-in.
 Metadata-only corrections retrigger through the PR `edited` event or a rerun at the same head.
+The worker and PR records carry the same bounded causal explanation and bind the current enrolled
+executor. Main confirmation uses the merged commit rather than the original pre-squash head.
+Both full-main reporting and dedicated verification can confirm the live merged registration;
+arrival order does not strand an incident in `needs-human`.
 
 Managed release edits also pass `ScheduledVersion.psm1` on the published PR head. The worker
 records an immutable pre-versioning commit, the release baseline, semantic decisions and expanded
@@ -137,3 +153,11 @@ The hosted health workflow and personal intake independently observe scheduler, 
 coverage and local scan availability. They distinguish fresh evidence, reused coverage, a failed
 scan, staged/paused operation and unavailable systems. Neither process claims to monitor its
 own total outage; the operator runbook is in the scheduled validation chapter.
+The reporter retains the actual validated planning timestamp rather than substituting run
+completion time. Hosted health uses read-only permissions and persists its component report as
+an artifact and step summary before signaling failure. The shared coverage/health issue contains
+separate hosted coverage and personal executor health records.
+Health inventories unsuccessful reporting runs through the Actions API even after newer reports
+succeed. Queue overflow, cancellation and reporting failure require rerunning the existing reporter,
+not repeating expensive source checks; the operator recovery procedure is in the runbook.
+The reporter processes its originating event and does not silently claim to backfill missing runs.

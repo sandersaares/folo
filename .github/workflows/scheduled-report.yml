@@ -9,6 +9,9 @@ concurrency:
   # One writer serializes coverage and issue generations across both originating workflows.
   group: scheduled-reporting
   cancel-in-progress: false
+  # Preserve pending reports instead of replacing all but the newest pending event.
+  # https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency
+  queue: max
 
 permissions:
   contents: read
