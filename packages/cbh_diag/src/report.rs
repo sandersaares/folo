@@ -33,34 +33,28 @@
 
 use std::time::Duration;
 
-mod sealed {
-    use std::time::Duration;
+/// The unconditional emit primitives, sealed within this module so no caller
+/// can invoke them directly.
+///
+/// Every note or timing a command emits flows through the guarded helpers on
+/// [`ReporterExt`] — which are the only surface that can reach these methods —
+/// so the `--verbose` guard is applied in exactly one place and can never be
+/// bypassed or forgotten at a call site.
+trait Sink {
+    /// Whether notes are consumed at all, gating the guarded helpers.
+    fn enabled(&self) -> bool;
 
-    /// The unconditional emit primitives, sealed within [`report`](super) so no
-    /// caller can invoke them directly.
-    ///
-    /// Every note or timing a command emits flows through the guarded helpers on
-    /// [`ReporterExt`](super::ReporterExt) — which are the only surface that can
-    /// reach these methods — so the `--verbose` guard is applied in exactly one
-    /// place and can never be bypassed or forgotten at a call site.
-    pub(crate) trait Sink {
-        /// Whether notes are consumed at all, gating the guarded helpers.
-        fn enabled(&self) -> bool;
+    /// Records a single diagnostic note unconditionally.
+    fn emit_note(&self, message: &str);
 
-        /// Records a single diagnostic note unconditionally.
-        fn emit_note(&self, message: &str);
+    /// Records the wall-clock duration of a named pipeline `stage`
+    /// unconditionally.
+    fn emit_timing(&self, stage: &str, elapsed: Duration);
 
-        /// Records the wall-clock duration of a named pipeline `stage`
-        /// unconditionally.
-        fn emit_timing(&self, stage: &str, elapsed: Duration);
-
-        /// Emits an always-on announcement unconditionally (not gated on
-        /// `--verbose`).
-        fn emit_announcement(&self, message: &str);
-    }
+    /// Emits an always-on announcement unconditionally (not gated on
+    /// `--verbose`).
+    fn emit_announcement(&self, message: &str);
 }
-
-use sealed::Sink;
 
 /// Receives human-facing diagnostic notes emitted while a command runs.
 ///
