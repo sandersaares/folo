@@ -355,12 +355,42 @@ staged, separately from an enabled scheduler that has stopped producing plans.
 | Machine/account transfer | Pause original automation and worker activity, account for unpublished work, deliberately transfer enrollment, and prove capabilities on the replacement. Never copy credentials or run two executors. |
 | Auth, quota or unsupported native API | Request normal sign-in, personal budget action or supported manual App action; no fallback account, PAT or private-database edits. |
 | Hosted schedule disabled/stale | Report the condition, restore scheduling deliberately and request an authoritative fresh run. Do not generate artificial source commits. |
+| Reporter run failed/cancelled, including reporting queue overflow | Recover the existing `scheduled-report` run as described below; a newer successful report does not account for its missing report. |
 | Detection/reporting unreliable after cutover | Restore affected ordinary merge gates through the shared executor until repaired; never leave both enforcement paths disabled. |
 
 Use native App controls for session cleanup. Do not delete existing sessions or
 worktrees as automated recovery. To pause, disable admissions or the project
 automation and preserve active ownership; scheduled detection/reporting remains
 independent. There are no individual PR timers to remove.
+
+### Recovering failed or cancelled reporting
+
+The reporter's `queue: max` concurrency queue is bounded; it is not a durable
+backlog. Queue overflow or cancellation can leave an existing `scheduled-report`
+run unprocessed. Health retains failed/cancelled report visibility even after newer
+reports succeed, because those newer reports do not establish that the missing
+source-run evidence was consumed.
+
+Use the reporting run identified by health or GitHub Actions history. Verify that
+it belongs to this repository's `scheduled-report.yml` workflow and inspect its
+failure or cancellation before retrying. Resolve any reported permission, evidence
+availability or reporter defect first. Once the reporting queue has capacity, use
+GitHub Actions **Re-run all jobs** on that existing reporting run, or:
+
+```text
+gh run rerun <REPORT_RUN_ID> --repo folo-rs/folo
+```
+
+`REPORT_RUN_ID` is the existing reporter run's ID, not its originating validation
+run's ID. Rerun the reporting workflow itself, preserving its original source-run
+association. Do not rerun heavy validation checks, dispatch a fresh validation
+workflow or create a source commit merely to recover reporting.
+
+Confirm that the new attempt completes successfully and that its expected
+finding/coverage updates and reporting health are reconciled. Until then, retain
+the unresolved reporting condition. If required evidence is expired or unavailable,
+keep missing evidence explicit and escalate for an operator decision; do not
+manufacture success or clear the failure because another report is green.
 
 ## Validation and rollout prerequisites
 
