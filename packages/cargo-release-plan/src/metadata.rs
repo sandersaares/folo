@@ -1089,12 +1089,46 @@ mod tests {
             "=1.2.3+build",
             "=1.2.3, <2.0.0",
             "^1.0.0, =1.2.3",
+            "=not-a-version",
         ] {
             assert_eq!(validated_exact_requirement(requirement), Err(()));
         }
-        for requirement in ["1.2.3", "^1.2.3", ">=1.2.3", "<=2.0.0"] {
+        for requirement in [
+            "1.2.3",
+            "^1.2.3",
+            ">=1.2.3",
+            "<=2.0.0",
+            "not-a-version",
+            ">=not-a-version",
+        ] {
             assert_eq!(validated_exact_requirement(requirement), Ok(None));
         }
+    }
+
+    #[test]
+    fn path_normalization_removes_current_and_parent_components() {
+        assert_eq!(
+            normalize_path(Path::new("./packages/../packages/demo")),
+            PathBuf::from("packages/demo")
+        );
+    }
+
+    #[cfg(unix)]
+    #[cfg_attr(miri, ignore)] // Creates a filesystem symbolic link, which Miri cannot emulate.
+    #[test]
+    fn member_resolution_follows_filesystem_aliases() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().unwrap();
+        let member = root.path().join("member");
+        fs::create_dir(&member).unwrap();
+        symlink(&member, root.path().join("alias")).unwrap();
+        let members = BTreeMap::from([(member, "member".to_string())]);
+
+        assert_eq!(
+            resolved_member(root.path(), "alias", &members),
+            Some("member")
+        );
     }
 
     #[test]

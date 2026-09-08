@@ -79,7 +79,12 @@ fn a_non_publishable_group_member_is_a_version_target() {
         "0.1.0",
         "\n[dependencies]\nbeta = { path = \"../beta\", version = \"=0.1.0\" }\n",
     );
-    write_package(&fixture, "beta", "0.1.0", "\npublish = false");
+    write_package(
+        &fixture,
+        "beta",
+        "0.1.0",
+        "\npublish = false\n\n[dependencies]\nalpha = { path = \"../alpha\", version = \"=0.1.0\" }\n",
+    );
     fixture.commit("group with a package that is never published");
     let base = fixture.sha("HEAD");
 
@@ -229,6 +234,27 @@ fn stale_exact_requirement_from_a_non_publishable_source_is_reported() {
             .count(),
         0
     );
+
+    let outcome = run(&RunInput::Check {
+        base: Some(base),
+        manifest_path: fixture.manifest(),
+        format: CheckFormat::Github,
+        verify_packaging: false,
+        verbose: false,
+    })
+    .unwrap();
+    match outcome {
+        RunOutcome::Check {
+            passed, message, ..
+        } => {
+            assert!(!passed);
+            assert!(
+                message.contains("title=stale-workspace-requirement::"),
+                "{message}"
+            );
+        }
+        other => panic!("expected check, got {other:?}"),
+    }
 }
 
 /// Invalid exact syntax is rejected by the loader shared by every command.
@@ -241,7 +267,7 @@ fn malformed_exact_requirements_fail_all_commands_before_writes() {
         &fixture,
         "helper",
         "0.1.0",
-        "\npublish = false\n\n[dependencies]\nlibrary = { path = \"../library\", version = \"=0.1\" }\n",
+        "\npublish = false\n\n[dependencies]\nlibrary = { path = \"../library\", version = \"=0.1\" }\n\n[dev-dependencies]\nlibrary = { path = \"../library\", version = \"=0.1.0\" }\n",
     );
     fixture.commit("malformed exact requirement");
     let base = fixture.sha("HEAD");
@@ -345,6 +371,34 @@ fn registry_exact_requirement_is_outside_group_validation_and_identity() {
         "\n[dependencies]\nshared = \"=0.1\"\n",
     );
     fixture.commit("same-named registry dependency");
+    let base = fixture.sha("HEAD");
+
+    let report: Value = serde_json::from_str(&report_json(&fixture, &base)).unwrap();
+
+    assert_eq!(report.get("groups"), Some(&json!({})));
+}
+
+/// An exact path dependency outside the workspace does not create or validate a group edge.
+#[cfg_attr(miri, ignore)] // Spawns git and cargo, which Miri cannot emulate.
+#[test]
+fn outside_workspace_exact_requirement_is_not_a_group_edge() {
+    let fixture = Fixture::new("exclude = [\"vendor/outside\"]");
+    write_package(
+        &fixture,
+        "consumer",
+        "0.1.0",
+        "\n[dependencies]\noutside = { path = \"../../vendor/outside\", version = \"=0.1\" }\n",
+    );
+    fixture.write(
+        "vendor/outside/Cargo.toml",
+        r#"[package]
+name = "outside"
+version = "0.1.0"
+edition = "2021"
+"#,
+    );
+    fixture.write("vendor/outside/src/lib.rs", "");
+    fixture.commit("outside-workspace exact dependency");
     let base = fixture.sha("HEAD");
 
     let report: Value = serde_json::from_str(&report_json(&fixture, &base)).unwrap();

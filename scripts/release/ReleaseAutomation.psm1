@@ -78,6 +78,48 @@ function Get-BinaryTarget {
     @($Package.targets | Where-Object { $_.kind -contains 'bin' })
 }
 
+function Test-PathCaseInsensitive {
+    # Cargo opens manifests through the filesystem while Git pathspecs are case-sensitive by
+    # default. Probe the workspace directory instead of inferring its behavior from the operating
+    # system; an inconclusive probe keeps the stricter case-sensitive result.
+    param(
+        [Parameter(Mandatory)][string] $Directory
+    )
+
+    try {
+        $entryName = @(
+            Get-ChildItem -LiteralPath $Directory -Force -ErrorAction Stop |
+                ForEach-Object { $_.Name }
+        )
+    } catch {
+        return $false
+    }
+    $present = [System.Collections.Generic.HashSet[string]]::new(
+        [StringComparer]::Ordinal
+    )
+    foreach ($name in $entryName) {
+        [void] $present.Add($name)
+    }
+    foreach ($name in $entryName) {
+        $flippedBuilder = [Text.StringBuilder]::new($name.Length)
+        foreach ($character in $name.ToCharArray()) {
+            if ([char]::IsUpper($character)) {
+                [void] $flippedBuilder.Append([char]::ToLowerInvariant($character))
+            } elseif ([char]::IsLower($character)) {
+                [void] $flippedBuilder.Append([char]::ToUpperInvariant($character))
+            } else {
+                [void] $flippedBuilder.Append($character)
+            }
+        }
+        $flipped = $flippedBuilder.ToString()
+        if ($flipped -ceq $name -or $present.Contains($flipped)) {
+            continue
+        }
+        return Test-Path -LiteralPath (Join-Path $Directory $flipped)
+    }
+    return $false
+}
+
 function Get-WorkspaceMember {
     # Returns current Cargo workspace members with publication eligibility and manifest identity.
     # Tracking is opt-in because the increment publication gate needs it, while ordinary release
@@ -119,6 +161,8 @@ function Get-WorkspaceMember {
 
     $workspaceRoot = [IO.Path]::GetFullPath([string] $metadata.workspace_root)
     $repositoryRoot = $null
+    $workspacePrefix = $null
+    $caseInsensitivePath = $false
     if ($IncludeTracking) {
         $previousNativeErrorPreference = $PSNativeCommandUseErrorActionPreference
         try {
@@ -152,6 +196,44 @@ function Get-WorkspaceMember {
             )
         }
         $repositoryRoot = [IO.Path]::GetFullPath($repositoryRootLine[0])
+
+        $previousNativeErrorPreference = $PSNativeCommandUseErrorActionPreference
+        try {
+            $PSNativeCommandUseErrorActionPreference = $false
+            $gitOutput = @(& git -C $workspaceRoot rev-parse --show-prefix 2>&1)
+            $gitExitCode = $LASTEXITCODE
+        } finally {
+            $PSNativeCommandUseErrorActionPreference = $previousNativeErrorPreference
+        }
+        if ($gitExitCode -ne 0) {
+            $diagnostic = @(
+                $gitOutput | ForEach-Object { $_.ToString() }
+            ) -join [Environment]::NewLine
+            if ([string]::IsNullOrWhiteSpace($diagnostic)) {
+                $diagnostic = '(no diagnostic output)'
+            }
+            throw (
+                "git rev-parse failed while resolving the workspace prefix for " +
+                "'$workspaceRoot' with exit code $gitExitCode`: $diagnostic"
+            )
+        }
+        $workspacePrefixLine = @(
+            $gitOutput |
+                ForEach-Object { $_.ToString() } |
+                Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+        )
+        if ($workspacePrefixLine.Count -gt 1) {
+            throw (
+                "git rev-parse returned an invalid workspace prefix for " +
+                "'$workspaceRoot'."
+            )
+        }
+        $workspacePrefix = if ($workspacePrefixLine.Count -eq 0) {
+            ''
+        } else {
+            $workspacePrefixLine[0].TrimEnd('/', '\')
+        }
+        $caseInsensitivePath = Test-PathCaseInsensitive -Directory $workspaceRoot
     }
 
     foreach ($package in $metadata.packages | Sort-Object -Property name) {
@@ -162,8 +244,20 @@ function Get-WorkspaceMember {
         $packageManifestPath = [IO.Path]::GetFullPath([string] $package.manifest_path)
         $tracked = $null
         if ($IncludeTracking) {
+            # Cargo's workspace root and package manifests share Cargo's path spelling. Rebase
+            # their relative relationship through Git's workspace prefix instead of subtracting
+            # Git's independently spelled repository root from a Cargo path. This also retains
+            # leading parent components for supported sibling members.
+            $workspaceRelativeManifestPath =
+                [IO.Path]::GetRelativePath($workspaceRoot, $packageManifestPath)
+            $gitWorkspacePath = [IO.Path]::GetFullPath(
+                [IO.Path]::Combine($repositoryRoot, $workspacePrefix)
+            )
+            $gitManifestPath = [IO.Path]::GetFullPath(
+                [IO.Path]::Combine($gitWorkspacePath, $workspaceRelativeManifestPath)
+            )
             $relativeManifestPath =
-                [IO.Path]::GetRelativePath($repositoryRoot, $packageManifestPath)
+                [IO.Path]::GetRelativePath($repositoryRoot, $gitManifestPath)
             $outsideRepository =
                 [IO.Path]::IsPathRooted($relativeManifestPath) -or
                 $relativeManifestPath -eq '..' -or
@@ -175,15 +269,19 @@ function Get-WorkspaceMember {
                 $tracked = $false
             } else {
                 # Git pathspecs are relative to -C and accept slash separators on every
-                # supported host. Literal pathspec mode prevents manifest directory names from
-                # being interpreted as wildcard patterns.
+                # supported host. Explicit literal magic prevents manifest directory names from
+                # being interpreted as patterns; `icase` follows a case-insensitive checkout.
                 $gitPath = $relativeManifestPath.Replace('\', '/')
+                $gitPathspec = if ($caseInsensitivePath) {
+                    ":(icase,literal)$gitPath"
+                } else {
+                    ":(literal)$gitPath"
+                }
                 $previousNativeErrorPreference = $PSNativeCommandUseErrorActionPreference
                 try {
                     $PSNativeCommandUseErrorActionPreference = $false
                     $gitOutput = @(
-                        & git -C $repositoryRoot --literal-pathspecs ls-files `
-                            --error-unmatch -- $gitPath 2>&1
+                        & git -C $repositoryRoot ls-files --error-unmatch -- $gitPathspec 2>&1
                     )
                     $gitExitCode = $LASTEXITCODE
                 } finally {

@@ -45,14 +45,13 @@ impl Groups {
             let mut pending = vec![first];
             let mut members = BTreeSet::new();
             while let Some(member) = pending.pop() {
-                if !members.insert(member.clone()) {
-                    continue;
-                }
-                if let Some(neighbors) = adjacency.get(&member) {
-                    for neighbor in neighbors {
-                        if unvisited.remove(neighbor) {
-                            pending.push(neighbor.clone());
-                        }
+                _ = members.insert(member.clone());
+                let neighbors = adjacency
+                    .get(&member)
+                    .expect("pending members originate from the adjacency map");
+                for neighbor in neighbors {
+                    if unvisited.remove(neighbor) {
+                        pending.push(neighbor.clone());
                     }
                 }
             }

@@ -46,10 +46,16 @@ Describe 'Get-TrackedWorkspaceMember (real cargo metadata and Git on a fixture w
 
     It 'propagates a fatal Git tracking failure with its diagnostic' {
         $repositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
+        $workspaceRoot = Split-Path -Parent $script:MetadataManifest
+        $workspacePrefix =
+            [IO.Path]::GetRelativePath($repositoryRoot, $workspaceRoot).Replace('\', '/') + '/'
         Mock git -ModuleName ReleaseAutomation {
-            if ($args -contains 'rev-parse') {
+            if ($args -contains '--show-toplevel') {
                 $global:LASTEXITCODE = 0
                 $repositoryRoot
+            } elseif ($args -contains '--show-prefix') {
+                $global:LASTEXITCODE = 0
+                $workspacePrefix
             } else {
                 $global:LASTEXITCODE = 128
                 'fatal: fixture repository is unavailable'
@@ -63,10 +69,16 @@ Describe 'Get-TrackedWorkspaceMember (real cargo metadata and Git on a fixture w
 
     It 'treats the documented Git no-match exit as untracked' {
         $repositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
+        $workspaceRoot = Split-Path -Parent $script:MetadataManifest
+        $workspacePrefix =
+            [IO.Path]::GetRelativePath($repositoryRoot, $workspaceRoot).Replace('\', '/') + '/'
         Mock git -ModuleName ReleaseAutomation {
-            if ($args -contains 'rev-parse') {
+            if ($args -contains '--show-toplevel') {
                 $global:LASTEXITCODE = 0
                 $repositoryRoot
+            } elseif ($args -contains '--show-prefix') {
+                $global:LASTEXITCODE = 0
+                $workspacePrefix
             } else {
                 $global:LASTEXITCODE = 1
                 'error: pathspec did not match any file(s) known to git'
@@ -87,6 +99,85 @@ Describe 'Get-TrackedWorkspaceMember (real cargo metadata and Git on a fixture w
         {
             Get-TrackedWorkspaceMember -ManifestPath $script:MetadataManifest
         } | Should -Throw '*git rev-parse*exit code 128*fatal: not a git repository*'
+    }
+
+    It 'propagates a Git workspace-prefix resolution failure with its diagnostic' {
+        $repositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
+        Mock git -ModuleName ReleaseAutomation {
+            if ($args -contains '--show-toplevel') {
+                $global:LASTEXITCODE = 0
+                $repositoryRoot
+            } else {
+                $global:LASTEXITCODE = 128
+                'fatal: workspace prefix is unavailable'
+            }
+        }
+
+        {
+            Get-TrackedWorkspaceMember -ManifestPath $script:MetadataManifest
+        } | Should -Throw '*workspace prefix*exit code 128*fatal: workspace prefix is unavailable*'
+    }
+
+    It 'rebases Cargo member paths through an independently spelled Git workspace prefix' {
+        $pathRoot = [IO.Path]::GetPathRoot((Get-Location).Path)
+        $cargoRoot = Join-Path $pathRoot 'cargo-root-spelling'
+        $workspaceRoot = Join-Path (Join-Path $cargoRoot 'Nested') 'Workspace'
+        $memberManifest = Join-Path (Join-Path $workspaceRoot 'Member') 'Cargo.toml'
+        $siblingManifest =
+            Join-Path (Join-Path $cargoRoot 'Sibling') 'Cargo.toml'
+        $gitRoot = Join-Path $pathRoot 'independent-git-root-spelling'
+        $metadataJson = [ordered]@{
+            workspace_root    = $workspaceRoot
+            workspace_members = @('member-id', 'sibling-id')
+            packages          = @(
+                [ordered]@{
+                    id            = 'member-id'
+                    name          = 'member'
+                    version       = '1.0.0'
+                    manifest_path = $memberManifest
+                    publish       = $null
+                    targets       = @()
+                    metadata      = @{}
+                }
+                [ordered]@{
+                    id            = 'sibling-id'
+                    name          = 'sibling-helper'
+                    version       = '1.0.0'
+                    manifest_path = $siblingManifest
+                    publish       = @()
+                    targets       = @()
+                    metadata      = @{}
+                }
+            )
+        } | ConvertTo-Json -Depth 5
+        $queriedPath = [System.Collections.Generic.List[string]]::new()
+        Mock cargo -ModuleName ReleaseAutomation {
+            $metadataJson
+        }
+        Mock Test-PathCaseInsensitive -ModuleName ReleaseAutomation {
+            $true
+        }
+        Mock git -ModuleName ReleaseAutomation {
+            if ($args -contains '--show-toplevel') {
+                $global:LASTEXITCODE = 0
+                $gitRoot
+            } elseif ($args -contains '--show-prefix') {
+                $global:LASTEXITCODE = 0
+                'Repository/Nested/Workspace/'
+            } else {
+                $queriedPath.Add([string] $args[-1])
+                $global:LASTEXITCODE = 0
+                [string] $args[-1]
+            }
+        }
+
+        $members = @(Get-TrackedWorkspaceMember -ManifestPath 'ignored-by-mocked-cargo')
+
+        $members.Name | Should -Be @('member', 'sibling-helper')
+        $queriedPath | Should -Be @(
+            ':(icase,literal)Repository/Nested/Workspace/Member/Cargo.toml'
+            ':(icase,literal)Repository/Sibling/Cargo.toml'
+        )
     }
 
     It 'tracks a literal-named sibling member elsewhere in the same repository' {
