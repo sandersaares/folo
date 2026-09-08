@@ -237,7 +237,19 @@ catalog `check_id` remains intact in evidence, descriptors and worker claims.
 The version evidence also carries the immutable `pre_version_sha`, canonical
 `decisions`, `expanded_plan` and `expanded_plan_digest` used by
 `ScheduledVersion.psm1` to regenerate the exact expected Cargo edits. Record that
-source checkpoint before applying versions. Persist this evidence after publication
+source checkpoint before applying versions, with every Cargo manifest and lockfile
+byte-identical to the pinned current trusted release baseline. A worker-selected
+checkpoint containing pending increments is not a valid starting point, even if
+the resulting expansion is empty.
+
+For continuation, preserve the source repair and restore only the worker's proven
+mechanical Cargo edits to the current baseline before recording a new source
+checkpoint and regenerating the full plan. Preserve human-owned, unrelated or
+uncertain Cargo differences and block for reconciliation; do not reset them or
+change checkpoint/baseline selection to evade the requirement. Test-only empty
+expansions still require baseline-identical Cargo inputs.
+
+Persist this evidence after publication
 intent and before the initial worker mirror/PR event; update the description flag
 only after the complete version section is confirmed in the published body.
 
@@ -287,6 +299,8 @@ version changes. Refresh the full plan on source/base/decision changes; do not
 replace it with a summary or include validation-log/changed-file listings.
 Combine the canonical expansion with the report's pending-release entries so
 sufficient existing increments remain visible on subsequent runs.
+Those entries complete the PR's release-impact presentation after canonical
+validation; they cannot authorize arbitrary Cargo edits in `pre_version_sha`.
 
 Apply obvious valid fixes from all reviewers; design changes require human approval.
 Automatically reply and resolve only agent-authored threads. All human-authored

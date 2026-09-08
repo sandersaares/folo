@@ -104,8 +104,22 @@ Do not add follow-up requests in automated review replies.
 # Stage 4: Validate and compute the complete version plan
 
 Run the existing targeted checks that establish the repair, obtain an independent
-critique and address concrete findings. Commit the complete non-version source
-repair, recording its immutable `pre_version_sha`, before applying versions.
+critique and address concrete findings. Pin the current trusted release baseline
+as `base_sha`. Before recording `pre_version_sha`, every Cargo manifest and lockfile
+must byte-match that baseline; the source checkpoint must not contain pending
+version increments or other Cargo changes.
+
+On continuation, preserve the source repair and use the previous canonical
+evidence to identify the worker's owned mechanical Cargo edits. Restore only those
+proven edits to the newly pinned baseline, without resetting source files, history,
+human changes or unrelated Cargo changes. If any Cargo difference is human-owned,
+non-mechanical or cannot be attributed confidently, preserve it and block for
+scope/reconciliation rather than overwriting it or selecting a different checkpoint
+to conceal it. A moved baseline requires a fresh comparison, not reuse of an old
+pre-version checkpoint.
+
+Commit the complete non-version source repair with baseline-identical Cargo files,
+recording its immutable `pre_version_sha`, then regenerate the whole version plan.
 
 Invoke `increment-versions` for the canonical released-content report, decisions,
 plan expansion and application. Its separate approval gate is not required.
@@ -135,7 +149,11 @@ Assert-ScheduledCanonicalVersion -Root (Get-Location).Path -HeadSha '{{HEAD_SHA}
 ```
 
 Stop on any exception. The helper regenerates the canonical expansion/application
-and compares all Cargo files to the committed head. Source/base/decision changes
+only from a pre-version checkpoint whose Cargo bytes match the trusted baseline,
+then compares all resulting Cargo files to the committed head. An empty expansion
+is valid for a test-only repair only when that baseline prerequisite also holds;
+already-sufficient increments embedded in a worker-selected checkpoint are not
+an alternative proof. Source/base/decision changes
 invalidate that evidence and require regeneration. Use the actual resulting head
 for publication; do not build the validation tool from candidate-modified source.
 
@@ -176,6 +194,8 @@ every source/base/decision update. Combine `expanded.json` with `report.json`'s
 pending-release entries: a sufficient existing increment may be absent from the
 new expansion but remains part of this PR's current release impact. An empty
 expansion alone does not mean the PR has no version changes.
+Pending-release entries complete the description after canonical validation; they
+do not waive the baseline-identical pre-version Cargo requirement.
 
 Use native `create_pull_request` for first publication and native
 `update_pull_request` for body changes. A PR ready for review is the target, not
