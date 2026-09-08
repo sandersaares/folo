@@ -84,7 +84,7 @@ function Write-ScheduledRecord {
 function Assert-ScheduledSha {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string] $Sha)
-    if ($Sha -cnotmatch '^[0-9a-f]{40}$') { throw "Not an immutable Git commit SHA: $Sha" }
+    if ($Sha -cnotmatch '^[0-9a-f]{40}$') { throw [FormatException]::new("Not an immutable Git commit SHA: $Sha") }
 }
 
 function Get-ScheduledPolicy {
@@ -129,34 +129,34 @@ function ConvertTo-ScheduledIncident {
         [long] $RepositoryId = 850321188
     )
 
-    if ($Issue.user.login -cne $ReporterLogin) { throw 'Finding issue is not reporter-owned.' }
+    if ($Issue.user.login -cne $ReporterLogin) { throw [FormatException]::new('Finding issue is not reporter-owned.') }
     $record = Read-ScheduledRecord -Text $Issue.body -Kind reporter
     if ($record.repository -cne $Repository -or $record.repository_id -ne $RepositoryId) {
-        throw 'Finding repository identity mismatch.'
+        throw [FormatException]::new('Finding repository identity mismatch.')
     }
     if ($record.finding_id -cnotmatch '^[0-9a-f]{64}$' -or $record.generation -lt 1) {
-        throw 'Invalid finding identity or generation.'
+        throw [FormatException]::new('Invalid finding identity or generation.')
     }
     Assert-ScheduledSha $record.source_sha
     if ($record.observation.run_id -le 0 -or $record.observation.run_attempt -lt 1 -or
         $record.observation.run_number -lt 1 -or $record.check_contract_digest -cnotmatch '^[0-9a-f]{64}$') {
-        throw 'Finding lacks authoritative execution identity.'
+        throw [FormatException]::new('Finding lacks authoritative execution identity.')
     }
     if ($record.observation.workflow_path -cnotin @(
             '.github/workflows/scheduled-validation.yml', '.github/workflows/scheduled-verify.yml')) {
-        throw 'Finding does not originate in an approved workflow.'
+        throw [FormatException]::new('Finding does not originate in an approved workflow.')
     }
     if ($Run.repository.id -ne $RepositoryId -or $Run.repository.full_name -cne $Repository -or
         $Run.id -ne $record.observation.run_id -or $Run.run_attempt -ne $record.observation.run_attempt -or
         $Run.run_number -ne $record.observation.run_number -or
         $Run.path -cne $record.observation.workflow_path -or
         $Run.status -cne 'completed' -or $Run.head_branch -cne 'main') {
-        throw 'Originating API run does not validate the reporter record.'
+        throw [FormatException]::new('Originating API run does not validate the reporter record.')
     }
     # Verification runs execute a separately declared source SHA. The trusted reporter records
     # both identities so workflow_dispatch's controller head is not confused with that source.
     $controllerSha = if ($record.ContainsKey('controller_sha')) { $record.controller_sha } else { $record.source_sha }
-    if ($Run.head_sha -cne $controllerSha) { throw 'Originating controller SHA mismatch.' }
+    if ($Run.head_sha -cne $controllerSha) { throw [FormatException]::new('Originating controller SHA mismatch.') }
     $workers = @($Comments | Where-Object {
             $_.user.login -ceq $WorkerLogin -and $_.body.Contains('<!-- scheduled-worker:')
         })
@@ -168,7 +168,7 @@ function ConvertTo-ScheduledIncident {
         }
     }
     # One enrolled executor edits its own durable record. Duplicates need explicit recovery.
-    if ($matching.Count -gt 1) { throw 'Ambiguous worker ownership.' }
+    if ($matching.Count -gt 1) { throw [FormatException]::new('Ambiguous worker ownership.') }
     $record.issue_number = $Issue.number
     $record.validated_worker = if ($matching.Count -eq 1) { $matching[0] } else { $null }
     return $record
