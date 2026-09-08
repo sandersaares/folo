@@ -638,10 +638,7 @@ fn staged_path_mode(record: &str) -> Option<(&str, &str)> {
 /// Applies the work-tree modes from NUL-delimited `git diff-files --raw` records.
 fn overlay_work_tree_modes(stdout: &[u8], modes: &mut WorkTreeModes) -> Result<(), AppError> {
     let fields = split_z(stdout)?;
-    for record in fields.chunks_exact(2) {
-        let [header, path] = record else {
-            continue;
-        };
+    for [header, path] in fields.as_chunks::<2>().0 {
         let mut metadata = header.split_whitespace();
         _ = metadata.next();
         if let Some(mode) = metadata.next() {

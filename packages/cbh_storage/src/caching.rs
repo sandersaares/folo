@@ -244,6 +244,8 @@ where
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
+    use std::future::{Future, ready};
+
     use cbh_diag::RecordingReporter;
     use futures::executor::block_on;
     use ohno::ErrorExt as _;
@@ -405,24 +407,28 @@ mod tests {
     struct GetFailsStorage;
 
     impl Storage for GetFailsStorage {
-        async fn put(&self, _key: &str, _bytes: &[u8]) -> Result<(), StorageError> {
-            Ok(())
+        fn put(&self, _key: &str, _bytes: &[u8]) -> impl Future<Output = Result<(), StorageError>> {
+            ready(Ok(()))
         }
 
-        async fn put_overwrite(&self, _key: &str, _bytes: &[u8]) -> Result<(), StorageError> {
-            Ok(())
+        fn put_overwrite(
+            &self,
+            _key: &str,
+            _bytes: &[u8],
+        ) -> impl Future<Output = Result<(), StorageError>> + Send {
+            ready(Ok(()))
         }
 
-        async fn get(&self, _key: &str) -> Result<Vec<u8>, StorageError> {
-            Err(TestStorageError::new().into())
+        fn get(&self, _key: &str) -> impl Future<Output = Result<Vec<u8>, StorageError>> + Send {
+            ready(Err(TestStorageError::new().into()))
         }
 
-        async fn list(&self, _prefix: &str) -> Result<Vec<String>, StorageError> {
-            Ok(Vec::new())
+        fn list(&self, _prefix: &str) -> impl Future<Output = Result<Vec<String>, StorageError>> {
+            ready(Ok(Vec::new()))
         }
 
-        async fn delete(&self, _key: &str) -> Result<(), StorageError> {
-            Ok(())
+        fn delete(&self, _key: &str) -> impl Future<Output = Result<(), StorageError>> {
+            ready(Ok(()))
         }
     }
 

@@ -2,7 +2,7 @@
 name = "nm_otel_impl"
 description = "Implementation crate for nm_otel; do not depend on it directly"
 publish = true
-version = "0.4.20"
+version = "0.4.21"
 
 authors.workspace = true
 edition.workspace = true

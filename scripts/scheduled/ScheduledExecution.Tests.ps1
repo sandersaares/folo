@@ -823,8 +823,13 @@ Describe 'Verified empty mutation selections' {
         $check.packages = @($provenance.package)
         $path = New-EmptyEvidence $check
         $execution = Get-Content -LiteralPath (Join-Path $path 'execution.json') -Raw | ConvertFrom-Json -AsHashtable
-        $execution.commands[3].command.arguments | Should -Be $provenance.build_argv
-        $execution.commands[4].command.arguments | Should -Be $provenance.test_argv
+        # Captured argv establishes cargo-mutants' option contract; the Rust pin is selected
+        # independently by the controller, not by the toolchain used to capture the fixture.
+        $pin = Get-ScheduledToolchain -Kind mutants
+        $expectedBuild = @("+$pin") + @($provenance.build_argv | Select-Object -Skip 1)
+        $expectedTest = @("+$pin") + @($provenance.test_argv | Select-Object -Skip 1)
+        $execution.commands[3].command.arguments | Should -Be $expectedBuild
+        $execution.commands[4].command.arguments | Should -Be $expectedTest
         $execution.commands[3].command.ContainsKey('timeout_seconds') | Should -BeFalse
         $execution.commands[4].command.timeout_seconds | Should -Be $provenance.test_timeout_seconds
         $check.flags = @('--features=alpha,beta', '--no-default-features', '--profile=custom', '--test-workspace')
@@ -838,7 +843,7 @@ Describe 'Verified empty mutation selections' {
             param($Check, $Command, $Configuration)
             Get-ScheduledEmptyBaselineCommand $Check $Command $Configuration Test
         } $check $command $configuration
-        $baseline.arguments | Should -Be @("+$($provenance.toolchain)", 'nextest', 'run', '--cargo-profile=custom',
+        $baseline.arguments | Should -Be @("+$pin", 'nextest', 'run', '--cargo-profile=custom',
             '--verbose', '--package=cpulist', '--no-default-features', '--all-features',
             '--features=alpha,beta', '--features=gamma', '--locked', $check.test_filter, '--tests')
         $baseline.environment.CBH_FAKER | Should -Be $command.environment.CBH_FAKER

@@ -279,6 +279,7 @@ mod tests {
         reason = "the faker value core stores exact metric values, so comparisons are exact"
     )]
 
+    use std::future::{Future, ready};
     use std::io;
     use std::num::NonZero;
     use std::path::PathBuf;
@@ -328,16 +329,16 @@ mod tests {
     }
 
     impl EnvironmentProbe for FakeProbe {
-        async fn git(&self) -> io::Result<GitInfo> {
-            Ok(self.git.clone())
+        fn git(&self) -> impl Future<Output = io::Result<GitInfo>> {
+            ready(Ok(self.git.clone()))
         }
 
-        async fn toolchain(&self) -> io::Result<RustcInfo> {
-            Ok(self.rustc.clone())
+        fn toolchain(&self) -> impl Future<Output = io::Result<RustcInfo>> {
+            ready(Ok(self.rustc.clone()))
         }
 
-        async fn hardware(&self) -> HardwareProfile {
-            self.hardware.clone()
+        fn hardware(&self) -> impl Future<Output = HardwareProfile> {
+            ready(self.hardware.clone())
         }
     }
 
@@ -357,18 +358,18 @@ mod tests {
     }
 
     impl BenchOutputSource for FakeOutput {
-        async fn collect(
+        fn collect(
             &self,
             engine: Engine,
             _since: Option<SystemTime>,
             _reporter: &dyn Reporter,
-        ) -> io::Result<Harvest> {
-            Ok(match engine {
+        ) -> impl Future<Output = io::Result<Harvest>> {
+            ready(Ok(match engine {
                 Engine::Callgrind => Harvest::Callgrind(self.callgrind.clone()),
                 Engine::Criterion => Harvest::Criterion(Vec::new()),
                 Engine::AllocTracker => Harvest::AllocTracker(Vec::new()),
                 Engine::AllTheTime => Harvest::AllTheTime(self.time.clone()),
-            })
+            }))
         }
     }
 

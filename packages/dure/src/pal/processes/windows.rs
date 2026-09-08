@@ -166,7 +166,7 @@ fn close(handle: HANDLE) {
     _ = unsafe { CloseHandle(handle) };
 }
 
-pub(super) fn wide(s: &str) -> Vec<u16> {
+pub(crate) fn wide(s: &str) -> Vec<u16> {
     wide_os(OsStr::new(s))
 }
 
@@ -714,7 +714,7 @@ impl Processes for BuildTargetProcesses {
 /// `git` would then be satisfied by an executable that happens to sit in the
 /// directory the session was launched from. A path a user spells out still
 /// reaches the launch directory; a bare name is a search-path lookup only.
-pub(super) fn search_path(command: &str, extension: &str) -> Option<PathBuf> {
+pub(crate) fn search_path(command: &str, extension: &str) -> Option<PathBuf> {
     let search_path = env::var_os("PATH")?;
     let search_path = wide_os(search_path.as_os_str());
     let name = wide(command);
