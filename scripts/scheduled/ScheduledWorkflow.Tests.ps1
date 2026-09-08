@@ -21,6 +21,48 @@ Describe 'Repair gate orchestration' {
                     -DeepResult $result -RunId 1 -RunAttempt 1 } | Should -Throw
         }
     }
+
+    Describe 'Coverage reporting lag' {
+        It 'does not reuse success across <Reason>' -TestCases @(
+            @{ Status = 'completed'; Conclusion = 'failure'; Attempt = 1; Id = 20; Reason = 'unreported-validation-failure' }
+            @{ Status = 'in_progress'; Conclusion = $null; Attempt = 1; Id = 20; Reason = 'unsettled-validation-run' }
+            @{ Status = 'completed'; Conclusion = 'success'; Attempt = 2; Id = 10; Reason = 'coverage-run-reattempted' }
+        ) {
+            param($Status, $Conclusion, $Attempt, $Id, $Reason)
+            InModuleScope ScheduledWorkflow -Parameters @{
+                Status = $Status; Conclusion = $Conclusion; Attempt = $Attempt; Id = $Id; Reason = $Reason
+            } {
+                param($Status, $Conclusion, $Attempt, $Id, $Reason)
+                $execution = @{
+                    id = $Id; run_attempt = $Attempt; head_sha = 'a' * 40; head_branch = 'main'
+                    status = $Status; conclusion = $Conclusion; updated_at = '2026-09-08T11:00:00Z'
+                }
+                Mock Invoke-ScheduledReadApi { @(@{ workflow_runs = @($execution) }) }
+                Get-ScheduledCoverageRunRisk -Policy @{ repository = 'folo-rs/folo' } `
+                    -Receipt @{ run_id = 10; run_attempt = 1; source_sha = 'a' * 40; completed_at = '2026-09-08T10:00:00Z' } `
+                    -CurrentRunId 30 -CurrentRunAttempt 1 | Should -Be $Reason
+            }
+        }
+
+        It 'ignores its own planning run without refreshing or invalidating prior coverage' {
+            InModuleScope ScheduledWorkflow {
+                Mock Invoke-ScheduledReadApi { @(@{ workflow_runs = @(@{ id = 30 }) }) }
+                Get-ScheduledCoverageRunRisk -Policy @{ repository = 'folo-rs/folo' } `
+                    -Receipt @{ run_id = 10; run_attempt = 1; source_sha = 'a' * 40; completed_at = '2026-09-08T10:00:00Z' } `
+                    -CurrentRunId 30 -CurrentRunAttempt 1 | Should -BeNullOrEmpty
+                Should -Invoke Invoke-ScheduledReadApi -Times 2 -Exactly
+            }
+        }
+
+        It 'forces a rerun of the coverage-producing workflow even before querying its own attempt' {
+            InModuleScope ScheduledWorkflow {
+                Mock Invoke-ScheduledReadApi { throw 'No API read needed' }
+                Get-ScheduledCoverageRunRisk -Policy @{ repository = 'folo-rs/folo' } `
+                    -Receipt @{ run_id = 10; run_attempt = 1 } -CurrentRunId 10 -CurrentRunAttempt 2 |
+                    Should -Be 'coverage-run-reattempted'
+            }
+        }
+    }
     It 'retains existing local deep execution until reviewed cutover' {
         InModuleScope ScheduledWorkflow {
             Mock just {}
@@ -35,6 +77,28 @@ Describe 'Repair gate orchestration' {
             Mock Get-ScheduledPolicy { @{ rollout = @{ cutover = $true } } }
             Invoke-ScheduledLocalDeepCheck -Kind mutants -Packages cpulist
             Should -Invoke just -Times 0 -Exactly
+        }
+    }
+    It 'keeps content-reader callbacks in their defining module when only the workflow is imported' {
+        $root = Join-Path $TestDrive 'callback-workspace'
+        New-Item -ItemType Directory -Path (Join-Path $root 'packages/sample') -Force | Out-Null
+        '[package]', 'name = "sample"', 'version = "0.1.0"' |
+            Set-Content (Join-Path $root 'packages/sample/Cargo.toml')
+        InModuleScope ScheduledWorkflow -Parameters @{ Root = $root } {
+            param($Root)
+            Mock gh -ModuleName ScheduledGate {
+                $endpoint = $args[1]
+                if ($endpoint -like '*/files?*') {
+                    return '[[{"filename":"Cargo.toml","status":"modified"}]]'
+                }
+                $version = if ($endpoint -like '*ref=base') { '0.1.0' } else { '0.1.1' }
+                return @{ content = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(
+                            "sample = { version = `"=$version`", path = `"packages/sample`" }")) } | ConvertTo-Json -Compress
+            }
+            Assert-ScheduledPullRequestChange -Root $Root -Policy @{ repository = 'folo-rs/folo' } `
+                -PullRequest @{ number = 42; base = @{ sha = 'base' }; head = @{ sha = 'head' } } `
+                -Scope @{ packages = @('sample') }
+            Should -Invoke gh -ModuleName ScheduledGate -Times 3 -Exactly
         }
     }
 }

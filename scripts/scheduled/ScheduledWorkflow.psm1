@@ -24,6 +24,39 @@ function Get-ScheduledCoverageIndex {
     }
 }
 
+function Get-ScheduledCoverageRunRisk {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)][hashtable] $Policy,
+        [Parameter(Mandatory)][hashtable] $Receipt,
+        [Parameter(Mandatory)][long] $CurrentRunId,
+        [Parameter(Mandatory)][int] $CurrentRunAttempt
+    )
+    if ($Receipt.run_id -eq $CurrentRunId -and $Receipt.run_attempt -lt $CurrentRunAttempt) {
+        return 'coverage-run-reattempted'
+    }
+    # Reporting is serialized but asynchronous. Check the execution API before reusing its
+    # durable index so an unreported failure or retry cannot hide behind an older green receipt.
+    $completed = [datetimeoffset]$Receipt.completed_at
+    foreach ($workflow in @('scheduled-validation.yml', 'scheduled-verify.yml')) {
+        $pages = Invoke-ScheduledReadApi "repos/$($Policy.repository)/actions/workflows/$workflow/runs?head_sha=$($Receipt.source_sha)&branch=main&per_page=100" -Paginate
+        foreach ($execution in @($pages | ForEach-Object { $_.workflow_runs })) {
+            if ($execution.id -eq $CurrentRunId) { continue }
+            if ($execution.head_sha -cne $Receipt.source_sha -or $execution.head_branch -cne 'main') {
+                throw 'Execution API returned an incompatible coverage candidate.'
+            }
+            if ($execution.id -eq $Receipt.run_id -and $execution.run_attempt -gt $Receipt.run_attempt) {
+                return 'coverage-run-reattempted'
+            }
+            if ($execution.status -cne 'completed') { return 'unsettled-validation-run' }
+            if ([datetimeoffset]$execution.updated_at -ge $completed -and $execution.conclusion -cne 'success') {
+                return 'unreported-validation-failure'
+            }
+        }
+    }
+}
+
 function Get-ScheduledConfirmationScope {
     [CmdletBinding()]
     param([Parameter(Mandatory)][hashtable] $Policy, [Parameter(Mandatory)][string] $SourceSha)
@@ -105,10 +138,11 @@ function Invoke-ScheduledPlanning {
             $sourceSha = $workflowEvent.merge_group.head_sha
             $releaseBaseSha = $workflowEvent.merge_group.base_sha
             $repository = $policy.repository
+            $readApi = Get-Command Invoke-ScheduledReadApi
             $isAncestor = {
                 param($ancestor, $descendant)
                 if ($ancestor -ceq $descendant) { return $true }
-                $comparison = Invoke-ScheduledReadApi "repos/$repository/compare/${ancestor}...${descendant}"
+                $comparison = & $readApi "repos/$repository/compare/${ancestor}...${descendant}"
                 return $comparison.status -cin @('ahead', 'identical')
             }.GetNewClosure()
             $entries = @(Get-ScheduledQueueEntry -Repository $repository)
@@ -174,6 +208,15 @@ function Invoke-ScheduledPlanning {
             $run = $decision.run
             $reason = $decision.reason
             $receipt = $decision.receipt
+            if (-not $run) {
+                $risk = Get-ScheduledCoverageRunRisk -Policy $policy -Receipt $receipt `
+                    -CurrentRunId ([long]$env:GITHUB_RUN_ID) -CurrentRunAttempt ([int]$env:GITHUB_RUN_ATTEMPT)
+                if ($risk) {
+                    $run = $true
+                    $reason = $risk
+                    $receipt = $null
+                }
+            }
         }
     }
     $plan = @{

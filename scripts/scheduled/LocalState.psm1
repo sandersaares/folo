@@ -495,7 +495,7 @@ function Invoke-ScheduledLocalRequest {
     param([Parameter(Mandatory)][string] $RequestPath)
     $request = Get-Content -LiteralPath $RequestPath -Raw | ConvertFrom-Json -AsHashtable
     Assert-LocalField $request @('policy_path', 'executor_id', 'login', 'action', 'data')
-    $policy = Get-Content -LiteralPath $request.policy_path -Raw | ConvertFrom-Json -AsHashtable
+    $policy = Get-ScheduledPolicy -Path $request.policy_path
     $root = Get-ScheduledStateRoot -RepositoryId $policy.repository_id
     Invoke-ScheduledLocalAction -StateRoot $root -Policy $policy -ExecutorId $request.executor_id `
         -Login $request.login -Now ([DateTimeOffset]::UtcNow) -Action $request.action -Data $request.data |

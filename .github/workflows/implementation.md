@@ -81,6 +81,9 @@ on checker failure. Reporting runs only reviewed default-branch code with issue-
 candidate artifacts are data, never commands or an alternate policy.
 
 `ScheduledPlan.psm1` establishes full-scope completeness and compatible-success reuse.
+Before reuse, the planner also checks the execution API for unreported failures, active work and
+newer attempts on the same main commit. The asynchronous reporter's durable index cannot conceal
+those observations, and skipped work does not refresh the coverage timestamp.
 `ScheduledExecution.psm1` constructs typed arguments and interprets pinned checker output.
 `ScheduledReport.psm1` and `ScheduledGitHub.psm1` separate deterministic state transitions from
 GitHub persistence. Reporting serializes all originating workflows into one writer; durable minimal
@@ -98,7 +101,9 @@ Metadata-only corrections retrigger through the PR `edited` event or a rerun at 
 
 Managed release edits also pass `ScheduledVersion.psm1` on the published PR head. The worker
 records an immutable pre-versioning commit, the release baseline, semantic decisions and expanded
-plan. A trusted controller build of `cargo-release-plan` independently regenerates the proposal
+plan. Every Cargo manifest and lockfile in that checkpoint must match the trusted release
+baseline byte for byte; worker-selected pending versions cannot define the reference.
+A trusted controller build of `cargo-release-plan` independently regenerates the proposal
 and expansion in a new owned reference worktree, then performs real apply without publication.
 Every committed Cargo manifest and lockfile is compared with that canonical result, including
 dependent requirement rewrites. Source changes after the pre-versioning checkpoint or a moved

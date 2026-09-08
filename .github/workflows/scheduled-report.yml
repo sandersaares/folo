@@ -43,5 +43,6 @@ jobs:
         with:
           name: scheduled-report-${{ github.run_id }}-${{ github.run_attempt }}
           path: .scheduled-report
+          include-hidden-files: true
           if-no-files-found: warn
           retention-days: 30

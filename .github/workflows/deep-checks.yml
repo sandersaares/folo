@@ -53,5 +53,6 @@ jobs:
         with:
           name: scheduled-result-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.id }}
           path: .scheduled-result
+          include-hidden-files: true
           if-no-files-found: warn
           retention-days: 30

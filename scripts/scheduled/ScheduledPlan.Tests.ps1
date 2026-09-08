@@ -83,6 +83,11 @@ Describe 'Unchanged main decisions' {
             run_number = 2; run_attempt = 2
         }
         (Get-ScheduledRunDecision -Manifest $manifest -Coverage $coverage -Now $now).run | Should -BeTrue
+        # A different workflow has its own independent sequence and can fail later with a
+        # numerically smaller run number. The reporter retains that unresolved invalidation.
+        $coverage.invalidation.run_number = 1
+        $coverage.invalidation.run_attempt = 1
+        (Get-ScheduledRunDecision -Manifest $manifest -Coverage $coverage -Now $now).run | Should -BeTrue
     }
     It 'reruns malformed or unreadable receipts rather than suppressing checks' {
         foreach ($invalid in @(@{}, @{ schema_version = 99 },

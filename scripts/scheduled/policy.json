@@ -20,6 +20,7 @@
   },
   "coverage": {
     "max_age_days": 7,
+    "expected_plan_gap_hours": 30,
     "retry_cooldown_hours": 3,
     "artifact_retention_days": 30,
     "max_artifact_bytes": 104857600

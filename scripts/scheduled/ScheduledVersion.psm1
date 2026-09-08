@@ -1,7 +1,7 @@
 #requires -Version 7
 
-# Mechanical version evidence is reproduced from the pre-versioning tree. Applying an already
-# versioned candidate would omit pending increments and cannot establish the same reference.
+# Mechanical version evidence is reproduced from a source checkpoint whose Cargo tree matches
+# the trusted release baseline. Worker-selected versions cannot become the generation reference.
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
@@ -54,6 +54,25 @@ function Get-ScheduledGitCargoFile {
     return $result
 }
 
+function Assert-ScheduledVersionReference {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string] $Root,
+        [Parameter(Mandatory)][string] $BaseSha,
+        [Parameter(Mandatory)][string] $PreVersionSha
+    )
+    $baseline = Get-ScheduledGitCargoFile -Root $Root -Revision $BaseSha
+    $reference = Get-ScheduledGitCargoFile -Root $Root -Revision $PreVersionSha
+    if ($baseline.Count -ne $reference.Count) {
+        throw 'Pre-version checkpoint Cargo file set differs from the trusted release baseline.'
+    }
+    foreach ($path in $baseline.Keys) {
+        if (-not $reference.ContainsKey($path) -or $reference[$path] -cne $baseline[$path]) {
+            throw "Pre-version checkpoint Cargo bytes differ from the trusted release baseline: $path"
+        }
+    }
+}
+
 function Assert-ScheduledCanonicalVersion {
     [CmdletBinding()]
     param(
@@ -63,7 +82,11 @@ function Assert-ScheduledCanonicalVersion {
         [Parameter(Mandatory)][hashtable] $Evidence,
         [Parameter(Mandatory)][string] $ReleasePlanExecutable,
         [Parameter(Mandatory)][string] $TrustedControllerRoot,
-        [Parameter(Mandatory)][string] $TemporaryRoot
+        [Parameter(Mandatory)][string] $TemporaryRoot,
+        [scriptblock] $AssertPublished = {
+            param([string] $ExpandedPath)
+            Assert-IncrementPackagePublished -ExpandedPath $ExpandedPath
+        }
     )
     Assert-ScheduledSha $HeadSha
     Assert-ScheduledSha $BaseSha
@@ -74,6 +97,9 @@ function Assert-ScheduledCanonicalVersion {
         throw 'Canonical verification requires the trusted controller release-plan executable.'
     }
     & git -C $Root merge-base --is-ancestor $Evidence.pre_version_sha $HeadSha
+    # An ancestor alone is not independent evidence: it could already contain arbitrary
+    # version movement that report would retain as a sufficient pending release.
+    Assert-ScheduledVersionReference -Root $Root -BaseSha $BaseSha -PreVersionSha $Evidence.pre_version_sha
     $postVersionPaths = @(& git -C $Root diff --name-only $Evidence.pre_version_sha $HeadSha)
     foreach ($path in $postVersionPaths) {
         if ($path -cnotmatch '(^|/)Cargo\.(toml|lock)$') {
@@ -101,6 +127,7 @@ function Assert-ScheduledCanonicalVersion {
             & $ReleasePlanExecutable expand --plan $planPath --out $expandedPath
             $expanded = Get-Content -LiteralPath $expandedPath -Raw | ConvertFrom-Json -AsHashtable
             Assert-ScheduledVersionArtifact -Evidence $Evidence -BaseSha $BaseSha -Expanded $expanded
+            & $AssertPublished $expandedPath
             & $ReleasePlanExecutable apply --plan $expandedPath
             $expected = Get-ScheduledGitCargoFile -Root $reference -Revision HEAD
             $actual = Get-ScheduledGitCargoFile -Root $Root -Revision $HeadSha

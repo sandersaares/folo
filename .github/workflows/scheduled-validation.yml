@@ -59,6 +59,7 @@ jobs:
         with:
           name: scheduled-plan-${{ github.run_id }}-${{ github.run_attempt }}
           path: .scheduled-plan
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 30
   checks:

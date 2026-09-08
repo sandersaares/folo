@@ -179,12 +179,12 @@ function Get-ScheduledRunDecision {
         if ($compatible) {
             $validManifest = (Get-ScheduledDigest $receipt.manifest.checks) -ceq
                 (Get-ScheduledDigest $Manifest.checks)
-            $newerInvalidation = $null -ne $Coverage.invalidation -and
+            # The serialized reporter owns execution ordering across workflow families.
+            # A retained invalidation is unresolved; per-workflow run numbers cannot order
+            # a verification run against a full scheduled run.
+            $applicableInvalidation = $null -ne $Coverage.invalidation -and
                 $Coverage.invalidation.source_sha -ceq $Manifest.source_sha -and
-                $Coverage.invalidation.check_contract_digest -ceq $Manifest.check_contract_digest -and
-                ($Coverage.invalidation.run_number -gt $receipt.run_number -or
-                    ($Coverage.invalidation.run_number -eq $receipt.run_number -and
-                        $Coverage.invalidation.run_attempt -ge $receipt.run_attempt))
+                $Coverage.invalidation.check_contract_digest -ceq $Manifest.check_contract_digest
             $completed = [datetimeoffset]::MinValue
             if ($receipt.completed_at -is [datetime] -or $receipt.completed_at -is [datetimeoffset]) {
                 $completed = [datetimeoffset]$receipt.completed_at
@@ -193,7 +193,7 @@ function Get-ScheduledRunDecision {
                     [Globalization.DateTimeStyles]::None, [ref]$completed)) {
                 return @{ run = $true; reason = 'malformed-receipt'; receipt = $null }
             }
-            if ($validManifest -and -not $newerInvalidation -and $completed -le $Now -and
+            if ($validManifest -and -not $applicableInvalidation -and $completed -le $Now -and
                 ($Now - $completed).TotalDays -lt $MaxAgeDays -and
                 $receipt.run_id -gt 0 -and $receipt.run_attempt -gt 0) {
                 return @{ run = $false; reason = 'not-run-unchanged'; receipt = $receipt }

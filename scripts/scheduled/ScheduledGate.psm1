@@ -283,14 +283,17 @@ function Assert-ScheduledPullRequestChange {
     $repository = $Policy.repository
     $baseSha = $PullRequest.base.sha
     $headSha = $PullRequest.head.sha
+    # A closure is a dynamic module. Capture the command, not only its name, so the callback
+    # retains the defining module's API boundary when called from another module.
+    $readApi = Get-Command Invoke-ScheduledReadApi
     $readBase = {
         param($path)
-        $value = Invoke-ScheduledReadApi "repos/$repository/contents/${path}?ref=$baseSha"
+        $value = & $readApi "repos/$repository/contents/${path}?ref=$baseSha"
         return [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($value.content))
     }.GetNewClosure()
     $readHead = {
         param($path)
-        $value = Invoke-ScheduledReadApi "repos/$repository/contents/${path}?ref=$headSha"
+        $value = & $readApi "repos/$repository/contents/${path}?ref=$headSha"
         return [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($value.content))
     }.GetNewClosure()
     Assert-ScheduledRepairChange -Files @($pages | ForEach-Object { $_ }) -Packages $Scope.packages `
