@@ -51,6 +51,9 @@ function Get-ScheduledSetupDecision {
     if ($live.host_id -cne $Desired.host_id) {
         $result.reason = 'live-host-differs'; return $result
     }
+    if ($live.workspace_type -cne 'worktree') {
+        $result.reason = 'local-worktree-required'; return $result
+    }
     # A renamed managed entry is still the same automation. Preserve the name and pause,
     # along with an operator's model choice unless a profile change is explicitly approved.
     $expected = @{
@@ -74,4 +77,31 @@ function Get-ScheduledSetupDecision {
     return $result
 }
 
-Export-ModuleMember -Function Get-ScheduledSetupDecision
+function ConvertTo-ScheduledNativeWorkflow {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][System.Collections.IDictionary] $Workflow,
+        [Parameter(Mandatory)][System.Collections.IDictionary] $ProjectRepository
+    )
+    # list_workflows uses camelCase, whereas the controller contracts use snake_case.
+    # Repository identity comes from separately verified project metadata, not prompt text.
+    foreach ($field in @('id', 'name', 'projectId', 'hostId', 'interval', 'cronExpression',
+        'enabled', 'model', 'reasoningEffort', 'mode', 'workspaceType', 'prompt')) {
+        if (-not $Workflow.Contains($field)) { throw "Native automation field '$field' is unavailable." }
+    }
+    if ([string]::IsNullOrWhiteSpace($Workflow.projectId) -or
+        -not $ProjectRepository.Contains($Workflow.projectId) -or
+        [string]::IsNullOrWhiteSpace($ProjectRepository[$Workflow.projectId])) {
+        throw 'Native project-to-repository association has not been verified.'
+    }
+    if ($Workflow.enabled -isnot [bool]) { throw 'Native enabled status must be a boolean.' }
+    return @{
+        id = $Workflow.id; name = $Workflow.name; repository = $ProjectRepository[$Workflow.projectId]
+        project_id = $Workflow.projectId; host_id = $Workflow.hostId
+        interval = $Workflow.interval; cron_expression = $Workflow.cronExpression
+        enabled = $Workflow.enabled; model = $Workflow.model; reasoning_effort = $Workflow.reasoningEffort
+        mode = $Workflow.mode; workspace_type = $Workflow.workspaceType; prompt = $Workflow.prompt
+    }
+}
+
+Export-ModuleMember -Function Get-ScheduledSetupDecision, ConvertTo-ScheduledNativeWorkflow

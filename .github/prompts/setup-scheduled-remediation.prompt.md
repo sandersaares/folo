@@ -74,6 +74,33 @@ ownership remain ambiguous; never delete arbitrary automations.
 
 ## Stage 4: Compute the idempotent reconciliation decision
 
+The supported native payload exposes `projectId`, `hostId`, `cronExpression`,
+`reasoningEffort` and `workspaceType` alongside the full prompt. Normalize it with
+`ConvertTo-ScheduledNativeWorkflow`, joining project IDs to canonical repositories
+established from `list_projects`. An observed native `hostId` of `local` is valid;
+the prohibition is on guessing that value, not on preserving native evidence.
+
+```powershell
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+$PSNativeCommandUseErrorActionPreference = $true
+Import-Module .\scripts\scheduled\LocalSetup.psm1 -Force
+$native = Get-Content -LiteralPath "{{NATIVE_WORKFLOW_PATH}}" -Raw | ConvertFrom-Json -AsHashtable
+$projects = Get-Content -LiteralPath "{{PROJECT_MAP_PATH}}" -Raw | ConvertFrom-Json -AsHashtable
+ConvertTo-ScheduledNativeWorkflow -Workflow $native -ProjectRepository $projects |
+    ConvertTo-Json -Depth 40
+```
+
+| Placeholder | Meaning |
+|---|---|
+| `NATIVE_WORKFLOW_PATH` | Absolute artifact containing one actual candidate `list_workflows` entry, retaining its native field names. |
+| `PROJECT_MAP_PATH` | Absolute JSON object mapping actual project IDs to canonical repository names verified through native project discovery. |
+
+Use each result as a normalized workflow below. A missing field or unknown
+association is an explicit metadata blocker; do not replace it with an empty list.
+Do not hardcode an installation's observed automation/project ID into repository
+defaults. Preserve the existing disabled managed entry rather than creating another.
+
 Prepare a non-secret JSON artifact containing the normalized native data:
 `desired`, `workflows`, `metadata_complete`, `registered_profile`. Only use fields
 actually observed or explicitly selected by the operator.
@@ -81,7 +108,7 @@ actually observed or explicitly selected by the operator.
 | Object | Fields |
 |---|---|
 | `desired` | Canonical `repository`, actual `project_id`, `host_id`, enrolled `executor_id`, selected `login`, policy `name`, `marker`, `cadence_cron`, desired `prompt`, operator-selected `coordinator_model` and optional supported `coordinator_effort`. |
-| Each `workflows` entry | Actual `id`, canonical `repository` association, `project_id`, `host_id`, `name`, `prompt`, `enabled`, `interval`, `cron_expression`, `model`, `mode`. |
+| Each `workflows` entry | Actual `id`, canonical `repository` association, `project_id`, `host_id`, `name`, `prompt`, `enabled`, `interval`, `cron_expression`, `model`, `reasoning_effort`, `mode`, `workspace_type`. |
 | `registered_profile` | Existing local profile, or null only after verified first-enrollment/recovery discovery. |
 | `metadata_complete` | True only when the native facts needed for matching and comparison are available. |
 

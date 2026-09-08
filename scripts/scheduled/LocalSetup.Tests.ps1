@@ -14,6 +14,7 @@ Describe 'Native setup reconciliation' {
             id = 'saved'; repository = $desired.repository; project_id = 'project'; host_id = 'real-local'
             name = $desired.name; prompt = $desired.prompt; enabled = $false; interval = 'manual'
             cron_expression = $desired.cadence_cron; model = 'operator-choice'; mode = 'autopilot'
+            workspace_type = 'worktree'
         }
         $script:registered = @{
             automation_id = 'saved'; executor_id = 'machine'; login = 'operator'; host_id = 'real-local'
@@ -92,5 +93,54 @@ Describe 'Native setup reconciliation' {
         (Get-ScheduledSetupDecision -Desired $desired -Workflows @() `
             -RegisteredProfile $registered -MetadataComplete $true).reason |
             Should -Be executor-transfer-requires-reconciliation
+    }
+    It 'normalizes the observed native camelCase schema and reuses its disabled Local entry' {
+        $native = @'
+{
+  "id": "saved",
+  "name": "Folo scheduled finding intake",
+  "projectId": "project",
+  "hostId": "local",
+  "interval": "manual",
+  "cronExpression": "17 */3 * * *",
+  "enabled": false,
+  "model": "gpt-5.4-mini",
+  "reasoningEffort": "medium",
+  "mode": "autopilot",
+  "workspaceType": "worktree",
+  "prompt": "folo-scheduled-remediation:v1 Run scheduled-intake. Human responses require approval."
+}
+'@ | ConvertFrom-Json -AsHashtable
+        $normalized = ConvertTo-ScheduledNativeWorkflow -Workflow $native `
+            -ProjectRepository @{ project = 'folo-rs/folo' }
+        $normalized.host_id | Should -Be local
+        $normalized.reasoning_effort | Should -Be medium
+        $normalized.workspace_type | Should -Be worktree
+        $normalized.enabled | Should -BeFalse
+        $desired.host_id = 'local'
+        $desired.prompt = $native.prompt
+        $desired.coordinator_model = 'gpt-5.4-mini'
+        $desired.coordinator_effort = 'medium'
+        $result = Get-ScheduledSetupDecision -Desired $desired -Workflows @($normalized) -MetadataComplete $true
+        $result.action | Should -Be unchanged
+        $result.workflow_id | Should -Be saved
+        $result.changes.Count | Should -Be 0
+        $native.Contains('host_id') | Should -BeFalse
+    }
+    It 'does not manufacture missing native fields or unknown project associations' {
+        $native = @{ id = 'saved'; name = 'name'; projectId = 'unknown'; hostId = 'local'
+            interval = 'manual'; cronExpression = '17 */3 * * *'; enabled = $false
+            model = 'gpt-5.4-mini'; reasoningEffort = 'medium'; mode = 'autopilot'
+            workspaceType = 'worktree'; prompt = 'folo-scheduled-remediation:v1' }
+        { ConvertTo-ScheduledNativeWorkflow -Workflow $native `
+            -ProjectRepository @{ project = 'folo-rs/folo' } } | Should -Throw
+        $native.projectId = 'project'; $native.Remove('prompt')
+        { ConvertTo-ScheduledNativeWorkflow -Workflow $native `
+            -ProjectRepository @{ project = 'folo-rs/folo' } } | Should -Throw
+    }
+    It 'requires the observed execution workspace to be a worktree' {
+        $live.workspace_type = 'branch'
+        (Get-ScheduledSetupDecision -Desired $desired -Workflows @($live) `
+            -MetadataComplete $true).reason | Should -Be local-worktree-required
     }
 }
