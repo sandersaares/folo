@@ -1,4 +1,19 @@
 #requires -Version 7
+<#
+.SYNOPSIS
+Runs one deep scheduled check (a Miri or mutation-testing leg) and reports its outcome.
+.DESCRIPTION
+Thin entrypoint for a single `deep-checks.yml` reusable-workflow matrix job: `$CheckJson` is one
+element of the plan's `manifest.checks` array (see ScheduledWorkflow.psm1's
+`Invoke-ScheduledPlanning`), passed in as `SCHEDULED_CHECK` via `toJSON(matrix)`. The real work -
+building the typed command, running it against the extracted candidate source, and parsing raw
+checker output into typed evidence - lives in ScheduledExecution.psm1 (Rust-owned; see
+../../.github/workflows/implementation.md#immutable-execution and #evidence-decoding), which this
+script only wraps for the hosted matrix job and for local reproduction via `just`
+(just_scheduled.just). The process exit code is this leg's pass/fail signal to the matrix job; the
+JSON result on stdout is what `scheduled-report.yml` later parses from the run's artifact. See
+../../docs/scheduled-validation.md#durable-ownership-and-native-calls.
+#>
 [CmdletBinding()]
 param(
     [string] $CheckJson = $env:SCHEDULED_CHECK,

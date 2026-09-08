@@ -1,7 +1,12 @@
 #requires -Version 7
 
-# Shared wire format for hosted evidence and the personal Local App executor.
-# Records have separate ownership; editing one record never replaces surrounding discussion.
+# Shared wire format for hosted evidence and the personal Local App executor: canonical
+# JSON-comparable digests (`Get-ScheduledDigest`), the fenced-block record embedding used inside
+# GitHub issue/PR bodies, and policy loading/validation. Every other module in this directory that
+# reads or writes a finding, coverage, incident or policy record imports this one, so it is the
+# sole place the wire format can change; nothing here calls back into GitHub, the native App, or
+# any other scheduled module. Records have separate ownership; editing one record never replaces
+# surrounding discussion. See ../../docs/scheduled-validation.md#durable-ownership-and-native-calls.
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
@@ -102,15 +107,27 @@ function Get-ScheduledPolicy {
         $policy.repair.max_explanation_characters -le 0) {
         throw 'Repair explanation bound must be a positive integer.'
     }
+    # These three switches are the compatibility fields consuming modules read to decide
+    # execution/reporting authorization and enforcement mode; this function only proves they
+    # exist with the right type, it does not itself decide authorization. See
+    # ../../.github/workflows/implementation.md#operating-policy.
     foreach ($switchName in @('hosted_execution_enabled', 'reporting_enabled', 'cutover')) {
         if ($policy.rollout[$switchName] -isnot [bool]) { throw "Rollout switch must be boolean: $switchName" }
     }
+    # Recorded operator verification (the two canaries and native App capability) plus
+    # managed-publication credential safeguards (benchmark_exclusion, azure_policy); named here so
+    # every reader of a policy file gets the same set #operating-policy documents, not whatever
+    # happens to be present in a given policy.json.
     $prerequisiteNames = @('execution_canary', 'reporting_canary', 'native_app_canary',
         'benchmark_exclusion', 'azure_policy')
     foreach ($name in $prerequisiteNames) {
         if ($policy.rollout.prerequisites[$name] -isnot [bool]) { throw "Missing rollout prerequisite: $name" }
     }
     if ($policy.rollout.cutover) {
+        # Fail closed: cutover (scheduled enforcement) is rejected unless both authorization
+        # switches and every recorded prerequisite are true, mirroring the acceptance rule in
+        # #operating-policy rather than letting a stale or partially-rolled-out policy select
+        # enforcement by accident.
         if (-not $policy.rollout.hosted_execution_enabled -or -not $policy.rollout.reporting_enabled) {
             throw 'Cutover requires both hosted execution and reporting.'
         }

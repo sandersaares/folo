@@ -50,6 +50,7 @@ jobs:
     # Conservative first-event exclusion: missing/corrupt managed metadata still never grants
     # a candidate production-backed benchmark credentials. The required repair gate owns
     # full issue/attempt/head validation, not this advisory workflow.
+    # Ref: .github/workflows/design.md#managed-publication.
     if: >-
       github.repository == 'folo-rs/folo'
       && github.event.pull_request.head.repo.full_name == github.repository

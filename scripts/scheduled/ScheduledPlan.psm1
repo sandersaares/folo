@@ -1,6 +1,8 @@
 #requires -Version 7
 
-# Coverage is a declared manifest, not the absence of observed errors.
+# The hosted planner and reporter share the declared scope, compatibility digest and receipt
+# reuse rules here; missing evidence never becomes coverage merely because no error was seen.
+# Ref: .github/workflows/implementation.md, "Scheduled controller ownership".
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
@@ -8,6 +10,7 @@ Import-Module (Join-Path $PSScriptRoot 'ScheduledContracts.psm1')
 Import-Module (Join-Path $PSScriptRoot '..\build\Miri.psm1')
 
 function Get-ScheduledCheckManifest {
+    # Declare obligations before execution; discovery results cannot shrink the expected scope.
     [CmdletBinding()]
     [OutputType([hashtable])]
     param(
@@ -79,10 +82,19 @@ function Get-ScheduledContractDigest {
     # Hash the checker contract, not the checked source or admission policy. Source SHA binds
     # Cargo content independently; a mechanical version increment or enabling repair admission
     # must not make an otherwise identical checker unable to confirm the original incident.
+    # The private decoder manifest is checker infrastructure, not a released package's version
+    # plan. Its source and dependency declarations must travel with the parser contract.
+    # Its reviewed dependency snapshot is validated against trusted Cargo metadata before parsing;
+    # unrelated workspace versions and dependency graphs do not enter this bounded identity.
     $paths = @('constants.env', 'rust-toolchain.toml', '.cargo/mutants.toml',
         '.github/workflows/deep-checks.yml', '.github/actions/setup-environment/action.yml',
         'scripts/scheduled/ScheduledContracts.psm1', 'scripts/scheduled/ScheduledPlan.psm1',
-        'scripts/scheduled/ScheduledExecution.psm1', 'scripts/scheduled/Read-MutationConfig.py',
+        'scripts/scheduled/ScheduledExecution.psm1',
+        'packages/scheduled-mutation-config/Cargo.toml',
+        'packages/scheduled-mutation-config/dependency-contract.json',
+        'packages/scheduled-mutation-config/src/dependency_contract.rs',
+        'packages/scheduled-mutation-config/src/main.rs',
+        'packages/scheduled-mutation-config/src/mutation_config.rs',
         'scripts/build/Mutants.psm1',
         'scripts/build/Miri.psm1', 'scripts/build/Sharding.psm1', 'scripts/build/CargoExecutable.psm1',
         'justfiles/just_quality.just', 'justfiles/just_quality_mutants.just', 'justfiles/just_testing.just')
@@ -94,6 +106,8 @@ function Get-ScheduledContractDigest {
 }
 
 function Test-ScheduledManifest {
+    # A successful receipt requires exactly one compatible result for every declared obligation,
+    # independently of whether individual results contain actionable findings.
     [CmdletBinding()]
     [OutputType([hashtable])]
     param(
@@ -141,6 +155,8 @@ function Test-ScheduledManifest {
 }
 
 function Get-ScheduledRunDecision {
+    # Reuse preserves the original observation time: polling does not extend evidence freshness.
+    # The caller supplies time so expiry and invalidation are deterministic in tests.
     [CmdletBinding()]
     [OutputType([hashtable])]
     param(

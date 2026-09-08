@@ -2,6 +2,13 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
 
+# Pure decision functions for the `scheduled-repair` skill's readiness/health checks: given API
+# collections and version evidence already gathered by the caller (never fetched here), decide
+# whether a managed repair PR is ready to merge, whether the hosted schedule looks stale, and
+# whether the executor's own recent run history looks healthy. Kept side-effect-free so the
+# decisions themselves stay covered by ordinary Pester assertions without mocking GitHub calls.
+# See ../../docs/scheduled-validation.md#pr-readiness-and-bounded-continuation and
+# ../../.github/workflows/implementation.md#independent-health.
 Import-Module (Join-Path $PSScriptRoot 'ScheduledContracts.psm1')
 
 # Readiness is a current-head decision. The caller supplies complete API collections and
@@ -137,6 +144,9 @@ function Get-ScheduledHostedCondition {
         [Parameter(Mandatory)][DateTimeOffset] $Now
     )
     if (-not $Policy.rollout.hosted_execution_enabled) {
+        # `staged` means hosted execution is deliberately disabled by policy, not that planning
+        # evidence is missing or stale; treat it as an expected quiescent state, never as proof of
+        # coverage. See ../../.github/workflows/implementation.md#operating-policy.
         return 'hosted-staged'
     }
     if (-not $Enabled) { 'github-schedule-disabled' }

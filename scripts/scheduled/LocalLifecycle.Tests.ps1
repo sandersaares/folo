@@ -1,4 +1,7 @@
 #Requires -Modules @{ ModuleName = 'Pester'; ModuleVersion = '5.0' }
+# Protects the merge-readiness decision from regressing to a stale-evidence claim: a PR must only
+# be treated as mergeable when checks, review state and version evidence all describe the current
+# head, never a prior commit's evidence carried forward across a push.
 BeforeAll {
     Import-Module (Join-Path $PSScriptRoot 'LocalLifecycle.psm1') -Force
 }

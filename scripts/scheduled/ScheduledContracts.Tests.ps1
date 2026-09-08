@@ -1,4 +1,7 @@
 #Requires -Modules @{ ModuleName = 'Pester'; ModuleVersion = '5.0' }
+# Protects the wire format shared by every scheduled module: canonical digests must be stable and
+# comment-terminator-safe when embedded in GitHub issue/PR bodies, and record/policy validation
+# must reject malformed input rather than silently coercing it into a usable record.
 BeforeAll {
     Import-Module (Join-Path $PSScriptRoot 'ScheduledContracts.psm1') -Force
 }

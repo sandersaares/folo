@@ -1,4 +1,8 @@
 #Requires -Modules @{ ModuleName = 'Pester'; ModuleVersion = '5.0' }
+# Protects the entrypoint scripts' own contract with their calling workflow: launched as real
+# `pwsh` processes (not dot-sourced) against stub modules, so a mistake in exit-code mapping or
+# output-file writing - invisible to a module-level Pester test that only calls functions in
+# process - still fails here.
 BeforeAll {
     $script:entryRoot = Join-Path $TestDrive 'entrypoints'
     New-Item -ItemType Directory -Path $entryRoot | Out-Null

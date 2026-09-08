@@ -2,6 +2,14 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
 
+# The `scheduled-intake` skill's single entrypoint (../../.github/skills/scheduled-intake/SKILL.md):
+# a fresh coordinator session imports only this module, scans the reporter-authored backlog and
+# decides which incident (if any) to admit, without itself editing source or calling native App
+# tools. It reads durable executor state through LocalState.psm1, collects the open finding/coverage
+# issues through LocalGitHub.psm1, validates each one through ScheduledContracts.psm1, and folds in
+# hosted-schedule staleness through LocalLifecycle.psm1's `Get-ScheduledHostedCondition` before it
+# can influence admission. See
+# ../../docs/scheduled-validation.md#durable-ownership-and-native-calls.
 Import-Module (Join-Path $PSScriptRoot 'ScheduledContracts.psm1')
 Import-Module (Join-Path $PSScriptRoot 'LocalState.psm1')
 Import-Module (Join-Path $PSScriptRoot 'LocalGitHub.psm1')
@@ -155,6 +163,10 @@ function Invoke-ScheduledInbox {
             $result.blocked_conditions += 'hosted-planning-evidence-invalid'
         }
     } elseif ($policy.rollout.hosted_execution_enabled) {
+        # Only flag missing/ambiguous planning evidence when hosted execution is actually
+        # enabled; Get-ScheduledHostedCondition below independently reports 'hosted-staged' when
+        # it is not, so this guard avoids double-flagging a deliberately disabled state as a
+        # coverage defect. See ../../.github/workflows/implementation.md#operating-policy.
         $result.blocked_conditions += 'hosted-planning-evidence-missing-or-ambiguous'
     }
     $lastPlanAt = if ($null -eq $result.last_hosted_plan) { $null } else { $result.last_hosted_plan.planned_at }

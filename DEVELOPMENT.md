@@ -82,9 +82,11 @@ registered repair PRs to readiness. Setup is reproducible from
 `.github\prompts\setup-scheduled-remediation.prompt.md`; new entries remain
 disabled/observe-only and setup does not run repairs or change account settings.
 
-`just validate-local` retains its Miri/mutation steps until reviewed cutover.
+`just validate-local` follows the reviewed operating policy: ordinary-validation
+fallback includes routine Miri/mutation calls, while scheduled enforcement delegates
+their recurring coverage to hosted checks. Safe defaults select the fallback.
 `just package="foo bar" validate-deep` explicitly runs the deep checks on the
-current platform regardless of cutover. The ordinary `just test-scripts` and
+current platform in either mode. The ordinary `just test-scripts` and
 `just validate-scripts` commands cover the deterministic local helpers; native
 account, host, scheduling, reuse and consent behavior still requires an operator
 pilot. See the chapter for credential safeguards before any real repair PR.

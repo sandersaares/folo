@@ -1,4 +1,8 @@
 #Requires -Modules @{ ModuleName = 'Pester'; ModuleVersion = '5.0' }
+# End-to-end regression for the reporter-to-worker contract: a durable finding record written by
+# the reporting side must be readable, admissible and recognizable by the Local admission modules
+# across the full reporter -> Local admission -> recognition chain, not just within one module's
+# own unit tests where the other side's format is assumed rather than exercised.
 BeforeAll {
     foreach ($name in @('ScheduledContracts', 'ScheduledPlan', 'ScheduledReport', 'LocalState', 'LocalInbox', 'ScheduledGate')) {
         Import-Module (Join-Path $PSScriptRoot "$name.psm1")

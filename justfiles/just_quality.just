@@ -263,7 +263,8 @@ validate-linux:
     wsl -e bash -l -c "just package='{{ package }}' validate-local"
 
 # Full validation of primary factors, as you would do in a build pipeline before a release.
-# Deep steps follow the reviewed rollout policy; staged mode retains existing enforcement.
+# Deep steps follow the operating policy, retaining routine checks in ordinary-validation fallback.
+# Ref: .github/workflows/implementation.md#operating-policy.
 # Performs validation on the current platform, whatever that may be.
 [group('quality')]
 validate-local:

@@ -1,4 +1,7 @@
 #Requires -Modules @{ ModuleName = 'Pester'; ModuleVersion = '5.0' }
+# Protects `scheduled-repair-gate`: a candidate must never pass the gate by claiming to be a
+# managed repair without matching evidence, by exceeding its reviewed package/file scope, or by
+# presenting evidence for a different check contract/manifest than the one the plan committed to.
 BeforeAll {
     Import-Module (Join-Path $PSScriptRoot 'ScheduledGate.psm1') -Force
     Import-Module (Join-Path $PSScriptRoot 'ScheduledContracts.psm1') -Force

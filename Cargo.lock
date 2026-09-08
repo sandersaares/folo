@@ -3304,6 +3304,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "scheduled-mutation-config"
+version = "0.0.0"
+dependencies = [
+ "ohno",
+ "serde",
+ "serde_json",
+ "toml",
+]
+
+[[package]]
 name = "scoped-tls"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

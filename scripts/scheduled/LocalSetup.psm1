@@ -2,7 +2,12 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
 
-# Pure native-tool reconciliation: unknown metadata is a manual capability gap, not absence.
+# Reconciles the desired native App automation profile (host, executor, repository) against the
+# App's own registered automations, for the one-time/occasional operator setup flow (not the
+# scheduled skills' hot path). Kept free of native App calls so the reconciliation decision itself
+# is unit-testable; the caller performs the actual create/update against the native automation
+# once this module says which action is safe. See
+# ../../docs/scheduled-validation.md#installation-and-operating-profile.
 function Get-ScheduledSetupDecision {
     [CmdletBinding()]
     param(
@@ -14,6 +19,8 @@ function Get-ScheduledSetupDecision {
         [switch] $UpdateModel
     )
     $result = @{ action = 'blocked'; reason = $null; workflow_id = $null; changes = @{} }
+    # Unknown metadata is a manual capability gap, not evidence the automation is absent - treat
+    # it as blocked rather than inferring "safe to create" from an incomplete native App read.
     if (-not $MetadataComplete) { $result.reason = 'native-metadata-unavailable'; return $result }
     if ([string]::IsNullOrWhiteSpace($Desired.host_id)) {
         $result.reason = 'select-real-local-host'; return $result

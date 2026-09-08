@@ -1,6 +1,8 @@
 name: Scheduled verification
 
 on:
+  # Confirmation tests merged main bytes, not the pre-squash repair head.
+  # Ref: .github/workflows/implementation.md#managed-repair-gate.
   push:
     branches: [main]
   workflow_dispatch:
@@ -23,6 +25,8 @@ permissions:
 
 jobs:
   plan:
+    # Confirmation scope comes from live merged registrations or explicit approved diagnostics.
+    # Ref: .github/workflows/implementation.md#managed-repair-gate.
     if: github.repository == 'folo-rs/folo' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
@@ -37,11 +41,15 @@ jobs:
       matrix: ${{ steps.plan.outputs.matrix }}
       manifest: ${{ steps.plan.outputs.manifest }}
     steps:
+      # Bind confirmation planning to the pushed controller SHA before main can advance again.
+      # Ref: .github/workflows/implementation.md#immutable-execution.
       - uses: actions/checkout@v7
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
       - name: Validate explicit immutable confirmation scope
+        # A diagnostic selection alone cannot close an incident; live registration is authoritative.
+        # Ref: .github/workflows/implementation.md#managed-repair-gate.
         id: plan
         shell: pwsh
         env:
@@ -52,6 +60,8 @@ jobs:
           $PSNativeCommandUseErrorActionPreference = $true
           ./scripts/scheduled/Invoke-ScheduledPlan.ps1 -Mode verify
       - uses: actions/upload-artifact@v6
+        # No pending repair is valid no-work; retaining the hidden plan makes that auditable.
+        # Ref: .github/workflows/implementation.md#serialized-reporting.
         if: always()
         with:
           name: scheduled-plan-${{ github.run_id }}-${{ github.run_attempt }}
@@ -60,6 +70,8 @@ jobs:
           if-no-files-found: error
           retention-days: 30
   checks:
+    # Do not invent global work when confirmation has no selected incident scope.
+    # Ref: .github/workflows/implementation.md#serialized-reporting.
     needs: plan
     if: needs.plan.outputs.run == 'true'
     uses: ./.github/workflows/deep-checks.yml

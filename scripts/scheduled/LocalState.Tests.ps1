@@ -1,4 +1,8 @@
 #Requires -Modules @{ ModuleName = 'Pester'; ModuleVersion = '5.0' }
+# Protects the durable transaction protocol itself: enrollment identity must never transfer
+# implicitly, a corrupt or missing state.json must never be reinterpreted as a fresh install, and
+# every write must go through the lock/read/mutate/revision-bump/atomic-replace sequence so a
+# concurrent or interrupted transaction can never lose or duplicate an admission decision.
 BeforeAll {
     Import-Module (Join-Path $PSScriptRoot 'LocalState.psm1') -Force
     Import-Module (Join-Path $PSScriptRoot 'ScheduledContracts.psm1') -Force

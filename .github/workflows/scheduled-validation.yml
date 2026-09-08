@@ -10,7 +10,7 @@ on:
         type: boolean
         default: false
       canary:
-        description: Explicit read-only execution pilot while scheduled execution is staged
+        description: Explicit read-only execution check without enabling recurring execution
         type: boolean
         default: false
 
@@ -18,11 +18,15 @@ permissions:
   contents: read
 
 concurrency:
+  # Queue expensive full runs rather than duplicating or cancelling evidence collection.
+  # Ref: .github/workflows/implementation.md#complete-evidence-and-reuse.
   group: scheduled-validation
   cancel-in-progress: false
 
 jobs:
   plan:
+    # Recurring scope is fixed before any checker starts and only for this repository's main.
+    # Ref: .github/workflows/implementation.md#immutable-execution.
     if: github.repository == 'folo-rs/folo' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
@@ -37,11 +41,16 @@ jobs:
       manifest: ${{ steps.plan.outputs.manifest }}
     steps:
       - name: Checkout scheduled immutable main
+        # The event SHA binds the plan to one source/controller, even if main advances.
+        # Ref: .github/workflows/implementation.md#immutable-execution.
         uses: actions/checkout@v7
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
       - name: Decide whether complete coverage is reusable
+        # Reuse requires compatible full success and no unsettled/newer failure; skips do not
+        # renew success age or imply authorization to run the personal repair worker.
+        # Ref: .github/workflows/implementation.md#complete-evidence-and-reuse.
         id: plan
         shell: pwsh
         env:
@@ -54,6 +63,8 @@ jobs:
           $PSNativeCommandUseErrorActionPreference = $true
           ./scripts/scheduled/Invoke-ScheduledPlan.ps1 -Force:($env:FORCE_RECHECK -eq 'true') -Canary:($env:EXECUTION_CANARY -eq 'true')
       - name: Preserve expected scope even when checks are not run
+        # Reporting must distinguish an intentional skip from incomplete evidence.
+        # Ref: .github/workflows/implementation.md#complete-evidence-and-reuse.
         if: always()
         uses: actions/upload-artifact@v6
         with:
@@ -63,6 +74,8 @@ jobs:
           if-no-files-found: error
           retention-days: 30
   checks:
+    # A disabled or compatibly covered plan is a legitimate skip, not fresh checker success.
+    # Ref: .github/workflows/implementation.md#operating-policy.
     needs: plan
     if: needs.plan.outputs.run == 'true'
     uses: ./.github/workflows/deep-checks.yml

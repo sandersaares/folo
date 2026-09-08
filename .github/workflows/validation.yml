@@ -5,6 +5,8 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+    # Registration/body corrections need exact-head revalidation even without a source push.
+    # Ref: .github/workflows/implementation.md#managed-repair-gate.
     types: [opened, synchronize, reopened, edited, ready_for_review]
   # Merge-queue runs must execute this workflow: a required check that never fires as
   # merge_group is a failed check, and the queue never merges. Queue entries use the same
@@ -37,8 +39,9 @@ permissions:
   contents: read
 
 jobs:
-  # Default-branch policy, not a candidate's edits, decides which deep checks can leave the
-  # merge path. The bootstrap leg retains every existing gate before this controller is deployed.
+  # Default-branch policy, not candidate edits, selects scheduled enforcement or fallback.
+  # Unconfigured installations retain ordinary deep gates and cannot authorize managed repairs.
+  # Ref: .github/workflows/implementation.md#operating-policy.
   scheduled-context:
     runs-on: ubuntu-latest
     permissions:
@@ -56,11 +59,15 @@ jobs:
       manifest: ${{ steps.plan.outputs.manifest }}
       bootstrapped: ${{ steps.plan.outcome == 'success' }}
     steps:
+      # The candidate cannot rewrite its own scope, publication prerequisites or policy.
+      # Ref: .github/workflows/implementation.md#managed-repair-gate.
       - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
-      - name: Reject managed publication before controller deployment
+      - name: Reject managed publication without an installed controller
+        # Recognizable initial PR metadata must not bypass the gate in an unconfigured install.
+        # Ref: .github/workflows/design.md#managed-publication.
         if: >-
           hashFiles('scripts/scheduled/ScheduledWorkflow.psm1') == ''
           && (startsWith(github.head_ref, 'sandersaares-scheduled-repair-') || contains(github.event.pull_request.body, '<!-- scheduled-repair:'))
@@ -71,6 +78,8 @@ jobs:
           $PSNativeCommandUseErrorActionPreference = $true
           throw 'Managed repairs require the deployed default-branch controller.'
       - name: Reject an incomplete deployed controller
+        # Missing installed code is damage, not authorization to use the unconfigured fallback.
+        # Ref: .github/workflows/implementation.md#operating-policy.
         if: hashFiles('scripts/scheduled/ScheduledWorkflow.psm1') == '' && hashFiles('scripts/scheduled/policy.json') != ''
         shell: pwsh
         run: |
@@ -78,7 +87,10 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $true
           throw 'Deployed scheduled policy has no usable controller.'
-      - name: Compute trusted managed scope and rollout
+      - name: Compute trusted managed scope and operating mode
+        # Join live issue/attempt/head identity. Queue runs validate actual combined-candidate
+        # ancestry and membership rather than guessing a PR from its synthetic ref.
+        # Ref: .github/workflows/implementation.md#managed-repair-gate.
         id: plan
         if: hashFiles('scripts/scheduled/ScheduledWorkflow.psm1') != ''
         shell: pwsh
@@ -90,6 +102,8 @@ jobs:
           $PSNativeCommandUseErrorActionPreference = $true
           ./scripts/scheduled/Invoke-ScheduledPlan.ps1 -Mode validation
       - uses: actions/upload-artifact@v6
+        # Freeze the complete expected scope before dependent jobs; hidden paths hold the plan.
+        # Ref: .github/workflows/implementation.md#complete-evidence-and-reuse.
         if: steps.plan.outcome == 'success'
         with:
           name: scheduled-plan-${{ github.run_id }}-${{ github.run_attempt }}
@@ -98,6 +112,8 @@ jobs:
           if-no-files-found: error
 
   scheduled-repair-checks:
+    # Ordinary PRs legitimately skip this matrix; registered repairs must produce scoped evidence.
+    # Ref: .github/workflows/implementation.md#managed-repair-gate.
     needs: scheduled-context
     if: needs.scheduled-context.outputs.run == 'true'
     uses: ./.github/workflows/deep-checks.yml
@@ -108,6 +124,9 @@ jobs:
       manifest: ${{ needs.scheduled-context.outputs.manifest }}
 
   scheduled-repair-gate:
+    # Always evaluate failures and missing evidence; the single required fan-in cannot infer
+    # managed success merely from a skipped matrix.
+    # Ref: .github/workflows/implementation.md#managed-repair-gate.
     name: scheduled-repair-gate
     if: always()
     needs: [scheduled-context, scheduled-repair-checks, scheduled-version-check]
@@ -118,6 +137,8 @@ jobs:
           ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
       - name: Require successful context even for ordinary pull requests
+        # Failed identity lookup cannot silently reclassify a managed repair as ordinary.
+        # Ref: .github/workflows/implementation.md#managed-repair-gate.
         if: needs.scheduled-context.result != 'success'
         shell: pwsh
         run: |
@@ -136,6 +157,8 @@ jobs:
           pattern: scheduled-result-${{ github.run_id }}-${{ github.run_attempt }}-*
           path: .scheduled-results
       - name: Require canonical version expansion for managed repairs
+        # The actual published Cargo bytes require independent canonical-apply proof.
+        # Ref: .github/workflows/implementation.md#canonical-version-validation.
         if: needs.scheduled-context.outputs.managed == 'true' && needs.scheduled-version-check.result != 'success'
         shell: pwsh
         run: |
@@ -144,6 +167,8 @@ jobs:
           $PSNativeCommandUseErrorActionPreference = $true
           throw 'Canonical version expansion did not succeed for the published repair.'
       - name: Evaluate exact candidate evidence
+        # Compare every result with the frozen plan, including source, controller and attempt.
+        # Ref: .github/workflows/implementation.md#managed-repair-gate.
         if: needs.scheduled-context.outputs.bootstrapped == 'true'
         shell: pwsh
         env:
@@ -156,6 +181,9 @@ jobs:
           ./scripts/scheduled/Invoke-ScheduledGate.ps1
 
   scheduled-version-check:
+    # Build the verifier from trusted controller code, not the repair's proposed tooling.
+    # The reference starts with baseline-identical Cargo inputs before canonical apply.
+    # Ref: .github/workflows/implementation.md#canonical-version-validation.
     needs: scheduled-context
     if: needs.scheduled-context.outputs.managed == 'true'
     runs-on: ubuntu-latest
@@ -171,6 +199,9 @@ jobs:
           name: scheduled-plan-${{ github.run_id }}-${{ github.run_attempt }}
           path: .scheduled-plan
       - name: Recreate and compare canonical version apply from the pre-versioning tree
+        # Compare all resulting manifests/lockfiles, including dependent/group rewrites;
+        # path and version-string restrictions alone cannot establish canonical equivalence.
+        # Ref: .github/workflows/implementation.md#canonical-version-validation.
         shell: pwsh
         run: |
           Set-StrictMode -Version Latest
@@ -538,6 +569,9 @@ jobs:
   # Ubuntu is dropped on PRs: Miri is an architecture-agnostic interpreter, so the Linux run
   # is a push-to-`main`-only sanity net over the Windows pass. Both platforms run on push.
   miri-x64:
+    # Ordinary deep jobs retain their platform/event scopes in fallback and skip only under
+    # trusted scheduled enforcement. They remain in required-checks as conditional dependencies.
+    # Ref: .github/workflows/implementation.md#operating-policy.
     needs: [delta, clippy-dev, test-x64, scheduled-context]
     if: needs.delta.outputs.skip_all != 'true' && needs.scheduled-context.outputs.cutover != 'true'
     strategy:
@@ -605,6 +639,8 @@ jobs:
   # architecture-agnostic for platform-neutral code; we run it on ARM purely to exercise
   # cfg(target_arch = "aarch64") (and similar) code paths under Miri's UB detection.
   miri-arm:
+    # The operating mode adds no platform/event exceptions to ordinary-validation fallback.
+    # Ref: .github/workflows/implementation.md#operating-policy.
     needs: [delta, clippy-dev, test-arm, scheduled-context]
     # Push-to-`main` only: an architecture-agnostic interpreter re-run on ARM is a sanity net
     # over cfg-gated paths, not PR-worthy signal.
@@ -632,6 +668,8 @@ jobs:
   # Gated behind the base `miri-x64` job so a quick Miri failure short-circuits the much more
   # expensive many-seeds run.
   miri-harder-events-once:
+    # Many-seed jobs share the ordinary Miri enforcement mode without reducing declared coverage.
+    # Ref: .github/workflows/implementation.md#operating-policy.
     needs: [delta, miri-x64, scheduled-context]
     if: >-
       needs.delta.outputs.skip_all != 'true'
@@ -656,6 +694,7 @@ jobs:
         run: just package=events_once miri-harder ${{ matrix.shard }}
 
   miri-harder-events:
+    # Ref: .github/workflows/implementation.md#operating-policy.
     needs: [delta, miri-x64, scheduled-context]
     if: >-
       needs.delta.outputs.skip_all != 'true'
@@ -680,6 +719,7 @@ jobs:
         run: just package=events miri-harder ${{ matrix.shard }}
 
   miri-harder-awaiter-set:
+    # Ref: .github/workflows/implementation.md#operating-policy.
     needs: [delta, miri-x64, scheduled-context]
     if: >-
       needs.delta.outputs.skip_all != 'true'
@@ -704,6 +744,7 @@ jobs:
         run: just package=awaiter_set miri-harder ${{ matrix.shard }}
 
   miri-harder-nm-impl:
+    # Ref: .github/workflows/implementation.md#operating-policy.
     needs: [delta, miri-x64, scheduled-context]
     if: >-
       needs.delta.outputs.skip_all != 'true'
@@ -827,6 +868,8 @@ jobs:
         run: just package="${{ needs.delta.outputs.packages }}" check-frozen
 
   mutants:
+    # Scheduled enforcement owns recurring mutation coverage; fallback retains the ordinary gate.
+    # Ref: .github/workflows/implementation.md#operating-policy.
     needs: [delta, test-x64, scheduled-context]
     if: needs.delta.outputs.skip_all != 'true' && needs.scheduled-context.outputs.cutover != 'true'
     # Sharded mutation-testing work budget (~180 min) plus up to 90 min for a cold-cache setup-environment.
@@ -894,6 +937,8 @@ jobs:
         run: just package="${{ needs.delta.outputs.packages }}" hack
 
   careful:
+    # Fallback keeps this push-only check; scheduled enforcement uses the declared deep manifest.
+    # Ref: .github/workflows/implementation.md#operating-policy.
     needs: [delta, test-x64, scheduled-context]
     # Push-to-`main` only: `cargo careful` rarely surfaces PR-specific signal.
     if: github.event_name == 'push' && needs.delta.outputs.skip_all != 'true' && needs.scheduled-context.outputs.cutover != 'true'
@@ -1002,6 +1047,9 @@ jobs:
   # The account, managed identity and federated credentials are scripted/Bicep'd in
   # infra/azure-bench-history-test/ - see that directory's README to deploy or re-create.
   test-azure:
+    # Initial managed branch/body hints exclude credentials even if registration is malformed.
+    # The required repair gate validates identity separately; draft status grants no exception.
+    # Ref: .github/workflows/design.md#managed-publication.
     needs: [delta, scheduled-context]
     if: >-
       needs.delta.outputs.skip_all != 'true'
@@ -1075,6 +1123,8 @@ jobs:
   # (which shells out to `az`) works; the code under test ignores the az session once
   # AZURE_CLIENT_ID is set.
   test-azure-gh:
+    # Apply the same first-event managed exclusion to CLI credentials as to SDK credentials.
+    # Ref: .github/workflows/design.md#managed-publication.
     needs: [delta, scheduled-context]
     if: >-
       needs.delta.outputs.skip_all != 'true'
@@ -1194,6 +1244,9 @@ jobs:
   # and `alert` stay off this list. When adding a merge-blocking job, add it here - never
   # to the GitHub ruleset. Unconditional gates also go on MUST_SUCCEED_JOBS below.
   required-checks:
+    # Context and repair gate must succeed, while policy-scoped deep jobs can legitimately skip.
+    # Matrix names never become independent ruleset targets.
+    # Ref: .github/workflows/implementation.md#merge-blocking-result.
     name: required-checks
     if: always()
     needs:
@@ -1267,6 +1320,8 @@ jobs:
   # that never happened. `alert` also stays off the fan-in's own `needs:` - it files issues,
   # it is not a merge gate.
   alert:
+    # Include scheduled control failures in main-push alerts without alerting on ordinary skips.
+    # Ref: .github/workflows/design.md#failure-alerting.
     needs:
       - scheduled-context
       - scheduled-repair-gate

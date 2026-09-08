@@ -1,4 +1,7 @@
 #Requires -Modules @{ ModuleName = 'Pester'; ModuleVersion = '5.0' }
+# Protects the version-verification contract: a worker's published version plan must be accepted
+# only when it matches an independently regenerated expansion against the recorded baseline
+# byte-for-byte, so a worker cannot make its own version numbers authoritative by publishing them.
 BeforeAll {
     Import-Module (Join-Path $PSScriptRoot 'ScheduledVersion.psm1') -Force
     Import-Module (Join-Path $PSScriptRoot 'ScheduledContracts.psm1') -Force

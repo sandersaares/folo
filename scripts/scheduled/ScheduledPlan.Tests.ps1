@@ -1,4 +1,11 @@
 #Requires -Modules @{ ModuleName = 'Pester'; ModuleVersion = '5.0' }
+# Protect the hosted plan's completeness and reuse contract, including the trusted decoder
+# inputs that make an empty-shard baseline comparable. Ref: workflow implementation,
+# "Scheduled controller ownership"; no GitHub or native checker execution is needed here.
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+$PSNativeCommandUseErrorActionPreference = $true
+
 BeforeAll {
     Import-Module (Join-Path $PSScriptRoot 'ScheduledPlan.psm1') -Force
     function Get-TestManifest {
@@ -19,12 +26,29 @@ Describe 'Expected deep scope' {
         InModuleScope ScheduledPlan {
             Mock Get-FileHash { @{ Hash = $LiteralPath } }
             Mock Get-ScheduledPolicy { throw 'Admission policy is not a checker input.' }
-            Get-ScheduledContractDigest -Root $TestDrive | Should -Match '^[0-9a-f]{64}$'
-            Should -Invoke Get-FileHash -Times 0 -ParameterFilter { $LiteralPath -like '*Cargo.toml' }
+            $root = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\..')).Path
+            Get-ScheduledContractDigest -Root $root | Should -Match '^[0-9a-f]{64}$'
+            Should -Invoke Get-FileHash -Times 0 -ParameterFilter {
+                $LiteralPath -eq (Join-Path $root 'Cargo.toml') -or $LiteralPath -like '*Cargo.lock'
+            }
             Should -Invoke Get-FileHash -Times 1 -ParameterFilter { $LiteralPath -like '*constants.env' }
             Should -Invoke Get-FileHash -Times 1 -ParameterFilter { $LiteralPath -like '*rust-toolchain.toml' }
             Should -Invoke Get-FileHash -Times 1 -ParameterFilter { $LiteralPath -like '*mutants.toml' }
-            Should -Invoke Get-FileHash -Times 1 -ParameterFilter { $LiteralPath -like '*Read-MutationConfig.py' }
+            Should -Invoke Get-FileHash -Times 1 -ParameterFilter {
+                $LiteralPath -like '*scheduled-mutation-config*Cargo.toml'
+            }
+            Should -Invoke Get-FileHash -Times 1 -ParameterFilter {
+                $LiteralPath -like '*scheduled-mutation-config*src*main.rs'
+            }
+            Should -Invoke Get-FileHash -Times 1 -ParameterFilter {
+                $LiteralPath -like '*scheduled-mutation-config*src*mutation_config.rs'
+            }
+            Should -Invoke Get-FileHash -Times 1 -ParameterFilter {
+                $LiteralPath -like '*scheduled-mutation-config*src*dependency_contract.rs'
+            }
+            Should -Invoke Get-FileHash -Times 1 -ParameterFilter {
+                $LiteralPath -like '*scheduled-mutation-config*dependency-contract.json'
+            }
             Should -Invoke Get-ScheduledPolicy -Times 0
         }
     }

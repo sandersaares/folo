@@ -1,4 +1,7 @@
 #Requires -Modules @{ ModuleName = 'Pester'; ModuleVersion = '5.0' }
+# Protects finding identity and merge semantics: two observations of the same defect must resolve
+# to the same finding id regardless of incidental evidence (line/column shifts, run metadata), and
+# merging must never let a newer, weaker observation silently supersede stronger prior evidence.
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true

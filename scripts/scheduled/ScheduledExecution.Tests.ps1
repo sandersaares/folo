@@ -1,4 +1,8 @@
 #Requires -Modules @{ ModuleName = 'Pester'; ModuleVersion = '5.0' }
+# Exercise checker command construction and independent evidence reconstruction without running
+# deep checks. The real controller decoder remains in the baseline path so trust, native startup
+# and TOML/JSON compatibility are covered together.
+# Ref: .github/workflows/implementation.md, "Scheduled controller ownership".
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
@@ -174,6 +178,183 @@ BeforeAll {
 
 AfterAll {
     Remove-Item -LiteralPath $script:work -Recurse -Force
+}
+
+Describe 'Controller-owned mutation configuration decoder' {
+    It 'builds only the trusted native helper even when called from a candidate directory' {
+        Push-Location (New-Output)
+        try {
+            $build = & (Get-Module ScheduledExecution) { Get-ScheduledMutationDecoderBuild }
+            $build.root | Should -Be $script:root
+            $build.command.file | Should -Be (Get-Command cargo -CommandType Application | Select-Object -First 1).Source
+            [IO.Path]::IsPathFullyQualified($build.command.file) | Should -BeTrue
+            $build.command.arguments | Should -Contain 'scheduled-mutation-config'
+            $build.command.arguments | Should -Contain (Join-Path $script:root 'Cargo.toml')
+            $build.command.arguments | Should -Contain '--locked'
+            $build.command.arguments | Should -Not -Contain '--workspace'
+            $build.command.environment.RUSTUP_AUTO_INSTALL | Should -Be '0'
+            $build.command.environment.CARGO_BUILD_TARGET | Should -BeNullOrEmpty
+            $platform = & (Get-Module ScheduledExecution) { Get-ScheduledHostPlatform }
+            $build.target | Should -Be (Join-Path $script:root `
+                "target\scheduled-mutation-config\$($platform.os)-$($platform.architecture)")
+        } finally {
+            Pop-Location
+        }
+    }
+
+    It 'invokes the native decoder with the actual controller configuration' {
+        $configuration = & (Get-Module ScheduledExecution) {
+            $text = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\..\.cargo\mutants.toml') -Raw
+            Get-ScheduledMutationConfig -Text $text
+        }
+        $configuration.all_features | Should -BeTrue
+        $configuration.profile | Should -Be 'mutants'
+        $configuration.additional_cargo_args | Should -Be @('--locked')
+        $configuration.additional_cargo_test_args | Should -Be @('--tests')
+    }
+
+    It 'reuses the built helper for repeated parses in the same controller process' {
+        InModuleScope ScheduledExecution {
+            $expected = Get-ScheduledMutationDecoder
+            Mock Get-ScheduledMutationDecoderBuild { throw 'The decoder was already built.' }
+            Get-ScheduledMutationDecoder | Should -Be $expected
+            Should -Invoke Get-ScheduledMutationDecoderBuild -Times 0
+        }
+    }
+
+    It 'does not accept a cached target artifact when the controller build fails' {
+        InModuleScope ScheduledExecution {
+            $saved = $script:mutationDecoderExecutable
+            $script:mutationDecoderExecutable = $null
+            try {
+                Mock Get-ScheduledMutationDecoderBuild {
+                    @{ root = 'controller'; target = 'controller-target'
+                        command = @{ file = 'cargo'; arguments = @(); environment = @{} } }
+                }
+                Mock New-Item {}
+                Mock Invoke-ScheduledProcess {
+                    @{ exit_code = 1; stdout_path = 'build.stdout'; stderr_path = 'build.stderr' }
+                }
+                Mock Get-Content { 'controller build diagnostic' }
+                Mock Resolve-CargoExecutable { throw 'Failed builds cannot supply executables.' }
+                { Get-ScheduledMutationDecoder } | Should -Throw -ExceptionType ([InvalidOperationException])
+                $script:mutationDecoderExecutable | Should -BeNullOrEmpty
+                Should -Invoke Resolve-CargoExecutable -Times 0
+            } finally {
+                $script:mutationDecoderExecutable = $saved
+            }
+        }
+    }
+
+    It 'refuses dependency drift before making the built decoder available for parsing' {
+        InModuleScope ScheduledExecution {
+            $saved = $script:mutationDecoderExecutable
+            $script:mutationDecoderExecutable = $null
+            try {
+                Mock Get-Content {
+                    param([string[]] $LiteralPath, [switch] $Raw)
+                    if ($LiteralPath -like '*dependency-contract.json') { return '{}' }
+                    foreach ($path in $LiteralPath) {
+                        if ($Raw) { [IO.File]::ReadAllText($path) }
+                        else { [IO.File]::ReadAllLines($path) }
+                    }
+                }
+                { Get-ScheduledMutationDecoder } | Should -Throw -ExceptionType ([InvalidOperationException])
+                $script:mutationDecoderExecutable | Should -BeNullOrEmpty
+            } finally {
+                $script:mutationDecoderExecutable = $saved
+            }
+        }
+    }
+
+    It 'rejects candidate configuration before starting any decoder or Cargo build' {
+        InModuleScope ScheduledExecution {
+            Mock Get-ScheduledMutationDecoder { throw 'Untrusted configuration cannot start code.' }
+            { Get-ScheduledMutationConfig -Text 'test_tool = "untrusted"' } | Should -Throw
+            Should -Invoke Get-ScheduledMutationDecoder -Times 0
+        }
+    }
+
+    It 'preserves absent defaults through the native JSON transport' {
+        InModuleScope ScheduledExecution {
+            Mock Get-Content { '' } -ParameterFilter { $LiteralPath -like '*mutants.toml' }
+            $actual = Get-ScheduledMutationConfig -Text ''
+            $actual.Count | Should -Be 8
+            foreach ($field in @('additional_cargo_args', 'additional_cargo_test_args', 'features')) {
+                $actual[$field] -is [array] | Should -BeTrue
+                $actual[$field].Count | Should -Be 0
+            }
+            foreach ($field in @('all_features', 'cap_lints', 'no_default_features')) {
+                $actual[$field] -is [bool] | Should -BeTrue
+                $actual[$field] | Should -BeFalse
+            }
+            $actual.profile | Should -BeNullOrEmpty
+            $actual.test_tool | Should -BeExactly 'cargo'
+        }
+    }
+
+    It 'preserves TOML escaping multiline arrays and Unicode through the native transport' {
+        InModuleScope ScheduledExecution {
+            $text = @'
+additional_cargo_args = [
+    "--config=build.rustflags=\"--cfg custom\"", # Retain embedded quotes.
+    'C:\workspace',
+]
+additional_cargo_test_args = ["--tests"]
+features = ["caf\u00e9", """multi\
+                          line"""]
+test_tool = "nextest"
+exclude_re = ['unrelated.*']
+'@
+            Mock Get-Content { $text } -ParameterFilter { $LiteralPath -like '*mutants.toml' }
+            $actual = Get-ScheduledMutationConfig -Text $text
+            $actual.additional_cargo_args | Should -Be @('--config=build.rustflags="--cfg custom"', 'C:\workspace')
+            $actual.features | Should -Be @('café', 'multiline')
+            $actual.test_tool | Should -BeExactly 'nextest'
+            $actual.ContainsKey('exclude_re') | Should -BeFalse
+        }
+    }
+
+    It 'propagates invalid configuration as a parse failure' -ForEach @(
+        @{ Text = 'all_features = 1' },
+        @{ Text = 'additional_cargo_args = [true]' },
+        @{ Text = 'test_tool = "unsupported"' },
+        @{ Text = 'features = [' }
+    ) {
+        InModuleScope ScheduledExecution -Parameters @{ Text = $Text } {
+            Mock Get-Content { $Text } -ParameterFilter { $LiteralPath -like '*mutants.toml' }
+            { Get-ScheduledMutationConfig -Text $Text } | Should -Throw -ExceptionType ([FormatException])
+        }
+    }
+
+    It 'returns a failing native exit and no stdout for invalid utility input' -ForEach @(
+        @{ Text = 'features = ['; Arguments = @() },
+        @{ Text = '{}'; Arguments = @('--dependency-contract') },
+        @{ Text = ''; Arguments = @('--unsupported') }
+    ) {
+        $start = [Diagnostics.ProcessStartInfo]::new()
+        $start.FileName = & (Get-Module ScheduledExecution) { Get-ScheduledMutationDecoder }
+        foreach ($argument in $Arguments) { $start.ArgumentList.Add($argument) }
+        $start.UseShellExecute = $false
+        $start.RedirectStandardInput = $true
+        $start.RedirectStandardOutput = $true
+        $start.RedirectStandardError = $true
+        $process = [Diagnostics.Process]::new()
+        $process.StartInfo = $start
+        try {
+            $process.Start() | Should -BeTrue
+            $stdout = $process.StandardOutput.ReadToEndAsync()
+            $stderr = $process.StandardError.ReadToEndAsync()
+            $process.StandardInput.Write($Text)
+            $process.StandardInput.Close()
+            $process.WaitForExit()
+            $process.ExitCode | Should -Not -Be 0
+            $stdout.GetAwaiter().GetResult() | Should -BeNullOrEmpty
+            $stderr.GetAwaiter().GetResult() | Should -Not -BeNullOrEmpty
+        } finally {
+            $process.Dispose()
+        }
+    }
 }
 
 Describe 'Typed scheduled commands' {

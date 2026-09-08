@@ -73,6 +73,8 @@ one record preserves surrounding human prose and other owners' records. Intake j
 reporter-authored issue with its actual originating run and repository identity. Worker claims
 belong to the enrolled personal account, never to the hosted reporter.
 
+### Immutable execution
+
 The check plan declares every expected platform, package, shard and seed range before execution.
 Its digest includes check construction, execution tooling and pins. Results bind the actual scope,
 source, controller, run and attempt to raw replay evidence. The reusable deep workflow checks out
@@ -83,25 +85,70 @@ Source bytes, including Cargo versions, are bound by the source SHA rather than 
 digest. Admission policy does not change checker compatibility; changing an allowlist or applying
 a release increment must not prevent an otherwise compatible repair from confirming its finding.
 
+Each execution leg runs independently with fail-fast disabled so a failed shard cannot cancel
+evidence from the rest of the manifest. The shared timeout accommodates mutation work and
+cold-cache setup. Always-upload steps include hidden artifact directories: failures still need
+their plan, result and raw evidence, not just a job conclusion.
+
+### Complete evidence and reuse
+
 `ScheduledPlan.psm1` establishes full-scope completeness and compatible-success reuse.
 Before reuse, the planner also checks the execution API for unreported failures, active work and
 newer attempts on the same main commit. The asynchronous reporter's durable index cannot conceal
 those observations, and skipped work does not refresh the coverage timestamp.
+
+### Evidence decoding
+
 `ScheduledExecution.psm1` constructs typed arguments and interprets pinned checker output.
-`ScheduledReport.psm1` and `ScheduledGitHub.psm1` separate deterministic state transitions from
-GitHub persistence. Reporting serializes all originating workflows into one writer; durable minimal
-reproduction data survives the larger artifacts. Raw mutation outcomes come from `mutants.out`,
-not from a full-run `--json` option. An unmutated baseline is mandatory and a replay that matches
-no mutation is an error. Timeouts remain findings.
+Raw mutation outcomes come from `mutants.out`, not from a full-run `--json` option.
+An unmutated baseline is mandatory and a replay that matches no mutation is an error.
+Timeouts remain findings.
 Ordinary empty mutation shards carry successful exact-scope discovery and explicit unmutated
 baseline evidence because the mutation tool does not run its baseline for an empty selection.
 The parser validates both before the leg can pass; zero-match exact replays remain failures.
-The archived mutation configuration must match the controller. Its baseline options are decoded
-with Python's standard TOML parser; both the decoder and configuration participate in compatibility.
+The archived mutation configuration must match the controller. The nonpublished
+`scheduled-mutation-config` Rust utility decodes its baseline options. Checker compatibility binds
+the utility's own manifest, Rust source and reviewed `dependency-contract.json`, alongside the
+trusted mutation configuration, execution wrapper and toolchain pin. The dependency contract
+captures the utility's effective direct requirements/features and reachable registry dependency
+identities, features and edges, rather than unrelated workspace release versions.
+
+The first decoder build obtains Cargo metadata from the pinned trusted controller. The Rust helper
+normalizes that metadata and requires it to match the reviewed dependency contract before caching
+the executable or decoding mutation configuration. Dependency drift requires a reviewed contract
+refresh; it cannot silently reuse checker compatibility. Planning hashes the checked-in contract
+without executing Rust, preserving cheap planning and empty Local scans.
+Cargo's workspace-unified feature resolution is conservative: feature changes reachable through
+the decoder's dependencies also require contract review. Registry dependency identity is supported;
+local and Git dependencies are rejected rather than assigned an incomplete content identity.
+The [maintenance procedure](../../docs/scheduled-validation.md#maintaining-decoder-dependency-identity)
+refreshes the contract explicitly, never as automatic acceptance during reporting.
+`ScheduledExecution.psm1` builds only that package on demand from the absolute trusted controller
+root, using its pinned stable toolchain and a controller-owned target directory. The resolved
+executable is reused within the module process; module import and empty Local scans do not build it.
+Candidate artifacts never supply the decoder, its dependencies, output directory or build instructions.
+The build disables implicit rustup installation; missing tooling is an explicit prerequisite failure.
+
+Deep execution prepares tools through the controller's environment setup. The reporter needs
+only rustup/Cargo and the hosted native compiler/linker, not the deep-check tool suite. Its
+PowerShell bootstrap uses the existing `RustToolchain.psm1` helpers to prepare the controller's
+pinned stable channel with the minimal profile before evidence reconciliation. Bootstrap must
+work without the Rust toolchain it prepares; this is the reason for the PowerShell boundary.
+The wrapper otherwise provides process orchestration around the Rust utility, while planning and
+health remain available without a Rust build.
 Miri's parallel seed output and post-suite diagnostics do not establish which test caused a
 failure. Unattributed findings retain the original target, filter and seed-range invocation instead
 of selecting the last printed test or seed. Narrowed reproduction requires independently established
 execution scope.
+
+### Serialized reporting
+
+`ScheduledReport.psm1` and `ScheduledGitHub.psm1` separate deterministic state transitions from
+GitHub persistence. Reporting serializes all originating workflows into one issue-writing job;
+candidate execution has no writer authority. The reporter checks out default-branch controller
+code, validates downloaded artifacts as data and preserves durable minimal reproduction data
+after the larger artifacts expire.
+
 Evidence ordering uses the originating attempt's API start time, with creation time and run ID
 breaking ties. An older run can have a genuinely newer rerun; neither its original run number nor
 its completion/report delivery time establishes that attempt's order. Source ancestry and incident
@@ -112,7 +159,9 @@ outage. Unexplained workflow failure cannot certify passing evidence or close an
 No-work verification retains the unselected catalog without inventing a global package selection.
 Invalid confirmation metadata is isolated to its incident and cannot discard unrelated findings.
 
-The Validation context reads the default-branch rollout and joins registered repair metadata.
+### Managed repair gate
+
+The Validation context joins registered repair metadata under the default-branch operating policy.
 Queue membership uses the GitHub merge queue entries' synthetic head commits and ancestry
 bounded by the event base/head. It requires the actual event candidate to exist in the API
 snapshot; an expired or ambiguous queue snapshot fails rather than guessing membership.
@@ -127,6 +176,8 @@ An unexplained pass does not disable the gate for an existing registered repair 
 still refuses fresh admission of that disposition; the current worker can finish its causal repair
 and present it for human acceptance.
 
+### Canonical version validation
+
 Managed release edits also pass `ScheduledVersion.psm1` on the published PR head. The worker
 records an immutable pre-versioning commit, the release baseline, semantic decisions and expanded
 plan. Every Cargo manifest and lockfile in that checkpoint must match the trusted release
@@ -139,32 +190,54 @@ release baseline invalidate the evidence. Path/version-string restrictions are o
 scope check; they are not proof of canonical apply. The PR description combines expanded targets
 with already-sufficient pending releases from the report so human review sees the whole release.
 
-Before the controller's initial deployment, the bootstrap leg retains every legacy gate and
-rejects recognizable managed PRs. No executor can be enrolled for publication before that
-deployment and the publication safeguards. Once the controller exists, its missing or malformed
-inputs fail the context rather than taking that deployment-only bootstrap path.
+## Operating policy
 
-## Rollout control
+`scripts/scheduled/policy.json` is the reviewed source of truth for
+[deep-validation operating modes](design.md#deep-validation-operating-modes).
+Scheduled enforcement is accepted only with hosted execution and reporting enabled and all
+readiness prerequisites recorded. It controls the ordinary deep jobs and routine local deep
+calls together. Those jobs remain in the fan-in as legitimate conditional skips; retained
+validation preserves its event and platform behavior. The ruleset never acquires matrix names
+or a second required integration.
 
-`scripts/scheduled/policy.json` is the reviewed source of truth. Hosted execution and reporting
-are independent switches, so observe mode can run both while local admission remains disabled.
-The `cutover` switch is accepted only with both hosted paths enabled and every prerequisite
-recorded. It controls the old deep jobs and routine local deep calls together. Those jobs remain
-in the fan-in as legitimate conditional skips; the ruleset never acquires matrix names or a second
-required integration. Retained validation jobs preserve their existing event and platform behavior.
+The serialized names are compatibility details. Their mapping to operating behavior is:
 
-Deployment requires the controller/workflows, helper modules, local skills and policy to be merged
-together. A read-only manual execution canary can run while scheduled execution is staged. Enable
-hosted observe execution/reporting after the deterministic execution and reporting pilots, then
-configure the personal Local App and prove its separate capabilities. Approve package/check
-allowlists and the managed credential policy before any managed PR, including a canary. Record
-those prerequisites through a reviewed policy change before cutover. Do not enable both the old
-and new heavy paths indefinitely, and do not disable both during rollback.
+| Policy field or emitted value | Meaning |
+|---|---|
+| `rollout.hosted_execution_enabled` | Authorizes recurring full execution and, with native App readiness, automatic merged-repair confirmation. |
+| `rollout.reporting_enabled` | Authorizes the reporter's issue writes independently of execution and local admission. |
+| `rollout.cutover` | Selects scheduled enforcement when true, ordinary-validation fallback when false. Validation exports the same selection as `cutover`. |
+| `rollout.prerequisites.execution_canary`, `reporting_canary`, `native_app_canary` | Recorded operator verification of execution, reporting and actual native App capabilities. |
+| `rollout.prerequisites.benchmark_exclusion`, `azure_policy` | Recorded authorization and installation of managed-publication credential safeguards. |
+| `rollout.phase` | Descriptive compatibility metadata, not authorization to execute, report or admit work. |
+| `local.mode` | Local admission selection: `observe` and `paused` do not dispatch repairs; `repair` also requires matching persisted executor mode, enrollment, approved scope, profile and budgets. |
+| Planning reason or health status `staged` | Deliberately disabled hosted operation, not proof of coverage. |
+
+Safe installation defaults disable hosted execution/reporting, leave Local enrollment and repair
+allowlists unconfigured, and retain ordinary-validation fallback. Setup preserves those settings.
+Manual read-only execution uses the existing `canary` dispatch input to exercise hosted execution
+without changing recurring authorization; explicit verification similarly validates approved
+diagnostic scope, not incident closure by itself. Neither action is part of merely installing the
+Local automation.
+
+The default-branch controller, workflows, policy and their helpers form one installed contract.
+When neither policy nor controller is installed there, Validation retains ordinary deep gates
+and rejects recognizable managed publication. An installed policy without its controller, or an
+installed controller with missing/malformed inputs, fails validation rather than treating damage
+as an unconfigured installation.
+
+Approve package/check scope and publication safeguards before any managed PR, including a test
+PR. Native profile registration is not authorization to publish. When scheduled detection or
+reporting is unreliable, select ordinary-validation fallback before disabling the hosted path;
+never leave both enforcement paths disabled.
+
+## Independent health
 
 The hosted health workflow and personal intake independently observe scheduler, reporting,
 coverage and local scan availability. They distinguish fresh evidence, reused coverage, a failed
-scan, staged/paused operation and unavailable systems. Neither process claims to monitor its
-own total outage; the operator runbook is in the scheduled validation chapter.
+scan, deliberately disabled/paused operation and unavailable systems. Neither process claims to
+monitor its own total outage; the operator runbook is in the
+[scheduled validation chapter](../../docs/scheduled-validation.md#health-recovery-and-rollback).
 The reporter retains the actual validated planning timestamp rather than substituting run
 completion time. Hosted health uses read-only permissions and persists its component report as
 an artifact and step summary before signaling failure. The shared coverage/health issue contains

@@ -1,4 +1,7 @@
 #Requires -Modules @{ ModuleName = 'Pester'; ModuleVersion = '5.0' }
+# Protects the admission-scan contract: reporter-authored, held or already-owned incidents must be
+# deferred with an explicit reason rather than silently skipped or wrongly admitted, and a scan
+# with any rejected/malformed evidence must surface as a blocked condition rather than a clean run.
 BeforeAll {
     Import-Module (Join-Path $PSScriptRoot 'LocalInbox.psm1') -Force
     Import-Module (Join-Path $PSScriptRoot 'ScheduledContracts.psm1') -Force

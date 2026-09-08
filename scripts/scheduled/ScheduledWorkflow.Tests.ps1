@@ -1,4 +1,8 @@
 #Requires -Modules @{ ModuleName = 'Pester'; ModuleVersion = '5.0' }
+# Protects planning/gate orchestration: the deep-checks matrix and managed/confirmation decision
+# must reflect the triggering event correctly, coverage reuse must never mask a stale or forced
+# rerun, and the reporting workflow's queue-without-replacement concurrency contract this module
+# relies on must not silently regress.
 BeforeAll {
     Import-Module (Join-Path $PSScriptRoot 'ScheduledWorkflow.psm1') -Force
 }

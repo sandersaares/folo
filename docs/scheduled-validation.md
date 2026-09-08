@@ -40,9 +40,21 @@ state.
 
 Ordinary tests, compilation, Clippy, docs, feature/dependency, external-type,
 version/SemVer and integration checks remain on the normal validation path.
-Scheduled enforcement owns mutation testing, ordinary and many-seed Miri, and
-careful checking when the corresponding cutover is approved. Retained platform
-coverage is not silently reduced.
+**Scheduled enforcement** runs mutation testing, ordinary and many-seed Miri, and
+careful checking through recurring complete manifests. **Ordinary-validation
+fallback** retains the ordinary PR/push deep jobs and routine local Miri/mutation
+calls with their existing scopes. Retained platform coverage is not silently
+reduced. Explicit `just package="foo bar" validate-deep` remains available in either
+mode.
+
+Hosted execution, issue reporting and Local repair admission are independently
+authorized. Hosted checks and reporting can run with Local admission disabled and
+ordinary-validation fallback selected. Safe installation defaults disable hosted
+execution/reporting, leave Local repair enrollment and allowlists unconfigured,
+and select ordinary-validation fallback; installation or profile reconciliation
+does not change those settings. The
+[operating policy](../.github/workflows/implementation.md#operating-policy)
+defines the exact configuration mapping and readiness requirements.
 
 A complete expected package/platform/check/shard/seed manifest establishes success.
 Missing, cancelled, blocked, unknown or expired evidence is not success. A mutation
@@ -62,8 +74,8 @@ verification, and do not classify missing test/seed attribution alone as missing
 evidence.
 
 `release.yml` continues publishing on merge. Scheduled enforcement accepts delayed
-detection of potentially already-published defects. Do not enable cutover without
-accepting this tradeoff and proving the replacement detection/reporting path.
+detection of potentially already-published defects. Selecting it requires explicit
+acceptance of this tradeoff and verified detection/reporting capabilities.
 
 The managed repair gate validates the actual published head or combined queue
 candidate. `required-checks` remains the sole ruleset-required check and includes
@@ -90,7 +102,7 @@ No repository configuration file is needed merely to install this automation.
 Do not put cron in `.github/github-app.yml`, use `auto_issue_session` as a poller or
 attach heavyweight `session.create` scripts to empty polling sessions.
 
-Policy proposes cron `17 */3 * * *`, represented by the native automation API as
+Policy defines cron `17 */3 * * *`, represented by the native automation API as
 `interval: manual` plus `cron_expression`. Verify timezone and next-run preview in
 the installed App. Real `host_id`, project and automation identifiers are
 installation data, not portable constants. New entries are disabled and observe-only.
@@ -100,8 +112,8 @@ verified marker and repository identity; a cached ID or matching name is not pro
 of ownership. Ambiguous duplicates and unavailable native metadata require operator
 reconciliation through supported App controls.
 
-Initial repair allowlists are empty. Enrollment, approved scope, publication
-safeguards, native capability pilots and explicit mode activation are required
+Repair allowlists are empty by default. Enrollment, approved scope, publication
+safeguards, verified native capabilities and explicit mode authorization are required
 before admissions. Policy constrains starts, active workers and continuations.
 Continuations have daily and lifetime-per-attempt limits; consumed reservations
 remain charged even if delivery fails. These are **admission limits, not hard token
@@ -112,6 +124,8 @@ not make empty polls free. A repair model is an independently selected profile i
 
 Normal OAuth/App authentication authorizes GitHub operations. The expected GitHub
 login does not prove that inference uses a personally funded Copilot entitlement.
+The selected `sandersaares` entitlement is personally funded and the approved Local
+executor is the operator's current Windows profile; setup preserves these choices.
 The operator must verify personal billing selection and actual pilot attribution,
 configure personal usage limits/notifications, and approve native tool consent.
 Never use PATs, export credentials to state, switch accounts to escape a quota,
@@ -124,10 +138,10 @@ a hard publisher sandbox. Review unattended setup/build code and permissions; us
 a proven dedicated machine/profile or supported sandbox if stronger isolation is
 required.
 
-Before any same-repository canary or repair PR, including a draft, approve and land
+Before any same-repository installation-test or repair PR, including a draft, approve and land
 the managed-repair production benchmark exclusion and Azure integration safeguards.
-PR creation can trigger ordinary workflows regardless of draft status. A staged
-policy flag is not itself proof that those protections are deployed.
+PR creation can trigger ordinary workflows regardless of draft status. A recorded
+policy prerequisite is not itself proof that those protections are installed.
 
 The enrolled machine and App must be available. Sleep, shutdown, lock-screen,
 restart, missed-tick, overlapping-run and native session-reuse behavior require a
@@ -181,8 +195,12 @@ renames or assume a slash namespace is supported.
 
 ### Local helper interface
 
-The existing `just` wrappers call the typed PowerShell interfaces. Scripts cannot
-invoke native App tools; the skill performs those calls between transactions.
+The `just` wrappers call the typed PowerShell interfaces. This boundary operates
+before a prepared Rust environment is available, so empty inbox scans and native
+App transactions do not require a utility build. Scripts cannot invoke native App
+tools; the skill performs those calls between transactions. Structured execution
+configuration uses the trusted Rust utility described under
+[evidence decoding](../.github/workflows/implementation.md#evidence-decoding).
 
 ```powershell
 Set-StrictMode -Version Latest
@@ -352,8 +370,9 @@ That issue's reporter-owned `coverage` record exposes
 `last_plan.planned_at` separately from `receipt.completed_at`. Successful skips may
 advance planning history but never renew full-success age.
 Hosted planning freshness uses `coverage.expected_plan_gap_hours`, not the local
-polling cadence. Deliberately disabled staged hosted execution is reported as
-staged, separately from an enabled scheduler that has stopped producing plans.
+polling cadence. Deliberately disabled hosted operation is reported separately from
+an enabled scheduler that has stopped producing plans. Disabled operation does not
+establish recent coverage.
 
 | Condition | Recovery |
 |---|---|
@@ -365,7 +384,7 @@ staged, separately from an enabled scheduler that has stopped producing plans.
 | Auth, quota or unsupported native API | Request normal sign-in, personal budget action or supported manual App action; no fallback account, PAT or private-database edits. |
 | Hosted schedule disabled/stale | Report the condition, restore scheduling deliberately and request an authoritative fresh run. Do not generate artificial source commits. |
 | Reporter run failed/cancelled, including reporting queue overflow | Recover the existing `scheduled-report` run as described below; a newer successful report does not account for its missing report. |
-| Detection/reporting unreliable after cutover | Restore affected ordinary merge gates through the shared executor until repaired; never leave both enforcement paths disabled. |
+| Detection/reporting unreliable in scheduled enforcement | Select ordinary-validation fallback before disabling hosted enforcement; never leave both enforcement paths disabled. |
 
 Use native App controls for session cleanup. Do not delete existing sessions or
 worktrees as automated recovery. To pause, disable admissions or the project
@@ -401,21 +420,24 @@ the unresolved reporting condition. If required evidence is expired or unavailab
 keep missing evidence explicit and escalate for an operator decision; do not
 manufacture success or clear the failure because another report is green.
 
-## Validation and rollout prerequisites
+## Validation and installation readiness
 
 `just test-scripts` includes deterministic Pester coverage for local state, API
 pagination, intake, PR continuation and setup reconciliation. `just validate-scripts`
 uses the existing analyzer. Tests inject time, contend a short real file lock without
 sleeping, and simulate lost responses instead of hanging a worker.
 
-Scheduled execution and reporting require Python 3.11 or newer with standard-library
-`tomllib` for `scripts/scheduled/Read-MutationConfig.py`. Mutation-configuration
-parsing supports exact comparison with trusted controller configuration and
-establishing a baseline for shards with no selected mutants. Prove interpreter and
-module availability in each actual execution/reporting environment during the
-approved pilot, including WSL when used; availability on the Windows host alone is
-not sufficient. Missing tooling is an explicit prerequisite blocker, not permission
-to install it automatically or to skip the baseline.
+Scheduled execution and reporting use the nonpublished `scheduled-mutation-config`
+Rust utility to decode mutation configuration. It supports exact comparison with
+trusted controller configuration and establishing an unmutated baseline for shards with no selected
+mutants. The [evidence-decoding contract](../.github/workflows/implementation.md#evidence-decoding)
+defines its on-demand, controller-only build and reuse. Hosted reporting prepares
+the pinned stable toolchain without installing the deep-check tool suite. Verify
+utility/toolchain availability in each actual execution/reporting environment,
+including WSL when used; availability on
+the Windows host alone is not sufficient. Missing tooling is an explicit
+prerequisite blocker, not permission to install it automatically or skip the
+baseline. Empty Local inbox scans do not require this build.
 
 Before repair activation, prove personal billing, expected GitHub permissions, the
 actual Local host and scheduling preview, native issue association/reuse, branch
@@ -424,4 +446,37 @@ Exercise no-work, old backlog, duplicate/human sessions, one-worker capacity,
 lost-response recovery, unavailable WSL, quota, paused state, an existing PR and
 closed-unmerged disposition. Reapply setup unchanged and after deletion/rename,
 policy refresh, project-ID change and missing metadata. No code test can establish
-these installation facts or authorize a real canary.
+these installation facts or authorize a real installation-test PR.
+
+### Maintaining decoder dependency identity
+
+The reviewed `packages/scheduled-mutation-config/dependency-contract.json` binds
+the decoder's effective dependency requirements and reachable registry graph to
+checker compatibility. Shared features reachable through that graph participate;
+unrelated workspace release versions do not. Dependency drift is a prerequisite
+failure, not authorization for the reporter to rewrite the contract.
+
+For an intentional dependency change, use a trusted maintenance checkout with the
+approved pinned Rust toolchain already prepared. From that checkout's repository
+root, regenerate the snapshot:
+
+```powershell
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+$PSNativeCommandUseErrorActionPreference = $true
+Import-Module .\scripts\build\CargoExecutable.psm1 -Force
+Import-Module .\scripts\scheduled\ScheduledExecution.psm1 -Force
+$pin = Get-ScheduledToolchain -Kind mutants
+$messages = @(cargo "+$pin" build --locked --package scheduled-mutation-config `
+    --bin scheduled-mutation-config --message-format=json)
+$decoder = Resolve-CargoExecutable -CargoMessage $messages -TargetName scheduled-mutation-config
+cargo "+$pin" metadata --locked --format-version=1 |
+    & $decoder --dependency-contract |
+    Set-Content .\packages\scheduled-mutation-config\dependency-contract.json -Encoding utf8
+```
+
+This example has no placeholders. Stop on any error; do not accept partial output.
+Review the generated dependency changes with the intended dependency edit and
+validate the helper and scheduled execution tests before committing the snapshot.
+Do not run this command against a repair candidate or during routine reporting to
+accept an unexpected graph.

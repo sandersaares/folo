@@ -1,6 +1,13 @@
 #requires -Version 7
 
-# Thin workflow entrypoints use reviewed controller inputs; candidate text is never executable.
+# Orchestration behind Invoke-ScheduledPlan.ps1 and Invoke-ScheduledGate.ps1: decides the deep-check
+# matrix and managed/confirmation status for a triggering event (`Invoke-ScheduledPlanning`), and
+# enforces `scheduled-repair-gate` against that plan's evidence (`Invoke-ScheduledGate`). Thin
+# workflow entrypoints use reviewed controller inputs; candidate text is never executable here -
+# coverage/plan history is read as data through the GitHub API, not by running anything from the
+# candidate checkout. See ../../.github/workflows/design.md#deep-validation-operating-modes,
+# ../../.github/workflows/implementation.md#complete-evidence-and-reuse and #managed-repair-gate,
+# and ../../docs/scheduled-validation.md#validation-and-release-contract.
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
@@ -160,6 +167,10 @@ function Invoke-ScheduledPlanning {
         $managedRepairs = @($repairs | Where-Object managed)
         $managed = $managedRepairs.Count -gt 0
         if ($managed) {
+            # A managed repair's credential/benchmark exclusions only hold while these operator
+            # prerequisites are recorded; the gate must not let a repair proceed on the strength of
+            # excluding production-backed tests alone. See
+            # ../../.github/workflows/design.md#managed-publication.
             foreach ($name in @('benchmark_exclusion', 'azure_policy', 'native_app_canary')) {
                 if (-not $policy.rollout.prerequisites[$name]) { throw "Managed publication prerequisite missing: $name" }
             }
@@ -189,6 +200,11 @@ function Invoke-ScheduledPlanning {
             $run = $true
             $reason = 'explicit-verification'
         } elseif ($policy.rollout.hosted_execution_enabled -and $policy.rollout.prerequisites.native_app_canary) {
+            # Automatic merged-repair confirmation is the one action `hosted_execution_enabled`
+            # authorizes beyond recurring execution, and only once native App readiness is
+            # separately recorded; without native_app_canary this branch is skipped and no
+            # confirmation scope is produced. See
+            # ../../.github/workflows/implementation.md#operating-policy.
             $confirmations = @(Get-ScheduledConfirmationScope -Policy $policy -SourceSha $sourceSha)
             $run = $confirmations.Count -gt 0
             if ($run) {

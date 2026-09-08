@@ -8,6 +8,10 @@ high-level design in `design.md` and per-job mechanics in inline YAML comments.
 
 - Update [design.md](design.md) when you change the design; do not record design or history
   here.
+- Explain meaningful job/step decisions inline and link their precise owning heading in
+  `.github/workflows/design.md` or `.github/workflows/implementation.md`. A shared comment may
+  cover a cohesive step group; generic checkout/setup needs no repeated narration unless it
+  establishes a trust or execution boundary.
 - Validate before pushing with `just validate-workflows` (actionlint, which delegates to
   ShellCheck for embedded shell).
 
@@ -17,11 +21,11 @@ high-level design in `design.md` and per-job mechanics in inline YAML comments.
   composite is the only exception - it bootstraps PowerShell itself.
 - Every `run: pwsh` step opens with the standard preamble (`Set-StrictMode -Version Latest` plus
   the two error-preference lines); see `docs/build-and-tooling.md`.
-- Keep steps thin: put non-trivial logic in a PowerShell `[script]` `just` recipe the step
-  calls, so it runs and is tested locally. Logic worth unit-testing goes one level deeper
-  into a module under `scripts/` covered by a Pester suite (`just test-scripts`); see
-  `scripts/release/ReleaseAutomation.psm1`. This is also what makes the logic visible to
-  `just validate-scripts` (PSScriptAnalyzer) - inline YAML is invisible to both it and Pester.
+- Keep steps and `just` recipes thin. Prefer nonpublished Rust utilities for structured parsing
+  and policy logic; use PowerShell where Rust execution is impractical at the calling boundary.
+  Follow [the language guidance](../../docs/build-and-tooling.md#automation-language-and-boundaries).
+  Put reusable PowerShell orchestration under `scripts/`, covered by Pester (`just test-scripts`)
+  and `just validate-scripts` (PSScriptAnalyzer); inline YAML is invisible to both.
 
 ## Toolchain versions
 
@@ -65,10 +69,12 @@ high-level design in `design.md` and per-job mechanics in inline YAML comments.
 - Keep `scheduled-repair-gate` unconditional and in the fan-in's must-succeed list. Read managed
   scope from the trusted default-branch policy and registered issue/attempt/head metadata.
   A personal account's unmarked PR is not a managed repair.
-- Do not remove the scheduled rollout prerequisites or turn on cutover before the corresponding
-  canaries and credential safeguards have been established. Preserve the legacy deep path while
-  hosted execution/reporting are staged; rollback must restore a working enforcement path.
+- Preserve independent hosted execution, reporting and Local admission controls. Changing the
+  enforcement mode requires the reviewed readiness prerequisites; documentation or setup changes
+  must not activate it. Preserve ordinary-validation fallback when scheduled enforcement is
+  disabled or unreliable; see [Operating policy](implementation.md#operating-policy).
 - Privileged scheduled reporting must check out the default-branch controller, not a triggering
   candidate. Treat downloaded evidence as data and preserve reporter/worker record ownership.
-- Scheduled mutation execution and raw reporting require Python 3.11+ for the standard-library
-  TOML decoder. Include the decoder and `.cargo/mutants.toml` in the checker contract digest.
+- Build scheduled evidence utilities only from the trusted controller, never candidate source
+  or downloaded artifacts. Include the Rust decoder and `.cargo/mutants.toml` in the checker
+  contract digest; see [Evidence decoding](implementation.md#evidence-decoding).

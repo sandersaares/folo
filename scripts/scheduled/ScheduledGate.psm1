@@ -1,6 +1,13 @@
 #requires -Version 7
 
-# Managed repairs join the ordinary required-checks fan-in; author identity alone is not a claim.
+# Backs the `scheduled-repair-gate` required check (Invoke-ScheduledGate.ps1, via
+# ScheduledWorkflow.psm1's `Invoke-ScheduledGate`): decides whether a PR/merge-group candidate is a
+# managed repair at all, what package/file scope it is allowed to touch, and whether its deep-check
+# evidence actually satisfies the plan's manifest. Managed repairs join the ordinary
+# required-checks fan-in; author identity alone is not a claim, so every check here is evidence- or
+# scope-based rather than trusting branch naming or PR body markers in isolation. See
+# ../../.github/workflows/implementation.md#managed-repair-gate and
+# ../../docs/scheduled-validation.md#pr-readiness-and-bounded-continuation.
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true

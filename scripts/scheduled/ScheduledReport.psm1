@@ -1,6 +1,12 @@
 #requires -Version 7
 
-# Reporter-owned state is independent of worker comments and of artifact retention.
+# Pure record-merging logic used by ScheduledGitHub.psm1's reporting/health flows: computing a
+# finding's semantic identity, deciding whether a new observation supersedes a prior one on the
+# same finding, merging coverage evidence, and rendering issue body markdown. Kept free of GitHub
+# calls so identity and merge decisions are unit-testable in isolation from the API adapter.
+# Reporter-owned state is independent of worker comments and of artifact retention. See
+# ../../.github/workflows/implementation.md#serialized-reporting and
+# ../../docs/scheduled-validation.md#health-recovery-and-rollback.
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true

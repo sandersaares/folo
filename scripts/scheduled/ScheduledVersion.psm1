@@ -1,7 +1,12 @@
 #requires -Version 7
 
-# Mechanical version evidence is reproduced from a source checkpoint whose Cargo tree matches
-# the trusted release baseline. Worker-selected versions cannot become the generation reference.
+# Backs Invoke-ScheduledVersion.ps1: independently regenerates cargo-release-plan's
+# report/expand/apply output from a repair's recorded pre-versioning checkpoint and compares it
+# byte-for-byte against what the worker actually published. Mechanical version evidence is
+# reproduced from a source checkpoint whose Cargo tree matches the trusted release baseline.
+# Worker-selected versions cannot become the generation reference; only this independent
+# regeneration can. See ../../.github/workflows/implementation.md#canonical-version-validation and
+# ../../docs/scheduled-validation.md#durable-ownership-and-native-calls.
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true

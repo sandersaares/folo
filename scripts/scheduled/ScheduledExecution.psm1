@@ -1,14 +1,21 @@
 #requires -Version 7
 
-# Typed execution and independently reproducible evidence for the scheduled check catalog.
+# The deep-check entrypoint and independent reporter share typed commands and evidence checks
+# here. PowerShell owns native process setup, capture and failure reporting, including failures
+# before Rust is available; the controller-built Rust decoder owns TOML semantics and dependency
+# identity normalization.
+# Ref: .github/workflows/implementation.md, "Scheduled controller ownership".
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
 Import-Module (Join-Path $PSScriptRoot '..\build\Mutants.psm1')
 Import-Module (Join-Path $PSScriptRoot '..\build\Miri.psm1')
 Import-Module (Join-Path $PSScriptRoot '..\build\CargoExecutable.psm1')
+$script:mutationDecoderExecutable = $null
 
 function Get-ScheduledToolchain {
+    # Execution and evidence reconstruction must use the same reviewed pin, not the caller's
+    # active rustup override. This also supplies the native decoder's stable build toolchain.
     [CmdletBinding()]
     [OutputType([string])]
     param([Parameter(Mandatory)][ValidateSet('mutants', 'miri', 'miri-many', 'careful')][string] $Kind)
@@ -79,6 +86,8 @@ function Test-ScheduledHostPlatform {
 }
 
 function Assert-ScheduledExecutionInput {
+    # Catalog controls cannot be smuggled through free-form flags or test filters. The reporter
+    # applies this same validation to reconstructed commands from either supported platform.
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][hashtable] $Check,
@@ -146,6 +155,8 @@ function Assert-ScheduledExecutionInput {
 }
 
 function Get-ScheduledCommand {
+    # One command constructor serves execution and independent replay verification, so changing
+    # a checker option cannot silently change what archived evidence is considered equivalent.
     [CmdletBinding()]
     [OutputType([hashtable])]
     param(
@@ -231,8 +242,9 @@ function Get-ScheduledCommand {
 }
 
 function Invoke-ScheduledProcess {
+    # Drain both streams concurrently so a verbose checker cannot deadlock on a full pipe.
+    # Keep raw bytes for the independent reporter instead of interpreting terminal rendering.
     # No shell participates: ArgumentList preserves each value on Windows and Unix alike.
-    # Drain both pipes concurrently so compiler stderr cannot deadlock a full stdout pipe.
     [CmdletBinding()]
     [OutputType([hashtable])]
     param(
@@ -281,6 +293,90 @@ function Invoke-ScheduledProcess {
     }
 }
 
+function Get-ScheduledMutationDecoderBuild {
+    # Building from the controller working directory keeps Cargo configuration discovery away
+    # from candidate worktrees. Resolve Cargo before starting the child, never through its cwd.
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    param()
+
+    $root = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\..')).Path
+    $hostPlatform = Get-ScheduledHostPlatform
+    # Windows and WSL can share this checkout but cannot share native executables.
+    $target = Join-Path $root "target\scheduled-mutation-config\$($hostPlatform.os)-$($hostPlatform.architecture)"
+    $toolchain = Get-ScheduledToolchain -Kind mutants
+    return @{
+        root = $root; target = $target
+        command = @{
+            file = (Get-Command cargo -CommandType Application | Select-Object -First 1).Source
+            arguments = @("+$toolchain", 'build', '--locked', '--package', 'scheduled-mutation-config',
+                '--bin', 'scheduled-mutation-config', '--manifest-path', (Join-Path $root 'Cargo.toml'),
+                '--target-dir', $target, '--message-format=json')
+            environment = @{
+                RUSTUP_TOOLCHAIN = $toolchain; RUSTUP_AUTO_INSTALL = '0'
+                CARGO_TERM_COLOR = 'never'; NO_COLOR = '1'
+                # Candidate checker settings are not native controller build settings.
+                CARGO_BUILD_TARGET = $null; CARGO_ENCODED_RUSTFLAGS = $null
+                RUSTFLAGS = ''; RUSTDOCFLAGS = ''; MIRIFLAGS = ''; MUTATION_TESTING = $null
+                RUSTC = $null; RUSTDOC = $null; RUSTC_WRAPPER = $null; RUSTC_WORKSPACE_WRAPPER = $null
+            }
+        }
+    }
+}
+
+function Get-ScheduledMutationDecoder {
+    # Only baseline parsing needs Rust. Module imports, planners and empty intake scans remain
+    # cheap. Immutable controller code permits one build per process, then direct invocation;
+    # Cargo reuses its own package-scoped cache across processes without trusting a stale path.
+    [CmdletBinding()]
+    [OutputType([string])]
+    param()
+
+    if ($null -ne $script:mutationDecoderExecutable -and
+        (Test-Path -LiteralPath $script:mutationDecoderExecutable -PathType Leaf)) {
+        return $script:mutationDecoderExecutable
+    }
+    $build = Get-ScheduledMutationDecoderBuild
+    $null = New-Item -ItemType Directory -Path $build.target -Force
+    # Cargo serializes its shared build cache; process-specific logs also let separate local
+    # controller processes prepare the same checkout without clobbering each other's evidence.
+    $result = Invoke-ScheduledProcess -Command $build.command -SourceRoot $build.root `
+        -OutputDirectory $build.target -Name "decoder-build-$PID"
+    if ($result.exit_code -ne 0) {
+        $diagnostic = Get-Content -LiteralPath $result.stderr_path -Raw
+        $messages = Get-Content -LiteralPath $result.stdout_path -Raw
+        throw [InvalidOperationException]::new("Cannot build the controller mutation decoder: $diagnostic`n$messages")
+    }
+    $executable = Resolve-CargoExecutable -CargoMessage @(Get-Content -LiteralPath $result.stdout_path) `
+        -TargetName 'scheduled-mutation-config'
+    # Cargo, not an artifact's source_root or an environment-supplied executable, owns this path.
+    $executable = (Resolve-Path -LiteralPath $executable).Path
+
+    # A reviewed bounded snapshot lets the planner hash dependency identity without starting
+    # Rust. Cargo supplies effective inherited requirements and the resolved transitive graph;
+    # the built Rust utility normalizes it before any baseline TOML can be decoded.
+    # Ref: .github/workflows/implementation.md, "Scheduled controller ownership".
+    $metadataCommand = $build.command.Clone()
+    $metadataCommand.arguments = @($build.command.arguments[0], 'metadata', '--locked',
+        '--format-version=1', '--manifest-path', (Join-Path $build.root 'Cargo.toml'))
+    $metadata = Invoke-ScheduledProcess -Command $metadataCommand -SourceRoot $build.root `
+        -OutputDirectory $build.target -Name "decoder-metadata-$PID"
+    if ($metadata.exit_code -ne 0) {
+        $diagnostic = Get-Content -LiteralPath $metadata.stderr_path -Raw
+        throw [InvalidOperationException]::new("Cannot identify controller decoder dependencies: $diagnostic")
+    }
+    $actual = Invoke-ScheduledMutationDecoder -Executable $executable -DependencyContract `
+        -Text (Get-Content -LiteralPath $metadata.stdout_path -Raw)
+    $expected = Get-Content -LiteralPath (Join-Path $build.root `
+        'packages\scheduled-mutation-config\dependency-contract.json') -Raw
+    if ($actual.Replace("`r`n", "`n").Trim() -cne $expected.Replace("`r`n", "`n").Trim()) {
+        throw [InvalidOperationException]::new(
+            'Controller decoder dependencies differ from dependency-contract.json; refresh and review the bounded snapshot.')
+    }
+    $script:mutationDecoderExecutable = $executable
+    return $executable
+}
+
 function Get-ScheduledMutationConfig {
     [CmdletBinding()]
     [OutputType([hashtable])]
@@ -292,18 +388,39 @@ function Get-ScheduledMutationConfig {
     if ($Text.Replace("`r`n", "`n") -cne $trusted.Replace("`r`n", "`n")) {
         throw [FormatException]::new('Empty-shard baseline configuration differs from the controller.')
     }
+    $json = Invoke-ScheduledMutationDecoder -Executable (Get-ScheduledMutationDecoder) -Text $Text
+    return ConvertFrom-Json -InputObject $json -AsHashtable
+}
+
+function Invoke-ScheduledMutationDecoder {
+    # The private caller supplies only the executable resolved from its trusted controller
+    # build. Both dependency attestation and configuration decoding use the same UTF-8 transport.
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)][string] $Executable,
+        [Parameter(Mandatory)][AllowEmptyString()][string] $Text,
+        [switch] $DependencyContract
+    )
+
     $start = [Diagnostics.ProcessStartInfo]::new()
-    $start.FileName = if ($IsWindows) { 'python' } else { 'python3' }
-    $start.ArgumentList.Add('-I')
-    $start.ArgumentList.Add((Join-Path $PSScriptRoot 'Read-MutationConfig.py'))
+    $start.FileName = $Executable
+    if ($DependencyContract) { $start.ArgumentList.Add('--dependency-contract') }
+    $start.WorkingDirectory = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\..')).Path
     $start.UseShellExecute = $false
     $start.RedirectStandardInput = $true
     $start.RedirectStandardOutput = $true
     $start.RedirectStandardError = $true
+    # Preserve TOML string values on Windows as well as Linux, independent of the console code page.
+    $start.StandardInputEncoding = [Text.UTF8Encoding]::new($false)
+    $start.StandardOutputEncoding = [Text.UTF8Encoding]::new($false)
+    $start.StandardErrorEncoding = [Text.UTF8Encoding]::new($false)
     $process = [Diagnostics.Process]::new()
     $process.StartInfo = $start
     try {
-        if (-not $process.Start()) { throw [InvalidOperationException]::new('Could not start the TOML parser.') }
+        if (-not $process.Start()) {
+            throw [InvalidOperationException]::new('Could not start the controller mutation utility.')
+        }
         $stdout = $process.StandardOutput.ReadToEndAsync()
         $stderr = $process.StandardError.ReadToEndAsync()
         $process.StandardInput.Write($Text)
@@ -311,8 +428,12 @@ function Get-ScheduledMutationConfig {
         $process.WaitForExit()
         $json = $stdout.GetAwaiter().GetResult()
         $diagnostic = $stderr.GetAwaiter().GetResult()
-        if ($process.ExitCode -ne 0) { throw [FormatException]::new("Cannot decode mutation configuration: $diagnostic") }
-        return ConvertFrom-Json -InputObject $json -AsHashtable
+        if ($process.ExitCode -ne 0) {
+            $operation = if ($DependencyContract) { 'identify controller decoder dependencies' }
+                else { 'decode mutation configuration' }
+            throw [FormatException]::new("Cannot ${operation}: $diagnostic")
+        }
+        return $json
     } finally {
         $process.Dispose()
     }
@@ -586,6 +707,9 @@ function Get-ScheduledMutationResult {
 }
 
 function Get-ScheduledEmptyMutationResult {
+    # cargo-mutants skips its baseline when discovery is empty. Only independently checked
+    # discovery plus explicit baseline evidence can certify such a shard; an empty replay cannot.
+    # Ref: .github/workflows/implementation.md, "Scheduled controller ownership".
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][hashtable] $Result,
@@ -1006,6 +1130,8 @@ function Get-ScheduledCheckResult {
 }
 
 function Invoke-ScheduledCheck {
+    # Persist progress before each native stage so setup failures and interrupted jobs still
+    # produce reportable evidence instead of being mistaken for successful absence of findings.
     [CmdletBinding()]
     [OutputType([hashtable])]
     param(

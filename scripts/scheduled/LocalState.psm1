@@ -4,8 +4,14 @@ $PSNativeCommandUseErrorActionPreference = $true
 
 Import-Module (Join-Path $PSScriptRoot 'ScheduledContracts.psm1')
 
-# Short file transactions protect the durable protocol described in
-# docs/scheduled-validation.md. No file handle is expected to survive an App tool call.
+# The single mutation point for the executor's durable state (state.json under
+# %LOCALAPPDATA%\Folo\ScheduledRemediation\<repository_id>): every skill and entrypoint that reads
+# or changes admission/attempt/health state does so exclusively through
+# `Invoke-ScheduledLocalAction` here, never by touching state.json directly, so the file lock and
+# the read-validate-mutate-write sequence below are the only path a transaction can take. Short
+# file transactions protect the durable protocol described in
+# ../../docs/scheduled-validation.md#durable-ownership-and-native-calls. No file handle is expected
+# to survive an App tool call.
 function Get-ScheduledStateRoot {
     [CmdletBinding()]
     param([Parameter(Mandatory)][ValidatePattern('^[1-9][0-9]*$')][string] $RepositoryId)

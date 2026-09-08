@@ -13,13 +13,27 @@ do not depend on the App being available. Local automation progresses existing r
 check failures, moved `main`, version readiness and review feedback to human acceptance; only a
 human approves and merges.
 
-The reviewed rollout policy separates deployment, hosted observe operation and cutover. Staged
-deployment retains the existing PR and push deep checks. Hosted observe operation enables scheduled
-execution and deduplicated reporting without enabling local repairs or removing any merge gate.
-Cutover moves ordinary Miri, many-seed Miri, mutation testing and careful checks to the scheduled
-manifest only after the execution, reporting, native App and credential safeguards are established.
-The same policy changes routine local validation while leaving explicit deep validation available.
-Rollback restores the existing checks before disabling the replacement.
+### Deep-validation operating modes
+
+The reviewed operating policy supports **scheduled enforcement** and **ordinary-validation
+fallback**. Scheduled enforcement runs ordinary Miri, many-seed Miri, mutation testing and careful
+checks through recurring complete manifests rather than the ordinary PR and push deep jobs.
+Ordinary-validation fallback retains those jobs with their event and platform scopes. The same
+selection controls routine local Miri and mutation calls; explicit local deep validation remains
+available in either mode.
+
+Hosted execution, issue reporting and Local App repair admission have independent authorization.
+Hosted checks and reporting can operate without local repair admission and without removing deep
+checks from ordinary validation. Scheduled enforcement requires proven execution, reporting, native
+App and credential safeguards. Restoring ordinary-validation fallback keeps enforcement available
+when scheduled detection or reporting is unreliable.
+
+Installation is not authorization to run or publish. Safe defaults leave hosted execution and
+reporting disabled, local repair admission unconfigured and ordinary-validation fallback selected.
+The operator approves enrollment, scope and operating settings; installing or reconciling the
+automation does not activate them.
+
+### Scheduled evidence
 
 Complete coverage is evidence for an immutable source and check contract, not merely a green
 workflow or an empty defect list. Compatible full successes can be reused for unchanged `main`
@@ -30,6 +44,8 @@ An empty mutation shard can establish coverage only through successful exact-sco
 an unmutated baseline. Missing output and a zero-match requested replay are not empty-shard proof.
 Reproductions preserve the observed invocation scope; an unattributed Miri failure must not be
 presented as a specific failing test or seed inferred from interleaved output.
+
+### Managed publication
 
 Managed repair identity joins the finding generation, registered executor/session/attempt, reserved
 branch, PR and exact head. A personal account's ordinary PR remains ordinary. Managed candidates
@@ -49,7 +65,7 @@ credential exclusions. Excluding credentials does not establish that a local wor
 Validation runs each `just` command as its own parallel job rather than one combined
 `validate-local` step. Parallelism gives faster feedback and pinpoints failures by check
 name instead of burying them in a monolithic log. Expensive jobs gate behind cheaper
-equivalents so a fast failure short-circuits slow work — for example, Miri and mutation
+equivalents so a fast failure short-circuits slow work — for example, fallback Miri and mutation
 testing only start once the dev Clippy pass and the base test pass have already succeeded,
 since there is nothing to interpret or mutate in code that does not compile or whose tests
 already fail. Clippy stands in for a bare `cargo check` here: Clippy compiles the code as a
@@ -73,16 +89,16 @@ delta's changed-package set would skip a package that already needed an incremen
 Test passes are organised as an x86_64/ARM64 pair. The x64 pass carries coverage
 instrumentation (which needs a nightly-only toolchain component), while the ARM pass
 doubles as the MSRV pass and exists to exercise architecture-gated code that x86_64 runners
-never compile. macOS is Apple Silicon, so it rides the ARM pass. Miri follows the same
-shape: it is an architecture-agnostic interpreter, so a second ARM run earns its keep only
-by subjecting ARM-gated paths to Miri's UB detection. Platform-agnostic checks (formatting,
-workflow validation, script tests) run on a single Linux runner because their result cannot
+never compile. macOS is Apple Silicon, so it rides the ARM pass. In ordinary-validation fallback,
+Miri follows the same shape: it is an architecture-agnostic interpreter, so a second ARM run earns
+its keep only by subjecting ARM-gated paths to Miri's UB detection. Platform-agnostic checks
+(formatting, workflow validation, script tests) run on a single Linux runner because their result cannot
 vary by platform.
 
-Not every check earns its place on every pull request. The full matrix runs on each push to
-`main`, but pull-request validation prunes the rarely-informative legs to cut runner cost,
-leaning on push-to-`main` as the backstop for what it drops. PRs run the test and docs
-suites only on the x86_64 Windows and Linux runners: the whole ARM pass (which carries the
+Not every check earns its place on every pull request. Within the selected operating mode, the
+full matrix runs on each push to `main`, but pull-request validation prunes the rarely-informative
+legs to cut runner cost, leaning on push-to-`main` as the backstop for what it drops. PRs run the
+test and docs suites only on the x86_64 Windows and Linux runners: the whole ARM pass (which carries the
 MSRV *test* run) and the macOS legs of the test and docs jobs wait for `main`, because
 architecture- and OS-gated behaviour rarely diverges on a PR and re-running the
 platform-independent test and doc suites on macOS almost never is informative. The base Miri
@@ -161,11 +177,19 @@ nightly and that tip's own collection cancel each other.
 
 ## Thin steps
 
-Workflow steps stay thin. Non-trivial logic lives in PowerShell `[script]` `just` recipes
-the steps call, so it runs and is debugged locally instead of only by pushing to `main`.
-Logic worth unit-testing goes one level deeper into a module under `scripts/` covered by a
-Pester suite. Every `run:` step uses `pwsh`; the `setup-environment` composite is the sole
-Bash holdout because it bootstraps PowerShell itself.
+Workflow steps stay thin so their logic can be exercised locally. Nonpublished Rust utilities
+own structured parsing and policy logic wherever the calling environment can execute Rust.
+PowerShell handles boundaries where that is impractical, including toolchain bootstrap and
+native App coordination without a prepared Rust environment. Thin `just` recipes expose the
+commands; reusable PowerShell orchestration belongs in Pester-tested modules under `scripts/`.
+The [automation language guidance](../../docs/build-and-tooling.md#automation-language-and-boundaries)
+defines that boundary.
+
+Steps implementing a design obligation explain the reason beside the step or cohesive step group
+and link to its owning design or implementation heading. This keeps authority, ordering and
+failure-handling decisions visible without duplicating their full rationale. Every `run:` step
+uses `pwsh`; the `setup-environment` composite is the sole Bash exception because it bootstraps
+PowerShell itself.
 
 ## Pull-request version readiness
 

@@ -1,4 +1,7 @@
 #Requires -Modules @{ ModuleName = 'Pester'; ModuleVersion = '5.0' }
+# Protects the PR-snapshot read path that LocalLifecycle.psm1's readiness decision depends on:
+# multi-page timeline/review/comment pagination must be aggregated completely and in a stable
+# order before a merge decision is made, or a partial read could make a not-yet-ready PR look done.
 BeforeAll {
     Import-Module (Join-Path $PSScriptRoot 'LocalGitHub.psm1') -Force
 }

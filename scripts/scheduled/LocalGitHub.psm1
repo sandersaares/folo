@@ -2,7 +2,11 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
 
-# Only read APIs are used here. Native App session and publication actions remain in the skills.
+# Read-side GitHub adapter for the personal Local App executor (LocalInbox.psm1 and the
+# `scheduled-intake`/`scheduled-repair` skills call it between durable-state transactions; see
+# ../../docs/scheduled-validation.md#durable-ownership-and-native-calls). It never authenticates,
+# publishes or claims anything itself - only read APIs are used here. Native App session creation
+# and publication actions remain the skills' responsibility, driven by LocalState.psm1's protocol.
 function Invoke-ScheduledApi {
     [CmdletBinding()]
     param(

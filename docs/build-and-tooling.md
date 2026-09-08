@@ -51,15 +51,18 @@ via `package="foo bar"`. It also smoke-runs the selected packages' Criterion
 targets through `just test-benches-criterion`; see Standard commands for the
 distinction between local and combined CI benchmark smoke passes.
 
-`just validate-local` retains ordinary Miri and package-scoped **mutation testing**
-until the reviewed scheduled-validation policy enables cutover. The final mutation
-step runs after cheaper checks; scope it with `package="foo bar"` to keep it
-tractable. At approved cutover, routine local validation omits those deep checks
-and GitHub scheduled evidence owns their recurring enforcement.
+`just validate-local` follows the reviewed deep-validation operating policy.
+In **ordinary-validation fallback**, it includes ordinary Miri and package-scoped
+mutation testing, with mutation testing last so cheaper checks can fail first.
+In **scheduled enforcement**, it omits those deep checks because GitHub scheduled
+validation owns their recurring enforcement. The fallback is the safe default
+when scheduled enforcement is not configured or cannot provide dependable evidence.
+The policy fields and readiness requirements are defined in the workflow
+[operating policy](../.github/workflows/implementation.md#operating-policy).
 
 Use `just package="foo bar" validate-deep` to explicitly run Miri, mutation testing,
 many-seed Miri and careful checking on the current platform. This command remains
-available independently of cutover. To run just mutation testing, use
+available in either operating mode. To run just mutation testing, use
 `just package="foo bar" mutants`. Mutation timeouts and missed mutations remain
 anomalies; changing enforcement cadence does not relax test-quality requirements.
 
@@ -85,10 +88,51 @@ standard validation on both Windows and Linux, execute:
 1. `just validate-local`
 2. `wsl -e bash -l -c "just validate-local"`
 
+## Automation language and boundaries
+
+Prefer **nonpublished Rust utilities** for automation logic, especially structured
+configuration parsing, data transformations and policy decisions. Reuse workspace
+dependencies and validation conventions; an internal automation task is not a reason
+to publish a new crate or introduce another language runtime.
+
+Use PowerShell when executing Rust is impractical at the calling boundary. Examples
+include bootstrapping the Rust toolchain, reporting a failed toolchain setup, or
+coordinating native App operations before a prepared Rust environment is available.
+Explain the actual constraint in the owning implementation guide and script rather
+than treating familiarity with shell scripting as justification.
+
+Keep the distinction between logic and process orchestration clear. A thin
+PowerShell wrapper can prepare command arguments, invoke a trusted Rust utility and
+propagate its outcome. Parsing and semantic decisions belong in the utility when
+that environment can execute it. Tool identity follows the workflow's authority:
+a privileged reporter uses reviewed controller code, not an executable supplied by
+the candidate it is evaluating.
+
 ## Scripting
 
 You can assume PowerShell 7 (`pwsh`) is available on every operating system and
-environment. Prefer PowerShell 7 commands to Bash commands.
+environment. Where a script is justified, prefer PowerShell 7 commands to Bash
+commands.
+
+### Script purpose and decision comments
+
+Every script, module and executable test fixture needs an inline purpose comment
+explaining why it exists and how it participates in the repository's workflows.
+Name its caller or entry point, the responsibility it owns and any important
+authority or lifetime boundary. A filename, a list of exported functions or
+"helpers for the workflow" is not an explanation. Test scripts identify the
+contract or failure class they protect.
+
+Document non-obvious decisions where they are implemented: why evidence is rejected,
+why a state transition retains ownership, why a subprocess is isolated, or why an
+operation must precede another. Link the relevant design or implementation heading
+instead of duplicating a long rationale. Comments must describe supported behavior,
+not development history or merely repeat the following statement.
+
+Apply the same standard to workflow steps and just recipes. A step that implements
+a design obligation needs a nearby justification with a link to that document's
+relevant heading. Shared comments may explain a cohesive step group; ordinary
+boilerplate does not need repeated narration.
 
 ### Every PowerShell snippet starts with the standard preamble
 
@@ -120,10 +164,10 @@ Silence a genuine false positive with a justified
 `[Diagnostics.CodeAnalysis.SuppressMessageAttribute(...)]`, never by relaxing the gate; the tree
 is expected to be finding-free.
 
-PSScriptAnalyzer can only see `.ps1`/`.psm1` files, so **nontrivial** inline PowerShell is not
-linted where it sits. Keep inline snippets (justfile `[script]` blocks and workflow `pwsh` steps)
-thin: anything with real logic - branching, loops, parsing, error handling, non-trivial data
-manipulation - belongs in a module under `scripts/`, covered by a Pester suite
-(`just test-scripts`) and thus by the linter, with the recipe or workflow step reduced to a thin
-wrapper that imports the module and calls it. A snippet that is just the preamble plus a command
-or two may stay inline.
+PSScriptAnalyzer can only see `.ps1`/`.psm1` files, so **nontrivial** inline PowerShell
+is not linted where it sits. Keep justfile `[script]` blocks and workflow `pwsh`
+steps thin. Put automation logic in a nonpublished Rust utility when practical.
+When the calling environment requires PowerShell, put nontrivial orchestration in
+a module under `scripts/`, covered by Pester (`just test-scripts`) and the analyzer.
+The recipe or workflow step then imports and invokes that boundary. A preamble and
+a command or two may stay inline.

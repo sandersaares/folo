@@ -14,13 +14,20 @@ name, marker, limits and approved scope. An installed App entry is only its appl
 copy. Review local prerequisite instructions; do not execute heavyweight setup or
 install missing tools without operator approval.
 
-Scheduled execution and reporting require Python 3.11 or newer with standard-library
-`tomllib` for `scripts\scheduled\Read-MutationConfig.py`. This supports trusted
-mutation-configuration comparison and empty-shard baselines. Record this prerequisite
-for each actual execution/reporting environment, including WSL when used; a Windows
-installation does not establish Linux availability. The approved environment pilot
-must establish availability. Do not install tooling or run scheduled workloads as
-part of setup, or add heavyweight preparation to empty polling sessions.
+Use the [operating policy](../workflows/implementation.md#operating-policy) to distinguish
+hosted execution/reporting authorization, ordinary-validation fallback and Local
+admission. Reconciliation does not select an enforcement mode or authorize repairs.
+New installations are disabled and unconfigured by default; preserve existing
+operator-approved settings rather than treating setup as activation.
+
+Scheduled execution and reporting lazily build the nonpublished Rust utility
+`scheduled-mutation-config` from the trusted controller for mutation-configuration
+comparison and empty-shard baselines; see
+[evidence decoding](../workflows/implementation.md#evidence-decoding). Record actual
+toolchain/utility availability in each execution environment, including WSL when
+used; a Windows installation does not establish Linux availability. Do not build
+utilities, install tooling or run scheduled workloads as part of setup, or add
+heavyweight preparation to empty polling sessions.
 
 Verify the expected GitHub API user and canonical numeric repository identity:
 
@@ -39,7 +46,7 @@ selection in the App; CLI login alone does not establish inference billing.
 The approved selected `sandersaares` entitlement is personally funded; preserve that
 decision while still proving actual pilot usage attribution and permissions.
 Record remaining quota/consent/sandbox/publication prerequisites without changing
-account settings. No same-repository PR canary before Azure/benchmark safeguards.
+account settings. No same-repository installation-test PR before Azure/benchmark safeguards.
 
 ## Stage 2: Discover the canonical project and Local host
 
@@ -185,7 +192,7 @@ recreation. If the tool requires another confirmation, obtain it normally.
 For ambiguous duplicates, missing permission or unavailable exact native
 capability, stop with an actionable manual step. No API database workaround.
 Do not call `run_workflow`, create a session automation, invoke intake, create a
-canary PR or start a repair as part of setup.
+installation-test PR or start a repair as part of setup.
 
 ## Stage 6: Register the observed profile without changing work
 
@@ -247,4 +254,4 @@ publication safeguards as applicable.
 
 Confirm that no run was triggered, repair was not enabled, account settings were
 not changed and existing state/session ownership was preserved. List only genuine
-remaining operator actions. Stop; no canary, background watcher or follow-up timer.
+remaining operator actions. Stop; no test run, background watcher or follow-up timer.

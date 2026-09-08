@@ -1,6 +1,14 @@
 #requires -Version 7
 
-# The privileged adapter reads candidate artifacts as data using the default-branch parser.
+# The privileged write-side GitHub adapter: runs only from the always-default-branch
+# `scheduled-report.yml`/`scheduled-health.yml` jobs (never a candidate checkout), and is the only
+# module authorized to write findings, coverage and health state back to GitHub issues, or to
+# download and parse a run's evidence artifacts. It reads candidate artifacts as data using the
+# default-branch parser (ScheduledContracts.psm1/ScheduledExecution.psm1), never by executing
+# anything from the candidate. See
+# ../../.github/workflows/implementation.md#scheduled-controller-ownership,
+# #serialized-reporting, #independent-health and #operating-policy, and
+# ../../docs/scheduled-validation.md#health-recovery-and-rollback.
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
@@ -381,6 +389,10 @@ function Sync-ScheduledIssue {
     }
     # GitHub caps issue bodies; never discard the typed reproduction to fit a write.
     if ($body.Length -gt 65536) { throw [FormatException]::new('Durable issue evidence exceeds the GitHub body limit.') }
+    # `reporting_enabled` authorizes issue writes independently of execution/admission (see
+    # ../../.github/workflows/implementation.md#operating-policy); without it every call here is a
+    # dry run regardless of `-Apply`, and the same rule gates the other reporting_enabled checks
+    # below in this module.
     if ($Apply -and $Policy.rollout.reporting_enabled) {
         $updated = Invoke-ScheduledGitHubApi -Endpoint $endpoint -Method $method -Body $payload
         return @{ action = $method; number = $updated.number }

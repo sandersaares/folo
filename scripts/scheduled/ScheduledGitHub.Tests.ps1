@@ -1,4 +1,8 @@
 #Requires -Modules @{ ModuleName = 'Pester'; ModuleVersion = '5.0' }
+# Protects the privileged reporting/health adapter: artifact extraction must resist a path-traversal
+# or symlink-escaping zip regardless of what a candidate run produced, reporting must never publish
+# without `-Apply`/rollout consent, and reporter-owned issue state must merge deterministically
+# rather than duplicate or drop findings across repeated or partially-failed reporting runs.
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true

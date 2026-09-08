@@ -1,4 +1,7 @@
 #Requires -Modules @{ ModuleName = 'Pester'; ModuleVersion = '5.0' }
+# Protects operator setup from silently transferring or duplicating the native App automation:
+# an executor/login/host mismatch against an already-registered profile must block rather than
+# quietly reconcile, and incomplete native metadata must never be read as "not yet installed".
 BeforeAll {
     Import-Module (Join-Path $PSScriptRoot 'LocalSetup.psm1') -Force
 }
