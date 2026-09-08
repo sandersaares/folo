@@ -8,7 +8,7 @@
 //! checkout is described by the toolchain it pins itself, so the recorded
 //! provenance names the compiler that actually built the measured benchmarks.
 
-use std::future::Future;
+use std::future::{Future, ready};
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -160,8 +160,8 @@ impl EnvironmentProbe for SystemProbe {
     }
 
     #[cfg_attr(test, mutants::skip)] // Queries the host hardware; the fingerprint logic is tested.
-    async fn hardware(&self) -> HardwareProfile {
-        system_profile()
+    fn hardware(&self) -> impl Future<Output = HardwareProfile> {
+        ready(system_profile())
     }
 }
 

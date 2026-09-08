@@ -1,23 +1,26 @@
-use std::cell::RefCell;
-use std::panic::{AssertUnwindSafe, RefUnwindSafe, UnwindSafe, catch_unwind, resume_unwind};
-use std::rc::Rc;
-use std::sync::Barrier;
-use std::task::Poll;
-use std::{mem, task, thread};
+pub(in crate::core::sync) use std::cell::RefCell;
+pub(in crate::core::sync) use std::panic::{
+    AssertUnwindSafe, RefUnwindSafe, UnwindSafe, catch_unwind, resume_unwind,
+};
+pub(in crate::core::sync) use std::pin::Pin;
+pub(in crate::core::sync) use std::rc::Rc;
+pub(in crate::core::sync) use std::sync::{Arc, Barrier, Mutex, atomic};
+pub(in crate::core::sync) use std::task::{Poll, Waker};
+pub(in crate::core::sync) use std::{mem, task, thread};
 
-use futures::executor::block_on;
+pub(in crate::core::sync) use futures::executor::block_on;
 use static_assertions::assert_impl_all;
-use testing::{
+pub(in crate::core::sync) use testing::{
     DropOnWakerRelease, assert_panics, assert_panics_with, clone_action_waker,
     clone_action_waker_panicking_on_clone_release, drop_waker, wake_action_waker, with_watchdog,
 };
 
-use super::test_hooks::{
+pub(in crate::core::sync) use super::super::event::test_hooks::{
     HOOK_PARTICIPANT, HOOK_POLL_AWAITING_PRE_CAS, HOOK_POLL_BOUND_PRE_CAS,
     HOOK_SERIALIZATION_MUTEX, HOOK_SET_IN_SIGNALING, HookFn,
 };
-use super::*;
-use crate::IntoValueError;
+pub(in crate::core::sync) use super::super::*;
+pub(in crate::core::sync) use crate::{BoxedReceiver, Disconnected, EmbeddedEvent, IntoValueError};
 
 assert_impl_all!(Event<u32>: Send, Sync, UnwindSafe, RefUnwindSafe);
 
@@ -30,9 +33,3 @@ assert_impl_all!(Event<u32>: Send, Sync, UnwindSafe, RefUnwindSafe);
 // object payload is also a regression test for #142.
 assert_impl_all!(Event<Box<dyn Send>>: Send, Sync, UnwindSafe, RefUnwindSafe);
 assert_impl_all!(Event<&'static mut u32>: Send, Sync, UnwindSafe, RefUnwindSafe);
-
-#[cfg(debug_assertions)]
-mod diagnostics;
-mod lifecycle;
-mod races;
-mod reentrancy;

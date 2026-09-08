@@ -56,6 +56,7 @@ pub(crate) use fake::MemoryConfigWriter;
 #[cfg(test)]
 mod fake {
     use std::collections::HashMap;
+    use std::future::{Future, ready};
     use std::path::{Path, PathBuf};
     use std::sync::Mutex;
 
@@ -97,16 +98,19 @@ mod fake {
     }
 
     impl ConfigWriter for MemoryConfigWriter {
-        async fn write_new(&self, path: &Path, contents: &str) -> io::Result<bool> {
-            if let Some(kind) = self.failure {
-                return Err(io::Error::from(kind));
-            }
-            let mut files = self.files.lock().unwrap();
-            if files.contains_key(path) {
-                return Ok(false);
-            }
-            files.insert(path.to_path_buf(), contents.to_owned());
-            Ok(true)
+        fn write_new(&self, path: &Path, contents: &str) -> impl Future<Output = io::Result<bool>> {
+            let result = if let Some(kind) = self.failure {
+                Err(io::Error::from(kind))
+            } else {
+                let mut files = self.files.lock().unwrap();
+                if files.contains_key(path) {
+                    Ok(false)
+                } else {
+                    files.insert(path.to_path_buf(), contents.to_owned());
+                    Ok(true)
+                }
+            };
+            ready(result)
         }
     }
 }
