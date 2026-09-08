@@ -75,7 +75,8 @@ function Invoke-ScheduledInbox {
     param(
         [string] $PolicyPath = (Join-Path $PSScriptRoot 'policy.json'),
         [Parameter(Mandatory)][string] $ExecutorId,
-        [DateTimeOffset] $Now = [DateTimeOffset]::UtcNow
+        [DateTimeOffset] $Now = [DateTimeOffset]::UtcNow,
+        [string] $StateRoot
     )
     $policy = Get-ScheduledPolicy -Path $PolicyPath
     $login = Invoke-ScheduledApi -Endpoint 'user'
@@ -84,7 +85,10 @@ function Invoke-ScheduledInbox {
         $repository.id -ne $policy.repository_id -or $repository.full_name -cne $policy.repository) {
         throw 'GitHub identity differs from the reviewed repository/account policy.'
     }
-    $state = Invoke-ScheduledLocalAction -StateRoot (Get-ScheduledStateRoot $policy.repository_id) `
+    if (-not $PSBoundParameters.ContainsKey('StateRoot')) {
+        $StateRoot = Get-ScheduledStateRoot $policy.repository_id
+    }
+    $state = Invoke-ScheduledLocalAction -StateRoot $StateRoot `
         -Policy $policy -ExecutorId $ExecutorId -Login $login.login -Now $Now -Action read
     $issues = Get-ScheduledApiCollection `
         -Endpoint "repos/$($policy.repository)/issues?state=open&labels=scheduled-finding&per_page=100"

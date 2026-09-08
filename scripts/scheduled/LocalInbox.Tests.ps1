@@ -112,8 +112,10 @@ Describe 'GitHub pagination and validated intake' {
     It 'validates originating run provenance while excluding PRs and exposing invalid records' {
         $record = Get-TestIncident 1
         $body = Write-ScheduledRecord -Record $record -Kind reporter
-        InModuleScope LocalInbox -Parameters @{ Body = $body } {
+        InModuleScope LocalInbox -Parameters @{ Body = $body; FixtureRoot = (Join-Path $TestDrive 'state') } {
             $script:testBody = $Body
+            $script:fixtureRoot = $FixtureRoot
+            Mock Get-ScheduledStateRoot { throw 'The fixture must supply its isolated state root.' }
             Mock Invoke-ScheduledLocalAction {
                 return @{ attempts = @{}; mode = 'observe'; executor_id = 'machine'; profile = $null }
             }
@@ -144,7 +146,8 @@ Describe 'GitHub pagination and validated intake' {
                     default { throw "Unexpected endpoint: $Endpoint" }
                 }
             }
-            $result = Invoke-ScheduledInbox -ExecutorId machine -Now '2026-09-08T12:00:00Z'
+            $result = Invoke-ScheduledInbox -ExecutorId machine -Now '2026-09-08T12:00:00Z' `
+                -StateRoot $script:fixtureRoot
             $result.rejected.Count | Should -Be 1 -Because ($result.rejected | ConvertTo-Json -Compress)
             $result.deferred.issue_number | Should -Be 1
             $result.blocked_conditions | Should -Contain hosted-staged
@@ -152,14 +155,18 @@ Describe 'GitHub pagination and validated intake' {
             Should -Invoke Invoke-ScheduledApi -Exactly 1 -ParameterFilter {
                 $Endpoint -eq 'repos/folo-rs/folo/actions/runs/17/attempts/1'
             }
+            Should -Invoke Invoke-ScheduledLocalAction -Exactly 1 -ParameterFilter {
+                $StateRoot -ceq $script:fixtureRoot
+            }
             Mock ConvertTo-ScheduledIncident { throw [InvalidOperationException]::new('Controller failure') }
-            { Invoke-ScheduledInbox -ExecutorId machine -Now '2026-09-08T12:00:00Z' } | Should -Throw
+            { Invoke-ScheduledInbox -ExecutorId machine -Now '2026-09-08T12:00:00Z' `
+                -StateRoot $script:fixtureRoot } | Should -Throw
         }
     }
     It 'fails explicitly on authentication and never records successful scan output' {
-        InModuleScope LocalInbox {
+        InModuleScope LocalInbox -Parameters @{ FixtureRoot = (Join-Path $TestDrive 'state') } {
             Mock Invoke-ScheduledApi { throw 'authentication denied' }
-            { Invoke-ScheduledInbox -ExecutorId machine } | Should -Throw
+            { Invoke-ScheduledInbox -ExecutorId machine -StateRoot $FixtureRoot } | Should -Throw
         }
     }
 }
