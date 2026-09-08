@@ -3,6 +3,7 @@ name: Scheduled reporting
 on:
   workflow_run:
     workflows: [Scheduled validation, Scheduled verification]
+    branches: [main]
     types: [completed]
 
 concurrency:

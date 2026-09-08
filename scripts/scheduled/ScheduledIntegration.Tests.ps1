@@ -114,5 +114,14 @@ Describe 'Reporter to registered repair contract' {
         $repair.explanation | Should -BeExactly $worker.explanation
         (Read-ScheduledRecord $issue.body reporter).evidence.replay.seed | Should -Be 31
         $incident.evidence.summary | Should -BeExactly $record.evidence.summary
+        $record.status = 'needs-human'
+        $issue.body = Get-ScheduledFindingBody $record
+        (Get-ScheduledRepairScope -PullRequest $pr -Issue $issue -Worker $worker -Policy $policy).managed | Should -BeTrue
+        $incident.status = 'needs-human'
+        $freshState = $state.Clone()
+        $freshState.attempts = @{}
+        $freshDecision = Get-ScheduledInboxDecision -Policy $policy -State $freshState -Incidents @($incident) -Now $now
+        $freshDecision.eligible.Count | Should -Be 0
+        $freshDecision.deferred.reason | Should -Contain reporter-disposition
     }
 }

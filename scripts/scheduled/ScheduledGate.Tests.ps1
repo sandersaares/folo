@@ -68,12 +68,12 @@ Describe 'Managed repair identification' {
             { Get-ScheduledRepairScope @fixture } | Should -Throw '*explanation*'
         }
     }
-    It 'can confirm a merged repair after an unexplained pass without readmitting an active PR' {
+    It 'preserves registered PR verification after an unexplained main pass without allowing premature closure' {
         $fixture = Get-GateFixture
         $record = Read-ScheduledRecord -Kind reporter -Text $fixture.Issue.body
         $record.status = 'needs-human'
         $fixture.Issue.body = Write-ScheduledRecord -Kind reporter -Record $record
-        { Get-ScheduledRepairScope @fixture } | Should -Throw
+        (Get-ScheduledRepairScope @fixture).managed | Should -BeTrue
         { Get-ScheduledRepairScope @fixture -Confirmation } | Should -Throw
         $fixture.PullRequest.merged = $true
         $fixture.PullRequest.state = 'closed'

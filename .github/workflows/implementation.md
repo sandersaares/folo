@@ -114,6 +114,9 @@ The worker and PR records carry the same bounded causal explanation and bind the
 executor. Main confirmation uses the merged commit rather than the original pre-squash head.
 Both full-main reporting and dedicated verification can confirm the live merged registration;
 arrival order does not strand an incident in `needs-human`.
+An unexplained pass does not disable the gate for an existing registered repair PR. Local intake
+still refuses fresh admission of that disposition; the current worker can finish its causal repair
+and present it for human acceptance.
 
 Managed release edits also pass `ScheduledVersion.psm1` on the published PR head. The worker
 records an immutable pre-versioning commit, the release baseline, semantic decisions and expanded

@@ -43,7 +43,9 @@ function Get-ScheduledRepairScope {
             throw [FormatException]::new('Managed repair incident generation mismatch.')
         }
     }
-    $allowedStatus = if ($Confirmation) { @('open', 'needs-human') } else { @('open') }
+    # An unexplained main pass cannot cancel an already registered repair. Fresh admission
+    # remains restricted by LocalInbox; this gate requires the existing exact-head claim.
+    $allowedStatus = @('open', 'needs-human')
     if ($Confirmation -and (-not $PullRequest.ContainsKey('merged') -or
         -not $PullRequest.merged -or $PullRequest.state -cne 'closed')) {
         throw [FormatException]::new('Confirmation requires an actually merged repair.')
