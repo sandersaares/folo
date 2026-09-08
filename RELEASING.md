@@ -3,6 +3,10 @@
 Publishing to crates.io and shipping `cargo-binstall` prebuilt binaries is automated
 by `.github/workflows/release.yml` on every push to `main`. Pull requests that change
 released content carry the version increments; merge publishes those versions.
+The `increment-versions` skill decides and applies the plan without a separate
+approval request. Human review of the complete PR, including its current
+**Version/release plan** section, is the approval step; see
+[docs/git-workflow.md](docs/git-workflow.md#versionrelease-plan-section).
 See [docs/release-versioning.md](docs/release-versioning.md) for how versions are
 decided and [docs/release-automation.md](docs/release-automation.md) for the publish
 design.
@@ -29,11 +33,13 @@ so a brand-new crate's first version must be published manually:
    Subsequent releases then go through `release.yml` automatically.
 
 The `increment-versions` skill runs `just check-never-published` as an early,
-workspace-wide advisory. Before applying an approved plan,
+workspace-wide advisory. Before applying an expanded plan,
 `just check-increment-published` fails unless every package the plan reaches has
 already reached crates.io. That gate cannot verify Trusted Publisher
 configuration or the release-workflow follow-up, so complete those remaining
 steps explicitly before retrying the increment.
+The skill only reports this maintainer handoff; it does not perform a manual
+first publication or an emergency publish.
 
 ## Emergency manual publish
 

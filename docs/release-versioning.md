@@ -50,10 +50,24 @@ The invariant has these consequences:
 
 The author finishes the change, then runs the `increment-versions` skill — or the
 `validate-versions` check fails and names that skill, which is enough to continue without
-having read this chapter. The skill proposes one increment *level* per version group and per
-ungrouped package. The author may raise a level above the `cargo-semver-checks` floor; they
-may not lower one. Group membership, `=`-pin rewrites and the lockfile are applied without a
-second question. Merge publishes.
+having read this chapter. The skill decides change levels from the evidence, then computes and
+applies the expanded plan without a separate human approval gate. This applies to every change
+level, not only patch increments. The author may raise a level above the `cargo-semver-checks`
+floor; they may not lower one. Group membership, dependency requirements, and the lockfile follow
+mechanically. Human review of the complete pull request is the approval step. Merge publishes.
+
+Every PR description carries a current **Version/release plan** section covering every package
+and group the expanded plan reaches, including retained pending increments and necessary
+dependent/group movements. It states previous and proposed versions, substantive change levels,
+and reasons, or explicitly states that there are no released-content or version changes.
+First-publication packages have a separate maintainer handoff rather than an increment.
+The presentation contract is in
+[`git-workflow.md`](git-workflow.md#versionrelease-plan-section).
+
+Source, release-baseline, group-membership, or decision changes require fresh assessment and an
+updated plan and PR section. Human review concerns the final current release, not an earlier
+plan. Removing the separate approval request does not relax SemVer floors, canonical expansion,
+publication checks, or the prohibition on publishing from the skill.
 
 ## The anchor and the rule
 
@@ -318,10 +332,11 @@ are dragged along, and how to run the skill. `--format github` adds workflow ann
 what `validate-versions` runs.
 
 **`expand`** resolves a proposed plan into the explicit package/version set it reaches. The skill
-presents that expanded document for approval so version-group members cannot appear only when the
-plan is applied.
+uses that expanded document for application and PR presentation so version-group members cannot
+appear only when the plan is applied. Changed evidence or group membership requires a fresh
+report, decisions, and canonical plan expansion, not a silently broadened plan.
 
-**`apply`** takes an approved plan, sets each package's version, rewrites every intra-workspace
+**`apply`** takes a plan, sets each package's version, rewrites every intra-workspace
 requirement that must follow — in particular the `=` pins — and expands group members. Manifests
 are edited structurally with `toml_edit`, preserving comments and layout. The whole edit set is
 computed and validated before anything is written, so a rejected plan or a failed rewrite changes
@@ -349,17 +364,17 @@ merge, or when the `validate-versions` check fails. The check's failure annotati
 skill and the recipe, so a failed job is a sufficient prompt.
 
 Mechanics live in `just` recipes, per the repository rule that logic worth testing must not live
-in prose; the skill file carries the judgement. The only judgement it asks for is the increment
-*level*. Everything that follows from a chosen level — group expansion, `=`-pin rewrites, the
-lockfile refresh, `just verify-lockfile` — is applied without a second question: skipping a
-group member diverges the group, skipping a pin leaves a stale `=` requirement, and skipping
-the lockfile fails `--locked` builds.
+in prose; the skill file carries the judgement. The skill decides the change *level* from the
+evidence without asking for separate approval. Everything that follows from a chosen level —
+group expansion, `=`-pin rewrites, the lockfile refresh, `just verify-lockfile` — is mandatory:
+skipping a group member diverges the group, skipping a pin leaves a stale `=` requirement, and
+skipping the lockfile fails `--locked` builds.
 
 1. **Preflight.** Run the `cargo-semver-checks` canary and the workspace-wide,
    best-effort `just check-never-published` advisory. When cargo-semver-checks fails to *run* —
    classically an installed copy too old for the toolchain's rustdoc JSON format — the result must
    never be read as "no breaking changes". `verify-semver-checks` is the canary for the skill and
-   for the CI `semver-checks` job. After approval, `check-increment-published` performs the exact
+   for the CI `semver-checks` job. Before application, `check-increment-published` performs the exact
    fail-closed publication check over the expanded plan before anything is applied.
 2. **Collect.** `just release-report <dir>` runs `cargo release-plan report` and then
    `cargo semver-checks --all-features` for the affected packages that declare a consumer
@@ -386,20 +401,24 @@ the lockfile fails `--locked` builds.
    comparison still contain it, and even when the new feature is on by default; so is removing a
    feature or the API it gated. Review the diff of `[features]` tables and of `cfg(feature = ...)`
    attributes directly and raise the level accordingly.
-4. **Present.** One table for the human, **one row per version group and per ungrouped
-   package** — not one row per crate. A version group is one decision, regardless of how many
-   members it has. Each row shows current version, proposed version, level, the floor
-   `cargo-semver-checks` reported, the members the level will apply to, and a one-line
-   justification citing the actual change.
-   Where the proposal exceeds the floor, the reason is stated explicitly — that is the entire
-   point of the exercise. Diffs stay on disk and are cited by path rather than pasted, since one
-   package's unreleased changes can run to thousands of lines.
-5. **Apply, on approval.** `just check-increment-published <expanded>`, then
+4. **Present.** Prepare the PR's **Version/release plan** section from the expanded plan,
+   **one row per version group and per ungrouped package**, naming every group member.
+   Each row shows previous version at the release anchor, proposed version, substantive
+   change level, and the reason, including necessary dependent and group movements. Retained
+   pending increments remain visible as part of the whole PR. Explain levels above the SemVer
+   floor. Keep supporting report/diff/log citations in the working evidence; the PR section is
+   a release explanation, not a local artifact inventory or a validation log.
+   State explicitly when there are no released-content or version changes, and identify
+   first-publication handoffs separately. No approval pause follows presentation.
+5. **Apply and verify.** Confirm the evidence and release baseline are still current, then
+   `just check-increment-published <expanded>`, then
    `just apply-release-plan <expanded>`, then `just verify-lockfile`, then re-run `check` and the
-   scoped `cargo semver-checks` to confirm the result, and write the summary into the pull request
-   description. Further changes may follow the increment without invalidating it. The plan is not
-   committed: the check verifies manifest state, not intent, so a plan file in the repository
-   would be inert churn.
+   scoped `cargo semver-checks` to confirm the result, and reconcile the PR section with that
+   final evidence. Further source, baseline, group, or decision changes require reassessment,
+   regeneration of stale plans, and a refreshed section before human review. Sufficient pending
+   increments are retained rather than raised again merely because the skill reruns.
+   The plan is not committed: the check verifies manifest state, not intent, so a plan file in
+   the repository would be inert churn. Human review and merge approve the complete PR.
 
 ## The GitHub check
 
@@ -511,14 +530,15 @@ job as well.
 ```mermaid
 flowchart TD
     A["Author finishes changes"] --> B["increment-versions: report + semver-checks"]
-    B --> C["Proposed plan with per-group justification"]
-    C --> D{"Human approves?"}
-    D -- adjust --> C
-    D -- yes --> E["apply: versions, pins, groups, lockfile"]
-    E --> F["validate-versions + scoped semver-checks"]
-    F --> G["required-checks fan-in"]
-    G --> H["Merge queue rebases onto main"]
-    H --> I["release.yml publishes every unpublished version"]
+    B --> C["Expanded plan with complete release explanation"]
+    C --> D["Publication gate + apply: versions, pins, groups, lockfile"]
+    D --> E["validate-versions + scoped semver-checks"]
+    E --> F["Current PR version/release-plan section"]
+    F --> G{"Human reviews complete PR"}
+    G -- revise --> B
+    G -- approve --> H["required-checks + merge queue"]
+    H -- stale plan --> B
+    H -- merge --> I["release.yml publishes every unpublished version"]
 ```
 
 ## Relationship to release-plz

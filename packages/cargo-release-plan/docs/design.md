@@ -183,7 +183,7 @@ it names is a starting point rather than the full set it moves.
 
 An **expanded plan** is what `expand` writes. It names every package whose
 version the plan sets and records the version each will carry. Both halves
-matter: the first makes the reviewed set complete with respect to the release
+matter: the first makes the documented set complete with respect to the release
 decision, and the second makes it stable, since an increment level would be
 resolved again against whatever the manifests say when the document is applied.
 Resolving an expanded plan must therefore reproduce it exactly.
@@ -195,9 +195,9 @@ they are not making. Their safety is a separate rule: a dependent that would
 keep an already-published version while its manifest is rewritten needs a
 change level of its own, and `check` rejects the result if one is missed.
 
-Approval is not a third stage. The expanded plan a caller approves is applied
-unchanged, so the reviewed document and the applied document are the same bytes,
-rather than one being a rendering of the other.
+The expanded plan is applied unchanged, so the documented package/version set
+and the applied document are the same artifact. Review and approval policy
+belong to the caller, not the tool.
 
 ### Preview a decision with `expand`
 
@@ -212,14 +212,14 @@ the plan gives them no version.
 
 An expanded plan records its stage, which binds it to the package set it names:
 applying it after a version group gained a member fails rather than quietly
-editing a package that was never reviewed. Recovering from that means expanding
-the proposal again and reviewing the wider set. A proposed plan keeps the
-opposite behavior, since naming a group and letting resolution reach its members
-is how such a plan is written.
+editing an unlisted package. Recovering from that means refreshing the planning
+inputs and expanding the proposal again to document the wider set. A proposed
+plan keeps the opposite behavior, since naming a group and letting resolution
+reach its members is how such a plan is written.
 
 ### Carry out a decision with `apply`
 
-`apply --plan <plan.json>` turns approved version choices into manifest edits,
+`apply --plan <plan.json>` turns recorded version choices into manifest edits,
 and accepts a plan of either stage. A proposed plan is created after reading the
 report: the maintainer or the `increment-versions` skill records a `patch`,
 `minor`, or `major` level (or an exact target version) for each selected package
@@ -418,9 +418,8 @@ declared member version and applies the highest chosen increment level. Entries
 that expand to the same group must all use increment levels or all use one
 matching exact version.
 
-`expand` exposes that resolution as a document so a caller can present the
-complete set of affected packages before approving a plan that omits packages
-`apply` will update.
+`expand` exposes that resolution as a document so a caller can present and apply
+the complete package/version set rather than leave group members implicit.
 
 An inconsistent group is a check failure in its own right, independent of any
 content change. A plan entry naming any member resolves it, and expansion is

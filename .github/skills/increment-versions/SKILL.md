@@ -12,9 +12,13 @@ pending release. Publishing is a separate process described in
 A **change level** describes the substance of a package's released changes:
 `breaking`, `nonbreaking`, or `patch`. This skill decides change levels; it does not choose
 version numbers, and it does not decide which packages a level reaches. The tooling maps the
-approved levels to version numbers, keeps every
+decided levels to version numbers, keeps every
 [version group](../../../packages/cargo-release-plan/README.md#plan-and-report-schema) on a
 single version, rewrites dependency requirements, and refreshes `Cargo.lock`.
+
+Decide and apply the plan without a separate human approval request, for every change level.
+Human review of the pull request as a whole is the approval step, including its version/release
+plan. This skill does not approve or merge the pull request or publish packages.
 
 This skill applies to a feature branch. Confirm the branch before Stage 1:
 
@@ -43,7 +47,7 @@ afterwards, and read a later stage's inputs from these files rather than from me
 | `diffs/{{PACKAGE}}.patch` | Stage 2 | A package's released-content diff against its anchor. |
 | `semver-checks.log` | Stage 2 | The console output of `cargo-semver-checks`. |
 | `analysis-order.json` | Stage 3 | The analysis batches. |
-| `decisions.json` | Stage 4 | The decided change levels. |
+| `decisions.json` | Stage 4 | The change levels decided from the current evidence, without a separate approval gate. |
 | `plan.json` | Stage 5 | The proposed plan: change levels mapped to increment levels. |
 | `expanded.json` | Stage 5 | The expanded plan: that proposal with every package it reaches named. |
 
@@ -58,7 +62,8 @@ Commit none of them.
 | `DIFF_PATH` | A package's `diff_path` value from `report.json`. |
 | `PACKAGE` | A package name. |
 | `CHANGE_LEVEL` | A decided change level: `breaking`, `nonbreaking`, or `patch`. |
-| `NEW_VERSION` | A package's resolved version from `expanded.json`. |
+| `PREVIOUS_VERSION` | A package's version at its release anchor, before the pull request's pending increment. |
+| `NEW_VERSION` | A package's resolved version from `expanded.json`, or its `declared_version` in `report.json` for a retained pending increment absent from the plan. |
 
 # Stage 1: Run preflight checks
 
@@ -72,7 +77,7 @@ publishable crates that still need their one-time manual first publication:
 Stop and report if either command exits non-zero. A checker that cannot execute must not be
 interpreted as an absence of a required increment. `check-never-published` is an advisory scan of
 the whole workspace: report its warnings, then continue. Stage 6 performs the exact fail-closed
-check over the packages the approved plan will edit.
+check over the packages the expanded plan will edit.
 
 # Stage 2: Collect evidence
 
@@ -112,15 +117,17 @@ Read each package's `untracked` entries before deciding its level. Untracked pat
 package directory but take no part in the released-content comparison, so a path this pull
 request intends to publish contributes no evidence until it is tracked. Track such a path and
 repeat this stage. Account for every remaining path as deliberately unreleased, so it is not
-mistaken for assessed content, and carry those paths into the Stage 5 proposal.
+mistaken for assessed content, and carry those paths into the Stage 5 explanation.
 
 Its `groups` object names each version group's `members` and whether they currently declare one
 version, in `consistent`. `just validate-versions` fails on an inconsistent group as well as on
-a package needing an increment. Stage 5 resolves both, and a proposal row lists a group's
+a package needing an increment. Stage 5 resolves both, and a plan row lists a group's
 members.
 
-The files describe the current work-tree content. Repeat this stage if that content changes
-before the decisions are presented or applied.
+The files describe the current work-tree content against the recorded release baseline. If the
+source, manifests, group membership, or release baseline changes before application, repeat this
+stage and the analysis and planning stages that follow. Do not combine fresh inputs with stale
+decisions or an old expanded plan.
 
 # Stage 3: Determine analysis order
 
@@ -191,8 +198,9 @@ Stage 5 retains an increment that is already sufficient.
 Use [determining-level.md](determining-level.md) to choose `breaking`, `nonbreaking`, `patch`,
 or no increment.
 
-Append each batch's outcome to `decisions.json` before starting the next batch, so the next
-batch reads its dependency decisions from the file. Omit a package that needs no increment.
+Rebuild `decisions.json` on each pass through this stage. Append each batch's outcome before
+starting the next batch, so the next batch reads its dependency decisions from the file.
+Omit a package that needs no increment.
 
 `decisions.json` carries its own schema revision, which is independent of the plan and report
 revision used below and does not move with it:
@@ -207,13 +215,13 @@ revision used below and does not move with it:
 }
 ```
 
-# Stage 5: Resolve version groups and present the proposal
+# Stage 5: Resolve version groups and document the plan
 
 A plan exists in two stages, and only the second is safe to present. A **proposed plan** records
 one entry per decision, so a decision about a grouped package names that package or its group and
 leaves the rest of the group implied. An **expanded plan** names every package whose version the
-plan sets, at the version each will carry. Present the expanded plan, so the caller sees the whole
-set of releases rather than one that widens during apply.
+plan sets, at the version each will carry. Document the expanded plan, so the caller and PR
+reviewer see the whole set of releases rather than one that widens during apply.
 
 Applying the plan also rewrites requirements inside the dependents of the packages it moves. Those
 dependents take no version from the plan, so they are not named here; Stage 4 gives each of them a
@@ -251,26 +259,31 @@ which stage it is:
 ```
 
 That stamp binds the document to the packages it names. Applying it after a version group gained
-a member fails rather than editing a package that was never presented, so a group membership
-change between approval and Stage 6 sends the run back to this stage rather than widening what
-was approved. Repeat this stage from `create-release-plan` if that happens.
+a member fails rather than editing an unlisted package. A group membership or other work-tree
+change sends the run back to Stage 2 for fresh evidence and decisions, then back through
+`create-release-plan` and `expand-release-plan`. Never silently broaden the expanded plan.
 
-Approval does not produce a third document: the expanded plan the caller approves is the one
-Stage 6 applies, unchanged.
+There is no approval document or pause: Stage 6 applies this expanded plan unchanged.
 
-Present one row per version group and one per ungrouped package, limited to what the plan moves: a
-group qualifies when `expanded.json` names at least one of its members, and an ungrouped package
-qualifies when `expanded.json` names it. Read the members from `report.json` and the versions from
-`expanded.json`. Every other analyzed package belongs in the no-increment summary below rather
-than in this table.
+Prepare a **Version/release plan** section for the pull request description. Its release set is
+every package named by `expanded.json` plus every `pending-release` package in `report.json`:
+the tooling omits sufficient existing increments from the plan, but they still release on merge.
+Present one row per version group reached by that set, naming every member, and one per ungrouped
+package in the set. Read members and anchor versions from `report.json`; read proposed versions
+from `expanded.json` where present, otherwise from the report's `declared_version`. The previous
+version is the anchor's version, not a version already incremented on this branch. Every other
+analyzed package belongs in the no-increment summary below rather than in this table.
 
-| Packages | Change level | New version |
-|----------|--------------|-------------|
-| `{{PACKAGE}}` | `{{CHANGE_LEVEL}}` | `{{NEW_VERSION}}` |
+| Packages / group members | Previous version(s) | Proposed version | Change level | Reason |
+|--------------------------|---------------------|------------------|--------------|--------|
+| `{{PACKAGE}}` | `{{PREVIOUS_VERSION}}` | `{{NEW_VERSION}}` | `{{CHANGE_LEVEL}}` | Substantive consumer-facing or released-content reason. |
 
 A group's row lists every member and the level that governs the group, which is the highest level
-decided for any of its members. A group present only because it was realigned has no change
-level, so write `none` in that column and give the reason in the row's explanation. Read the
+required by its members, including public-dependency propagation. If members have different
+previous versions, identify each member's version rather than presenting one as shared.
+A group present only because it was realigned has no change level, so write `none` in that column
+and give the reason in the row's explanation. Likewise, distinguish a retained version-only
+increment from a substantive released-content change rather than inventing a change level. Read the
 versions from `expanded.json` rather than assuming which form realignment took: a group usually
 moves onto the highest version one of its members already declared, in which case name the
 members that move, because each receives a new version and becomes pending release while the
@@ -278,10 +291,16 @@ member already there keeps the version it has. A group whose members all move to
 of them declared was patch-incremented instead, because a member that would have kept its version
 pins one the alignment moves; say so, since every member is then published.
 
-Follow each row with its supporting explanation. The explanation may span multiple paragraphs and
-must cite the `report.json` entry, diff path, or `semver-checks.log` summary it rests on. Name any
-member that is moving only because it shares a group. State that the remaining analyzed packages
-need no increment, and report any `untracked` path left deliberately unreleased.
+Keep supporting evidence with the working explanation, citing the `report.json` entry, diff path,
+or `semver-checks.log` summary it rests on. In the PR section, explain the substantive reasons,
+including levels above the SemVer floor, dependent requirement or public-API movements, and members
+moving only because they share a group. Do not copy local artifact paths, a changed-file inventory,
+or a validation log into the PR. State that the remaining analyzed packages need no increment,
+and report any `untracked` path left deliberately unreleased to the caller.
+
+If the final evidence shows no released-content or version changes, say so explicitly in the PR
+section instead of omitting it. An empty plan alone is not sufficient evidence for that statement:
+account for existing pending increments and first-publication packages as well.
 
 Report separately, and outside that table, every `report.json` entry that has no `anchor`. Such a
 package has never been released, so it has no version to increment. Hand it off for a first
@@ -291,23 +310,39 @@ from this run: bootstrap publication happens from a clean `main` checkout after 
 merge, in dependency order, and configures Trusted Publishing. Name every such package in the
 handoff.
 
-Ask the caller to approve or adjust the change levels. An adjustment is still bound by the
-floors in Stage 4: report the conflict rather than recording a level below one. To record an
-adjustment, edit `decisions.json` and repeat this stage from `create-release-plan`. Never edit
-`plan.json` or `expanded.json` directly; a hand-edited expansion can give one group's members
-different versions, which the tool rejects. Do not continue until the caller approves.
+Include any first-publication handoff in the PR section separately from increments, identifying
+the initial declared version and the absence of a released predecessor.
 
-# Stage 6: Apply approved changes
+Proceed without asking the caller to approve the levels. If further evidence or review feedback
+changes a decision, return to Stage 4 to reassess it and its dependents, respecting every SemVer
+floor, then regenerate both plans and refresh the PR section. Report a requested level below a
+floor as a conflict rather than recording it. Never edit `plan.json` or `expanded.json` directly;
+a hand-edited expansion can give one group's members different versions, which the tool rejects.
+
+# Stage 6: Apply the expanded plan
+
+Before applying, confirm the working evidence and decisions still describe the current tree and
+refresh the release-branch tip:
+
+> git fetch origin main
+>
+> git rev-parse FETCH_HEAD
+
+Stop and report if either command exits non-zero. Compare the returned commit with
+`{{WORK_DIR}}/base.txt`. If it differs, return to Stage 2 rather than applying a plan based on a
+stale release baseline. For changed source or group membership, also return to Stage 2; for
+changed decisions alone, repeat Stages 4 and 5. Regenerate the plan and its PR section before
+continuing.
 
 `cargo-release-plan apply` raises an existing version and cannot create a crate on crates.io, so
-confirm that every package the approved expanded plan names is already published:
+confirm that every package the expanded plan names is already published:
 
 > just check-increment-published "{{WORK_DIR}}/expanded.json"
 
 Stop and report without applying anything if the command exits non-zero, following the
 first-publication handoff above rather than publishing anything from this run.
 
-Apply the approved expanded plan, which is the document the caller saw:
+Apply the expanded plan used to prepare the PR section, without a separate approval gate:
 
 > just apply-release-plan "{{WORK_DIR}}/expanded.json"
 
@@ -359,5 +394,15 @@ leaving the old directory in place would regenerate a plan from pre-apply eviden
 the same packages a second time. The copied `base.txt` keeps the adopted directory on the
 original baseline. Rerun Stage 3 against the adopted directory's `report.json` first.
 
-Commit the resulting `Cargo.toml`, dependency requirement, and `Cargo.lock` edits, and
-summarize the approved package change levels in the pull request description.
+Commit the resulting `Cargo.toml`, dependency requirement, and `Cargo.lock` edits, and publish
+the **Version/release plan** section prepared in Stage 5 in the pull request description.
+Keep `[Copilot speaking]` first in an agent-authored PR body, before this or any other section.
+Follow the presentation contract in
+[`docs/git-workflow.md`](../../../docs/git-workflow.md#versionrelease-plan-section).
+
+Reconcile the section with the final evidence, covering every package/group reached by the
+expanded plan and any retained pending release. If verification required another pass, use the
+regenerated plan, not a history of intermediate increments. Later source, base, group, or decision
+changes require fresh assessment and an updated section before the PR is ready for human review.
+Human review and merge of the complete PR remain the final approval; completing this skill
+does not authorize either.

@@ -28,6 +28,14 @@ directly:
   be pointed out to you in instructions.
 * **Do not execute `just gh-release`** — it performs real crates.io publishes and is
   a CI-only entry point (driven by the release workflow); never run it manually.
+* **Make version decisions reviewable in the PR.** Run `increment-versions` without a
+  separate approval gate; human review of the complete PR is the approval step.
+  Keep a **Version/release plan** section current with every expanded-plan package/group,
+  previous and proposed versions, change levels, and substantive reasons, including
+  dependent/group movements; explicitly state when there are no released-content or
+  version changes. Keep `[Copilot speaking]` first in agent-authored PR bodies.
+  Follow [docs/git-workflow.md](docs/git-workflow.md#versionrelease-plan-section) and
+  [docs/release-versioning.md](docs/release-versioning.md#on-a-pull-request).
 * **Check for a package-local `AGENTS.md`** before doing nontrivial work in a
   specific crate (e.g. `packages/events_once/AGENTS.md`). Package-local
   guidance refines and sometimes overrides the workspace-wide rules.
@@ -298,10 +306,18 @@ dev-dependencies for tests or benches that need internal surface.
 
 ### [docs/git-workflow.md](docs/git-workflow.md)
 
-Conventions for PRs: using `--body-file` with `gh pr create`, and replying to
-and resolving review comment threads.
+Conventions for PRs: version/release-plan presentation, using `--body-file` with
+`gh pr create`, and replying to and resolving review comment threads.
 
 **Open this when**: creating a pull request; addressing review comments.
+
+### [docs/scheduled-validation.md](docs/scheduled-validation.md)
+
+Scheduled checks and personal App remediation, including setup, recovery, and
+the ready-PR lifecycle.
+
+**Open this when**: working on scheduled checks, personal App remediation,
+ready-PR lifecycle, or setup and recovery for that workflow.
 
 ### [docs/release-versioning.md](docs/release-versioning.md)
 
