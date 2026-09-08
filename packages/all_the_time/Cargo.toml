@@ -2,7 +2,7 @@
 name = "all_the_time"
 description = "Processor time tracking utilities for benchmarks and performance analysis"
 publish = true
-version = "0.6.5"
+version = "0.6.6"
 
 authors.workspace = true
 edition.workspace = true

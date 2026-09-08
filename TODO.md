@@ -18,3 +18,9 @@ pre-check — needs one listing per engine instead of one listing overall.
 
 Reordering rewrites every stored key, so it is not worth a storage-schema break
 on its own. Do it as part of the next change that breaks the schema anyway.
+
+## Enable newer Clippy module-root and bit-width lints
+
+When the pinned Rust toolchain provides `clippy::definition_in_module_root` and
+`clippy::manual_bit_width`, enable both as warnings in the root `Cargo.toml` and
+adjust every reported violation. Rust 1.98.1 does not recognize either lint.
