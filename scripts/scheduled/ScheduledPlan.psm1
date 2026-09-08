@@ -1,0 +1,183 @@
+#requires -Version 7
+
+# Coverage is a declared manifest, not the absence of observed errors.
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+$PSNativeCommandUseErrorActionPreference = $true
+Import-Module (Join-Path $PSScriptRoot 'ScheduledContracts.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot '..\build\Miri.psm1') -Force
+
+function Get-ScheduledCheckManifest {
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    param(
+        [Parameter(Mandatory)][string] $SourceSha,
+        [Parameter(Mandatory)][string] $ControllerSha,
+        [Parameter(Mandatory)][string] $ContractDigest,
+        [ValidateSet('full', 'repair', 'confirmation')][string] $Scope = 'full',
+        [string[]] $Packages = @(),
+        [string[]] $CheckIds = @()
+    )
+
+    Assert-ScheduledSha $SourceSha
+    Assert-ScheduledSha $ControllerSha
+    $checks = @()
+    foreach ($platform in @('ubuntu-latest', 'windows-latest', 'ubuntu-24.04-arm', 'windows-11-arm')) {
+        $checks += @{
+            id = "miri-$platform"; kind = 'miri'; platform = $platform; packages = $Packages
+            shard = ''; seed_range = ''; flags = @(); test_filter = ''
+        }
+    }
+    foreach ($platform in @('ubuntu-latest', 'windows-latest')) {
+        # Preserve the existing eight-way mutation split on each supported mutation platform.
+        foreach ($index in 1..8) {
+            $checks += @{
+                id = "mutants-$platform-$index"; kind = 'mutants'; platform = $platform
+                packages = $Packages; shard = "$index/8"; seed_range = ''; flags = @(); test_filter = ''
+            }
+        }
+        $checks += @{
+            id = "careful-$platform"; kind = 'careful'; platform = $platform
+            packages = $Packages; shard = ''; seed_range = ''; flags = @(); test_filter = ''
+        }
+    }
+    foreach ($family in @(
+            @{ package = 'events_once'; shards = 4 },
+            @{ package = 'events'; shards = 2 },
+            @{ package = 'awaiter_set'; shards = 2 },
+            @{ package = 'nm_impl'; shards = 2 })) {
+        if ($Packages.Count -gt 0 -and $family.package -cnotin $Packages) { continue }
+        foreach ($index in 1..$family.shards) {
+            $shard = "$index/$($family.shards)"
+            $checks += @{
+                id = "miri-many-$($family.package)-$index"; kind = 'miri-many'
+                platform = 'ubuntu-latest'; packages = @($family.package); shard = $shard
+                seed_range = Get-MiriSeedRange -Spec $shard; flags = @(); test_filter = ''
+            }
+        }
+    }
+    if ($CheckIds.Count -gt 0) {
+        if ($Scope -eq 'full') { throw 'A partial selection cannot claim full coverage.' }
+        foreach ($id in $CheckIds) {
+            if ($id -cnotin @($checks.id)) { throw "Unknown scheduled check: $id" }
+        }
+        $checks = @($checks | Where-Object { $_.id -cin $CheckIds })
+    }
+    if ($Scope -eq 'full' -and $Packages.Count -gt 0) { throw 'Full coverage requires the workspace.' }
+    return @{
+        schema_version = 1; repository = 'folo-rs/folo'; repository_id = 850321188
+        source_sha = $SourceSha; controller_sha = $ControllerSha
+        check_contract_digest = $ContractDigest; scope = $Scope; checks = $checks
+    }
+}
+
+function Get-ScheduledContractDigest {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Mandatory)][string] $Root)
+
+    # Hash execution, planning, policy, pins and Cargo scope. Local ownership/heartbeat changes do
+    # not affect check compatibility; source SHA separately binds every tested byte.
+    $paths = @('constants.env', 'rust-toolchain.toml', 'Cargo.toml',
+        '.github/workflows/deep-checks.yml', '.github/actions/setup-environment/action.yml',
+        'scripts/scheduled/ScheduledContracts.psm1', 'scripts/scheduled/ScheduledPlan.psm1',
+        'scripts/scheduled/ScheduledExecution.psm1', 'scripts/build/Mutants.psm1',
+        'scripts/build/Miri.psm1', 'scripts/build/Sharding.psm1',
+        'justfiles/just_quality.just', 'justfiles/just_quality_mutants.just', 'justfiles/just_testing.just')
+    $files = @{}
+    foreach ($path in $paths) {
+        $files[$path] = (Get-FileHash -LiteralPath (Join-Path $Root $path) -Algorithm SHA256).Hash
+    }
+    $policy = Get-ScheduledPolicy -Path (Join-Path $Root 'scripts/scheduled/policy.json')
+    return Get-ScheduledDigest @{ files = $files; coverage = $policy.coverage; repair = $policy.repair }
+}
+
+function Test-ScheduledManifest {
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    param(
+        [Parameter(Mandatory)][hashtable] $Manifest,
+        [Parameter(Mandatory)][AllowEmptyCollection()][hashtable[]] $Results
+    )
+
+    $problems = [Collections.Generic.List[string]]::new()
+    if ($Manifest.schema_version -ne 1 -or $Manifest.checks.Count -eq 0) {
+        $problems.Add('Missing or unsupported expected manifest.')
+    }
+    $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($check in $Manifest.checks) {
+        if (-not $seen.Add($check.id)) { $problems.Add("Duplicate expected check: $($check.id)") }
+        $matches = @($Results | Where-Object { $_.check_id -ceq $check.id })
+        if ($matches.Count -ne 1) {
+            $problems.Add("Expected one result: $($check.id)")
+            continue
+        }
+        $result = $matches[0]
+        foreach ($key in @('source_sha', 'controller_sha', 'check_contract_digest')) {
+            if ($result[$key] -cne $Manifest[$key]) { $problems.Add("$($check.id): mismatched $key") }
+        }
+        if ($result.schema_version -ne 1 -or
+            (Get-ScheduledDigest $result.actual_scope) -cne (Get-ScheduledDigest $check)) {
+            $problems.Add("$($check.id): mismatched execution scope")
+        }
+        if ($result.outcome -cnotin @('passed', 'findings', 'execution-error', 'blocked', 'incomplete', 'not-applicable')) {
+            $problems.Add("$($check.id): unknown outcome")
+        }
+        if ($result.outcome -cin @('blocked', 'incomplete', 'execution-error', 'not-applicable')) {
+            # The catalog has no optional legs. An exclusion must be in the reviewed catalog,
+            # never a candidate's justification for missing evidence.
+            $problems.Add("$($check.id): $($result.outcome)")
+        }
+    }
+    foreach ($result in $Results) {
+        if (-not $seen.Contains($result.check_id)) { $problems.Add("Unexpected result: $($result.check_id)") }
+    }
+    return @{
+        complete = $problems.Count -eq 0
+        successful = $problems.Count -eq 0 -and @($Results | Where-Object { $_.outcome -cne 'passed' }).Count -eq 0
+        problems = @($problems)
+    }
+}
+
+function Get-ScheduledRunDecision {
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    param(
+        [Parameter(Mandatory)][hashtable] $Manifest,
+        [AllowNull()][hashtable] $Coverage,
+        [Parameter(Mandatory)][datetimeoffset] $Now,
+        [int] $MaxAgeDays = 7,
+        [switch] $Force
+    )
+
+    $reason = 'no-compatible-complete-success'
+    if ($Force) { return @{ run = $true; reason = 'forced'; receipt = $null } }
+    if ($null -ne $Coverage -and $Coverage.schema_version -eq 1 -and
+        $Coverage.ContainsKey('receipt') -and $null -ne $Coverage.receipt) {
+        $receipt = $Coverage.receipt
+        $compatible = $receipt.source_sha -ceq $Manifest.source_sha -and
+            $receipt.check_contract_digest -ceq $Manifest.check_contract_digest -and
+            $receipt.scope -ceq 'full' -and $receipt.complete -eq $true -and $receipt.successful -eq $true
+        if ($compatible) {
+            $validManifest = (Get-ScheduledDigest $receipt.manifest.checks) -ceq
+                (Get-ScheduledDigest $Manifest.checks)
+            $newerInvalidation = $null -ne $Coverage.invalidation -and
+                $Coverage.invalidation.source_sha -ceq $Manifest.source_sha -and
+                $Coverage.invalidation.check_contract_digest -ceq $Manifest.check_contract_digest -and
+                ($Coverage.invalidation.run_number -gt $receipt.run_number -or
+                    ($Coverage.invalidation.run_number -eq $receipt.run_number -and
+                        $Coverage.invalidation.run_attempt -ge $receipt.run_attempt))
+            $completed = [datetimeoffset]::Parse($receipt.completed_at)
+            if ($validManifest -and -not $newerInvalidation -and $completed -le $Now -and
+                ($Now - $completed).TotalDays -lt $MaxAgeDays -and
+                $receipt.run_id -gt 0 -and $receipt.run_attempt -gt 0) {
+                return @{ run = $false; reason = 'not-run-unchanged'; receipt = $receipt }
+            }
+            $reason = 'expired-or-invalidated-coverage'
+        }
+    }
+    return @{ run = $true; reason = $reason; receipt = $null }
+}
+
+Export-ModuleMember -Function Get-ScheduledCheckManifest, Get-ScheduledContractDigest,
+Test-ScheduledManifest, Get-ScheduledRunDecision

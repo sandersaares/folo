@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "repository": "folo-rs/folo",
+  "repository_id": 850321188,
+  "reporter_login": "github-actions[bot]",
+  "worker_login": "sandersaares",
+  "managed_branch_prefix": "scheduled-repair/",
+  "rollout": {
+    "phase": "staged",
+    "hosted_execution_enabled": false,
+    "reporting_enabled": false,
+    "cutover": false,
+    "prerequisites": {
+      "execution_canary": false,
+      "reporting_canary": false,
+      "native_app_canary": false,
+      "benchmark_exclusion": false,
+      "azure_policy": false
+    }
+  },
+  "coverage": {
+    "max_age_days": 7,
+    "retry_cooldown_hours": 3,
+    "artifact_retention_days": 30,
+    "max_artifact_bytes": 104857600
+  },
+  "repair": {
+    "allowed_packages": [],
+    "allowed_checks": ["mutants", "miri", "miri-many", "careful"],
+    "azure_integration": "exclude",
+    "require_explained_nondeterminism": true
+  },
+  "local": {
+    "cadence_cron": "17 */3 * * *",
+    "max_active_workers": 1,
+    "max_starts_per_day": 2,
+    "max_attempts_per_incident": 2,
+    "max_continuations_per_day": 4,
+    "coordinator_lease_minutes": 30,
+    "attempt_lease_minutes": 240,
+    "max_continuations_per_attempt": 12,
+    "expected_login": "sandersaares",
+    "expected_poll_gap_minutes": 420,
+    "automation_name": "Folo scheduled finding intake",
+    "automation_marker": "folo-scheduled-remediation:v1",
+    "allowed_packages": [],
+    "allowed_checks": [],
+    "mode": "observe",
+    "enrolled_machine_id": null
+  }
+}
