@@ -51,12 +51,23 @@ via `package="foo bar"`. It also smoke-runs the selected packages' Criterion
 targets through `just test-benches-criterion`; see Standard commands for the
 distinction between local and combined CI benchmark smoke passes.
 
-`just validate-local` includes package-scoped **mutation testing** as its final
-step. Uncaught mutations are a very common cause of CI failures, so we run them
-before pushing rather than discovering them in CI. Mutation testing is by far the
-slowest step, so it runs last (after the cheaper checks have had a chance to fail
-fast); scope it with `package="foo bar"` to keep it tractable. To run just the
-mutation step on its own, use `just package="foo bar" mutants`.
+`just validate-local` retains ordinary Miri and package-scoped **mutation testing**
+until the reviewed scheduled-validation policy enables cutover. The final mutation
+step runs after cheaper checks; scope it with `package="foo bar"` to keep it
+tractable. At approved cutover, routine local validation omits those deep checks
+and GitHub scheduled evidence owns their recurring enforcement.
+
+Use `just package="foo bar" validate-deep` to explicitly run Miri, mutation testing,
+many-seed Miri and careful checking on the current platform. This command remains
+available independently of cutover. To run just mutation testing, use
+`just package="foo bar" mutants`. Mutation timeouts and missed mutations remain
+anomalies; changing enforcement cadence does not relax test-quality requirements.
+
+See [scheduled validation and local remediation](scheduled-validation.md) for the
+hosted/local responsibility split, exact-head repair gates, reproducible Local App
+setup, admission limits and recovery. The local coordinator needs only the existing
+PowerShell/GitHub tooling on empty scans; prepare Rust/WSL tooling in repair sessions
+when applicable rather than on every polling-session creation.
 
 We operate under a **zero warnings allowed** requirement - fix all warnings that
 validation generates.
