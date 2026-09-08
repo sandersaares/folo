@@ -26,6 +26,10 @@ workflow or an empty defect list. Compatible full successes can be reused for un
 within the reviewed maximum age. A skip preserves the age of that success; a newer failed or
 incomplete attempt invalidates it. Setup failures are execution incidents, not a defect in each
 package that setup prevented from running.
+An empty mutation shard can establish coverage only through successful exact-scope discovery and
+an unmutated baseline. Missing output and a zero-match requested replay are not empty-shard proof.
+Reproductions preserve the observed invocation scope; an unattributed Miri failure must not be
+presented as a specific failing test or seed inferred from interleaved output.
 
 Managed repair identity joins the finding generation, registered executor/session/attempt, reserved
 branch, PR and exact head. A personal account's ordinary PR remains ordinary. Managed candidates

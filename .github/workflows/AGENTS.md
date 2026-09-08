@@ -70,3 +70,5 @@ high-level design in `design.md` and per-job mechanics in inline YAML comments.
   hosted execution/reporting are staged; rollback must restore a working enforcement path.
 - Privileged scheduled reporting must check out the default-branch controller, not a triggering
   candidate. Treat downloaded evidence as data and preserve reporter/worker record ownership.
+- Scheduled mutation execution and raw reporting require Python 3.11+ for the standard-library
+  TOML decoder. Include the decoder and `.cargo/mutants.toml` in the checker contract digest.

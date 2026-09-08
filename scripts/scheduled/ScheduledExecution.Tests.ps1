@@ -91,6 +91,47 @@ BeforeAll {
         return $path
     }
 
+    function New-EmptyEvidence {
+        [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+            Justification = 'Writes isolated baseline evidence fixtures removed by AfterAll.')]
+        [CmdletBinding()]
+        param($Check)
+
+        $path = New-Evidence $Check 0
+        Remove-Item -LiteralPath (Join-Path $path 'mutants.out\outcomes.json')
+        Copy-Item -LiteralPath (Join-Path $script:fixtures 'empty-mutants.json') `
+            -Destination (Join-Path $path 'mutants.out\mutants.json')
+        Copy-Item -LiteralPath (Join-Path $script:fixtures 'empty-mutants.json') -Destination (Join-Path $path 'discovery.stdout')
+        Set-Content -LiteralPath (Join-Path $path 'discovery.stderr') -Value ''
+        Set-Content -LiteralPath (Join-Path $path 'mutants-version.stdout') -Value 'cargo-mutants 27.1.0'
+        Set-Content -LiteralPath (Join-Path $path 'mutants-version.stderr') -Value ''
+        Copy-Item -LiteralPath (Join-Path $script:root '.cargo\mutants.toml') -Destination (Join-Path $path 'mutation-config.toml')
+        $pin = Get-ScheduledToolchain -Kind mutants
+        $execution = Get-Content -LiteralPath (Join-Path $path 'execution.json') -Raw | ConvertFrom-Json -AsHashtable
+        $discovery = Get-ScheduledCommand $Check $script:root $path $pin -List
+        $execution.commands += @{ name = 'discovery'; command = $discovery; exit_code = 0 }
+        $execution.commands += @{ name = 'mutants-version'; exit_code = 0
+            command = @{ file = 'cargo'; arguments = @("+$pin", 'mutants', '--version'); environment = $discovery.environment } }
+        $configuration = & (Get-Module ScheduledExecution) {
+            param($Text)
+            Get-ScheduledMutationConfig -Text $Text
+        } (Get-Content -LiteralPath (Join-Path $path 'mutation-config.toml') -Raw)
+        foreach ($phase in @('Build', 'Test')) {
+            $command = & (Get-Module ScheduledExecution) {
+                param($Check, $Command, $Configuration, $Phase)
+                Get-ScheduledEmptyBaselineCommand $Check $Command $Configuration $Phase
+            } $Check $execution.commands[0].command $configuration $phase
+            $name = "baseline-$($phase.ToLowerInvariant())"
+            $execution.commands += @{ name = $name; command = $command; exit_code = 0; timed_out = $false }
+            Set-Content -LiteralPath (Join-Path $path "$name.stdout") -Value ''
+            Set-Content -LiteralPath (Join-Path $path "$name.stderr") -Value ''
+        }
+        Copy-Item -LiteralPath (Join-Path $script:fixtures 'baseline-build.stderr') -Destination (Join-Path $path 'baseline-build.stderr')
+        Copy-Item -LiteralPath (Join-Path $script:fixtures 'baseline-test.stdout') -Destination (Join-Path $path 'baseline-test.stdout')
+        Write-Json $execution (Join-Path $path 'execution.json')
+        return $path
+    }
+
     function New-TargetEvidence {
         [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
             Justification = 'Writes only test-owned target evidence fixtures removed by AfterAll.')]
@@ -491,8 +532,151 @@ Describe 'Pinned cargo-mutants output classification' {
     }
 }
 
+Describe 'Verified empty mutation selections' {
+    It 'passes an empty ordinary shard only with successful discovery and real baseline evidence' {
+        $check = New-Check
+        $check.shard = '8/8'
+        $path = New-EmptyEvidence $check
+        $result = Get-ScheduledCheckResult $check $path $script:context
+        $result.outcome | Should -Be 'passed'
+        $result.baseline | Should -Be 'passed'
+        $result.findings.Count | Should -Be 0
+        Test-Path -LiteralPath (Join-Path $path 'mutants.out\outcomes.json') | Should -BeFalse
+    }
+
+    It 'rejects incomplete or inconsistent empty-selection proof' -ForEach @(
+        @{ Change = 'missing-baseline' }, @{ Change = 'missing-build-output' }, @{ Change = 'missing-test-output' },
+        @{ Change = 'missing-discovery' }, @{ Change = 'nonempty-discovery' }, @{ Change = 'failed-discovery' },
+        @{ Change = 'wrong-shard' }, @{ Change = 'wrong-pin' }, @{ Change = 'wrong-package' },
+        @{ Change = 'changed-config' }, @{ Change = 'skipped-tests' }, @{ Change = 'wrong-tool-version' },
+        @{ Change = 'wrong-timeout' }, @{ Change = 'baseline-traversal' }, @{ Change = 'nonzero-mutation-exit' },
+        @{ Change = 'failed-raw-tests' }, @{ Change = 'raw-build-error' }, @{ Change = 'unfinished-tests' }
+    ) {
+        $check = New-Check
+        $check.shard = '8/8'
+        $path = New-EmptyEvidence $check
+        $executionPath = Join-Path $path 'execution.json'
+        $execution = Get-Content -LiteralPath $executionPath -Raw | ConvertFrom-Json -AsHashtable
+        switch ($Change) {
+            'missing-baseline' { $execution.commands = @($execution.commands[0..2]) }
+            'missing-build-output' { Remove-Item -LiteralPath (Join-Path $path 'baseline-build.stderr') }
+            'missing-test-output' { Remove-Item -LiteralPath (Join-Path $path 'baseline-test.stdout') }
+            'missing-discovery' { Remove-Item -LiteralPath (Join-Path $path 'discovery.stdout') }
+            'nonempty-discovery' { Copy-Item -LiteralPath (Join-Path $script:fixtures 'mutants.json') -Destination (Join-Path $path 'discovery.stdout') }
+            'failed-discovery' { $execution.commands[1].exit_code = 1 }
+            'wrong-shard' { $execution.commands[1].command.arguments += '--shard=0/8' }
+            'wrong-pin' { $execution.commands[4].command.arguments[0] = '+1.95.0' }
+            'wrong-package' { $execution.commands[4].command.arguments += '--package=other' }
+            'changed-config' { Add-Content -LiteralPath (Join-Path $path 'mutation-config.toml') -Value 'test_tool = "nextest"' }
+            'skipped-tests' { $execution.commands[4].command.arguments += '--no-run' }
+            'wrong-tool-version' { Set-Content -LiteralPath (Join-Path $path 'mutants-version.stdout') -Value 'cargo-mutants 26.0.0' }
+            'wrong-timeout' { $execution.commands[4].command.timeout_seconds = 1 }
+            'baseline-traversal' { $execution.commands[3].name = 'baseline-/../../outside' }
+            'nonzero-mutation-exit' { $execution.commands[0].exit_code = 1 }
+            'failed-raw-tests' { Set-Content -LiteralPath (Join-Path $path 'baseline-test.stdout') -Value 'test result: FAILED. 0 passed; 1 failed;' }
+            'raw-build-error' { Set-Content -LiteralPath (Join-Path $path 'baseline-build.stderr') -Value 'error: compilation failed' }
+            'unfinished-tests' { Set-Content -LiteralPath (Join-Path $path 'baseline-test.stdout') -Value 'running 6 tests' }
+        }
+        Write-Json $execution $executionPath
+        $result = Get-ScheduledCheckResult $check $path $script:context
+        $result.outcome | Should -Be 'incomplete'
+        $result.findings.Count | Should -Be 0
+    }
+
+    It 'blocks failed or timed-out unmutated baselines' -ForEach @(
+        @{ Phase = 3; Timeout = $false; Baseline = 'failed' },
+        @{ Phase = 4; Timeout = $false; Baseline = 'failed' },
+        @{ Phase = 4; Timeout = $true; Baseline = 'timeout' }
+    ) {
+        $check = New-Check
+        $path = New-EmptyEvidence $check
+        $executionPath = Join-Path $path 'execution.json'
+        $execution = Get-Content -LiteralPath $executionPath -Raw | ConvertFrom-Json -AsHashtable
+        $execution.commands = @($execution.commands[0..$Phase])
+        $execution.commands[$Phase].exit_code = 101
+        $execution.commands[$Phase].timed_out = $Timeout
+        $execution.exit_code = 101
+        Write-Json $execution $executionPath
+        $result = Get-ScheduledCheckResult $check $path $script:context
+        $result.outcome | Should -Be 'blocked'
+        $result.baseline | Should -Be $Baseline
+        $result.findings.Count | Should -Be 0
+    }
+
+    It 'never certifies a zero-match exact replay even with successful ordinary baseline files' {
+        $check = New-Check
+        $path = New-EmptyEvidence $check
+        $check.replay_mutant = @(Get-Content -LiteralPath (Join-Path $script:fixtures 'mutants.json') -Raw |
+                ConvertFrom-Json -AsHashtable)[0]
+        $executionPath = Join-Path $path 'execution.json'
+        $execution = Get-Content -LiteralPath $executionPath -Raw | ConvertFrom-Json -AsHashtable
+        $execution.commands[0].command = Get-ScheduledCommand $check $script:root $path (Get-ScheduledToolchain -Kind mutants)
+        Write-Json $execution $executionPath
+        (Get-ScheduledCheckResult $check $path $script:context).outcome | Should -Be 'blocked'
+    }
+
+    It 'requires nextest completion when configuration selects that test tool' -ForEach @(
+        @{ Completion = 'passed'; Expected = 'passed' },
+        @{ Completion = 'failed'; Expected = 'incomplete' },
+        @{ Completion = 'missing'; Expected = 'incomplete' }
+    ) {
+        Mock -ModuleName ScheduledExecution Get-ScheduledMutationConfig {
+            return @{ test_tool = 'nextest'; profile = 'mutants'; all_features = $true; cap_lints = $false
+                no_default_features = $false; features = @(); additional_cargo_args = @('--locked')
+                additional_cargo_test_args = @('--tests') }
+        }
+        $check = New-Check
+        $path = New-EmptyEvidence $check
+        Set-Content -LiteralPath (Join-Path $path 'baseline-test.stdout') -Value ''
+        $stderr = Get-Content -LiteralPath (Join-Path $script:fixtures 'nextest-test.stderr') -Raw
+        if ($Completion -eq 'failed') { $stderr = $stderr.Replace('6 passed, 0 skipped', '5 passed, 1 failed') }
+        if ($Completion -eq 'missing') { $stderr = $stderr -replace '(?m)^.*Summary.*$', '' }
+        Set-Content -LiteralPath (Join-Path $path 'baseline-test.stderr') -Value $stderr
+        (Get-ScheduledCheckResult $check $path $script:context).outcome | Should -Be $Expected
+    }
+
+    It 'matches captured baseline argv and preserves configuration, features, test tool and helpers' {
+        $provenance = Get-Content -LiteralPath (Join-Path $script:fixtures 'empty-baseline-provenance.json') -Raw |
+            ConvertFrom-Json -AsHashtable
+        $check = New-Check
+        $check.packages = @($provenance.package)
+        $path = New-EmptyEvidence $check
+        $execution = Get-Content -LiteralPath (Join-Path $path 'execution.json') -Raw | ConvertFrom-Json -AsHashtable
+        $execution.commands[3].command.arguments | Should -Be $provenance.build_argv
+        $execution.commands[4].command.arguments | Should -Be $provenance.test_argv
+        $execution.commands[3].command.ContainsKey('timeout_seconds') | Should -BeFalse
+        $execution.commands[4].command.timeout_seconds | Should -Be $provenance.test_timeout_seconds
+        $check.flags = @('--features=alpha,beta', '--no-default-features', '--profile=custom', '--test-workspace')
+        $check.test_filter = 'a "filter";$(throw)'
+        $command = $execution.commands[0].command
+        $command.environment.CBH_FAKER = 'C:\helper path\faker.exe'
+        $configuration = @{ test_tool = 'nextest'; profile = 'mutants'; all_features = $true; cap_lints = $true
+            no_default_features = $false; features = @('gamma'); additional_cargo_args = @('--locked')
+            additional_cargo_test_args = @('--tests') }
+        $baseline = & (Get-Module ScheduledExecution) {
+            param($Check, $Command, $Configuration)
+            Get-ScheduledEmptyBaselineCommand $Check $Command $Configuration Test
+        } $check $command $configuration
+        $baseline.arguments | Should -Be @("+$($provenance.toolchain)", 'nextest', 'run', '--cargo-profile=custom',
+            '--verbose', '--package=cpulist', '--no-default-features', '--all-features',
+            '--features=alpha,beta', '--features=gamma', '--locked', $check.test_filter, '--tests')
+        $baseline.environment.CBH_FAKER | Should -Be $command.environment.CBH_FAKER
+        $baseline.environment.INSTA_UPDATE | Should -Be 'no'
+        $baseline.environment.INSTA_FORCE_PASS | Should -Be '0'
+        $baseline.environment.CARGO_ENCODED_RUSTFLAGS | Should -Be (@('--cfg', 'mutants', '--cap-lints=warn') -join [char]0x1f)
+        $check.packages = @()
+        $workspace = & (Get-Module ScheduledExecution) {
+            param($Check, $Command, $Configuration)
+            Get-ScheduledEmptyBaselineCommand $Check $Command $Configuration Build
+        } $check $command $configuration
+        $workspace.arguments | Should -Contain '--workspace'
+        $workspace.arguments | Should -Contain '--no-run'
+        $workspace.arguments | Should -Not -Contain $check.test_filter
+    }
+}
+
 Describe 'Miri and careful evidence' {
-    It 'parses the actual pinned Miri canary capture into an exact test and seed replay' {
+    It 'retains the original input scope when parsing the actual pinned Miri canary capture' {
         $provenance = Get-Content -LiteralPath (Join-Path $script:fixtures 'miri-provenance.json') -Raw |
             ConvertFrom-Json -AsHashtable
         $provenance.exit_code | Should -Be 101
@@ -506,8 +690,9 @@ Describe 'Miri and careful evidence' {
         $result = Get-ScheduledCheckResult $check $path $script:context
         $result.outcome | Should -Be 'findings'
         $result.findings.Count | Should -Be 1
-        $result.findings[0].replay.test_filter | Should -Be 'fixture_failure'
-        $result.findings[0].replay.flags | Should -Contain '-Zmiri-seed=19'
+        $result.findings[0].replay.test_filter | Should -Be ''
+        $result.findings[0].replay.seed_range | Should -Be '19..20'
+        $result.findings[0].replay.flags.Count | Should -Be 0
     }
 
     It 'rejects noncanonical record names before reading any package output' -ForEach @(
@@ -532,7 +717,7 @@ Describe 'Miri and careful evidence' {
         Should -Invoke -ModuleName ScheduledExecution Get-ScheduledTestResult -Times 0
     }
 
-    It 'retains the exact failing seed and test when forming a replay from many-seed output' {
+    It 'preserves the complete many-seed invocation rather than pairing shared output lines' {
         $check = New-Check 'miri-many'
         $check.packages = @('nm_impl')
         $check.seed_range = '0..32'
@@ -541,11 +726,11 @@ Describe 'Miri and careful evidence' {
         $result = Get-ScheduledCheckResult $check $path $script:context
         $result.outcome | Should -Be 'findings'
         $finding = $result.findings[0]
-        $finding.identity.seed | Should -Be '19'
+        $finding.identity.seed | Should -Be ''
         $replay = Get-ScheduledCommand $finding.replay $script:root $path $script:toolchain
-        $replay.environment.MIRIFLAGS | Should -Be '-Zmiri-strict-provenance -Zmiri-seed=19'
-        $replay.arguments | Should -Contain $finding.replay.test_filter
-        $finding.identity.test | Should -Be "lib:nm_impl::$($finding.replay.test_filter)"
+        $replay.environment.MIRIFLAGS | Should -Be '-Zmiri-strict-provenance -Zmiri-many-seeds=0..32'
+        $finding.replay.test_filter | Should -Be ''
+        $finding.identity.test | Should -Be 'lib:nm_impl::<target>'
         $finding.replay.target.kind | Should -Be 'lib'
         $finding.replay.target.name | Should -Be 'nm_impl'
     }
@@ -554,7 +739,60 @@ Describe 'Miri and careful evidence' {
         $check = New-Check 'miri-many'
         $path = New-TestEvidence $check
         Set-Content -LiteralPath (Join-Path $path 'check-0.stderr') -Value 'error: Undefined Behavior: Data race detected'
-        (Get-ScheduledCheckResult $check $path $script:context).outcome | Should -Be 'incomplete'
+        $result = Get-ScheduledCheckResult $check $path $script:context
+        $result.outcome | Should -Be 'findings'
+        $result.findings[0].identity.seed | Should -Be ''
+        $result.findings[0].replay.flags | Should -Be $check.flags
+    }
+
+    It 'does not attribute interleaved interpreters or post-suite leaks to the last test' -ForEach @(
+        @{ Fixture = 'miri-interleaved'; Kind = 'miri-many' },
+        @{ Fixture = 'miri-post-suite'; Kind = 'miri' }
+    ) {
+        # These diagnostic-order fixtures model shared interpreter streams and delayed leak checks.
+        $check = New-Check $Kind
+        $check.seed_range = '16..32'
+        $check.shard = '1/2'
+        $check.test_filter = 'tests::'
+        $check.flags = @('-Zmiri-strict-provenance')
+        $path = New-TestEvidence $check
+        foreach ($extension in @('stdout', 'stderr')) {
+            Copy-Item -LiteralPath (Join-Path $script:fixtures "$Fixture.$extension") `
+                -Destination (Join-Path $path "check-0.$extension")
+        }
+        $result = Get-ScheduledCheckResult $check $path $script:context
+        $result.outcome | Should -Be 'findings'
+        $result.findings.Count | Should -Be 1
+        $finding = $result.findings[0]
+        $finding.identity.test | Should -Be 'lib:example::<target>'
+        $finding.identity.seed | Should -Be ''
+        foreach ($field in @('test_filter', 'seed_range', 'shard', 'flags')) {
+            $finding.replay[$field] | Should -Be $check[$field]
+        }
+        $scope = $check.Clone()
+        $scope.target = $finding.replay.target
+        $original = Get-ScheduledCommand $scope $script:root $path $script:toolchain
+        $replay = Get-ScheduledCommand $finding.replay $script:root $path $script:toolchain
+        $replay.arguments | Should -Be $original.arguments
+        $replay.environment.MIRIFLAGS | Should -Be $original.environment.MIRIFLAGS
+    }
+
+    It 'uses already-exact input attribution without letting interleaved diagnostics override it' {
+        $check = New-Check 'miri-many'
+        $check.test_filter = 'tests::test_a'
+        $check.flags = @('-Zmiri-seed=19', '-Zmiri-strict-provenance')
+        $check.seed_range = '16..32'
+        $check.shard = '1/2'
+        $path = New-TestEvidence $check
+        Copy-Item -LiteralPath (Join-Path $script:fixtures 'miri-interleaved.stderr') `
+            -Destination (Join-Path $path 'check-0.stderr')
+        $result = Get-ScheduledCheckResult $check $path $script:context
+        $finding = $result.findings[0]
+        $finding.identity.test | Should -Be 'lib:example::tests::test_a'
+        $finding.identity.seed | Should -Be '19'
+        foreach ($field in @('test_filter', 'seed_range', 'shard', 'flags')) {
+            $finding.replay[$field] | Should -Be $check[$field]
+        }
     }
 
     It 'separates compiler or tool errors from attributable test failures' {
@@ -657,17 +895,17 @@ Describe 'Cargo test target scope' {
         $ids = @($result.findings | ForEach-Object { Get-ScheduledFindingId -Repository 'folo-rs/folo' -Identity $_.identity })
         @($ids | Select-Object -Unique).Count | Should -Be 4
         foreach ($finding in $result.findings) {
-            $finding.replay.test_filter | Should -Be 'tests::same_name'
-            $finding.identity.seed | Should -Be '0'
+            $finding.replay.test_filter | Should -Be ''
+            $finding.identity.seed | Should -Be ''
             $finding.identity.target.kind | Should -Be $finding.replay.target.kind
             $finding.identity.target.name | Should -Be $finding.replay.target.name
             $command = Get-ScheduledCommand $finding.replay $script:root $path $script:toolchain
             $selector = if ($finding.replay.target.kind -eq 'lib') { '--lib' }
                 else { "--$($finding.replay.target.kind)=$($finding.replay.target.name)" }
             $command.arguments | Should -Contain $selector
-            $command.arguments | Should -Contain '--exact'
-            $command.arguments | Should -Contain 'tests::same_name'
-            $command.environment.MIRIFLAGS | Should -Be '-Zmiri-seed=0'
+            $command.arguments | Should -Not -Contain '--exact'
+            $command.arguments | Should -Not -Contain 'tests::same_name'
+            $command.environment.MIRIFLAGS | Should -Be ''
             $replayPath = New-TargetEvidence $finding.replay 0
             $confirmed = Get-ScheduledCheckResult $finding.replay $replayPath $script:context
             $confirmed.outcome | Should -Be 'passed'
@@ -879,6 +1117,59 @@ Describe 'Execution failure evidence and replay preflight' {
         Should -Invoke -ModuleName ScheduledExecution Invoke-ScheduledProcess -Times 1 -ParameterFilter {
             $Name -eq 'check' -and $Command.arguments -contains '--baseline=run' -and
             $Command.arguments -notcontains '--json' -and $Command.environment.ContainsKey('CBH_FAKER')
+        }
+    }
+
+    It 'executes verified-empty ordinary shards through explicit unmutated baseline phases' -ForEach @(
+        @{ FailurePhase = ''; TimedOut = $false; Expected = 'passed'; Baseline = 'passed'; TestCalls = 1 },
+        @{ FailurePhase = 'baseline-build'; TimedOut = $false; Expected = 'blocked'; Baseline = 'failed'; TestCalls = 0 },
+        @{ FailurePhase = 'baseline-test'; TimedOut = $false; Expected = 'blocked'; Baseline = 'failed'; TestCalls = 1 },
+        @{ FailurePhase = 'baseline-test'; TimedOut = $true; Expected = 'blocked'; Baseline = 'timeout'; TestCalls = 1 }
+    ) {
+        Mock -ModuleName ScheduledExecution Invoke-ScheduledProcess {
+            param($Command, $SourceRoot, $OutputDirectory, $Name)
+            $stdout = Join-Path $OutputDirectory "$Name.stdout"
+            $stderr = Join-Path $OutputDirectory "$Name.stderr"
+            Set-Content -LiteralPath $stdout, $stderr -Value ''
+            if ($Name -in @('cargo-bench-history-faker', 'dure-test-helper')) {
+                $exe = Join-Path $OutputDirectory "$Name.exe"
+                Set-Content -LiteralPath $exe -Value 'fake helper'
+                @{ reason = 'compiler-artifact'; target = @{ name = $Name }; executable = $exe } |
+                    ConvertTo-Json -Compress | Set-Content -LiteralPath $stdout
+            } elseif ($Name -eq 'check') {
+                $null = New-Item -ItemType Directory -Path (Join-Path $OutputDirectory 'mutants.out')
+                Set-Content -LiteralPath (Join-Path $OutputDirectory 'mutants.out\mutants.json') -Value '[]'
+            } elseif ($Name -eq 'discovery') {
+                Set-Content -LiteralPath $stdout -Value '[]'
+            } elseif ($Name -eq 'mutants-version') {
+                Set-Content -LiteralPath $stdout -Value 'cargo-mutants 27.1.0'
+            } elseif ($Name -eq 'baseline-test') {
+                Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'fixtures\execution\baseline-test.stdout') -Destination $stdout
+            } elseif ($Name -eq 'baseline-build') {
+                Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'fixtures\execution\baseline-build.stderr') -Destination $stderr
+            } else {
+                throw [InvalidOperationException]::new("Unexpected native call: $Name $SourceRoot $($Command.file)")
+            }
+            return @{ exit_code = if ($Name -eq $FailurePhase) { 101 } else { 0 }
+                timed_out = $Name -eq $FailurePhase -and $TimedOut; stdout_path = $stdout; stderr_path = $stderr }
+        }
+        $check = New-Check
+        $check.shard = '8/8'
+        $path = New-Output
+        $result = Invoke-ScheduledCheck $check $script:root $path (Get-ScheduledToolchain -Kind mutants) $script:context
+        $result.outcome | Should -Be $Expected
+        $result.baseline | Should -Be $Baseline
+        $result.findings.Count | Should -Be 0
+        (Get-ScheduledCheckResult $check $path $script:context).outcome | Should -Be $Expected
+        foreach ($name in @('evidence.json', 'check.log', 'mutation-config.toml', 'discovery.stdout', 'mutants-version.stdout')) {
+            Test-Path -LiteralPath (Join-Path $path $name) | Should -BeTrue
+        }
+        Should -Invoke -ModuleName ScheduledExecution Invoke-ScheduledProcess -Times 1 -ParameterFilter {
+            $Name -eq 'baseline-build' -and $Command.arguments -contains '--no-run' -and
+            $Command.environment.ContainsKey('CBH_FAKER') -and -not $Command.ContainsKey('timeout_seconds')
+        }
+        Should -Invoke -ModuleName ScheduledExecution Invoke-ScheduledProcess -Times $TestCalls -ParameterFilter {
+            $Name -eq 'baseline-test' -and $Command.arguments -contains '--tests' -and $Command.timeout_seconds -eq 60
         }
     }
 

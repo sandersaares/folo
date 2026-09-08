@@ -23,6 +23,8 @@ Describe 'Expected deep scope' {
             Should -Invoke Get-FileHash -Times 0 -ParameterFilter { $LiteralPath -like '*Cargo.toml' }
             Should -Invoke Get-FileHash -Times 1 -ParameterFilter { $LiteralPath -like '*constants.env' }
             Should -Invoke Get-FileHash -Times 1 -ParameterFilter { $LiteralPath -like '*rust-toolchain.toml' }
+            Should -Invoke Get-FileHash -Times 1 -ParameterFilter { $LiteralPath -like '*mutants.toml' }
+            Should -Invoke Get-FileHash -Times 1 -ParameterFilter { $LiteralPath -like '*Read-MutationConfig.py' }
             Should -Invoke Get-ScheduledPolicy -Times 0
         }
     }

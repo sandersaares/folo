@@ -93,6 +93,15 @@ GitHub persistence. Reporting serializes all originating workflows into one writ
 reproduction data survives the larger artifacts. Raw mutation outcomes come from `mutants.out`,
 not from a full-run `--json` option. An unmutated baseline is mandatory and a replay that matches
 no mutation is an error. Timeouts remain findings.
+Ordinary empty mutation shards carry successful exact-scope discovery and explicit unmutated
+baseline evidence because the mutation tool does not run its baseline for an empty selection.
+The parser validates both before the leg can pass; zero-match exact replays remain failures.
+The archived mutation configuration must match the controller. Its baseline options are decoded
+with Python's standard TOML parser; both the decoder and configuration participate in compatibility.
+Miri's parallel seed output and post-suite diagnostics do not establish which test caused a
+failure. Unattributed findings retain the original target, filter and seed-range invocation instead
+of selecting the last printed test or seed. Narrowed reproduction requires independently established
+execution scope.
 Evidence ordering uses the originating attempt's API start time, with creation time and run ID
 breaking ties. An older run can have a genuinely newer rerun; neither its original run number nor
 its completion/report delivery time establishes that attempt's order. Source ancestry and incident

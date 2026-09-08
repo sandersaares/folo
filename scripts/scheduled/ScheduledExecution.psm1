@@ -263,15 +263,106 @@ function Invoke-ScheduledProcess {
         if (-not $process.Start()) { throw [InvalidOperationException]::new('Could not start the check.') }
         $copyOut = $process.StandardOutput.BaseStream.CopyToAsync($stdout)
         $copyErr = $process.StandardError.BaseStream.CopyToAsync($stderr)
-        $process.WaitForExit()
+        $timedOut = $false
+        if ($Command.ContainsKey('timeout_seconds')) {
+            $timedOut = -not $process.WaitForExit([int]($Command.timeout_seconds * 1000))
+            if ($timedOut) { $process.Kill($true); $process.WaitForExit() }
+        } else {
+            $process.WaitForExit()
+        }
         $null = $copyOut.GetAwaiter().GetResult()
         $null = $copyErr.GetAwaiter().GetResult()
-        return @{ exit_code = $process.ExitCode; stdout_path = $stdoutPath; stderr_path = $stderrPath }
+        return @{ exit_code = $process.ExitCode; timed_out = $timedOut
+            stdout_path = $stdoutPath; stderr_path = $stderrPath }
     } finally {
         $stdout.Dispose()
         $stderr.Dispose()
         $process.Dispose()
     }
+}
+
+function Get-ScheduledMutationConfig {
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    param([Parameter(Mandatory)][AllowEmptyString()][string] $Text)
+
+    # Baseline policy is controller-owned. Candidate configuration is archived as data and must
+    # agree before it can certify an empty shard; the reporter never follows source_root paths.
+    $trusted = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\..\.cargo\mutants.toml') -Raw
+    if ($Text.Replace("`r`n", "`n") -cne $trusted.Replace("`r`n", "`n")) {
+        throw [FormatException]::new('Empty-shard baseline configuration differs from the controller.')
+    }
+    $start = [Diagnostics.ProcessStartInfo]::new()
+    $start.FileName = if ($IsWindows) { 'python' } else { 'python3' }
+    $start.ArgumentList.Add('-I')
+    $start.ArgumentList.Add((Join-Path $PSScriptRoot 'Read-MutationConfig.py'))
+    $start.UseShellExecute = $false
+    $start.RedirectStandardInput = $true
+    $start.RedirectStandardOutput = $true
+    $start.RedirectStandardError = $true
+    $process = [Diagnostics.Process]::new()
+    $process.StartInfo = $start
+    try {
+        if (-not $process.Start()) { throw [InvalidOperationException]::new('Could not start the TOML parser.') }
+        $stdout = $process.StandardOutput.ReadToEndAsync()
+        $stderr = $process.StandardError.ReadToEndAsync()
+        $process.StandardInput.Write($Text)
+        $process.StandardInput.Close()
+        $process.WaitForExit()
+        $json = $stdout.GetAwaiter().GetResult()
+        $diagnostic = $stderr.GetAwaiter().GetResult()
+        if ($process.ExitCode -ne 0) { throw [FormatException]::new("Cannot decode mutation configuration: $diagnostic") }
+        return ConvertFrom-Json -InputObject $json -AsHashtable
+    } finally {
+        $process.Dispose()
+    }
+}
+
+function Get-ScheduledEmptyBaselineCommand {
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    param(
+        [Parameter(Mandatory)][hashtable] $Check,
+        [Parameter(Mandatory)][hashtable] $MutationCommand,
+        [Parameter(Mandatory)][hashtable] $Configuration,
+        [Parameter(Mandatory)][ValidateSet('Build', 'Test')][string] $Phase
+    )
+
+    # Equivalent to v27.1.0 cargo.rs cargo_argv/encoded_rustflags and timeouts.rs for_baseline.
+    # lab.rs applies the baseline to mutated packages, independently of test_package/test_workspace.
+    # With none selected, certify the entire declared package scope rather than invent a mutant.
+    $arguments = @($MutationCommand.arguments[0])
+    $arguments += if ($Configuration.test_tool -ceq 'nextest') { @('nextest', 'run') } else { 'test' }
+    if ($Phase -ceq 'Build') { $arguments += '--no-run' }
+    $profiles = @($Check.flags | Where-Object { $_.StartsWith('--profile=') })
+    $cargoProfile = if ($profiles.Count -gt 0) { $profiles[-1].Substring('--profile='.Length) } else { $Configuration.profile }
+    if ($null -ne $cargoProfile) {
+        $arguments += if ($Configuration.test_tool -ceq 'nextest') { "--cargo-profile=$cargoProfile" } else { "--profile=$cargoProfile" }
+    }
+    $arguments += '--verbose'
+    if ($Check.packages.Count -eq 0) { $arguments += '--workspace' }
+    foreach ($package in $Check.packages) { $arguments += "--package=$package" }
+    if ($Configuration.no_default_features -or $Check.flags -ccontains '--no-default-features') {
+        $arguments += '--no-default-features'
+    }
+    if ($Configuration.all_features -or $Check.flags -ccontains '--all-features') { $arguments += '--all-features' }
+    $arguments += @($Check.flags | Where-Object { $_.StartsWith('--features=') })
+    foreach ($feature in $Configuration.features) { $arguments += "--features=$feature" }
+    $arguments += @($Configuration.additional_cargo_args)
+    if ($Phase -ceq 'Test') {
+        if ($Check.test_filter -ne '') { $arguments += $Check.test_filter }
+        $arguments += @($Configuration.additional_cargo_test_args)
+    }
+    $environment = $MutationCommand.environment.Clone()
+    $environment.INSTA_UPDATE = 'no'
+    $environment.INSTA_FORCE_PASS = '0'
+    if ($Configuration.cap_lints) {
+        $environment.CARGO_ENCODED_RUSTFLAGS = (@('--cfg', 'mutants', '--cap-lints=warn') -join [char]0x1f)
+    }
+    $command = @{ file = 'cargo'; arguments = [string[]]$arguments; environment = $environment }
+    # The scheduled mutation command explicitly supplies this test timeout; baseline builds have none.
+    if ($Phase -ceq 'Test') { $command.timeout_seconds = 60 }
+    return $command
 }
 
 function Write-ScheduledExecutionFile {
@@ -363,16 +454,28 @@ function Get-ScheduledMutationResult {
     param(
         [Parameter(Mandatory)][hashtable] $Result,
         [Parameter(Mandatory)][hashtable] $Check,
-        [Parameter(Mandatory)][string] $OutputDirectory
+        [Parameter(Mandatory)][string] $OutputDirectory,
+        [Parameter(Mandatory)][hashtable] $Execution,
+        [Parameter(Mandatory)][string] $Toolchain
     )
 
     $outcomesPath = Join-Path $OutputDirectory 'mutants.out\outcomes.json'
     $inventoryPath = Join-Path $OutputDirectory 'mutants.out\mutants.json'
+    if ((Test-Path -LiteralPath $inventoryPath) -and -not (Test-Path -LiteralPath $outcomesPath) -and
+        (Get-Content -LiteralPath $inventoryPath -Raw) -cmatch '^\s*\[\s*\]\s*$') {
+        Get-ScheduledEmptyMutationResult -Result $Result -Check $Check -OutputDirectory $OutputDirectory `
+            -Execution $Execution -Toolchain $Toolchain
+        return
+    }
     if (-not (Test-Path -LiteralPath $outcomesPath) -or -not (Test-Path -LiteralPath $inventoryPath)) {
         $Result.summary = 'Mutation output or selected-mutant inventory is missing.'
         return
     }
     $lab = Get-Content -LiteralPath $outcomesPath -Raw | ConvertFrom-Json -AsHashtable
+    $run = @($Execution.commands | Where-Object { $_.name -ceq 'check' })[0]
+    if ($run.exit_code -ne $Execution.exit_code) {
+        throw [FormatException]::new('Mutation command and aggregate exit code disagree.')
+    }
     $inventory = @(Get-Content -LiteralPath $inventoryPath -Raw | ConvertFrom-Json -AsHashtable)
     foreach ($name in @('outcomes', 'total_mutants', 'missed', 'caught', 'timeout', 'unviable',
             'success', 'end_time', 'cargo_mutants_version')) {
@@ -482,6 +585,103 @@ function Get-ScheduledMutationResult {
     }
 }
 
+function Get-ScheduledEmptyMutationResult {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable] $Result,
+        [Parameter(Mandatory)][hashtable] $Check,
+        [Parameter(Mandatory)][string] $OutputDirectory,
+        [Parameter(Mandatory)][hashtable] $Execution,
+        [Parameter(Mandatory)][string] $Toolchain
+    )
+
+    if ($Check.ContainsKey('replay_mutant')) {
+        $Result.outcome = 'blocked'
+        $Result.summary = 'An exact mutant replay must select the intended mutant.'
+        return
+    }
+    $mutationRun = @($Execution.commands | Where-Object { $_.name -ceq 'check' })[0]
+    if ($mutationRun.exit_code -ne 0) { throw [FormatException]::new('Empty mutation selection did not succeed.') }
+    $expected = Get-ScheduledCommand -Check $Check -SourceRoot $Execution.source_root `
+        -OutputDirectory $Execution.output_directory -Toolchain $Toolchain -List
+    $version = @{ file = 'cargo'; arguments = @("+$Toolchain", 'mutants', '--version')
+        environment = $expected.environment }
+    foreach ($probe in @(@{ name = 'discovery'; command = $expected }, @{ name = 'mutants-version'; command = $version })) {
+        $records = @($Execution.commands | Where-Object { $_.name -ceq $probe.name })
+        if ($records.Count -ne 1 -or $records[0].exit_code -ne 0) {
+            throw [FormatException]::new('Empty selection lacks successful version and exact-scope discovery records.')
+        }
+        Assert-ScheduledRecordedCommand -Expected $probe.command -Recorded $records[0].command
+        foreach ($extension in @('stdout', 'stderr')) {
+            if (-not (Test-Path -LiteralPath (Join-Path $OutputDirectory "$($probe.name).$extension"))) {
+                throw [FormatException]::new('Empty-selection probe output is missing.')
+            }
+        }
+    }
+    if ((Get-Content -LiteralPath (Join-Path $OutputDirectory 'discovery.stdout') -Raw) -cnotmatch '^\s*\[\s*\]\s*$' -or
+        (Get-Content -LiteralPath (Join-Path $OutputDirectory 'mutants-version.stdout') -Raw).Trim() -cne 'cargo-mutants 27.1.0') {
+        throw [FormatException]::new('Discovery did not verify an empty selection using the pinned mutation tool.')
+    }
+    $configPath = Join-Path $OutputDirectory 'mutation-config.toml'
+    if (-not (Test-Path -LiteralPath $configPath)) { throw [FormatException]::new('Baseline configuration is missing.') }
+    $configuration = Get-ScheduledMutationConfig -Text (Get-Content -LiteralPath $configPath -Raw)
+    $phases = @($Execution.commands | Where-Object { $_.name -like 'baseline-*' })
+    if ($phases.Count -lt 1 -or $phases.Count -gt 2) {
+        throw [FormatException]::new('Empty selection lacks its unmutated build/test baseline.')
+    }
+    for ($index = 0; $index -lt $phases.Count; $index++) {
+        $phase = @('Build', 'Test')[$index]
+        $name = @('baseline-build', 'baseline-test')[$index]
+        $record = $phases[$index]
+        if ($record.name -cne $name -or -not $record.ContainsKey('timed_out') -or $record.timed_out -isnot [bool]) {
+            throw [FormatException]::new('Invalid empty-selection baseline phase record.')
+        }
+        $expected = Get-ScheduledEmptyBaselineCommand -Check $Check -MutationCommand $mutationRun.command `
+            -Configuration $configuration -Phase $phase
+        Assert-ScheduledRecordedCommand -Expected $expected -Recorded $record.command
+        foreach ($extension in @('stdout', 'stderr')) {
+            # Names are generated only after exact record-name validation, never taken from the archive.
+            if (-not (Test-Path -LiteralPath (Join-Path $OutputDirectory "$name.$extension"))) {
+                throw [FormatException]::new('Unmutated baseline output is missing.')
+            }
+        }
+        if ($record.timed_out -and $phase -ceq 'Build') { throw [FormatException]::new('Baseline builds have no timeout.') }
+        if ($record.exit_code -ne 0 -or $record.timed_out) {
+            if ($phases.Count -ne $index + 1 -or $Execution.exit_code -ne $record.exit_code) {
+                throw [FormatException]::new('Baseline failure disagrees with the completed phase sequence.')
+            }
+            $Result.baseline = if ($record.timed_out) { 'timeout' } else { 'failed' }
+            $Result.outcome = 'blocked'
+            $Result.summary = 'The explicit unmutated baseline failed; an empty selection cannot certify coverage.'
+            return
+        }
+        $stdout = Get-Content -LiteralPath (Join-Path $OutputDirectory "$name.stdout") -Raw
+        $stderr = Get-Content -LiteralPath (Join-Path $OutputDirectory "$name.stderr") -Raw
+        $text = "$stdout`n$stderr"
+        $suites = [regex]::Matches($text, 'test result: (ok|FAILED)\. (\d+) passed; (\d+) failed;')
+        if ($text -match '(?m)^\s*error(?:\[[^\]]+\])?:' -or
+            @($suites | Where-Object { $_.Groups[1].Value -cne 'ok' -or [int]$_.Groups[3].Value -ne 0 }).Count -gt 0) {
+            throw [FormatException]::new('Baseline raw diagnostics disagree with its successful exit code.')
+        }
+        $cargoFinished = $text -match '(?m)^\s*Finished [^\r\n]+ profile '
+        $nextestSummary = [regex]::Match($text, '(?m)^\s*Summary \[[^\]\r\n]+\] (\d+) tests? run: ([^\r\n]+)\r?$')
+        if ($phase -ceq 'Test' -and $configuration.test_tool -ceq 'nextest') {
+            if (-not $nextestSummary.Success -or
+                $nextestSummary.Groups[2].Value -match '(?:[1-9]\d*) (?:failed|timed out|exec failed)') {
+                throw [FormatException]::new('Nextest baseline has no successful completed summary.')
+            }
+        } elseif (-not $cargoFinished -and ($phase -ceq 'Build' -or $suites.Count -eq 0)) {
+            throw [FormatException]::new('Raw baseline output contains no completed Cargo phase.')
+        }
+    }
+    if ($phases.Count -ne 2 -or $Execution.exit_code -ne 0) {
+        throw [FormatException]::new('The empty-selection baseline did not complete successfully.')
+    }
+    $Result.baseline = 'passed'
+    $Result.outcome = 'passed'
+    $Result.summary = 'Exact-scope discovery selected no mutants and the unmutated package baseline passed.'
+}
+
 function Get-ScheduledTestResult {
     [CmdletBinding()]
     param(
@@ -504,14 +704,34 @@ function Get-ScheduledTestResult {
     $failedTests = @([regex]::Matches($text, '(?m)^test ([^\r\n]+?) \.\.\. FAILED\s*$') |
             ForEach-Object { $_.Groups[1].Value })
     $miriError = [regex]::Match($stderr, '(?m)^error: (?:Undefined Behavior:|unsupported operation:|the evaluated program leaked memory)[^\r\n]*')
-    if ($miriError.Success -and $Check.kind -in @('miri', 'miri-many')) {
-        $running = [regex]::Matches($stdout, '(?m)^test ([^\r\n]+?) \.\.\.')
-        $test = if ($running.Count -gt 0) { $running[-1].Groups[1].Value } else { $Check.test_filter }
-        if ($test -eq '') {
-            $Result.summary = 'Miri failed without a reproducible test identity.'
+    if ($Check.kind -in @('miri', 'miri-many') -and ($miriError.Success -or $failedTests.Count -gt 0)) {
+        if ($Result.exit_code -eq 0) {
+            throw [FormatException]::new('Miri defects accompanied a successful exit code.')
+        }
+        if ($Check.packages.Count -ne 1 -or -not $Check.ContainsKey('target')) {
+            $Result.summary = 'Miri defects require a metadata-verified package and target.'
             return
         }
-        $failedTests = @($test)
+        # Seed interpreters share output, and leaks can be diagnosed after the whole suite.
+        # Neither the last test line nor a reported failing seed establishes their association.
+        # Only an already exact input scope identifies one test; otherwise replay the target.
+        $explicitSeed = @($Check.flags | Where-Object { $_ -match '^-Zmiri-seed=\d+$' })
+        $seed = if ($explicitSeed.Count -eq 1) { $explicitSeed[0].Substring('-Zmiri-seed='.Length) } else { '' }
+        $test = if ($seed -ne '' -and $Check.test_filter -ne '') { $Check.test_filter } else { '<target>' }
+        $target = $Check.target.Clone()
+        $Result.findings += @{
+            identity = @{
+                kind = $Check.kind; package = $Check.packages[0]; platform = $Check.platform
+                path = ''; function = ''; mutation = ''
+                test = "$($target.kind):$($target.name)::$test"; seed = $seed
+                flags = @($Check.flags); target = $target
+            }
+            summary = if ($miriError.Success) { $miriError.Value } else { 'Miri target reported failing tests.' }
+            replay = $Check.Clone()
+        }
+        $Result.outcome = 'findings'
+        $Result.summary = 'Miri defects require replay of the verified input scope.'
+        return
     }
     if ($Result.exit_code -ne 0 -and $failedTests.Count -eq 0) {
         $Result.outcome = 'execution-error'
@@ -528,44 +748,18 @@ function Get-ScheduledTestResult {
         }
         foreach ($test in ($failedTests | Sort-Object -Unique)) {
             $flags = @($Check.flags)
-            $seed = ''
-            $explicitSeed = @($flags | Where-Object { $_ -match '^-Zmiri-seed=\d+$' })
-            if ($explicitSeed.Count -eq 1) { $seed = $explicitSeed[0].Substring('-Zmiri-seed='.Length) }
-            $reportedSeed = [regex]::Matches($text, '(?i)(?:-Zmiri-seed=|(?:failing|failed|current) seed[:= ]+)(\d+)')
-            if ($reportedSeed.Count -gt 0) { $seed = $reportedSeed[-1].Groups[1].Value }
-            if ($Check.kind -eq 'miri-many' -and $seed -eq '') {
-                $Result.summary = 'Many-seed failure did not identify its failing seed.'
-                return
-            }
             $replay = $Check.Clone()
             $replay.shard = ''
             $replay.seed_range = ''
             $replay.test_filter = $test
-            if ($seed -ne '') {
-                $flags = @($flags | Where-Object { $_ -notmatch '^-Zmiri-(?:many-seeds|seed)=' }) + "-Zmiri-seed=$seed"
-            }
-            if ($Check.kind -eq 'miri' -and $seed -eq '') {
-                # Miri's ordinary execution uses its deterministic default seed.
-                $seed = '0'
-                $flags += '-Zmiri-seed=0'
-            }
             $replay.flags = $flags
-            $identityTest = $test
-            $identityTarget = $null
-            if ($Check.ContainsKey('target')) {
-                $identityTarget = $Check.target.Clone()
-                # Target qualification remains in the established test identity field so reporters
-                # using its semantic allow-list distinguish identical names in different binaries.
-                # The replay filter remains the original libtest name, not this qualified identity.
-                $identityTest = "$($identityTarget.kind):$($identityTarget.name)::$test"
-            }
             $Result.findings += @{
                 identity = @{
                     kind = $Check.kind; package = $Check.packages[0]; platform = $Check.platform
-                    path = ''; function = ''; mutation = ''; test = $identityTest; seed = $seed; flags = $flags
-                    target = $identityTarget
+                    path = ''; function = ''; mutation = ''; test = $test; seed = ''; flags = $flags
+                    target = $null
                 }
-                summary = if ($miriError.Success) { $miriError.Value } else { "Failed test: $test" }
+                summary = "Failed test: $test"
                 replay = $replay
             }
         }
@@ -736,6 +930,10 @@ function Assert-ScheduledRecordedCommand {
             $Recorded.environment[$key] -cne $Expected.environment[$key]) {
             throw [FormatException]::new("Recorded environment does not match the check: $key")
         }
+        if ($Expected.ContainsKey('timeout_seconds') -ne $Recorded.ContainsKey('timeout_seconds') -or
+            ($Expected.ContainsKey('timeout_seconds') -and $Expected.timeout_seconds -ne $Recorded.timeout_seconds)) {
+            throw [FormatException]::new('Recorded timeout does not match the command.')
+        }
     }
 }
 
@@ -787,13 +985,14 @@ function Get-ScheduledCheckResult {
             $result.summary = 'The check process did not finish.'
         } elseif ($Check.kind -eq 'mutants') {
             $runs = @($execution.commands | Where-Object { $_.name -eq 'check' })
-            if ($runs.Count -ne 1 -or $runs[0].exit_code -ne $execution.exit_code) {
+            if ($runs.Count -ne 1 -or $runs[0].name -cne 'check') {
                 throw [FormatException]::new('Missing or inconsistent mutation execution record.')
             }
             $expected = Get-ScheduledCommand -Check $Check -SourceRoot $execution.source_root `
                 -OutputDirectory $execution.output_directory -Toolchain $toolchain
             Assert-ScheduledRecordedCommand -Expected $expected -Recorded $runs[0].command
-            Get-ScheduledMutationResult -Result $result -Check $Check -OutputDirectory $OutputDirectory
+            Get-ScheduledMutationResult -Result $result -Check $Check -OutputDirectory $OutputDirectory `
+                -Execution $execution -Toolchain $toolchain
         } else {
             Get-ScheduledPackageResult -Result $result -Check $Check -Execution $execution `
                 -OutputDirectory $OutputDirectory -Toolchain $toolchain
@@ -899,6 +1098,47 @@ function Invoke-ScheduledCheck {
             $execution.commands += @{ name = 'check'; command = $command; exit_code = $step.exit_code }
             $execution.exit_code = $step.exit_code
             Get-Content -LiteralPath $step.stdout_path, $step.stderr_path | Add-Content -LiteralPath $logPath
+            $inventoryPath = Join-Path $OutputDirectory 'mutants.out\mutants.json'
+            if ($step.exit_code -eq 0 -and -not $Check.ContainsKey('replay_mutant') -and
+                (Test-Path -LiteralPath $inventoryPath) -and
+                -not (Test-Path -LiteralPath (Join-Path $OutputDirectory 'mutants.out\outcomes.json')) -and
+                (Get-Content -LiteralPath $inventoryPath -Raw) -cmatch '^\s*\[\s*\]\s*$') {
+                $execution.stage = 'empty-discovery'
+                $discovery = Get-ScheduledCommand -Check $Check -SourceRoot $SourceRoot `
+                    -OutputDirectory $OutputDirectory -Toolchain $Toolchain -List
+                $version = @{ file = 'cargo'; arguments = @("+$Toolchain", 'mutants', '--version')
+                    environment = $discovery.environment }
+                foreach ($probe in @(@{ name = 'discovery'; command = $discovery }, @{ name = 'mutants-version'; command = $version })) {
+                    Write-ScheduledExecutionFile $execution $executionPath
+                    $step = Invoke-ScheduledProcess -Command $probe.command -SourceRoot $SourceRoot `
+                        -OutputDirectory $OutputDirectory -Name $probe.name
+                    $execution.commands += @{ name = $probe.name; command = $probe.command; exit_code = $step.exit_code }
+                    $execution.exit_code = $step.exit_code
+                    Get-Content -LiteralPath $step.stdout_path, $step.stderr_path | Add-Content -LiteralPath $logPath
+                    if ($step.exit_code -ne 0) { $execution.completed = $true; return }
+                }
+                if ((Get-Content -LiteralPath (Join-Path $OutputDirectory 'discovery.stdout') -Raw) -cnotmatch '^\s*\[\s*\]\s*$' -or
+                    (Get-Content -LiteralPath (Join-Path $OutputDirectory 'mutants-version.stdout') -Raw).Trim() -cne 'cargo-mutants 27.1.0') {
+                    $execution.completed = $true
+                    return
+                }
+                $configText = Get-Content -LiteralPath (Join-Path $SourceRoot '.cargo\mutants.toml') -Raw
+                $configuration = Get-ScheduledMutationConfig -Text $configText
+                Set-Content -LiteralPath (Join-Path $OutputDirectory 'mutation-config.toml') -Value $configText -NoNewline
+                $execution.stage = 'check'
+                foreach ($phase in @('Build', 'Test')) {
+                    $baselineCommand = Get-ScheduledEmptyBaselineCommand -Check $Check -MutationCommand $command `
+                        -Configuration $configuration -Phase $phase
+                    Write-ScheduledExecutionFile $execution $executionPath
+                    $step = Invoke-ScheduledProcess -Command $baselineCommand -SourceRoot $SourceRoot `
+                        -OutputDirectory $OutputDirectory -Name "baseline-$($phase.ToLowerInvariant())"
+                    $execution.commands += @{ name = "baseline-$($phase.ToLowerInvariant())"; command = $baselineCommand
+                        exit_code = $step.exit_code; timed_out = $step.timed_out }
+                    $execution.exit_code = $step.exit_code
+                    Get-Content -LiteralPath $step.stdout_path, $step.stderr_path | Add-Content -LiteralPath $logPath
+                    if ($step.exit_code -ne 0 -or $step.timed_out) { $execution.completed = $true; return }
+                }
+            }
         } else {
             $execution.stage = 'metadata'
             $metadataCommand = @{ file = 'cargo'
