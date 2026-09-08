@@ -52,6 +52,15 @@ deep work on unchanged source and check contracts, subject to the policy's maxim
 age and invalidations. A skip does not renew the receipt's age, replace a failed
 execution, suppress local intake or stand in for full scheduled coverage.
 
+Miri replay follows the structured scope supplied by validated evidence: Cargo
+target kind/name, test filter and matching mode when present, flags, seed or seed
+range, and shard. Target-level and seed-range failures are valid findings even when
+the failing test or seed is unknown. Shared output from parallel seeds and
+post-suite leak diagnostics does not establish narrower attribution. Narrow only
+from independently known input scope, preserve the recorded replay for repair
+verification, and do not classify missing test/seed attribution alone as missing
+evidence.
+
 `release.yml` continues publishing on merge. Scheduled enforcement accepts delayed
 detection of potentially already-published defects. Do not enable cutover without
 accepting this tradeoff and proving the replacement detection/reporting path.

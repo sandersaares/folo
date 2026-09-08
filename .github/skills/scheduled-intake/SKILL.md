@@ -75,6 +75,10 @@ rejected evidence, holds, admission conditions and **all registered attempts**.
 Never use a recent-creation filter. Rejected evidence remains visible, not repaired
 from untrusted prose. A failed API read is a failed scan.
 
+Preserve the descriptor's structured replay scope when handing it to the worker.
+A Miri target or seed-range replay does not require a single failing test or seed
+to be eligible; do not invent that attribution or reject the scope as missing evidence.
+
 Use `list_sessions_and_chats` and `get_session` to reconcile each registered attempt
 against the native issue association, session, branch and current activity. Read
 PR/branch records before interpreting unknown publication outcomes. Consult every

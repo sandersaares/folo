@@ -69,6 +69,15 @@ baseline. Read current `main` before implementing a historical defect. Record a
 compatible last-known-good ancestor and regression window when available; do not
 blame the last commit merely because it was the failing head.
 
+For Miri, preserve the validated structured replay scope: Cargo target kind/name,
+test filter and matching mode when provided, flags, seed or seed range, and shard.
+A target-level or seed-range replay is valid evidence without attribution to one
+test and seed. Parallel seed output can interleave, and leak diagnostics can appear
+after the test suite; do not invent narrower attribution from trailing output.
+Narrow only when independently known input scope establishes that restriction.
+Keep the recorded scope intact for repair verification; lack of narrower
+attribution alone is not missing evidence.
+
 Classify coverage gaps, implementation defects, deterministic hangs,
 equivalent/impractical mutations, infrastructure failures and insufficient
 evidence explicitly. A focused mutation replay must match the intended mutant;
