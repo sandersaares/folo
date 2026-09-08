@@ -5,6 +5,41 @@ the tenets behind them, and how the pieces relate. Per-job mechanics live in inl
 YAML comments and in the `just` recipes the steps call; this document stays high-level.
 Ownership of the release-validation pipeline is in [implementation.md](implementation.md).
 
+## Scheduled correctness and personal remediation
+
+The [scheduled validation contract](../../docs/scheduled-validation.md) separates deterministic
+hosted checks from personally authorized Local Copilot App repairs. Hosted detection and reporting
+do not depend on the App being available. Local automation progresses existing repairs through
+check failures, moved `main`, version readiness and review feedback to human acceptance; only a
+human approves and merges.
+
+The reviewed rollout policy separates deployment, hosted observe operation and cutover. Staged
+deployment retains the existing PR and push deep checks. Hosted observe operation enables scheduled
+execution and deduplicated reporting without enabling local repairs or removing any merge gate.
+Cutover moves ordinary Miri, many-seed Miri, mutation testing and careful checks to the scheduled
+manifest only after the execution, reporting, native App and credential safeguards are established.
+The same policy changes routine local validation while leaving explicit deep validation available.
+Rollback restores the existing checks before disabling the replacement.
+
+Complete coverage is evidence for an immutable source and check contract, not merely a green
+workflow or an empty defect list. Compatible full successes can be reused for unchanged `main`
+within the reviewed maximum age. A skip preserves the age of that success; a newer failed or
+incomplete attempt invalidates it. Setup failures are execution incidents, not a defect in each
+package that setup prevented from running.
+
+Managed repair identity joins the finding generation, registered executor/session/attempt, reserved
+branch, PR and exact head. A personal account's ordinary PR remains ordinary. Managed candidates
+receive package-scoped deep checks and an unconditional gate feeding `required-checks`; absent,
+skipped or stale evidence cannot pass. Merge queue scope follows actual synthetic candidate
+ancestry and API membership rather than a PR number parsed from a queue ref. Confirmation checks
+use the actual post-merge main commit, including squash merges. Unexplained nondeterminism remains
+unresolved rather than being erased by a single passing replay.
+
+Managed PRs are excluded from production-backed advisory benchmarks and credentialed Azure tests
+on the initial opening event, including drafts. Emulator and other ordinary validation remain.
+The required managed gate enforces publication prerequisites independently of those conservative
+credential exclusions. Excluding credentials does not establish that a local worktree is a sandbox.
+
 ## Job granularity and gating
 
 Validation runs each `just` command as its own parallel job rather than one combined

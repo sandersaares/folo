@@ -62,3 +62,11 @@ high-level design in `design.md` and per-job mechanics in inline YAML comments.
 - Merge-queue runs use the same pruned job set as pull requests. A `github.event_name ==
   'push'` guard that means "full matrix" must stay keyed on `push`, not on
   `!= 'pull_request'`, or a `merge_group` run would take the full matrix.
+- Keep `scheduled-repair-gate` unconditional and in the fan-in's must-succeed list. Read managed
+  scope from the trusted default-branch policy and registered issue/attempt/head metadata.
+  A personal account's unmarked PR is not a managed repair.
+- Do not remove the scheduled rollout prerequisites or turn on cutover before the corresponding
+  canaries and credential safeguards have been established. Preserve the legacy deep path while
+  hosted execution/reporting are staged; rollback must restore a working enforcement path.
+- Privileged scheduled reporting must check out the default-branch controller, not a triggering
+  candidate. Treat downloaded evidence as data and preserve reporter/worker record ownership.

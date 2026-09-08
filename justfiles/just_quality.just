@@ -263,8 +263,7 @@ validate-linux:
     wsl -e bash -l -c "just package='{{ package }}' validate-local"
 
 # Full validation of primary factors, as you would do in a build pipeline before a release.
-# Includes package-scoped mutation testing as its final (and by far slowest) step, since
-# uncaught mutations are a very common cause of CI failures - we catch them before pushing.
+# Deep steps follow the reviewed rollout policy; staged mode retains existing enforcement.
 # Performs validation on the current platform, whatever that may be.
 [group('quality')]
 validate-local:
@@ -279,14 +278,14 @@ validate-local:
     just package="{{ package }}" test-docs
     just package="{{ package }}" docs
     just package="{{ package }}" docs-default-features
-    just package="{{ package }}" miri
+    just package="{{ package }}" _scheduled-routine-deep miri
     just package="{{ package }}" machete
     just package="{{ package }}" default-features-check
     just package="{{ package }}" check-external-types
     just package="{{ package }}" check release
     just package="{{ package }}" clippy release
     just package="{{ package }}" build release
-    just package="{{ package }}" mutants
+    just package="{{ package }}" _scheduled-routine-deep mutants
 
 # Validation of extra factors that take potentially too long to run in regular validation.
 [group('quality')]

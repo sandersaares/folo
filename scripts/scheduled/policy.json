@@ -4,7 +4,7 @@
   "repository_id": 850321188,
   "reporter_login": "github-actions[bot]",
   "worker_login": "sandersaares",
-  "managed_branch_prefix": "scheduled-repair/",
+  "managed_branch_prefix": "sandersaares-scheduled-repair-",
   "rollout": {
     "phase": "staged",
     "hosted_execution_enabled": false,

@@ -1,0 +1,72 @@
+name: Scheduled validation
+
+on:
+  schedule:
+    - cron: 41 2 * * *
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Force fresh full evidence even when unchanged main is covered
+        type: boolean
+        default: false
+      canary:
+        description: Explicit read-only execution pilot while scheduled execution is staged
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: scheduled-validation
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    if: github.repository == 'folo-rs/folo' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: read
+      actions: read
+    outputs:
+      run: ${{ steps.plan.outputs.run }}
+      source_sha: ${{ steps.plan.outputs.source_sha }}
+      controller_sha: ${{ steps.plan.outputs.controller_sha }}
+      matrix: ${{ steps.plan.outputs.matrix }}
+      manifest: ${{ steps.plan.outputs.manifest }}
+    steps:
+      - name: Checkout scheduled immutable main
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Decide whether complete coverage is reusable
+        id: plan
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORCE_RECHECK: ${{ inputs.force || false }}
+          EXECUTION_CANARY: ${{ inputs.canary || false }}
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          ./scripts/scheduled/Invoke-ScheduledPlan.ps1 -Force:($env:FORCE_RECHECK -eq 'true') -Canary:($env:EXECUTION_CANARY -eq 'true')
+      - name: Preserve expected scope even when checks are not run
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: scheduled-plan-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .scheduled-plan
+          if-no-files-found: error
+          retention-days: 30
+  checks:
+    needs: plan
+    if: needs.plan.outputs.run == 'true'
+    uses: ./.github/workflows/deep-checks.yml
+    with:
+      source_sha: ${{ needs.plan.outputs.source_sha }}
+      controller_sha: ${{ needs.plan.outputs.controller_sha }}
+      matrix: ${{ needs.plan.outputs.matrix }}
+      manifest: ${{ needs.plan.outputs.manifest }}

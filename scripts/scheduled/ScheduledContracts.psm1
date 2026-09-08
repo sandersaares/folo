@@ -53,9 +53,15 @@ function Read-ScheduledRecord {
     )
 
     $records = [regex]::Matches($Text, "<!-- scheduled-${Kind}:v1 (\{[^\r\n]*\}) -->")
-    if ($records.Count -ne 1) { throw "Expected exactly one scheduled $Kind record." }
-    $record = ConvertFrom-Json -InputObject $records[0].Groups[1].Value -AsHashtable
-    if ($record.schema_version -ne 1) { throw 'Unsupported scheduled record schema.' }
+    if ($records.Count -ne 1) { throw [FormatException]::new("Expected exactly one scheduled $Kind record.") }
+    try {
+        $record = ConvertFrom-Json -InputObject $records[0].Groups[1].Value -AsHashtable
+    } catch [ArgumentException] {
+        throw [FormatException]::new('Invalid scheduled record JSON.', $_.Exception)
+    }
+    if (-not $record.ContainsKey('schema_version') -or $record.schema_version -ne 1) {
+        throw [FormatException]::new('Unsupported scheduled record schema.')
+    }
     return $record
 }
 
@@ -91,12 +97,20 @@ function Get-ScheduledPolicy {
         throw 'Unsupported scheduled policy or missing repository identity.'
     }
     if ($policy.coverage.max_age_days -le 0) { throw 'Coverage maximum age must be positive.' }
+    foreach ($switchName in @('hosted_execution_enabled', 'reporting_enabled', 'cutover')) {
+        if ($policy.rollout[$switchName] -isnot [bool]) { throw "Rollout switch must be boolean: $switchName" }
+    }
+    $prerequisiteNames = @('execution_canary', 'reporting_canary', 'native_app_canary',
+        'benchmark_exclusion', 'azure_policy')
+    foreach ($name in $prerequisiteNames) {
+        if ($policy.rollout.prerequisites[$name] -isnot [bool]) { throw "Missing rollout prerequisite: $name" }
+    }
     if ($policy.rollout.cutover) {
         if (-not $policy.rollout.hosted_execution_enabled -or -not $policy.rollout.reporting_enabled) {
             throw 'Cutover requires both hosted execution and reporting.'
         }
-        foreach ($prerequisite in $policy.rollout.prerequisites.GetEnumerator()) {
-            if ($prerequisite.Value -ne $true) { throw "Cutover prerequisite missing: $($prerequisite.Key)" }
+        foreach ($name in $prerequisiteNames) {
+            if (-not $policy.rollout.prerequisites[$name]) { throw "Cutover prerequisite missing: $name" }
         }
     }
     return $policy

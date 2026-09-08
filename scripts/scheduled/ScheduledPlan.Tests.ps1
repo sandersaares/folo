@@ -1,10 +1,10 @@
 #Requires -Modules @{ ModuleName = 'Pester'; ModuleVersion = '5.0' }
 BeforeAll {
     Import-Module (Join-Path $PSScriptRoot 'ScheduledPlan.psm1') -Force
-    function New-TestManifest {
+    function Get-TestManifest {
         Get-ScheduledCheckManifest -SourceSha ('a' * 40) -ControllerSha ('b' * 40) -ContractDigest ('c' * 64)
     }
-    function New-TestResults($manifest) {
+    function Get-TestResult($manifest) {
         @($manifest.checks | ForEach-Object {
             @{
                 schema_version = 1; check_id = $_.id; actual_scope = $_; outcome = 'passed'
@@ -16,7 +16,7 @@ BeforeAll {
 }
 Describe 'Expected deep scope' {
     It 'preserves ordinary Miri platforms mutation shards many-seed budgets and careful platforms' {
-        $manifest = New-TestManifest
+        $manifest = Get-TestManifest
         $manifest.checks.Count | Should -Be 32
         @($manifest.checks | Where-Object kind -EQ mutants).Count | Should -Be 16
         @($manifest.checks | Where-Object kind -EQ miri).Count | Should -Be 4
@@ -29,8 +29,8 @@ Describe 'Expected deep scope' {
             Should -Throw
     }
     It 'rejects every missing duplicate stale unknown or skipped required result' {
-        $manifest = New-TestManifest
-        $results = New-TestResults $manifest
+        $manifest = Get-TestManifest
+        $results = Get-TestResult $manifest
         (Test-ScheduledManifest -Manifest $manifest -Results $results).successful | Should -BeTrue
         (Test-ScheduledManifest -Manifest $manifest -Results $results[1..31]).complete | Should -BeFalse
         (Test-ScheduledManifest -Manifest $manifest -Results ($results + $results[0])).complete | Should -BeFalse
@@ -38,8 +38,8 @@ Describe 'Expected deep scope' {
         (Test-ScheduledManifest -Manifest $manifest -Results $results).complete | Should -BeFalse
     }
     It 'distinguishes complete findings from incomplete execution' {
-        $manifest = New-TestManifest
-        $results = New-TestResults $manifest
+        $manifest = Get-TestManifest
+        $results = Get-TestResult $manifest
         $results[0].outcome = 'findings'
         $verdict = Test-ScheduledManifest -Manifest $manifest -Results $results
         $verdict.complete | Should -BeTrue
@@ -52,14 +52,14 @@ Describe 'Expected deep scope' {
 }
 Describe 'Unchanged main decisions' {
     BeforeEach {
-        $manifest = New-TestManifest
-        $now = [datetimeoffset]'2026-09-08T12:00:00Z'
+        $manifest = Get-TestManifest
+        $script:now = [datetimeoffset]'2026-09-08T12:00:00Z'
         $receipt = @{
             scope = 'full'; complete = $true; successful = $true; manifest = $manifest
             source_sha = $manifest.source_sha; check_contract_digest = $manifest.check_contract_digest
             run_id = 1; run_number = 2; run_attempt = 1; completed_at = '2026-09-07T12:00:00Z'
         }
-        $coverage = @{ schema_version = 1; receipt = $receipt; invalidation = $null }
+        $script:coverage = @{ schema_version = 1; receipt = $receipt; invalidation = $null }
     }
     It 'reuses a complete compatible receipt without refreshing its time' {
         $decision = Get-ScheduledRunDecision -Manifest $manifest -Coverage $coverage -Now $now
@@ -83,5 +83,20 @@ Describe 'Unchanged main decisions' {
             run_number = 2; run_attempt = 2
         }
         (Get-ScheduledRunDecision -Manifest $manifest -Coverage $coverage -Now $now).run | Should -BeTrue
+    }
+    It 'reruns malformed or unreadable receipts rather than suppressing checks' {
+        foreach ($invalid in @(@{}, @{ schema_version = 99 },
+                @{ schema_version = 1; receipt = @{}; invalidation = $null })) {
+            (Get-ScheduledRunDecision -Manifest $manifest -Coverage $invalid -Now $now).run | Should -BeTrue
+        }
+        $receipt.completed_at = 'not a timestamp'
+        (Get-ScheduledRunDecision -Manifest $manifest -Coverage $coverage -Now $now).run | Should -BeTrue
+    }
+    It 'preserves timestamp meaning after JSON DateTime conversion' {
+        $serialized = $coverage | ConvertTo-Json -Depth 50
+        $roundTripped = $serialized | ConvertFrom-Json -AsHashtable
+        (Get-ScheduledRunDecision -Manifest $manifest -Coverage $roundTripped -Now $now).run | Should -BeFalse
+        $roundTripped.receipt.completed_at = [datetime]'2026-09-01T12:00:00Z'
+        (Get-ScheduledRunDecision -Manifest $manifest -Coverage $roundTripped -Now $now).run | Should -BeTrue
     }
 }

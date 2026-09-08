@@ -1,0 +1,47 @@
+name: Scheduled reporting
+
+on:
+  workflow_run:
+    workflows: [Scheduled validation, Scheduled verification]
+    types: [completed]
+
+concurrency:
+  # One writer serializes coverage and issue generations across both originating workflows.
+  group: scheduled-reporting
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  report:
+    if: github.repository == 'folo-rs/folo'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+      pull-requests: read
+    steps:
+      - name: Checkout trusted default-branch reporter, never the triggering candidate
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - name: Reconcile durable evidence under reviewed rollout policy
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          ./scripts/scheduled/Invoke-ScheduledReport.ps1 -Apply
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: scheduled-report-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .scheduled-report
+          if-no-files-found: warn
+          retention-days: 30

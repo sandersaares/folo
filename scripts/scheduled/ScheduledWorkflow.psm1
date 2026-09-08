@@ -1,0 +1,238 @@
+#requires -Version 7
+
+# Thin workflow entrypoints use reviewed controller inputs; candidate text is never executable.
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+$PSNativeCommandUseErrorActionPreference = $true
+Import-Module (Join-Path $PSScriptRoot 'ScheduledContracts.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'ScheduledPlan.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'ScheduledGate.psm1') -Force
+
+function Get-ScheduledCoverageIndex {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][hashtable] $Policy)
+    $pages = Invoke-ScheduledReadApi "repos/$($Policy.repository)/issues?labels=scheduled-coverage&state=all&per_page=100" -Paginate
+    $issues = @($pages | ForEach-Object { $_ } | Where-Object { $_.user.login -ceq $Policy.reporter_login })
+    if ($issues.Count -eq 0) { return $null }
+    if ($issues.Count -ne 1) { throw 'Ambiguous coverage index; operator reconciliation required.' }
+    try {
+        return Read-ScheduledRecord -Text $issues[0].body -Kind coverage
+    } catch [FormatException] {
+        # A corrupt optional cache is a reason to execute, never a reason to assume coverage.
+        Write-Verbose "Coverage index is malformed; forcing fresh execution: $($_.Exception.Message)"
+        return $null
+    }
+}
+
+function Get-ScheduledConfirmationScope {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][hashtable] $Policy, [Parameter(Mandatory)][string] $SourceSha)
+
+    $pages = Invoke-ScheduledReadApi "repos/$($Policy.repository)/issues?labels=scheduled-finding&state=open&per_page=100" -Paginate
+    foreach ($issue in @($pages | ForEach-Object { $_ })) {
+        if ($issue.user.login -cne $Policy.reporter_login) { continue }
+        $reporter = Read-ScheduledRecord -Text $issue.body -Kind reporter
+        $commentPages = Invoke-ScheduledReadApi "repos/$($Policy.repository)/issues/$($issue.number)/comments?per_page=100" -Paginate
+        $run = Invoke-ScheduledReadApi "repos/$($Policy.repository)/actions/runs/$($reporter.observation.run_id)/attempts/$($reporter.observation.run_attempt)"
+        $incident = ConvertTo-ScheduledIncident -Issue $issue -Comments @($commentPages | ForEach-Object { $_ }) `
+            -Repository $Policy.repository -RepositoryId $Policy.repository_id -Run $run `
+            -ReporterLogin $Policy.reporter_login -WorkerLogin $Policy.worker_login
+        $worker = $incident.validated_worker
+        if ($null -eq $worker -or $null -eq $worker.pr_number) { continue }
+        $pr = Invoke-ScheduledReadApi "repos/$($Policy.repository)/pulls/$($worker.pr_number)"
+        if ($pr.state -cne 'closed' -or -not $pr.merged) { continue }
+        Assert-ScheduledSha $pr.merge_commit_sha
+        if ($reporter.ContainsKey('confirmation') -and $null -ne $reporter.confirmation -and
+            $reporter.confirmation.merge_commit_sha -ceq $pr.merge_commit_sha -and
+            $reporter.confirmation.status -cne 'retry') {
+            continue
+        }
+        $comparison = Invoke-ScheduledReadApi "repos/$($Policy.repository)/compare/$($pr.merge_commit_sha)...${SourceSha}"
+        if ($comparison.status -cnotin @('identical', 'ahead')) {
+            throw 'Merged repair is not contained in the confirmation main candidate.'
+        }
+        $scope = Get-ScheduledRepairScope -PullRequest $pr -Issue $issue -Worker $worker -Policy $Policy
+        if (-not $scope.managed) { throw 'Registered merged repair lost its recognition metadata.' }
+        @{
+            issue_number = $issue.number; finding_id = $incident.finding_id; generation = $incident.generation
+            pr_number = $pr.number; merge_commit_sha = $pr.merge_commit_sha; source_sha = $SourceSha
+            check_ids = $scope.check_ids; packages = $scope.packages; worker = $worker
+        }
+    }
+}
+
+function Invoke-ScheduledPlanning {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][ValidateSet('scheduled', 'validation', 'verify')][string] $Mode,
+        [Parameter(Mandatory)][string] $EventPath,
+        [Parameter(Mandatory)][string] $OutputDirectory,
+        [datetimeoffset] $Now = [datetimeoffset]::UtcNow,
+        [switch] $Force,
+        [switch] $Canary
+    )
+    $workflowEvent = Get-Content -LiteralPath $EventPath -Raw | ConvertFrom-Json -AsHashtable
+    $policy = Get-ScheduledPolicy
+    if ($workflowEvent.repository.id -ne $policy.repository_id) { throw 'Wrong repository for scheduled controller.' }
+    $root = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
+    $controllerSha = (& git -C $root rev-parse HEAD).Trim()
+    $contractDigest = Get-ScheduledContractDigest -Root $root
+    $sourceSha = $controllerSha
+    $scope = 'full'
+    $packages = @()
+    $checkIds = @()
+    $repairs = @()
+    $confirmations = @()
+    $managed = $false
+    $run = $false
+    $reason = 'staged'
+    $receipt = $null
+
+    if ($Mode -eq 'validation') {
+        $scope = 'repair'
+        if ($workflowEvent.ContainsKey('pull_request')) {
+            # Re-read body/registration so metadata-only reruns see the latest exact-head record.
+            $pr = Invoke-ScheduledReadApi "repos/$($policy.repository)/pulls/$($workflowEvent.pull_request.number)"
+            if ($pr.head.sha -cne $workflowEvent.pull_request.head.sha) { throw 'PR head moved since this event.' }
+            $sourceSha = $pr.head.sha
+            $prScope = Get-ScheduledPullRequestScope -PullRequest $pr -Policy $policy
+            if ($prScope.managed) {
+                Assert-ScheduledPullRequestChange -PullRequest $pr -Scope $prScope -Policy $policy -Root $root
+            }
+            $repairs += $prScope
+        } elseif ($workflowEvent.ContainsKey('merge_group')) {
+            $sourceSha = $workflowEvent.merge_group.head_sha
+            $repository = $policy.repository
+            $isAncestor = {
+                param($ancestor, $descendant)
+                if ($ancestor -ceq $descendant) { return $true }
+                $comparison = Invoke-ScheduledReadApi "repos/$repository/compare/${ancestor}...${descendant}"
+                return $comparison.status -cin @('ahead', 'identical')
+            }.GetNewClosure()
+            $entries = @(Get-ScheduledQueueEntry -Repository $repository)
+            $members = @(Get-ScheduledMergeGroupMember -HeadSha $sourceSha -BaseSha $workflowEvent.merge_group.base_sha `
+                    -Entries $entries -IsAncestor $isAncestor)
+            foreach ($member in $members) {
+                $pr = Invoke-ScheduledReadApi "repos/$repository/pulls/$($member.number)"
+                $prScope = Get-ScheduledPullRequestScope -PullRequest $pr -Policy $policy
+                if ($prScope.managed) {
+                    Assert-ScheduledPullRequestChange -PullRequest $pr -Scope $prScope -Policy $policy -Root $root
+                }
+                $repairs += $prScope
+            }
+        }
+        $managedRepairs = @($repairs | Where-Object managed)
+        $managed = $managedRepairs.Count -gt 0
+        if ($managed) {
+            foreach ($name in @('benchmark_exclusion', 'azure_policy', 'native_app_canary')) {
+                if (-not $policy.rollout.prerequisites[$name]) { throw "Managed publication prerequisite missing: $name" }
+            }
+            $packages = @($managedRepairs.packages | Sort-Object -Unique)
+            $checkIds = @($managedRepairs.check_ids | Sort-Object -Unique)
+            $run = $true
+            $reason = 'managed-repair'
+        } else {
+            $reason = 'ordinary-validation'
+        }
+    } elseif ($Mode -eq 'verify') {
+        $scope = 'confirmation'
+        if ($workflowEvent.ContainsKey('inputs')) {
+            $sourceSha = $workflowEvent.inputs.source_sha
+            Assert-ScheduledSha $sourceSha
+            # Manual selection is diagnostic evidence, not authority to close an incident.
+            $comparison = Invoke-ScheduledReadApi "repos/$($policy.repository)/compare/${sourceSha}...${controllerSha}"
+            if ($comparison.status -cnotin @('identical', 'ahead')) {
+                throw 'Confirmation source must be on the trusted main ancestry.'
+            }
+            $checkIds = @($workflowEvent.inputs.check_ids -split ',' | Where-Object { $_ })
+            $packages = @($workflowEvent.inputs.packages -split ',' | Where-Object { $_ })
+            if ($checkIds.Count -eq 0 -or $packages.Count -eq 0) { throw 'Verification requires explicit check and package scope.' }
+            foreach ($packageName in $packages) {
+                if ($packageName -cnotin $policy.repair.allowed_packages) { throw "Unapproved verification package: $packageName" }
+            }
+            $run = $true
+            $reason = 'explicit-verification'
+        } elseif ($policy.rollout.hosted_execution_enabled -and $policy.rollout.prerequisites.native_app_canary) {
+            $confirmations = @(Get-ScheduledConfirmationScope -Policy $policy -SourceSha $sourceSha)
+            $run = $confirmations.Count -gt 0
+            if ($run) {
+                $packages = @($confirmations.packages | Sort-Object -Unique)
+                $checkIds = @($confirmations.check_ids | Sort-Object -Unique)
+            }
+            $reason = if ($run) { 'merged-repair-confirmation' } else { 'no-pending-main-confirmation' }
+        }
+    }
+    $manifest = Get-ScheduledCheckManifest -SourceSha $sourceSha -ControllerSha $controllerSha `
+        -ContractDigest $contractDigest -Scope $scope -Packages $packages -CheckIds $checkIds
+    if ($Mode -eq 'scheduled') {
+        if ($policy.rollout.hosted_execution_enabled -or $Canary) {
+            $coverage = Get-ScheduledCoverageIndex -Policy $policy
+            $decision = Get-ScheduledRunDecision -Manifest $manifest -Coverage $coverage `
+                -Now $Now -MaxAgeDays $policy.coverage.max_age_days -Force:$Force
+            $run = $decision.run
+            $reason = $decision.reason
+            $receipt = $decision.receipt
+        }
+    }
+    $plan = @{
+        schema_version = 1; manifest = $manifest; decision = @{ run = $run; reason = $reason; receipt = $receipt }
+        managed = $managed; repairs = $repairs; confirmations = $confirmations; canary = [bool]$Canary
+        run_id = [long]$env:GITHUB_RUN_ID; run_attempt = [int]$env:GITHUB_RUN_ATTEMPT
+        run_number = [long]$env:GITHUB_RUN_NUMBER; planned_at = $Now.ToString('o')
+    }
+    New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
+    $plan | ConvertTo-Json -Depth 100 | Set-Content -LiteralPath (Join-Path $OutputDirectory 'plan.json')
+    $matrix = @{ include = $manifest.checks } | ConvertTo-Json -Depth 50 -Compress
+    if ($env:GITHUB_OUTPUT) {
+        @(
+            "run=$($run.ToString().ToLowerInvariant())"
+            "managed=$($managed.ToString().ToLowerInvariant())"
+            "cutover=$($policy.rollout.cutover.ToString().ToLowerInvariant())"
+            "matrix=$matrix"
+            "manifest=$($manifest | ConvertTo-Json -Depth 50 -Compress)"
+            "source_sha=$sourceSha"
+            "controller_sha=$controllerSha"
+        ) | Add-Content -LiteralPath $env:GITHUB_OUTPUT
+    }
+    Write-Verbose "Planning $Mode source=$sourceSha contract=${contractDigest}: run=$run because $reason."
+    return $plan
+}
+
+function Invoke-ScheduledGate {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string] $PlanPath,
+        [Parameter(Mandatory)][string] $ResultsDirectory,
+        [Parameter(Mandatory)][string] $ContextResult,
+        [Parameter(Mandatory)][string] $DeepResult,
+        [Parameter(Mandatory)][long] $RunId,
+        [Parameter(Mandatory)][int] $RunAttempt
+    )
+    if ($ContextResult -cne 'success') { throw 'Scheduled context did not succeed.' }
+    $plan = Get-Content -LiteralPath $PlanPath -Raw | ConvertFrom-Json -AsHashtable
+    if (-not $plan.managed) {
+        Write-Verbose 'Ordinary validation: no managed repair evidence required.'
+        return
+    }
+    if ($DeepResult -cne 'success') { throw "Relevant deep execution was $DeepResult." }
+    $results = @()
+    foreach ($file in Get-ChildItem -LiteralPath $ResultsDirectory -Filter evidence.json -Recurse -File) {
+        $results += Get-Content -LiteralPath $file.FullName -Raw | ConvertFrom-Json -AsHashtable
+    }
+    $verdict = Test-ScheduledRepairEvidence -Manifest $plan.manifest -Results $results -RunId $RunId -RunAttempt $RunAttempt
+    if (-not $verdict.successful) { throw "Managed repair evidence rejected: $($verdict.problems -join '; ')" }
+}
+
+function Invoke-ScheduledLocalDeepCheck {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][ValidateSet('miri', 'mutants')][string] $Kind, [string] $Packages = '')
+    $policy = Get-ScheduledPolicy
+    if ($policy.rollout.cutover) {
+        Write-Verbose "Routine $Kind execution moved to scheduled validation; use validate-deep explicitly."
+        return
+    }
+    & just "package=$Packages" $Kind
+}
+
+Export-ModuleMember -Function Invoke-ScheduledPlanning, Invoke-ScheduledGate,
+Invoke-ScheduledLocalDeepCheck, Get-ScheduledCoverageIndex, Get-ScheduledConfirmationScope

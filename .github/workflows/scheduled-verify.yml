@@ -1,0 +1,69 @@
+name: Scheduled verification
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Immutable main commit to confirm (not the original pre-squash PR head)
+        required: true
+        type: string
+      check_ids:
+        description: Comma-separated catalog check IDs
+        required: true
+        type: string
+      packages:
+        description: Comma-separated approved packages
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    if: github.repository == 'folo-rs/folo' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: read
+      actions: read
+      pull-requests: read
+    outputs:
+      run: ${{ steps.plan.outputs.run }}
+      source_sha: ${{ steps.plan.outputs.source_sha }}
+      controller_sha: ${{ steps.plan.outputs.controller_sha }}
+      matrix: ${{ steps.plan.outputs.matrix }}
+      manifest: ${{ steps.plan.outputs.manifest }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Validate explicit immutable confirmation scope
+        id: plan
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          ./scripts/scheduled/Invoke-ScheduledPlan.ps1 -Mode verify
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: scheduled-plan-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .scheduled-plan
+          if-no-files-found: error
+          retention-days: 30
+  checks:
+    needs: plan
+    if: needs.plan.outputs.run == 'true'
+    uses: ./.github/workflows/deep-checks.yml
+    with:
+      source_sha: ${{ needs.plan.outputs.source_sha }}
+      controller_sha: ${{ needs.plan.outputs.controller_sha }}
+      matrix: ${{ needs.plan.outputs.matrix }}
+      manifest: ${{ needs.plan.outputs.manifest }}

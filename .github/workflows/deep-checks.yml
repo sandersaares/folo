@@ -1,0 +1,57 @@
+name: Deep checks
+
+on:
+  workflow_call:
+    inputs:
+      source_sha:
+        required: true
+        type: string
+      controller_sha:
+        required: true
+        type: string
+      matrix:
+        required: true
+        type: string
+      manifest:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  execute:
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(inputs.matrix) }}
+    runs-on: ${{ matrix.platform }}
+    # Preserve the existing mutation work plus cold-cache setup budget.
+    timeout-minutes: 270
+    steps:
+      - name: Checkout immutable controller
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.controller_sha }}
+          persist-credentials: false
+      - name: Setup environment from controller
+        uses: ./.github/actions/setup-environment
+      - name: Checkout immutable candidate
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.source_sha }}
+          path: candidate
+          persist-credentials: false
+      - name: Execute declared check
+        shell: pwsh
+        env:
+          SCHEDULED_CHECK: ${{ toJSON(matrix) }}
+          SCHEDULED_MANIFEST: ${{ inputs.manifest }}
+        run: just scheduled-check
+      - name: Preserve result and raw replay evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: scheduled-result-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.id }}
+          path: .scheduled-result
+          if-no-files-found: warn
+          retention-days: 30

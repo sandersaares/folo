@@ -64,3 +64,61 @@ list therefore fails the fan-in instead of silently disappearing from it.
 
 Azure OIDC test jobs are among the legitimate queue skips because their federated identity
 trusts pull-request and `main` subjects, not merge-group subjects.
+
+## Scheduled controller ownership
+
+`scripts/scheduled/ScheduledContracts.psm1` owns canonical fingerprints and separate reporter,
+worker, PR, coverage and health records. Each record is a versioned JSON HTML comment; replacing
+one record preserves surrounding human prose and other owners' records. Intake joins the
+reporter-authored issue with its actual originating run and repository identity. Worker claims
+belong to the enrolled personal account, never to the hosted reporter.
+
+The check plan declares every expected platform, package, shard and seed range before execution.
+Its digest includes check construction, execution tooling and pins. Results bind the actual scope,
+source, controller, run and attempt to raw replay evidence. The reusable deep workflow checks out
+the controller and candidate separately, runs with read permissions and preserves artifacts even
+on checker failure. Reporting runs only reviewed default-branch code with issue-write authority;
+candidate artifacts are data, never commands or an alternate policy.
+
+`ScheduledPlan.psm1` establishes full-scope completeness and compatible-success reuse.
+`ScheduledExecution.psm1` constructs typed arguments and interprets pinned checker output.
+`ScheduledReport.psm1` and `ScheduledGitHub.psm1` separate deterministic state transitions from
+GitHub persistence. Reporting serializes all originating workflows into one writer; durable minimal
+reproduction data survives the larger artifacts. Raw mutation outcomes come from `mutants.out`,
+not from a full-run `--json` option. An unmutated baseline is mandatory and a replay that matches
+no mutation is an error. Timeouts remain findings.
+
+The Validation context reads the default-branch rollout and joins registered repair metadata.
+Queue membership uses the GitHub merge queue entries' synthetic head commits and ancestry
+bounded by the event base/head. It requires the actual event candidate to exist in the API
+snapshot; an expired or ambiguous queue snapshot fails rather than guessing membership.
+The selected checks execute against the actual combined candidate. Their unconditional
+`scheduled-repair-gate` rejects incomplete results and feeds the existing single required fan-in.
+Metadata-only corrections retrigger through the PR `edited` event or a rerun at the same head.
+
+Before the controller's initial deployment, the bootstrap leg retains every legacy gate and
+rejects recognizable managed PRs. No executor can be enrolled for publication before that
+deployment and the publication safeguards. Once the controller exists, its missing or malformed
+inputs fail the context rather than taking that deployment-only bootstrap path.
+
+## Rollout control
+
+`scripts/scheduled/policy.json` is the reviewed source of truth. Hosted execution and reporting
+are independent switches, so observe mode can run both while local admission remains disabled.
+The `cutover` switch is accepted only with both hosted paths enabled and every prerequisite
+recorded. It controls the old deep jobs and routine local deep calls together. Those jobs remain
+in the fan-in as legitimate conditional skips; the ruleset never acquires matrix names or a second
+required integration. Retained validation jobs preserve their existing event and platform behavior.
+
+Deployment requires the controller/workflows, helper modules, local skills and policy to be merged
+together. A read-only manual execution canary can run while scheduled execution is staged. Enable
+hosted observe execution/reporting after the deterministic execution and reporting pilots, then
+configure the personal Local App and prove its separate capabilities. Approve package/check
+allowlists and the managed credential policy before any managed PR, including a canary. Record
+those prerequisites through a reviewed policy change before cutover. Do not enable both the old
+and new heavy paths indefinitely, and do not disable both during rollback.
+
+The hosted health workflow and personal intake independently observe scheduler, reporting,
+coverage and local scan availability. They distinguish fresh evidence, reused coverage, a failed
+scan, staged/paused operation and unavailable systems. Neither process claims to monitor its
+own total outage; the operator runbook is in the scheduled validation chapter.
