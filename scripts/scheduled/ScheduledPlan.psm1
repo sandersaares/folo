@@ -4,8 +4,8 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
-Import-Module (Join-Path $PSScriptRoot 'ScheduledContracts.psm1') -Force
-Import-Module (Join-Path $PSScriptRoot '..\build\Miri.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'ScheduledContracts.psm1')
+Import-Module (Join-Path $PSScriptRoot '..\build\Miri.psm1')
 
 function Get-ScheduledCheckManifest {
     [CmdletBinding()]

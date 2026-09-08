@@ -87,6 +87,30 @@ Describe 'Managed repair identification' {
         { ConvertTo-ScheduledIncident -Issue $fixture.Issue -Comments $comments -Run $run -Repository 'folo-rs/folo' } |
             Should -Throw
     }
+    It 'rejects spoofed authors wrong workflow provenance and ambiguous worker records' {
+        foreach ($mutation in @('author', 'repository', 'workflow', 'attempt', 'duplicate-worker')) {
+            $fixture = Get-GateFixture
+            $run = @{
+            id = 10; run_attempt = 1; run_number = 2; head_branch = 'main'; head_sha = 'a' * 40
+            status = 'completed'; path = '.github/workflows/scheduled-validation.yml'
+            repository = @{ id = 850321188; full_name = 'folo-rs/folo' }
+            }
+            $comment = @{
+            user = @{ login = 'sandersaares' }
+            body = Write-ScheduledRecord -Kind worker -Record $fixture.Worker
+            }
+            $comments = @($comment)
+            switch ($mutation) {
+            author { $fixture.Issue.user.login = 'unrelated-user' }
+            repository { $run.repository.id = 1 }
+            workflow { $run.path = '.github/workflows/other.yml' }
+            attempt { $run.run_attempt = 2 }
+            duplicate-worker { $comments += $comment }
+            }
+            { ConvertTo-ScheduledIncident -Issue $fixture.Issue -Comments $comments -Run $run -Repository 'folo-rs/folo' } |
+            Should -Throw
+        }
+    }
 }
 Describe 'Combined merge queue scope' {
     It 'uses queue candidate ancestry not a number extracted from the ref' {

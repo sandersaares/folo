@@ -109,7 +109,7 @@ jobs:
   scheduled-repair-gate:
     name: scheduled-repair-gate
     if: always()
-    needs: [scheduled-context, scheduled-repair-checks]
+    needs: [scheduled-context, scheduled-repair-checks, scheduled-version-check]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -134,6 +134,14 @@ jobs:
         with:
           pattern: scheduled-result-${{ github.run_id }}-${{ github.run_attempt }}-*
           path: .scheduled-results
+      - name: Require canonical version expansion for managed repairs
+        if: needs.scheduled-context.outputs.managed == 'true' && needs.scheduled-version-check.result != 'success'
+        shell: pwsh
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          throw 'Canonical version expansion did not succeed for the published repair.'
       - name: Evaluate exact candidate evidence
         if: needs.scheduled-context.outputs.bootstrapped == 'true'
         shell: pwsh
@@ -145,6 +153,29 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $true
           ./scripts/scheduled/Invoke-ScheduledGate.ps1
+
+  scheduled-version-check:
+    needs: scheduled-context
+    if: needs.scheduled-context.outputs.managed == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.scheduled-context.outputs.controller_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/setup-environment
+      - uses: actions/download-artifact@v7
+        with:
+          name: scheduled-plan-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .scheduled-plan
+      - name: Recreate and compare canonical version apply from the pre-versioning tree
+        shell: pwsh
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          ./scripts/scheduled/Invoke-ScheduledVersion.ps1
 
   # Determines which packages are impacted by changes in a PR branch compared
   # to origin/main. On a merge-queue run the baseline is merge_group.base_sha (the

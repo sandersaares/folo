@@ -4,8 +4,8 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
-Import-Module (Join-Path $PSScriptRoot 'ScheduledContracts.psm1') -Force
-Import-Module (Join-Path $PSScriptRoot 'ScheduledPlan.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'ScheduledContracts.psm1')
+Import-Module (Join-Path $PSScriptRoot 'ScheduledPlan.psm1')
 
 function Test-ScheduledManagedPullRequest {
     [CmdletBinding()]
@@ -81,6 +81,8 @@ function Get-ScheduledRepairScope {
         managed = $true; check_ids = $checkIds; packages = @($reporter.package)
         issue_number = $Issue.number; finding_id = $reporter.finding_id
         generation = $reporter.generation; attempt_id = $repair.attempt_id
+        version_evidence = if ($Worker.ContainsKey('version_evidence')) { $Worker.version_evidence } else { $null }
+        head_sha = $PullRequest.head.sha
     }
 }
 

@@ -96,6 +96,16 @@ The selected checks execute against the actual combined candidate. Their uncondi
 `scheduled-repair-gate` rejects incomplete results and feeds the existing single required fan-in.
 Metadata-only corrections retrigger through the PR `edited` event or a rerun at the same head.
 
+Managed release edits also pass `ScheduledVersion.psm1` on the published PR head. The worker
+records an immutable pre-versioning commit, the release baseline, semantic decisions and expanded
+plan. A trusted controller build of `cargo-release-plan` independently regenerates the proposal
+and expansion in a new owned reference worktree, then performs real apply without publication.
+Every committed Cargo manifest and lockfile is compared with that canonical result, including
+dependent requirement rewrites. Source changes after the pre-versioning checkpoint or a moved
+release baseline invalidate the evidence. Path/version-string restrictions are only an early
+scope check; they are not proof of canonical apply. The PR description combines expanded targets
+with already-sufficient pending releases from the report so human review sees the whole release.
+
 Before the controller's initial deployment, the bootstrap leg retains every legacy gate and
 rejects recognizable managed PRs. No executor can be enrolled for publication before that
 deployment and the publication safeguards. Once the controller exists, its missing or malformed

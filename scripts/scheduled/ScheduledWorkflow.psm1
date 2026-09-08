@@ -4,9 +4,9 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
-Import-Module (Join-Path $PSScriptRoot 'ScheduledContracts.psm1') -Force
-Import-Module (Join-Path $PSScriptRoot 'ScheduledPlan.psm1') -Force
-Import-Module (Join-Path $PSScriptRoot 'ScheduledGate.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'ScheduledContracts.psm1')
+Import-Module (Join-Path $PSScriptRoot 'ScheduledPlan.psm1')
+Import-Module (Join-Path $PSScriptRoot 'ScheduledGate.psm1')
 
 function Get-ScheduledCoverageIndex {
     [CmdletBinding()]
@@ -78,6 +78,7 @@ function Invoke-ScheduledPlanning {
     $controllerSha = (& git -C $root rev-parse HEAD).Trim()
     $contractDigest = Get-ScheduledContractDigest -Root $root
     $sourceSha = $controllerSha
+    $releaseBaseSha = $controllerSha
     $scope = 'full'
     $packages = @()
     $checkIds = @()
@@ -102,6 +103,7 @@ function Invoke-ScheduledPlanning {
             $repairs += $prScope
         } elseif ($workflowEvent.ContainsKey('merge_group')) {
             $sourceSha = $workflowEvent.merge_group.head_sha
+            $releaseBaseSha = $workflowEvent.merge_group.base_sha
             $repository = $policy.repository
             $isAncestor = {
                 param($ancestor, $descendant)
@@ -177,6 +179,7 @@ function Invoke-ScheduledPlanning {
     $plan = @{
         schema_version = 1; manifest = $manifest; decision = @{ run = $run; reason = $reason; receipt = $receipt }
         managed = $managed; repairs = $repairs; confirmations = $confirmations; canary = [bool]$Canary
+        release_base_sha = $releaseBaseSha
         run_id = [long]$env:GITHUB_RUN_ID; run_attempt = [int]$env:GITHUB_RUN_ATTEMPT
         run_number = [long]$env:GITHUB_RUN_NUMBER; planned_at = $Now.ToString('o')
     }
