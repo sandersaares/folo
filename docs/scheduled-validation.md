@@ -408,6 +408,15 @@ pagination, intake, PR continuation and setup reconciliation. `just validate-scr
 uses the existing analyzer. Tests inject time, contend a short real file lock without
 sleeping, and simulate lost responses instead of hanging a worker.
 
+Scheduled execution and reporting require Python 3.11 or newer with standard-library
+`tomllib` for `scripts/scheduled/Read-MutationConfig.py`. Mutation-configuration
+parsing supports exact comparison with trusted controller configuration and
+establishing a baseline for shards with no selected mutants. Prove interpreter and
+module availability in each actual execution/reporting environment during the
+approved pilot, including WSL when used; availability on the Windows host alone is
+not sufficient. Missing tooling is an explicit prerequisite blocker, not permission
+to install it automatically or to skip the baseline.
+
 Before repair activation, prove personal billing, expected GitHub permissions, the
 actual Local host and scheduling preview, native issue association/reuse, branch
 naming, unattended consent, crash/restart behavior and publication protections.

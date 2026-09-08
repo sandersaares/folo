@@ -14,6 +14,14 @@ name, marker, limits and approved scope. An installed App entry is only its appl
 copy. Review local prerequisite instructions; do not execute heavyweight setup or
 install missing tools without operator approval.
 
+Scheduled execution and reporting require Python 3.11 or newer with standard-library
+`tomllib` for `scripts\scheduled\Read-MutationConfig.py`. This supports trusted
+mutation-configuration comparison and empty-shard baselines. Record this prerequisite
+for each actual execution/reporting environment, including WSL when used; a Windows
+installation does not establish Linux availability. The approved environment pilot
+must establish availability. Do not install tooling or run scheduled workloads as
+part of setup, or add heavyweight preparation to empty polling sessions.
+
 Verify the expected GitHub API user and canonical numeric repository identity:
 
 ```powershell
