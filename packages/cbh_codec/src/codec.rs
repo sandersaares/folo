@@ -338,9 +338,12 @@ mod tests {
     /// A representative repetitive object body — the kind of JSON the storage
     /// layer actually stores, where the same field names recur on every record.
     fn sample_json() -> Vec<u8> {
+        // Repetition, not volume, is the property these JSON round trips exercise.
+        const RECORD_COUNT: usize = 2;
+
         let record = r#"{"id":["fast_time","capture","two_instants"],"metrics":[{"kind":"WallTime","value":12.5}]},"#;
         let mut body = String::from(r#"{"schema":1,"results":["#);
-        for _ in 0..64 {
+        for _ in 0..RECORD_COUNT {
             body.push_str(record);
         }
         body.push_str("]}");
@@ -388,21 +391,50 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "incompressible input spanning scratch windows requires a large codec workload"
+    )]
     fn roundtrips_incompressible_input_growing_both_buffers() {
         let plain = incompressible();
         let compressed = compress(&plain);
-        // gzip cannot shrink random data, so the compressed body grew past the
-        // initial `len / 3` guess; decompressing it grows the output buffer too.
+        // The incompressible body spans scratch windows in both directions.
         let restored = decompress(&compressed).unwrap();
         assert_eq!(restored, plain);
     }
 
     #[test]
+    fn roundtrips_across_small_scratch_windows() {
+        // A small scratch window exercises the same multi-pass coder loops as
+        // large objects, without interpreting a production-sized payload.
+        const SCRATCH_LEN: usize = 8;
+
+        let plain = incompressible_of(SCRATCH_LEN * 2);
+        let mut scratch = [0; SCRATCH_LEN];
+        let mut deflate = Compress::new(Compression::new(GZIP_LEVEL), false);
+        let mut compressed = Vec::new();
+        run_deflate(&mut deflate, &mut scratch, &plain, &mut compressed);
+        assert!(compressed.len() > scratch.len());
+
+        let mut inflate = Decompress::new(false);
+        let mut restored = Vec::new();
+        run_inflate(&mut inflate, &mut scratch, &compressed, &mut restored).unwrap();
+        assert_eq!(restored, plain);
+    }
+
+    #[test]
     fn reuses_thread_state_across_many_calls() {
+        // Consecutive distinct inputs exercise reset under Miri; native tests
+        // additionally cover sustained reuse without paying that interpreter cost.
+        const CALLS: u32 = if cfg!(miri) { 2 } else { 50 };
+        const PAYLOAD_LEN: u32 = if cfg!(miri) { 8 } else { 1000 };
+
         // Repeated calls on one thread reuse the per-thread coders; each must
         // still produce an independent, correct round-trip.
-        for seed in 0..50_u32 {
-            let plain: Vec<u8> = (0..1000).map(|i| (i ^ seed).to_le_bytes()[0]).collect();
+        for seed in 0..CALLS {
+            let plain: Vec<u8> = (0..PAYLOAD_LEN)
+                .map(|i| (i ^ seed).to_le_bytes()[0])
+                .collect();
             assert_eq!(decompress(&compress(&plain)).unwrap(), plain);
         }
     }

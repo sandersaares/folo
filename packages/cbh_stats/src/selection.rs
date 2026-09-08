@@ -650,6 +650,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "the supported-length analytic scan tests stress-family resolution over every split"
+    )]
     fn analytic_certificate_clears_stress_scale_boundary_without_permutations() {
         // These constants mirror the detector policy at the stress harness's default
         // family size. The exact subgroup can resolve rank one, while this fixture
@@ -726,6 +730,35 @@ mod tests {
 
     #[test]
     fn analytic_acceptance_returns_the_weighted_certificate() {
+        // The first balanced split beyond exact feasibility exercises the normal-score
+        // certificate without building exact tables or scanning a production-length history.
+        const REGIME_POINTS: usize = 29;
+        const ANALYTIC_WEIGHT: f64 = 0.1;
+        let values = [vec![1.0; REGIME_POINTS], vec![2.0; REGIME_POINTS]].concat();
+        let calibration = SelectionCalibration {
+            permutation_order_budget: NonZero::new(1).unwrap(),
+            analytic_weight: ANALYTIC_WEIGHT,
+            accept_analytic_below: NO_EVIDENCE,
+            reject_at_or_above: NO_EVIDENCE,
+        };
+        assert!(!exact_mw_feasible(REGIME_POINTS, REGIME_POINTS));
+        let adjusted =
+            selection_adjusted_change_point(&values, REGIME_POINTS, calibration).unwrap();
+
+        // At complete separation the normalized deviation is one half. Serfling's
+        // exponent is -2 * 29 * (1/2)^2 / (1 - 28/58) = -841/30, tighter than
+        // the Chernoff exponent -29 * ln(2). Both tails receive the analytic weight.
+        let expected = 2.0 * (-841.0_f64 / 30.0).exp() / ANALYTIC_WEIGHT;
+        close(adjusted.adjusted_p, expected, 1e-22);
+        assert!(adjusted.adjusted_p > adjusted.tainted_p);
+    }
+
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "the supported-length certificate scans every approximate split and its rank tails"
+    )]
+    fn analytic_acceptance_returns_the_weighted_certificate_at_supported_length() {
         let budget = NonZero::new(10).expect("the test budget is nonzero");
         let calibration = SelectionCalibration {
             permutation_order_budget: budget,
@@ -878,13 +911,14 @@ mod tests {
 
     #[test]
     fn reportable_tied_step_is_not_rejected_by_early_stopping() {
-        // Of the C(12, 6) tied orderings, the two fully separated orders are at
-        // least as extreme as this one. The adjusted chance level therefore stays
-        // below the detector boundary while still encountering extreme permutations.
-        let values = [vec![10.0; 6], vec![20.0; 6]].concat();
+        // This is the smallest balanced tied step whose two fully separated orders
+        // clear the detector boundary after permutation weighting. Allowing a shorter
+        // regime keeps multiple splits admissible, so calibration cannot bypass the orbit.
+        const REGIME_POINTS: usize = 5;
+        let values = [vec![10.0; REGIME_POINTS], vec![20.0; REGIME_POINTS]].concat();
         let adjusted = selection_adjusted_change_point(
             &values,
-            5,
+            REGIME_POINTS - 1,
             calibration(NonZero::new(2_000).expect("the test budget is nonzero")),
         )
         .expect("the clean middle split is reportable");
@@ -892,6 +926,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "exhaustive tied-null calibration compares every ordering against every other ordering"
+    )]
     fn tied_null_distribution_is_conservative() {
         // Six repeated low values and six repeated high values have 924 distinct
         // temporal orderings. Enumerating all of them exercises the tie pattern
@@ -955,6 +993,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "exhaustive tied-null calibration repeats normal-score tail searches for every ordering"
+    )]
     fn analytic_normal_score_bound_is_conservative_with_ties() {
         // Force the approximate scorer over every ordering of a tied population. This
         // mechanically checks the finite-population tail inversion and union bound,
@@ -1009,6 +1051,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "exhaustive tied-null calibration rebuilds exact rank tables and a group orbit for every ordering"
+    )]
     fn exact_group_combination_is_conservative_with_ties() {
         // Enumerating every observed ordering mechanically checks the weighted
         // analytic/exact-group combination under one tied conditional null.

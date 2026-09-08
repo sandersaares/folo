@@ -226,7 +226,10 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore)] // Miri perturbs `exp`, so no bitwise comparison of its results holds.
+    #[cfg_attr(
+        miri,
+        ignore = "Miri perturbs exp, invalidating bitwise convergence checks"
+    )]
     fn erf_series_is_converged_at_its_term_count() {
         // The procedure that establishes the term count: doubling it must not
         // move a single bit anywhere the series is used.
@@ -241,7 +244,10 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore)] // Miri perturbs `exp`, so no bitwise comparison of its results holds.
+    #[cfg_attr(
+        miri,
+        ignore = "Miri perturbs exp, invalidating bitwise convergence checks"
+    )]
     fn tail_erfc_is_converged_at_its_depth() {
         // The same procedure for the fraction, over the whole range it serves:
         // beyond thirty the result underflows and carries no information.
@@ -256,7 +262,10 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore)] // Miri perturbs `exp`, so no bitwise comparison of its results holds.
+    #[cfg_attr(
+        miri,
+        ignore = "Miri perturbs exp, invalidating last-bit crossover checks"
+    )]
     fn neither_route_can_take_over_the_other_side_of_the_crossover() {
         // Why the crossover sits where it does, from both sides.
         //

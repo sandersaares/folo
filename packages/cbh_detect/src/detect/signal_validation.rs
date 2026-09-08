@@ -31,7 +31,7 @@
 //! * **Absolute scale (dimension 2).** Every case is analysed as-is and scaled up by a
 //!   large constant. Every curated move already stands far above its metric kind's
 //!   absolute floor, so scaling cannot carry a verdict across that floor and every
-//!   scaled verdict must match its as-is reference. Two dedicated tests pin the
+//!   scaled verdict must match its as-is reference. Dedicated tests pin the
 //!   opposite: on a small instruction count and on a sub-nanosecond timing move,
 //!   scaling promotes a move by carrying its absolute delta across the floor.
 //! * **Report size (dimension 3).** Every case is analysed alone and again embedded in
@@ -384,16 +384,15 @@ const CURATED_NAME: &str = "curated";
 /// clears its floor, so there the multiple only has to leave the verdict alone.
 const SCALE_MULTIPLE: f64 = 1000.0;
 
-/// The length of each of the two regimes the dedicated absolute-floor tests are built
-/// from.
-///
-/// Long enough that the step between them is statistically unmistakable in both modes,
-/// so the verdict turns on the absolute floor and on nothing else.
-const FLOOR_REGIME_POINTS: usize = 50;
-
-/// The merge base the dedicated absolute-floor tests split at: the last commit of the
-/// first regime, so branch mode sees the whole second regime as the branch side.
-const FLOOR_MERGE_BASE: usize = FLOOR_REGIME_POINTS - 1;
+/// The smallest balanced step judged by the selected detector's absolute floor.
+fn floor_regime_points(mode: Mode) -> usize {
+    match mode {
+        // A single admissible split needs no search correction.
+        Mode::History => MIN_REGIME,
+        // Branch mode must retain a complete base window.
+        Mode::Branch => MIN_SERIES_POINTS,
+    }
+}
 
 /// The move the context run of `a_regression_within_a_contended_window_is_quiet`
 /// carries, as a multiple of the base level.
@@ -788,8 +787,10 @@ fn scaled(values: &[f64], scale: f64) -> Vec<f64> {
 }
 
 #[test]
-// The production permutation budget makes this large matrix impractical under Miri.
-#[cfg_attr(miri, ignore)]
+#[cfg_attr(
+    miri,
+    ignore = "the mode, scale, and report-size matrix repeatedly calibrates statistical findings"
+)]
 fn curated_signals_match_expected_verdicts() {
     for case in cases() {
         let values = case.values();
@@ -856,28 +857,44 @@ fn curated_signals_match_expected_verdicts() {
 }
 
 #[test]
-fn scaling_a_quantized_move_can_clear_the_absolute_floor() {
+fn scaling_a_quantized_move_can_clear_the_absolute_floor_in_history() {
+    assert_quantized_move_crosses_floor(Mode::History);
+}
+
+#[test]
+fn scaling_a_quantized_move_can_clear_the_absolute_floor_in_branch() {
+    assert_quantized_move_crosses_floor(Mode::Branch);
+}
+
+fn assert_quantized_move_crosses_floor(mode: Mode) {
     // A 60 -> 64 instruction-count step clears both relative floors but not the
     // five-count absolute floor. Scaling preserves its shape and relative magnitude
     // while lifting the absolute delta above the floor, so both analysis modes may
     // legitimately change from quiet to finding.
     let kind = MetricKind::InstructionCount;
-    let values = [
-        run_of(60.0, FLOOR_REGIME_POINTS),
-        run_of(64.0, FLOOR_REGIME_POINTS),
-    ]
-    .concat();
+    let regime_points = floor_regime_points(mode);
+    let values = [run_of(60.0, regime_points), run_of(64.0, regime_points)].concat();
     let scaled_values = scaled(&values, SCALE_MULTIPLE);
 
-    for mode in Mode::ALL {
-        let context = mode.context(Some(FLOOR_MERGE_BASE), values.len().saturating_sub(1));
-        assert!(!raises_finding(&values, kind, &context, ALONE));
-        assert!(raises_finding(&scaled_values, kind, &context, ALONE));
-    }
+    let context = mode.context(
+        Some(regime_points.checked_sub(1).unwrap()),
+        values.len().saturating_sub(1),
+    );
+    assert!(!raises_finding(&values, kind, &context, ALONE));
+    assert!(raises_finding(&scaled_values, kind, &context, ALONE));
 }
 
 #[test]
-fn scaling_a_sub_nanosecond_move_can_clear_the_absolute_floor() {
+fn scaling_a_sub_nanosecond_move_can_clear_the_absolute_floor_in_history() {
+    assert_sub_nanosecond_move_crosses_floor(Mode::History);
+}
+
+#[test]
+fn scaling_a_sub_nanosecond_move_can_clear_the_absolute_floor_in_branch() {
+    assert_sub_nanosecond_move_crosses_floor(Mode::Branch);
+}
+
+fn assert_sub_nanosecond_move_crosses_floor(mode: Mode) {
     // A 2.0 -> 2.4 ns step is a 20% move, clearing every relative floor comfortably, but
     // spans only 0.4 ns and so falls under `PRACTICAL_ABSOLUTE_TIME`. Timing metrics are
     // floored on absolute magnitude exactly as counted ones are: a move of well under a
@@ -889,27 +906,27 @@ fn scaling_a_sub_nanosecond_move_can_clear_the_absolute_floor() {
     // This deliberately breaks the matrix's scale-invariance assertion, which is why it
     // is a dedicated test rather than a matrix row.
     let kind = MetricKind::WallTime;
+    let regime_points = floor_regime_points(mode);
     let values = with_noise(
-        &[
-            run_of(2.0, FLOOR_REGIME_POINTS),
-            run_of(2.4, FLOOR_REGIME_POINTS),
-        ]
-        .concat(),
+        &[run_of(2.0, regime_points), run_of(2.4, regime_points)].concat(),
         kind,
         seed_of("sub_nanosecond_move"),
     );
     let scaled_values = scaled(&values, SCALE_MULTIPLE);
 
-    for mode in Mode::ALL {
-        let context = mode.context(Some(FLOOR_MERGE_BASE), values.len().saturating_sub(1));
-        assert!(!raises_finding(&values, kind, &context, ALONE));
-        assert!(raises_finding(&scaled_values, kind, &context, ALONE));
-    }
+    let context = mode.context(
+        Some(regime_points.checked_sub(1).unwrap()),
+        values.len().saturating_sub(1),
+    );
+    assert!(!raises_finding(&values, kind, &context, ALONE));
+    assert!(raises_finding(&scaled_values, kind, &context, ALONE));
 }
 
 #[test]
-// The production permutation budget makes these large crowds impractical under Miri.
-#[cfg_attr(miri, ignore)]
+#[cfg_attr(
+    miri,
+    ignore = "independent companion crowds repeat statistical calibration across modes and scales"
+)]
 fn companion_crowds_report_nothing_of_their_own() {
     // Dimension 3 collapses the crowd outcome to a single boolean per case, which is only
     // meaningful if a crowd contributes no finding of its own. That is enforced here
@@ -950,8 +967,10 @@ fn companion_crowds_report_nothing_of_their_own() {
 }
 
 #[test]
-// The production permutation budget makes this large batch impractical under Miri.
-#[cfg_attr(miri, ignore)]
+#[cfg_attr(
+    miri,
+    ignore = "false-discovery calibration requires the full noisy family and its solo controls"
+)]
 fn a_batch_of_flat_noisy_series_raises_nothing() {
     // The direct analogue of issue #428: a batch of roughly 300 real series reported 17
     // "regressions" and — every single time — exactly zero improvements, a rotating cast

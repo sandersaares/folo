@@ -1988,11 +1988,12 @@ mod tests {
 
     /// The spawner-distributed [`find_changes_spawned`] must produce exactly the same
     /// findings as the serial [`find_changes`] oracle. On a multi-core host this
-    /// exercises the chunked spawn-and-recombine path across several chunks; under
-    /// Miri, which reports one CPU, it exercises the single-worker chunk. Either way
-    /// the synchronous spawner runs each chunk inline on the calling thread.
-    // The production permutation budget makes this large batch impractical under Miri.
-    #[cfg_attr(miri, ignore)]
+    /// exercises the chunked spawn-and-recombine path across several chunks. The
+    /// synchronous spawner runs each chunk inline on the calling thread.
+    #[cfg_attr(
+        miri,
+        ignore = "the full mixed batch repeats statistical detection and compares complete rendered findings"
+    )]
     #[cfg(feature = "private-test-util")]
     #[test]
     fn find_changes_spawned_matches_the_serial_pass() {
@@ -2195,10 +2196,10 @@ mod tests {
     fn change_point_accepts_a_minimal_before_regime() {
         // Pettitt splits at tau=MIN_REGIME, so the before regime holds exactly
         // `min_regime` points: a `<=`/`==` slip on the before-regime bound would
-        // reject the step. The after regime is padded to twice that so the split is
-        // lopsided and only the before-regime bound is at its limit.
+        // reject the step. One extra after point makes the split lopsided, so only
+        // the before-regime bound is at its limit.
         let mut values = vec![100.0; MIN_REGIME];
-        values.extend(std::iter::repeat_n(130.0, 2 * MIN_REGIME));
+        values.extend(std::iter::repeat_n(130.0, MIN_REGIME + 1));
         let finding = only(changes(&[series_of(&values)]));
         assert_eq!(finding.method, FindingMethod::ChangePoint);
         assert_eq!(finding.baseline, 100.0);
@@ -2207,10 +2208,10 @@ mod tests {
 
     #[test]
     fn change_point_accepts_a_minimal_after_regime() {
-        // The mirror image: Pettitt splits at tau=2*MIN_REGIME, so the after regime
+        // The mirror image: Pettitt splits at tau=MIN_REGIME+1, so the after regime
         // holds exactly `min_regime` points and a `<=` slip on the after-regime bound
         // would reject the step.
-        let mut values = vec![100.0; 2 * MIN_REGIME];
+        let mut values = vec![100.0; MIN_REGIME + 1];
         values.extend(std::iter::repeat_n(130.0, MIN_REGIME));
         let finding = only(changes(&[series_of(&values)]));
         assert_eq!(finding.method, FindingMethod::ChangePoint);
@@ -2425,8 +2426,10 @@ mod tests {
     }
 
     #[test]
-    // The production cap deliberately makes this fixture too large for Miri.
-    #[cfg_attr(miri, ignore)]
+    #[cfg_attr(
+        miri,
+        ignore = "testing the production history cap requires a maximum-length statistical series"
+    )]
     fn history_detection_uses_the_newest_capped_active_window_and_keeps_the_full_chart() {
         // A nonzero prefix proves re-baselining is applied before the cap. The following
         // old active regime is also discarded by the cap; if either prefix reached
@@ -2578,8 +2581,6 @@ mod tests {
     }
 
     #[test]
-    // The production permutation budget makes this large batch impractical under Miri.
-    #[cfg_attr(miri, ignore)]
     fn many_independent_series_are_detected_in_a_stable_order() {
         // `find_changes` runs the per-series detection sequentially. The work is
         // embarrassingly parallel — no series depends on another — so this guards
@@ -2591,7 +2592,10 @@ mod tests {
         // pins the spawner-distributed pass to this same output.
         let mut series = Vec::new();
         let mut stepped_ids = Vec::new();
-        for raw in 0_i32..32 {
+        // Distinct findings plus flat companions cover filtering and ranking under Miri.
+        // Native runs additionally exercise a large independent family.
+        let pairs = if cfg!(miri) { 2 } else { 32 };
+        for raw in 0_i32..pairs {
             // A clean step of a distinct magnitude: flags as a regression with its own
             // `|relative_delta|`, so the final ranking is a total order.
             let name = format!("step{raw:03}");
@@ -2968,8 +2972,9 @@ mod tests {
 
     #[test]
     fn history_does_not_reflag_a_blessed_step() {
-        // The unblessed step from 100 to 130 is a change point.
-        let mut values = vec![100.0; MIN_REGIME];
+        // One extra pre-step point makes this analytically conclusive while retaining
+        // a shortest judged post-blessing window. Calibration is not the property here.
+        let mut values = vec![100.0; MIN_REGIME + 1];
         values.extend(std::iter::repeat_n(130.0, MIN_SERIES_POINTS));
         let series = series_of(&values);
         assert_eq!(only(changes(slice::from_ref(&series))).latest, 130.0);
@@ -2978,7 +2983,7 @@ mod tests {
         // begins at the first elevated point, leaving a full-length but flat 130
         // regime to judge, which no longer moves.
         let mut blessed = series;
-        blessed.active_start = MIN_REGIME;
+        blessed.active_start = MIN_REGIME + 1;
         blessed.blessing = Some(Blessing {
             commit: "abcdef0123456789".to_owned(),
             commit_time: Some(Timestamp::from_second(3).unwrap()),
@@ -3350,11 +3355,12 @@ mod tests {
             Testability::Unjudged(UnjudgedReason::TooFewBaseCommitsSinceBlessing)
         );
 
-        let mut unresolved_values = vec![100.0; 36];
+        // The shortest searchable base leaves a repeated but incomplete trailing regime.
+        let mut unresolved_values = vec![100.0; 16];
         unresolved_values.extend(std::iter::repeat_n(200.0, 4));
         unresolved_values.push(220.0);
-        let unresolved_branch = examples::with_base_window(series_of(&unresolved_values), 39);
-        let unresolved_context = examples::branch_context(&unresolved_branch, 39);
+        let unresolved_branch = examples::with_base_window(series_of(&unresolved_values), 19);
+        let unresolved_context = examples::branch_context(&unresolved_branch, 19);
         assert_eq!(
             testability(&unresolved_branch, &unresolved_context),
             Testability::Unjudged(UnjudgedReason::CurrentBaseRegimeUnresolved)
@@ -3370,19 +3376,20 @@ mod tests {
 
     #[test]
     fn branch_findings_materialize_the_base_window_and_tip_chart() {
-        let mut values = vec![100.0; 20];
+        // Chart materialization needs a judged base window, not regime-selection evidence.
+        let mut values = vec![100.0; MIN_SERIES_POINTS];
         values.push(130.0);
         let mut source = series_of(&values);
         source.points.last_mut().unwrap().dirty = true;
-        let branch = examples::with_base_window(source, 19);
-        let context = examples::branch_context(&branch, 19);
+        let branch = examples::with_base_window(source, MIN_SERIES_POINTS - 1);
+        let context = examples::branch_context(&branch, MIN_SERIES_POINTS - 1);
         let finding = only(find_changes(std::slice::from_ref(&branch), &context).findings);
 
         assert!(finding.is_regression());
-        assert_eq!(finding.series.len(), 21);
+        assert_eq!(finding.series.len(), MIN_SERIES_POINTS + 1);
         assert_eq!(finding.series.first().unwrap().value, 100.0);
         assert_eq!(finding.series.last().unwrap().value, 130.0);
-        assert_eq!(finding.series.last().unwrap().topo_index, 20);
+        assert_eq!(finding.series.last().unwrap().topo_index, MIN_SERIES_POINTS);
         assert!(finding.series.last().unwrap().dirty);
         assert_eq!(finding.chart_base_ref, None);
 
@@ -3604,6 +3611,10 @@ mod tests {
 
     /// One scenario per gate family, each declining for a different reason.
     fn declined_cases() -> Vec<DeclinedCase> {
+        // Each half is complete, but its minority group cannot itself form a regime.
+        const MINORITY_POINTS: usize = MIN_REGIME.div_euclid(2);
+        const MAJORITY_POINTS: usize = MIN_SERIES_POINTS - MINORITY_POINTS;
+
         let mut short_after = vec![100.0; MIN_SERIES_POINTS];
         short_after.extend(std::iter::repeat_n(130.0, MIN_REGIME - 1));
         let noisy_step = [
@@ -3611,15 +3622,14 @@ mod tests {
         ];
         // Two levels that both recur in each half of the history: the first half sits mostly
         // on the low level with a few high commits, the second half mostly on the high level
-        // with a few low ones. The majority shifts, so the move is real and — at this length —
-        // significant even after the search correction, yet the levels overlap enough that the
-        // probability of superiority (0.80) stays under the separation gate. Each half is
-        // ordered high-then-low so no trend survives for the drift detector to read.
+        // with a few low ones. The majority shifts, yet the overlap keeps the probability
+        // of superiority under the separation gate. Each half is ordered high-then-low
+        // so no trend survives for the drift detector to read.
         let mut overlapping_regimes: Vec<f64> = Vec::new();
-        overlapping_regimes.extend(std::iter::repeat_n(130.0, 4));
-        overlapping_regimes.extend(std::iter::repeat_n(100.0, 16));
-        overlapping_regimes.extend(std::iter::repeat_n(130.0, 16));
-        overlapping_regimes.extend(std::iter::repeat_n(100.0, 4));
+        overlapping_regimes.extend(std::iter::repeat_n(130.0, MINORITY_POINTS));
+        overlapping_regimes.extend(std::iter::repeat_n(100.0, MAJORITY_POINTS));
+        overlapping_regimes.extend(std::iter::repeat_n(130.0, MAJORITY_POINTS));
+        overlapping_regimes.extend(std::iter::repeat_n(100.0, MINORITY_POINTS));
 
         vec![
             DeclinedCase {
@@ -3827,33 +3837,50 @@ mod tests {
         assert_eq!(log.declined_by(), None);
     }
 
-    #[test]
-    fn recording_the_gates_does_not_change_any_verdict() {
-        // The log observes detection; it must not participate in it. Every scenario the
-        // suite knows about therefore has to reach the same verdict, field for field,
-        // whether or not anyone is watching.
-        let mut batch: Vec<(&str, Series)> = declined_cases()
-            .into_iter()
-            .map(|case| (case.shape, case.series))
-            .collect();
-        batch.push(("a clean step", series_of(&step_values(100.0, 130.0))));
-        batch.push((
-            "a steady climb",
-            series_of(&ramp(100.0, 4.0, MIN_SERIES_POINTS)),
-        ));
+    /// The log observes detection without participating in the verdict.
+    fn assert_recording_preserves_verdict(shape: &str, series: &Series) {
+        let context = observed_context(series);
+        let unobserved = find_changes(slice::from_ref(series), &context).findings;
+        let (observed, _) = evaluate_with_log(series, &context);
+        // `Finding` carries no equality contract, so compare the whole rendering
+        // rather than a hand-picked subset of fields that could hide a difference.
+        assert_eq!(
+            format!("{:?}", unobserved.first()),
+            format!("{observed:?}"),
+            "{shape}"
+        );
+    }
 
-        for (shape, series) in batch {
-            let context = observed_context(&series);
-            let unobserved = find_changes(slice::from_ref(&series), &context).findings;
-            let (observed, _) = evaluate_with_log(&series, &context);
-            // `Finding` carries no equality contract, so compare the whole rendering
-            // rather than a hand-picked subset of fields that could hide a difference.
-            assert_eq!(
-                format!("{:?}", unobserved.first()),
-                format!("{observed:?}"),
-                "{shape}"
-            );
+    fn assert_recording_preserves_declined_verdicts(stage: GateStage) {
+        for case in declined_cases()
+            .into_iter()
+            .filter(|case| case.stage == stage)
+        {
+            assert_recording_preserves_verdict(case.shape, &case.series);
         }
+    }
+
+    #[test]
+    fn recording_the_gates_does_not_change_declined_steps() {
+        assert_recording_preserves_declined_verdicts(GateStage::ChangePoint);
+    }
+
+    #[test]
+    fn recording_the_gates_does_not_change_declined_drifts() {
+        assert_recording_preserves_declined_verdicts(GateStage::Drift);
+    }
+
+    #[test]
+    fn recording_the_gates_does_not_change_a_reported_step() {
+        assert_recording_preserves_verdict("a clean step", &series_of(&step_values(100.0, 130.0)));
+    }
+
+    #[test]
+    fn recording_the_gates_does_not_change_a_reported_drift() {
+        assert_recording_preserves_verdict(
+            "a steady climb",
+            &series_of(&ramp(100.0, 4.0, MIN_SERIES_POINTS)),
+        );
     }
 
     /// The named example series, paired with the verdict its documentation claims.
@@ -3893,6 +3920,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "evaluates the complete scattered documentation examples; small detector shapes have separate Miri coverage"
+    )]
     fn every_named_example_reaches_the_verdict_it_documents() {
         // The figures and the prose both quote these verdicts, so the series and their
         // documentation are only worth sharing while the engine still agrees with them.

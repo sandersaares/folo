@@ -1042,13 +1042,21 @@ mod tests {
     fn mann_whitney_superiority_does_not_drift_with_sample_size() {
         // The effect size is invariant to how many times each level is sampled: two
         // fully interleaved two-level populations keep a superiority of 0.5 whether
-        // sampled 2 or 20 times each, even though the *p-value* would grow
+        // sampled sparsely or repeatedly, even though the *p-value* would grow
         // significant. This is exactly why a separation gate needs the effect size,
         // not the p-value.
+        // Doubling the repeated two-level sample proves size invariance under Miri;
+        // the wider native sample retains coverage of the larger exact rank table.
+        const LARGE_SAMPLE_SIZE: usize = if cfg!(miri) { 4 } else { 20 };
         let small = MannWhitneyU::new(&[10.0, 20.0], &[10.0, 20.0])
             .unwrap()
             .superiority();
-        let large_left: Vec<f64> = [10.0, 20.0].iter().copied().cycle().take(20).collect();
+        let large_left: Vec<f64> = [10.0, 20.0]
+            .iter()
+            .copied()
+            .cycle()
+            .take(LARGE_SAMPLE_SIZE)
+            .collect();
         let large_right = large_left.clone();
         let large = MannWhitneyU::new(&large_left, &large_right)
             .unwrap()
@@ -1121,28 +1129,28 @@ mod tests {
         // Hand-authored samples with heavy ties pit the subset-sum tail against the
         // independent enumeration, and check the p-value is symmetric in its two
         // arguments (the null does not privilege a side).
+        // Distinct values on the left against tied values on the right exercise the
+        // same rank handling in a smaller Miri orbit; native keeps the wider enumeration.
+        let mixed_ties: (&[f64], &[f64]) = if cfg!(miri) {
+            (&[1.0, 2.0, 3.0], &[2.0, 2.0, 4.0])
+        } else {
+            (
+                &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+                &[3.0, 3.0, 3.0, 7.0, 8.0, 9.0],
+            )
+        };
         let cases: &[(&[f64], &[f64])] = &[
             (&[1.0, 2.0, 3.0], &[4.0, 5.0, 6.0]),
             (&[1.0, 1.0, 2.0, 3.0], &[2.0, 3.0, 3.0, 4.0]),
             (&[5.0, 5.0, 5.0], &[1.0, 2.0, 5.0]),
             (&[1.0, 2.0, 2.0, 3.0, 3.0], &[2.0, 3.0, 3.0, 4.0, 5.0]),
             (&[10.0, 10.0, 10.0, 10.0], &[10.0, 10.0, 10.0, 20.0]),
-            (
-                &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
-                &[3.0, 3.0, 3.0, 7.0, 8.0, 9.0],
-            ),
+            mixed_ties,
         ];
         for &(left, right) in cases {
-            close(
-                mann_whitney_u_pvalue(left, right),
-                brute_two_sided_p(left, right),
-                1e-12,
-            );
-            close(
-                mann_whitney_u_pvalue(left, right),
-                mann_whitney_u_pvalue(right, left),
-                1e-12,
-            );
+            let actual = mann_whitney_u_pvalue(left, right);
+            close(actual, brute_two_sided_p(left, right), 1e-12);
+            close(actual, mann_whitney_u_pvalue(right, left), 1e-12);
         }
     }
 
@@ -1150,7 +1158,7 @@ mod tests {
     fn mann_whitney_exact_complete_separation_matches_the_closed_form() {
         // With every left point below every right point only the one extreme split
         // reaches the observed rank sum, so the exact two-sided p is 2 / C(2r, r):
-        // C(6,3)=20, C(10,5)=252, C(16,8)=12870, C(52,26)=495918532948104.
+        // C(6,3)=20, C(10,5)=252, C(16,8)=12870.
         close(
             mann_whitney_u_pvalue(&[1.0, 2.0, 3.0], &[4.0, 5.0, 6.0]),
             2.0 / 20.0,
@@ -1164,7 +1172,14 @@ mod tests {
         let left: Vec<f64> = (1..=8).map(f64::from).collect();
         let right: Vec<f64> = (9..=16).map(f64::from).collect();
         close(mann_whitney_u_pvalue(&left, &right), 2.0 / 12870.0, 1e-12);
+    }
 
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "the wide exact split builds a large subset-sum table; small closed-form cases cover Miri"
+    )]
+    fn mann_whitney_exact_wide_separation_matches_the_closed_form() {
         // A balanced N = 52 split enumerates 26 per side; C(52, 26) stays inside
         // f64's exact-integer range, so the closed form still holds.
         let left: Vec<f64> = (1..=26).map(f64::from).collect();
@@ -1193,15 +1208,19 @@ mod tests {
 
     #[test]
     fn mann_whitney_uses_the_exact_tail_for_a_lopsided_wide_split() {
-        // A 5-vs-52 split spans N = 57, past the balanced feasibility limit, yet its
-        // smaller side has only five points, so C(57, 5) fits f64 exactly and the
-        // exact tail runs. On complete separation it must report the discrete
-        // `2 / C(57, 5)`, not the normal approximation's tie-shrunken value, which
-        // understates it by millions and would let the split masquerade as
-        // astronomically significant.
-        let lows = vec![1.0_f64; 5];
-        let highs = vec![2.0_f64; 52];
-        let exact = 2.0 / 4_187_106.0; // 2 / C(57, 5)
+        // The total is past the balanced feasibility limit, yet the smaller side's
+        // subset count fits f64 exactly and the exact tail runs. On complete
+        // separation it must report the discrete `2 / C(n, k)`, not the normal
+        // approximation's tie-shrunken value, which understates it by millions and
+        // would let the split masquerade as astronomically significant.
+        const TOTAL_SIZE: usize = 57;
+        // Miri keeps a nontrivial minority subset while avoiding the wider exact table.
+        const MINORITY_SIZE: usize = if cfg!(miri) { 2 } else { 5 };
+        let lows = vec![1.0_f64; MINORITY_SIZE];
+        let highs = vec![2.0_f64; TOTAL_SIZE - MINORITY_SIZE];
+        // C(57, 2) and C(57, 5), independently calculated for the respective fixtures.
+        let subset_count = if cfg!(miri) { 1_596.0 } else { 4_187_106.0 };
+        let exact = 2.0 / subset_count;
         close(mann_whitney_u_pvalue(&lows, &highs), exact, 1e-18);
     }
 
