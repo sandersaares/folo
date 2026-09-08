@@ -77,6 +77,8 @@ Describe 'Durable local transactions' {
         $script:now = [DateTimeOffset]'2026-09-01T12:00:00Z'
         $script:explanation = 'The regression test asserts the shifted-range boundary, detecting the observed off-by-one mutation.'
         $script:policy = Get-ScheduledPolicy
+        # A smaller fixture cap proves that policy, not a duplicated production constant, sets the bound.
+        $script:policy.repair.max_explanation_characters = 128
         # The fixture namespace is independent of the installation's App-configured prefix.
         $script:policy.managed_branch_prefix = 'scheduled-repair/'
         $script:policy.local.mode = 'repair'
@@ -176,7 +178,7 @@ Describe 'Durable local transactions' {
         $state = Invoke-TestAction prepare-publication $publication
         $state.attempts[$script:attemptId].phase | Should -Be publishing
         $state.attempts[$script:attemptId].pr_number | Should -BeNullOrEmpty
-        (Get-ScheduledRepairRecord -State $state -AttemptId $script:attemptId).explanation |
+        (Get-ScheduledRepairRecord -State $state -AttemptId $script:attemptId -Policy $script:policy).explanation |
             Should -BeExactly $script:explanation
         (Get-ScheduledWorkerRecord -State $state -AttemptId $script:attemptId).explanation |
             Should -BeExactly $script:explanation
@@ -342,7 +344,8 @@ Describe 'Durable local transactions' {
         $worker.check_id | Should -Be mutants-ubuntu-latest-1
         $worker.check_kind | Should -Be mutants
         $worker.pr_number | Should -BeNullOrEmpty
-        (Get-ScheduledRepairRecord -State $state -AttemptId $script:attemptId).head_sha | Should -Be ('b' * 40)
+        (Get-ScheduledRepairRecord -State $state -AttemptId $script:attemptId -Policy $script:policy).head_sha |
+            Should -Be ('b' * 40)
     }
     It 'preserves claims and scan history when setup is reapplied or a scan fails' {
         Initialize-TestExecutor
@@ -360,9 +363,9 @@ Describe 'Durable local transactions' {
         $state.health.backlog_count | Should -Be 4
         $state.attempts.Count | Should -Be 1
     }
-    It 'rejects missing empty nontext and oversized publication explanations' -ForEach @(
+    It 'rejects missing empty and nontext publication explanations' -ForEach @(
         @{ Explanation = $null }, @{ Explanation = '' }, @{ Explanation = '   ' }
-        @{ Explanation = @{ reason = 'not text' } }, @{ Explanation = ('x' * 4001) }
+        @{ Explanation = @{ reason = 'not text' } }
     ) {
         Initialize-TestExecutor
         Invoke-TestWorkerSetup
@@ -379,16 +382,23 @@ Describe 'Durable local transactions' {
         Initialize-TestExecutor
         Invoke-TestWorkerSetup
         # Exercise the accepted size boundary; prose quality is established by diagnosis/review.
-        $explanation = 'x' * 4000
-        $state = Invoke-TestAction prepare-publication @{
+        $explanation = 'x' * $script:policy.repair.max_explanation_characters
+        $publication = @{
             attempt_id = $script:attemptId; session_id = 'worker-a'; dispatch_token = $script:dispatch
             expected_head = ('a' * 40); head_sha = ('b' * 40); branch = 'scheduled-repair/finding'
-            check_contract_digest = ('c' * 64); explanation = $explanation
+            check_contract_digest = ('c' * 64); explanation = "$explanation!"
         }
-        $record = Get-ScheduledRepairRecord -State $state -AttemptId $script:attemptId
+        { Invoke-TestAction prepare-publication $publication } | Should -Throw
+        $publication.explanation = $explanation
+        $state = Invoke-TestAction prepare-publication $publication
+        $record = Get-ScheduledRepairRecord -State $state -AttemptId $script:attemptId -Policy $script:policy
         $marker = Write-ScheduledRecord -Kind repair -Record $record
         (Read-ScheduledRecord -Kind repair -Text $marker).explanation | Should -BeExactly $explanation
+        $script:policy.repair.max_explanation_characters--
+        { Get-ScheduledRepairRecord -State $state -AttemptId $script:attemptId -Policy $script:policy } |
+            Should -Throw
         $state.attempts[$script:attemptId].explanation = ''
-        { Get-ScheduledRepairRecord -State $state -AttemptId $script:attemptId } | Should -Throw
+        { Get-ScheduledRepairRecord -State $state -AttemptId $script:attemptId -Policy $script:policy } |
+            Should -Throw
     }
 }

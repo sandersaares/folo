@@ -220,7 +220,7 @@ The example identities and path are placeholders, not enrollment defaults.
 | `register-branch` | Worker identity plus `expected_branch`, actual managed `branch`, unchanged `head_sha`; follows registration/acceptance and precedes source edits. |
 | `begin-dispatch` | `coordinator_token`, `attempt_id`; allowed only once for each reserved dispatch. |
 | `accept-dispatch` | `attempt_id`, `session_id`, `dispatch_token`; same-token acceptance is idempotent. |
-| `prepare-publication` | Worker identity plus `expected_head`, `head_sha`, `branch`, `check_contract_digest`, nonempty causal `explanation` of at most 4000 characters; applies to initial creation and subsequent published heads. |
+| `prepare-publication` | Worker identity plus `expected_head`, `head_sha`, `branch`, `check_contract_digest`, nonempty causal `explanation` bounded by `repair.max_explanation_characters`; applies to initial creation and subsequent published heads. |
 | `register-pr` | Worker identity plus `pr_number`, `head_sha`, `branch`; never accepts a replacement PR. |
 | `record-version-plan` | Worker identity plus `version_evidence` containing current `head_sha`, `base_sha`, canonical `plan_digest`, `current`, `description_current`. |
 | `complete-dispatch` | Worker identity plus `phase` (`pr-open`, `awaiting-review`, `blocked`), `reason`, `handled_evidence` fingerprints, optional `proposed_responses` (`kind`, `id`, `fingerprint`, `body`, `status`). Preserve pending human proposals until approved/posted. |
@@ -255,7 +255,8 @@ only after the complete version section is confirmed in the published body.
 
 `Get-ScheduledWorkerRecord` projects the separate executor-owned issue comment.
 `Get-ScheduledRepairRecord` projects the initial/update PR-body identity only after
-publication intent is persisted. Both include numeric repository identity. Serialize
+publication intent is persisted and revalidates the explanation against its explicit
+`Policy` argument. Both include numeric repository identity. Serialize
 through shared `Write-ScheduledRecord`; do not handcraft markers. Every authored
 comment and PR body begins `[Copilot speaking]`. Update the single owned worker
 comment instead of appending a new ownership record every time.

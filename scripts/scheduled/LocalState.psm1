@@ -4,9 +4,6 @@ $PSNativeCommandUseErrorActionPreference = $true
 
 Import-Module (Join-Path $PSScriptRoot 'ScheduledContracts.psm1')
 
-# Keep publication rationale to concise causal paragraphs rather than copied execution logs.
-$script:MaxRepairExplanationLength = 4000
-
 # Short file transactions protect the durable protocol described in
 # docs/scheduled-validation.md. No file handle is expected to survive an App tool call.
 function Get-ScheduledStateRoot {
@@ -262,7 +259,8 @@ function Invoke-LocalStateChange {
                 -not $Data.branch.StartsWith($Policy.managed_branch_prefix, [StringComparison]::Ordinal)) {
                 throw 'Publication conflicts with the recorded branch/head or a previous unknown publication.'
             }
-            Assert-LocalRepairExplanation $Data.explanation
+            Assert-LocalRepairExplanation -Explanation $Data.explanation `
+                -MaxCharacters $Policy.repair.max_explanation_characters
             $attempt.head_sha = $Data.head_sha
             $attempt.check_contract_digest = $Data.check_contract_digest
             $attempt.explanation = $Data.explanation
@@ -485,19 +483,27 @@ function Get-ScheduledWorkerRecord {
 }
 
 function Assert-LocalRepairExplanation {
-    param([AllowNull()][object] $Explanation)
+    param(
+        [AllowNull()][object] $Explanation,
+        [Parameter(Mandatory)][ValidateRange(1, [int]::MaxValue)][int] $MaxCharacters
+    )
     if ($Explanation -isnot [string] -or [string]::IsNullOrWhiteSpace($Explanation) -or
-        $Explanation.Length -gt $script:MaxRepairExplanationLength) {
+        $Explanation.Length -gt $MaxCharacters) {
         throw 'A nonempty bounded causal explanation is required before repair publication.'
     }
 }
 
 function Get-ScheduledRepairRecord {
     [CmdletBinding()]
-    param([Parameter(Mandatory)] $State, [Parameter(Mandatory)][string] $AttemptId)
+    param(
+        [Parameter(Mandatory)] $State,
+        [Parameter(Mandatory)][string] $AttemptId,
+        [Parameter(Mandatory)][System.Collections.IDictionary] $Policy
+    )
     $attempt = Get-LocalAttempt $State @{ attempt_id = $AttemptId }
     if ($attempt.phase -cne 'publishing') { throw 'Persist publication intent before composing a PR record.' }
-    Assert-LocalRepairExplanation $attempt.explanation
+    Assert-LocalRepairExplanation -Explanation $attempt.explanation `
+        -MaxCharacters $Policy.repair.max_explanation_characters
     return @{
         schema_version = 1; repository = $State.repository; repository_id = $State.repository_id
         issue_number = $attempt.issue_number; finding_id = $attempt.finding_id; generation = $attempt.generation

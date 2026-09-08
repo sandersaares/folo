@@ -161,7 +161,8 @@ for publication; do not build the validation tool from candidate-modified source
 
 Persist `prepare-publication` with the previous expected head and new actual
 branch/head BEFORE the first push/PR opening. Supply `explanation`: a nonempty
-causal account, at most 4000 characters, describing the diagnosed failure and why
+causal account within `policy.repair.max_explanation_characters`, describing the
+diagnosed failure and why
 the specific code/test change fixes it. Link the explanation to observed evidence;
 do not substitute a green rerun, generic success statement or copied logs. Refresh
 it when the causal account or repair changes. The helper persists it in the worker
@@ -185,8 +186,9 @@ $PSNativeCommandUseErrorActionPreference = $true
 Import-Module .\scripts\scheduled\LocalState.psm1 -Force
 Import-Module .\scripts\scheduled\ScheduledContracts.psm1 -Force
 $state = Get-Content -LiteralPath "{{STATE_PATH}}" -Raw | ConvertFrom-Json -AsHashtable
+$policy = Get-ScheduledPolicy
 $worker = Get-ScheduledWorkerRecord -State $state -AttemptId '{{ATTEMPT_ID}}'
-$repair = Get-ScheduledRepairRecord -State $state -AttemptId '{{ATTEMPT_ID}}'
+$repair = Get-ScheduledRepairRecord -State $state -AttemptId '{{ATTEMPT_ID}}' -Policy $policy
 "[Copilot speaking]`n`n$(Write-ScheduledRecord -Kind worker -Record $worker)" |
     Set-Content -LiteralPath "{{WORKER_BODY_PATH}}"
 Write-ScheduledRecord -Kind repair -Record $repair
