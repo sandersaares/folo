@@ -337,6 +337,7 @@ fn work_tree_from_metadata(
                 .map(|dir| (dir.to_path_buf(), package.name.clone()))
         })
         .collect();
+    let canonical_tracked_members_by_dir = canonical_members_by_dir(&tracked_members_by_dir);
     // Apply visits every member Cargo can see so an untracked or ignored
     // dependent cannot retain a stale exact pin. This set is deliberately wider
     // than the tracked package set accepted as plan targets.
@@ -399,6 +400,7 @@ fn work_tree_from_metadata(
         metadata,
         &selected_member_ids,
         &tracked_members_by_dir,
+        &canonical_tracked_members_by_dir,
         &root_manifest,
         &workspace_root,
     )?;
@@ -534,6 +536,7 @@ fn discover_exact_dependencies(
     metadata: &MetadataJson,
     selected_member_ids: &HashSet<&str>,
     tracked_members_by_dir: &BTreeMap<PathBuf, String>,
+    canonical_tracked_members_by_dir: &BTreeMap<PathBuf, String>,
     workspace_manifest: &DocumentMut,
     workspace_root: &Path,
 ) -> Result<Vec<ExactDependency>, AppError> {
@@ -568,9 +571,12 @@ fn discover_exact_dependencies(
                     let Some(path) = dependency_field(effective.item, "path") else {
                         continue;
                     };
-                    let Some(target) =
-                        resolved_member(effective.path_base, path, tracked_members_by_dir)
-                    else {
+                    let Some(target) = resolved_member(
+                        effective.path_base,
+                        path,
+                        tracked_members_by_dir,
+                        canonical_tracked_members_by_dir,
+                    ) else {
                         continue;
                     };
                     let package_name = dependency_field(effective.item, "package").unwrap_or(alias);
@@ -660,17 +666,27 @@ fn resolved_member<'a>(
     base: &Path,
     dependency_path: &str,
     members_by_dir: &'a BTreeMap<PathBuf, String>,
+    canonical_members_by_dir: &'a BTreeMap<PathBuf, String>,
 ) -> Option<&'a str> {
     let joined = normalize_path(&base.join(dependency_path));
     if let Some(name) = members_by_dir.get(&joined) {
         return Some(name);
     }
     let resolved = fs::canonicalize(&joined).ok()?;
-    members_by_dir.iter().find_map(|(member_dir, name)| {
-        fs::canonicalize(member_dir)
-            .is_ok_and(|member| member == resolved)
-            .then_some(name.as_str())
-    })
+    canonical_members_by_dir.get(&resolved).map(String::as_str)
+}
+
+/// Indexes workspace members by their filesystem-resolved directories.
+///
+/// Building the fallback index once per metadata snapshot keeps alias resolution
+/// to one filesystem query per dependency edge rather than one per candidate member.
+fn canonical_members_by_dir(
+    members_by_dir: &BTreeMap<PathBuf, String>,
+) -> BTreeMap<PathBuf, String> {
+    members_by_dir
+        .iter()
+        .filter_map(|(dir, name)| fs::canonicalize(dir).ok().map(|dir| (dir, name.clone())))
+        .collect()
 }
 
 fn normalize_path(path: &Path) -> PathBuf {
@@ -1124,9 +1140,10 @@ mod tests {
         fs::create_dir_all(&member).unwrap();
         symlink(&member, root.path().join("alias")).unwrap();
         let members = BTreeMap::from([(member, "member".to_string())]);
+        let canonical_members = canonical_members_by_dir(&members);
 
         assert_eq!(
-            resolved_member(root.path(), "alias", &members),
+            resolved_member(root.path(), "alias", &members, &canonical_members),
             Some("member")
         );
     }

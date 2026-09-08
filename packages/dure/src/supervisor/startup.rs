@@ -21,21 +21,21 @@ use crate::{BreakawayDeniedError, SessionId, StartupFailedError, StoreError};
 /// VGA text-mode geometry (`DEFAULT_PTY_COLS` by `DEFAULT_PTY_ROWS`). The first
 /// attach always resizes to the client's real size (design.md, "Terminal
 /// pass-through").
-pub(super) const DEFAULT_PTY_SIZE: WindowSize = WindowSize {
+pub(crate) const DEFAULT_PTY_SIZE: WindowSize = WindowSize {
     cols: DEFAULT_PTY_COLS,
     rows: DEFAULT_PTY_ROWS,
 };
 /// Resources that must be torn down if initialization fails.
-pub(super) struct InitGuard<'a, P: Processes, S: SessionStore, T: Transport, C: Pseudoconsole> {
-    pub(super) processes: &'a P,
-    pub(super) store: &'a S,
-    pub(super) transport: &'a T,
-    pub(super) pty_host: &'a C,
-    pub(super) job: Option<JobId>,
-    pub(super) pty: Option<PtyId>,
-    pub(super) listener: Option<ListenerId>,
-    pub(super) session: Option<(SessionId, ProcessIdentity)>,
-    pub(super) committed: bool,
+pub(crate) struct InitGuard<'a, P: Processes, S: SessionStore, T: Transport, C: Pseudoconsole> {
+    pub(crate) processes: &'a P,
+    pub(crate) store: &'a S,
+    pub(crate) transport: &'a T,
+    pub(crate) pty_host: &'a C,
+    pub(crate) job: Option<JobId>,
+    pub(crate) pty: Option<PtyId>,
+    pub(crate) listener: Option<ListenerId>,
+    pub(crate) session: Option<(SessionId, ProcessIdentity)>,
+    pub(crate) committed: bool,
 }
 
 impl<P: Processes, S: SessionStore, T: Transport, C: Pseudoconsole> Drop
@@ -63,16 +63,16 @@ impl<P: Processes, S: SessionStore, T: Transport, C: Pseudoconsole> Drop
     }
 }
 
-pub(super) struct Initialized {
-    pub(super) session_id: SessionId,
-    pub(super) identity: ProcessIdentity,
-    pub(super) listener: ListenerId,
-    pub(super) pty: PtyId,
-    pub(super) job: JobId,
-    pub(super) app: AppId,
+pub(crate) struct Initialized {
+    pub(crate) session_id: SessionId,
+    pub(crate) identity: ProcessIdentity,
+    pub(crate) listener: ListenerId,
+    pub(crate) pty: PtyId,
+    pub(crate) job: JobId,
+    pub(crate) app: AppId,
     /// The pipe clients attach on, so the initiating client can be told it
     /// rather than reading back the record just written.
-    pub(super) pipe_name: String,
+    pub(crate) pipe_name: String,
 }
 
 /// What `initialize` failed at.
@@ -80,12 +80,12 @@ pub(super) struct Initialized {
 /// The supervisor has no console of its own, so the step is the only thing
 /// that tells the user which subsystem to look at.
 /// Ref: docs/supervisor.md, "Startup".
-pub(super) struct FailedStartup {
-    pub(super) step: StartupStep,
-    pub(super) error: AppError,
+pub(crate) struct FailedStartup {
+    pub(crate) step: StartupStep,
+    pub(crate) error: AppError,
 }
 
-pub(super) fn initialize<P, S, T, C>(
+pub(crate) fn initialize<P, S, T, C>(
     guard: &mut InitGuard<'_, P, S, T, C>,
     processes: &P,
     store: &S,
@@ -171,7 +171,7 @@ where
     })
 }
 
-pub(super) fn map_startup(error: &PalError) -> AppError {
+pub(crate) fn map_startup(error: &PalError) -> AppError {
     match error.kind() {
         PalErrorKind::BreakawayDenied => BreakawayDeniedError::new().into(),
         _ => StartupFailedError::new().into(),

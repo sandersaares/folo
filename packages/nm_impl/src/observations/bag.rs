@@ -180,7 +180,7 @@ impl ObservationBag {
 /// a catch-all that causes `copy_from` to scan all buckets at or above the threshold.
 /// Histograms of this size are outside the expected workload, so scanning their tail
 /// does not justify a larger dirty-state representation on every event.
-const DIRTY_BUCKETS_OVERFLOW_INDEX: usize = 63;
+pub(crate) const DIRTY_BUCKETS_OVERFLOW_INDEX: usize = 63;
 
 /// Relaxed ordering minimizes synchronization on the observation hot path. Reports already
 /// permit fields from different instants, so they do not require ordering between independent
@@ -270,7 +270,7 @@ impl ObservationBagSync {
         // Validate compatibility before mutating any field so the copy is transactional and
         // cannot panic partway through with a caller's lock held. Comparing magnitudes (not
         // just lengths) rejects same-length histograms whose boundaries differ.
-        assert!(self.bucket_magnitudes == data.bucket_magnitudes);
+        assert_eq!(self.bucket_magnitudes, data.bucket_magnitudes);
 
         self.count.store(data.count.get(), SYNC_BAG_ACCESS_ORDERING);
         self.sum.store(data.sum.get(), SYNC_BAG_ACCESS_ORDERING);
@@ -536,7 +536,3 @@ impl ObservationBagSnapshot {
         }
     }
 }
-
-#[cfg(test)]
-#[cfg_attr(coverage_nightly, coverage(off))]
-mod tests;

@@ -16,33 +16,33 @@ rust-version = "1.95"
 include = ["src/**/*"]
 
 [workspace.dependencies]
-all_the_time = { version = "0.6.5", path = "packages/all_the_time", default-features = false }
-alloc_tracker = { version = "0.7.5", path = "packages/alloc_tracker", default-features = false }
+all_the_time = { version = "0.6.6", path = "packages/all_the_time", default-features = false }
+alloc_tracker = { version = "0.7.6", path = "packages/alloc_tracker", default-features = false }
 anyspawn = { version = "0.8.0", default-features = false }
 arc-swap = { version = "1.7.0", default-features = false }
 async-trait = { version = "0.1.89", default-features = false }
-awaiter_set = { version = "0.1.14", path = "packages/awaiter_set", default-features = false }
+awaiter_set = { version = "0.1.15", path = "packages/awaiter_set", default-features = false }
 axum = { version = "0.8.0", default-features = false }
 azure_core = { version = "1.0.0", default-features = false }
 azure_identity = { version = "1.0.0", default-features = false }
 azure_storage_blob = { version = "1.0.0", default-features = false }
 base64 = { version = "0.23.1", default-features = false, features = ["std"] }
-cargo-freeze-deps = { version = "0.1.10", path = "packages/cargo-freeze-deps", default-features = false }
+cargo-freeze-deps = { version = "0.1.11", path = "packages/cargo-freeze-deps", default-features = false }
 cargo-release-plan = { version = "0.2.0", path = "packages/cargo-release-plan", default-features = false }
-cbh_analyze = { version = "=0.2.7", path = "packages/cbh_analyze", default-features = false }
-cbh_cli = { version = "=0.2.7", path = "packages/cbh_cli", default-features = false }
-cbh_codec = { version = "=0.2.7", path = "packages/cbh_codec", default-features = false }
-cbh_command = { version = "=0.2.7", path = "packages/cbh_command", default-features = false }
-cbh_config = { version = "=0.2.7", path = "packages/cbh_config", default-features = false }
-cbh_detect = { version = "=0.2.7", path = "packages/cbh_detect", default-features = false }
-cbh_diag = { version = "=0.2.7", path = "packages/cbh_diag", default-features = false }
-cbh_engines = { version = "=0.2.7", path = "packages/cbh_engines", default-features = false }
-cbh_git = { version = "=0.2.7", path = "packages/cbh_git", default-features = false }
-cbh_model = { version = "=0.2.7", path = "packages/cbh_model", default-features = false }
-cbh_probe = { version = "=0.2.7", path = "packages/cbh_probe", default-features = false }
-cbh_render = { version = "=0.2.7", path = "packages/cbh_render", default-features = false }
-cbh_stats = { version = "=0.2.7", path = "packages/cbh_stats", default-features = false }
-cbh_storage = { version = "=0.2.7", path = "packages/cbh_storage", default-features = false }
+cbh_analyze = { version = "=0.2.8", path = "packages/cbh_analyze", default-features = false }
+cbh_cli = { version = "=0.2.8", path = "packages/cbh_cli", default-features = false }
+cbh_codec = { version = "=0.2.8", path = "packages/cbh_codec", default-features = false }
+cbh_command = { version = "=0.2.8", path = "packages/cbh_command", default-features = false }
+cbh_config = { version = "=0.2.8", path = "packages/cbh_config", default-features = false }
+cbh_detect = { version = "=0.2.8", path = "packages/cbh_detect", default-features = false }
+cbh_diag = { version = "=0.2.8", path = "packages/cbh_diag", default-features = false }
+cbh_engines = { version = "=0.2.8", path = "packages/cbh_engines", default-features = false }
+cbh_git = { version = "=0.2.8", path = "packages/cbh_git", default-features = false }
+cbh_model = { version = "=0.2.8", path = "packages/cbh_model", default-features = false }
+cbh_probe = { version = "=0.2.8", path = "packages/cbh_probe", default-features = false }
+cbh_render = { version = "=0.2.8", path = "packages/cbh_render", default-features = false }
+cbh_stats = { version = "=0.2.8", path = "packages/cbh_stats", default-features = false }
+cbh_storage = { version = "=0.2.8", path = "packages/cbh_storage", default-features = false }
 clap = { version = "4.6.1", default-features = false, features = ["default"] }
 colored = { version = "3.1.1", default-features = false }
 cpu-time = { version = "1.0.0", default-features = false }
@@ -53,16 +53,16 @@ derive_more = { version = "2.0.0", default-features = false }
 event-listener = { version = "5.4.0", default-features = false, features = [
     "std",
 ] }
-events = { version = "0.7.16", path = "packages/events", default-features = false }
-events_once = { version = "0.5.37", path = "packages/events_once", default-features = false }
+events = { version = "0.7.17", path = "packages/events", default-features = false }
+events_once = { version = "0.5.38", path = "packages/events_once", default-features = false }
 fake_headers = { version = "0.0.5", default-features = false }
-fast_time = { version = "0.1.30", path = "packages/fast_time", default-features = false }
+fast_time = { version = "0.1.31", path = "packages/fast_time", default-features = false }
 flate2 = { version = "1.1.9", default-features = false }
 foldhash = { version = "0.2.0", default-features = false, features = ["std"] }
 folo_ffi = { version = "0.1.17", path = "packages/folo_ffi", default-features = false }
 folo_utils = { version = "0.1.13", path = "packages/folo_utils", default-features = false }
 frozen-collections = { version = "0.9.1", default-features = false }
-future_deque = { version = "0.1.20", path = "packages/future_deque", default-features = false }
+future_deque = { version = "0.1.21", path = "packages/future_deque", default-features = false }
 futures = { version = "0.3.32", default-features = false, features = ["std"] }
 futures-core = { version = "0.3.32", default-features = false }
 # Keep this version in lockstep with `GUNGRAUN_RUNNER_VERSION` in `constants.env` (which the
@@ -84,20 +84,20 @@ itertools = { version = "0.15.0", default-features = false, features = [
 ] }
 jiff = { version = "0.2.28", default-features = false, features = ["std"] }
 libc = { version = "0.2.172", default-features = false }
-linked = { version = "1.0.22", path = "packages/linked", default-features = false }
-linked_macros = { version = "=1.0.22", path = "packages/linked_macros", default-features = false }
-linked_macros_impl = { version = "=1.0.22", path = "packages/linked_macros_impl", default-features = false }
-many_cpus = { version = "2.4.19", path = "packages/many_cpus", default-features = false }
-many_cpus_impl = { version = "=2.4.19", path = "packages/many_cpus_impl", default-features = false }
+linked = { version = "1.0.23", path = "packages/linked", default-features = false }
+linked_macros = { version = "=1.0.23", path = "packages/linked_macros", default-features = false }
+linked_macros_impl = { version = "=1.0.23", path = "packages/linked_macros_impl", default-features = false }
+many_cpus = { version = "2.4.20", path = "packages/many_cpus", default-features = false }
+many_cpus_impl = { version = "=2.4.20", path = "packages/many_cpus_impl", default-features = false }
 mimalloc = { version = "0.1.52", default-features = false }
 mockall = { version = "0.15.0", default-features = false }
 mutants = { version = "0.0.4", default-features = false }
 negative-impl = { version = "0.1.0", default-features = false }
 new_zealand = { version = "1.0.9", path = "packages/new_zealand", default-features = false }
-nm = { version = "0.1.48", path = "packages/nm", default-features = false }
-nm_impl = { version = "=0.1.48", path = "packages/nm_impl", default-features = false }
-nm_otel = { version = "0.4.20", path = "packages/nm_otel", default-features = false }
-nm_otel_impl = { version = "=0.4.20", path = "packages/nm_otel_impl", default-features = false }
+nm = { version = "0.1.49", path = "packages/nm", default-features = false }
+nm_impl = { version = "=0.1.49", path = "packages/nm_impl", default-features = false }
+nm_otel = { version = "0.4.21", path = "packages/nm_otel", default-features = false }
+nm_otel_impl = { version = "=0.4.21", path = "packages/nm_otel_impl", default-features = false }
 nonempty = { version = "0.12.0", default-features = false }
 num-integer = { version = "0.1.46", default-features = false }
 num-traits = { version = "0.2.19", default-features = false }
@@ -145,7 +145,7 @@ toml = { version = "1.1.2", default-features = false }
 toml_edit = { version = "0.25.12", default-features = false }
 tracing = { version = "0.1.44", default-features = false, features = ["std"] }
 trybuild = { version = "1.0.0", default-features = false }
-vicinal = { version = "0.1.39", path = "packages/vicinal", default-features = false }
+vicinal = { version = "0.1.40", path = "packages/vicinal", default-features = false }
 windows = { version = "0.62.0", default-features = false, features = ["std"] }
 
 [workspace.metadata.cargo-udeps.ignore]
@@ -260,6 +260,7 @@ let_underscore_must_use = "warn"
 literal_string_with_formatting_args = "warn"
 lossy_float_literal = "warn"
 manual_assert = "warn"
+manual_assert_eq = "warn"
 manual_ilog2 = "warn"
 manual_instant_elapsed = "warn"
 manual_is_power_of_two = "warn"
@@ -327,6 +328,7 @@ same_length_and_capacity = "warn"
 semicolon_if_nothing_returned = "warn"
 semicolon_inside_block = "warn"
 set_contains_or_insert = "warn"
+self_named_module_files = "warn"
 single_char_pattern = "warn"
 single_option_map = "warn"
 str_split_at_newline = "warn"
@@ -358,6 +360,7 @@ unneeded_field_pattern = "warn"
 unnested_or_patterns = "warn"
 unseparated_literal_suffix = "warn"
 unused_async = "warn"
+unused_async_trait_impl = "warn"
 unused_peekable = "warn"
 unused_result_ok = "warn"
 unused_self = "warn"
@@ -366,6 +369,7 @@ useless_let_if_seq = "warn"
 verbose_bit_mask = "warn"
 volatile_composites = "warn"
 while_float = "warn"
+with_capacity_zero = "warn"
 
 [patch.crates-io]
 # `thread_aware` depends on a compatible published version of this package. Resolve that transitive

@@ -9,9 +9,9 @@ use std::mem::{MaybeUninit, offset_of};
 use std::panic::{RefUnwindSafe, UnwindSafe};
 use std::pin::Pin;
 use std::ptr::NonNull;
-#[cfg(test)]
+#[cfg(all(test, debug_assertions))]
 use std::sync::Arc;
-#[cfg(any(debug_assertions, test))]
+#[cfg(debug_assertions)]
 use std::sync::Mutex;
 use std::sync::atomic::{self, AtomicU8};
 use std::task::Waker;
@@ -1072,7 +1072,6 @@ where
 unsafe impl<T: Send> Sync for Event<T> {}
 
 #[cfg_attr(coverage_nightly, coverage(off))] // No API contract to test.
-#[expect(clippy::missing_fields_in_debug, reason = "phantoms are boring")]
 impl<T: Send + 'static> fmt::Debug for Event<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut debug = f.debug_struct(type_name::<Self>());
@@ -1103,44 +1102,44 @@ impl<T: Send + 'static> fmt::Debug for Event<T> {
 /// test's barrier. Tests that install hooks hold [`HOOK_SERIALIZATION_MUTEX`] for the duration.
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
-mod test_hooks {
+pub(crate) mod test_hooks {
     use std::cell::Cell;
     use std::sync::{Arc, Mutex};
 
     use crate::NEVER_POISONED;
 
     /// A hook closure, shared between the test that installs it and the thread that runs it.
-    pub(super) type HookFn = dyn Fn() + Send + Sync;
+    pub(crate) type HookFn = dyn Fn() + Send + Sync;
 
     /// Held by a test for as long as it has any hook installed, so that hook-based tests cannot
     /// observe each other's hooks.
-    pub(super) static HOOK_SERIALIZATION_MUTEX: Mutex<()> = Mutex::new(());
+    pub(crate) static HOOK_SERIALIZATION_MUTEX: Mutex<()> = Mutex::new(());
 
-    pub(super) static HOOK_POLL_BOUND_PRE_CAS: Mutex<Option<Arc<HookFn>>> = Mutex::new(None);
-    pub(super) static HOOK_POLL_AWAITING_PRE_CAS: Mutex<Option<Arc<HookFn>>> = Mutex::new(None);
-    pub(super) static HOOK_SET_IN_SIGNALING: Mutex<Option<Arc<HookFn>>> = Mutex::new(None);
+    pub(crate) static HOOK_POLL_BOUND_PRE_CAS: Mutex<Option<Arc<HookFn>>> = Mutex::new(None);
+    pub(crate) static HOOK_POLL_AWAITING_PRE_CAS: Mutex<Option<Arc<HookFn>>> = Mutex::new(None);
+    pub(crate) static HOOK_SET_IN_SIGNALING: Mutex<Option<Arc<HookFn>>> = Mutex::new(None);
 
     thread_local! {
         /// Marks the current thread as a participant in a hook-based test. Only threads with
         /// this flag set to `true` trigger hooks when they reach a hook callsite.
-        pub(super) static HOOK_PARTICIPANT: Cell<bool> = const { Cell::new(false) };
+        pub(crate) static HOOK_PARTICIPANT: Cell<bool> = const { Cell::new(false) };
     }
 
     /// Runs in `Event::poll_bound()` after the waker has been written into the event but before
     /// the state transition that publishes it to the sender.
-    pub(super) fn poll_bound_pre_cas() {
+    pub(crate) fn poll_bound_pre_cas() {
         run(&HOOK_POLL_BOUND_PRE_CAS);
     }
 
     /// Runs in `Event::poll_awaiting()` before the state transition that takes the previously
     /// registered waker back from the sender.
-    pub(super) fn poll_awaiting_pre_cas() {
+    pub(crate) fn poll_awaiting_pre_cas() {
         run(&HOOK_POLL_AWAITING_PRE_CAS);
     }
 
     /// Runs in `Event::set()` while the event is in the transient `EVENT_SIGNALING` state, after
     /// the sender has taken the awaiter and before it publishes `EVENT_SET`.
-    pub(super) fn set_in_signaling() {
+    pub(crate) fn set_in_signaling() {
         run(&HOOK_SET_IN_SIGNALING);
     }
 
@@ -1158,7 +1157,3 @@ mod test_hooks {
         }
     }
 }
-
-#[cfg(test)]
-#[cfg_attr(coverage_nightly, coverage(off))]
-mod tests;

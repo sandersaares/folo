@@ -1,22 +1,23 @@
 #[cfg(debug_assertions)]
-use std::cell::RefCell;
-use std::panic::{RefUnwindSafe, UnwindSafe};
-use std::sync::{Arc, Barrier};
-use std::task::{self, Poll, Waker};
-use std::{iter, thread};
+pub(crate) use std::cell::RefCell;
+pub(crate) use std::panic::{RefUnwindSafe, UnwindSafe};
+pub(crate) use std::sync::{Arc, Barrier};
+pub(crate) use std::task::{self, Poll, Waker};
+pub(crate) use std::{iter, thread};
 
-use futures::executor::block_on;
+pub(crate) use futures::executor::block_on;
 use static_assertions::assert_impl_all;
 #[cfg(debug_assertions)]
-use testing::assert_panics_with;
-use testing::with_watchdog;
+pub(crate) use testing::assert_panics_with;
+pub(crate) use testing::with_watchdog;
 
-use super::*;
+pub(crate) use super::super::*;
 #[cfg(debug_assertions)]
-use crate::assert_inspect_awaiters_is_reentrant;
-use crate::{
+pub(crate) use crate::assert_inspect_awaiters_is_reentrant;
+pub(crate) use crate::{
     Disconnected,
     PanickingPayload,
+    RawPooledSender,
     // Shared helpers keep callback-safety regression coverage consistent across containers.
     assert_disconnected_send_payload_panic_releases_event,
     assert_receiver_waker_panic_handoff_releases_event,
@@ -64,7 +65,3 @@ fn unread_payload_panic_releases_event() {
         || pool.is_empty(),
     );
 }
-
-mod concurrency;
-mod diagnostics;
-mod lifecycle;

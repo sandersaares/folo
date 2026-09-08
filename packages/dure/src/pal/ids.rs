@@ -7,30 +7,30 @@
 
 /// Listener for incoming client connections.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) struct ListenerId(pub(in crate::pal) u64);
+pub(crate) struct ListenerId(pub(crate) u64);
 
 /// One connected client or startup channel.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) struct ConnId(pub(in crate::pal) u64);
+pub(crate) struct ConnId(pub(crate) u64);
 
 /// App-lifetime job object.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) struct JobId(pub(in crate::pal) u64);
+pub(crate) struct JobId(pub(crate) u64);
 
 /// Supervisor-owned pseudoconsole.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) struct PtyId(pub(in crate::pal) u64);
+pub(crate) struct PtyId(pub(crate) u64);
 
 /// Spawned app process waitable.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) struct AppId(pub(in crate::pal) u64);
+pub(crate) struct AppId(pub(crate) u64);
 
 /// One outstanding takeover of the local console for a relay.
 ///
 /// Names the console state that takeover replaced, so handing the console back
 /// undoes exactly what was taken and nothing a later takeover owns.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) struct RelayLeaseId(pub(in crate::pal) u64);
+pub(crate) struct RelayLeaseId(pub(crate) u64);
 
 // A stand-in PAL written inside a test module issues handles the same way a real
 // implementation does, so it needs the same minting operation. Nothing else may

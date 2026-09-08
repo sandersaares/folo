@@ -26,7 +26,7 @@ use crate::{PalFailedError, StoreError};
 // are wired up leaves the test's client waiting forever, and watchdogs are
 // disabled under cargo-mutants.
 #[cfg_attr(test, mutants::skip)]
-pub(super) fn serve<P, S, T, C>(
+pub(crate) fn serve<P, S, T, C>(
     processes: &P,
     store: &S,
     transport: &T,
@@ -197,7 +197,7 @@ fn close_job_once<P: Processes>(processes: &P, job: JobId, closed: &AtomicBool) 
 // Blocking accept. A mutation that drops the stop check or the accept error
 // path hangs unit tests because watchdogs are disabled under cargo-mutants.
 #[cfg_attr(test, mutants::skip)]
-pub(super) fn accept_loop<T, C>(
+pub(crate) fn accept_loop<T, C>(
     shared: &Arc<Shared<T, C>>,
     transport: &T,
     listener: ListenerId,
@@ -224,7 +224,7 @@ pub(super) fn accept_loop<T, C>(
 // Blocking recv. A mutation that drops the disconnect path hangs unit tests
 // because watchdogs are disabled under cargo-mutants.
 #[cfg_attr(test, mutants::skip)]
-pub(super) fn client_loop<T, C>(
+pub(crate) fn client_loop<T, C>(
     shared: &Shared<T, C>,
     conn: ConnId,
     set_attached: &impl Fn(u64, bool),
@@ -370,7 +370,7 @@ pub(super) fn client_loop<T, C>(
 // Blocking read of pty output. A mutation that drops the stop check hangs
 // unit tests because watchdogs are disabled under cargo-mutants.
 #[cfg_attr(test, mutants::skip)]
-pub(super) fn pty_output_loop<T, C>(shared: &Shared<T, C>) -> Result<(), PalError>
+pub(crate) fn pty_output_loop<T, C>(shared: &Shared<T, C>) -> Result<(), PalError>
 where
     T: Transport + Clone,
     C: Pseudoconsole,

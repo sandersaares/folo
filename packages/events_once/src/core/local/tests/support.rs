@@ -1,18 +1,21 @@
-use std::cell::RefCell;
-use std::mem;
-use std::pin::Pin;
-use std::rc::Rc;
-use std::sync::Arc;
-use std::task::{self, Poll};
+pub(crate) use std::cell::{Cell, RefCell};
+pub(crate) use std::mem;
+pub(crate) use std::panic::{RefUnwindSafe, UnwindSafe};
+pub(crate) use std::pin::Pin;
+pub(crate) use std::rc::Rc;
+pub(crate) use std::sync::Arc;
+pub(crate) use std::task::{self, Poll, Waker};
 
 use static_assertions::{assert_impl_all, assert_not_impl_any};
-use testing::{
+pub(crate) use testing::{
     DropOnWakerRelease, assert_panics, assert_panics_with, clone_action_waker,
     clone_action_waker_panicking_on_clone_release, drop_waker, wake_action_waker, with_watchdog,
 };
 
-use super::*;
-use crate::IntoValueError;
+pub(crate) use super::super::*;
+pub(crate) use crate::{
+    Disconnected, EmbeddedLocalEvent, IntoValueError, RawLocalReceiver, RawLocalSender,
+};
 
 assert_not_impl_any!(LocalEvent<i32>: Send, Sync);
 
@@ -25,7 +28,7 @@ assert_impl_all!(LocalEvent<Rc<RefCell<u32>>>: UnwindSafe, RefUnwindSafe);
 ///
 /// The storage comes first in the returned tuple, which makes it outlive the endpoints
 /// bound alongside it.
-fn placed<T: 'static>() -> (
+pub(crate) fn placed<T: 'static>() -> (
     Pin<Box<EmbeddedLocalEvent<T>>>,
     RawLocalSender<T>,
     RawLocalReceiver<T>,
@@ -46,7 +49,7 @@ fn placed<T: 'static>() -> (
 ///
 /// The only such state is the diagnostic backtrace, which exists in debug builds only.
 #[cfg(debug_assertions)]
-fn placed_event<T: 'static>(place: &EmbeddedLocalEvent<T>) -> &LocalEvent<T> {
+pub(crate) fn placed_event<T: 'static>(place: &EmbeddedLocalEvent<T>) -> &LocalEvent<T> {
     // SAFETY: The container is only ever accessed through shared references, matching the
     // access that the endpoints make, and the pointer of an `UnsafeCell` is never null.
     let event = unsafe { place.inner.get().as_ref_unchecked() };
@@ -55,8 +58,3 @@ fn placed_event<T: 'static>(place: &EmbeddedLocalEvent<T>) -> &LocalEvent<T> {
     // into it. Releasing an event does not deinitialize the storage.
     unsafe { event.assume_init_ref() }
 }
-
-#[cfg(debug_assertions)]
-mod diagnostics;
-mod lifecycle;
-mod reentrancy;
