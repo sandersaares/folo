@@ -84,7 +84,7 @@ function Get-ScheduledConfirmationScope {
         if ($comparison.status -cnotin @('identical', 'ahead')) {
             throw 'Merged repair is not contained in the confirmation main candidate.'
         }
-        $scope = Get-ScheduledRepairScope -PullRequest $pr -Issue $issue -Worker $worker -Policy $Policy
+        $scope = Get-ScheduledRepairScope -PullRequest $pr -Issue $issue -Worker $worker -Policy $Policy -Confirmation
         if (-not $scope.managed) { throw 'Registered merged repair lost its recognition metadata.' }
         @{
             issue_number = $issue.number; finding_id = $incident.finding_id; generation = $incident.generation

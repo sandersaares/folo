@@ -76,20 +76,20 @@ function Get-ScheduledContractDigest {
     [OutputType([string])]
     param([Parameter(Mandatory)][string] $Root)
 
-    # Hash execution, planning, policy, pins and Cargo scope. Local ownership/heartbeat changes do
-    # not affect check compatibility; source SHA separately binds every tested byte.
-    $paths = @('constants.env', 'rust-toolchain.toml', 'Cargo.toml',
+    # Hash the checker contract, not the checked source or admission policy. Source SHA binds
+    # Cargo content independently; a mechanical version increment or enabling repair admission
+    # must not make an otherwise identical checker unable to confirm the original incident.
+    $paths = @('constants.env', 'rust-toolchain.toml',
         '.github/workflows/deep-checks.yml', '.github/actions/setup-environment/action.yml',
         'scripts/scheduled/ScheduledContracts.psm1', 'scripts/scheduled/ScheduledPlan.psm1',
         'scripts/scheduled/ScheduledExecution.psm1', 'scripts/build/Mutants.psm1',
-        'scripts/build/Miri.psm1', 'scripts/build/Sharding.psm1',
+        'scripts/build/Miri.psm1', 'scripts/build/Sharding.psm1', 'scripts/build/CargoExecutable.psm1',
         'justfiles/just_quality.just', 'justfiles/just_quality_mutants.just', 'justfiles/just_testing.just')
     $files = @{}
     foreach ($path in $paths) {
         $files[$path] = (Get-FileHash -LiteralPath (Join-Path $Root $path) -Algorithm SHA256).Hash
     }
-    $policy = Get-ScheduledPolicy -Path (Join-Path $Root 'scripts/scheduled/policy.json')
-    return Get-ScheduledDigest @{ files = $files; coverage = $policy.coverage; repair = $policy.repair }
+    return Get-ScheduledDigest @{ files = $files }
 }
 
 function Test-ScheduledManifest {

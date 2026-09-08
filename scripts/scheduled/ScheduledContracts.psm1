@@ -97,6 +97,11 @@ function Get-ScheduledPolicy {
         throw 'Unsupported scheduled policy or missing repository identity.'
     }
     if ($policy.coverage.max_age_days -le 0) { throw 'Coverage maximum age must be positive.' }
+    if (($policy.repair.max_explanation_characters -isnot [int] -and
+        $policy.repair.max_explanation_characters -isnot [long]) -or
+        $policy.repair.max_explanation_characters -le 0) {
+        throw 'Repair explanation bound must be a positive integer.'
+    }
     foreach ($switchName in @('hosted_execution_enabled', 'reporting_enabled', 'cutover')) {
         if ($policy.rollout[$switchName] -isnot [bool]) { throw "Rollout switch must be boolean: $switchName" }
     }

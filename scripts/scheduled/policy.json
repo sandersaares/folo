@@ -28,6 +28,7 @@
   "repair": {
     "allowed_packages": [],
     "allowed_checks": ["mutants", "miri", "miri-many", "careful"],
+    "max_explanation_characters": 4000,
     "azure_integration": "exclude",
     "require_explained_nondeterminism": true
   },

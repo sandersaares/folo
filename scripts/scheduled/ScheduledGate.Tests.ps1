@@ -5,6 +5,7 @@ BeforeAll {
     function Get-GateFixture {
         $policy = Get-ScheduledPolicy
         $policy.repair.allowed_packages = @('events_once')
+        $policy.local.enrolled_machine_id = 'executor'
         $reporter = @{
             schema_version = 1; repository = $policy.repository; repository_id = $policy.repository_id
             finding_id = 'c' * 64; generation = 1; status = 'open'; package = 'events_once'
@@ -20,12 +21,14 @@ BeforeAll {
             finding_id = $reporter.finding_id; generation = 1; branch = 'sandersaares-scheduled-repair-fix'
             head_sha = 'b' * 40; attempt_id = 'attempt'; session_id = 'session'; executor_id = 'executor'
             pr_number = $null
+            explanation = 'The repaired ownership transition preserves the waiter until notification completes.'
         }
         $repair = @{
             schema_version = 1; repository = $policy.repository; repository_id = $policy.repository_id
             finding_id = $reporter.finding_id; generation = 1; branch = $worker.branch
             head_sha = $worker.head_sha; attempt_id = $worker.attempt_id; issue_number = 42
             check_contract_digest = $reporter.check_contract_digest
+            explanation = $worker.explanation
         }
         $pr = @{
             number = 43; user = @{ login = 'sandersaares' }; base = @{ ref = 'main' }
@@ -58,14 +61,33 @@ Describe 'Managed repair identification' {
         $fixture.PullRequest.body = 'Removed'
         { Get-ScheduledRepairScope @fixture } | Should -Throw
     }
+    It 'requires matching bounded causal explanations before the opening event' {
+        foreach ($explanation in @('', ' ', ('x' * 4001), 'A different explanation')) {
+            $fixture = Get-GateFixture
+            $fixture.Worker.explanation = $explanation
+            { Get-ScheduledRepairScope @fixture } | Should -Throw '*explanation*'
+        }
+    }
+    It 'can confirm a merged repair after an unexplained pass without readmitting an active PR' {
+        $fixture = Get-GateFixture
+        $record = Read-ScheduledRecord -Kind reporter -Text $fixture.Issue.body
+        $record.status = 'needs-human'
+        $fixture.Issue.body = Write-ScheduledRecord -Kind reporter -Record $record
+        { Get-ScheduledRepairScope @fixture } | Should -Throw
+        { Get-ScheduledRepairScope @fixture -Confirmation } | Should -Throw
+        $fixture.PullRequest.merged = $true
+        $fixture.PullRequest.state = 'closed'
+        (Get-ScheduledRepairScope @fixture -Confirmation).managed | Should -BeTrue
+    }
     It 'rejects stale head wrong PR wrong generation and unapproved package' {
-        foreach ($mutation in @('head', 'pr', 'generation', 'package')) {
+        foreach ($mutation in @('head', 'pr', 'generation', 'package', 'executor')) {
             $fixture = Get-GateFixture
             switch ($mutation) {
                 head { $fixture.Worker.head_sha = 'f' * 40 }
                 pr { $fixture.Worker.pr_number = 100 }
                 generation { $fixture.Worker.generation = 2 }
                 package { $fixture.Policy.repair.allowed_packages = @() }
+                executor { $fixture.Worker.executor_id = 'unenrolled-machine' }
             }
             { Get-ScheduledRepairScope @fixture } | Should -Throw
         }

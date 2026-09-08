@@ -25,52 +25,71 @@ function Get-ScheduledRepairScope {
         [Parameter(Mandatory)][hashtable] $PullRequest,
         [AllowNull()][hashtable] $Issue,
         [AllowNull()][hashtable] $Worker,
-        [Parameter(Mandatory)][hashtable] $Policy
+        [Parameter(Mandatory)][hashtable] $Policy,
+        [switch] $Confirmation
     )
 
     if (-not (Test-ScheduledManagedPullRequest -PullRequest $PullRequest -Policy $Policy)) {
         return @{ managed = $false; check_ids = @(); packages = @() }
     }
     $repair = Read-ScheduledRecord -Text $PullRequest.body -Kind repair
-    if ($null -eq $Issue -or $null -eq $Worker) { throw 'Managed repair has no registered issue/worker.' }
+    if ($null -eq $Issue -or $null -eq $Worker) { throw [FormatException]::new('Managed repair has no registered issue/worker.') }
     $reporter = Read-ScheduledRecord -Text $Issue.body -Kind reporter
     foreach ($record in @($repair, $reporter, $Worker)) {
         if ($record.repository -cne $Policy.repository -or $record.repository_id -ne $Policy.repository_id) {
-            throw 'Managed repair repository mismatch.'
+            throw [FormatException]::new('Managed repair repository mismatch.')
         }
         if ($record.finding_id -cne $reporter.finding_id -or $record.generation -ne $reporter.generation) {
-            throw 'Managed repair incident generation mismatch.'
+            throw [FormatException]::new('Managed repair incident generation mismatch.')
         }
     }
-    if ($Issue.user.login -cne $Policy.reporter_login -or $reporter.status -cne 'open' -or
+    $allowedStatus = if ($Confirmation) { @('open', 'needs-human') } else { @('open') }
+    if ($Confirmation -and (-not $PullRequest.ContainsKey('merged') -or
+        -not $PullRequest.merged -or $PullRequest.state -cne 'closed')) {
+        throw [FormatException]::new('Confirmation requires an actually merged repair.')
+    }
+    if ($Issue.user.login -cne $Policy.reporter_login -or $reporter.status -cnotin $allowedStatus -or
         $Issue.state -cne 'open' -or $repair.issue_number -ne $Issue.number) {
-        throw 'Managed repair lacks an open authoritative finding.'
+        throw [FormatException]::new('Managed repair lacks an open authoritative finding.')
     }
     if ($PullRequest.head.repo.id -ne $Policy.repository_id -or $PullRequest.base.ref -cne 'main') {
-        throw 'Managed repair must target main from its enrolled repository.'
+        throw [FormatException]::new('Managed repair must target main from its enrolled repository.')
     }
     Assert-ScheduledSha $PullRequest.head.sha
     foreach ($record in @($repair, $Worker)) {
-        if ($record.branch -cne $PullRequest.head.ref -or $record.head_sha -cne $PullRequest.head.sha) {
-            throw 'Managed repair metadata is stale for this published head.'
+        if (-not $record.ContainsKey('explanation') -or $record.explanation -isnot [string] -or
+            [string]::IsNullOrWhiteSpace($record.explanation) -or
+            $record.explanation.Length -gt $Policy.repair.max_explanation_characters) {
+            throw [FormatException]::new('Managed repair requires a bounded causal explanation.')
         }
+        if ($record.branch -cne $PullRequest.head.ref -or $record.head_sha -cne $PullRequest.head.sha) {
+            throw [FormatException]::new('Managed repair metadata is stale for this published head.')
+        }
+    }
+    if ($repair.explanation -cne $Worker.explanation) {
+        throw [FormatException]::new('Published repair explanation differs from registered worker evidence.')
     }
     if ($repair.attempt_id -cne $Worker.attempt_id -or [string]::IsNullOrWhiteSpace($Worker.session_id) -or
         [string]::IsNullOrWhiteSpace($Worker.executor_id) -or
         ($null -ne $Worker.pr_number -and $Worker.pr_number -ne $PullRequest.number)) {
-        throw 'Managed repair attempt/session/PR registration mismatch.'
+        throw [FormatException]::new('Managed repair attempt/session/PR registration mismatch.')
+    }
+    if (-not $Policy.ContainsKey('local') -or
+        [string]::IsNullOrWhiteSpace($Policy.local.enrolled_machine_id) -or
+        $Worker.executor_id -cne $Policy.local.enrolled_machine_id) {
+        throw [FormatException]::new('Managed repair executor is not the currently enrolled machine.')
     }
     if (-not $PullRequest.head.ref.StartsWith($Policy.managed_branch_prefix, [StringComparison]::Ordinal)) {
-        throw 'Managed repair is outside the reserved branch namespace.'
+        throw [FormatException]::new('Managed repair is outside the reserved branch namespace.')
     }
     if ($reporter.package -cnotin $Policy.repair.allowed_packages) {
-        throw 'Managed repair package is not approved for hosted verification.'
+        throw [FormatException]::new('Managed repair package is not approved for hosted verification.')
     }
     $catalog = Get-ScheduledCheckManifest -SourceSha $PullRequest.head.sha -ControllerSha $reporter.controller_sha `
         -ContractDigest $reporter.check_contract_digest -Scope repair -Packages @($reporter.package)
     $origin = @($catalog.checks | Where-Object { $_.id -ceq $reporter.check_id })
     if ($origin.Count -ne 1 -or $origin[0].kind -cnotin $Policy.repair.allowed_checks) {
-        throw 'Managed repair check is unknown or outside approved scope.'
+        throw [FormatException]::new('Managed repair check is unknown or outside approved scope.')
     }
     # A full implicated family on its original platform prevents one green seed or mutation
     # shard from erasing the untested remainder. Scope remains package-specific.

@@ -15,6 +15,17 @@ BeforeAll {
     }
 }
 Describe 'Expected deep scope' {
+    It 'keeps version movement and repair admission separate from checker compatibility' {
+        InModuleScope ScheduledPlan {
+            Mock Get-FileHash { @{ Hash = $LiteralPath } }
+            Mock Get-ScheduledPolicy { throw 'Admission policy is not a checker input.' }
+            Get-ScheduledContractDigest -Root $TestDrive | Should -Match '^[0-9a-f]{64}$'
+            Should -Invoke Get-FileHash -Times 0 -ParameterFilter { $LiteralPath -like '*Cargo.toml' }
+            Should -Invoke Get-FileHash -Times 1 -ParameterFilter { $LiteralPath -like '*constants.env' }
+            Should -Invoke Get-FileHash -Times 1 -ParameterFilter { $LiteralPath -like '*rust-toolchain.toml' }
+            Should -Invoke Get-ScheduledPolicy -Times 0
+        }
+    }
     It 'preserves ordinary Miri platforms mutation shards many-seed budgets and careful platforms' {
         $manifest = Get-TestManifest
         $manifest.checks.Count | Should -Be 32
