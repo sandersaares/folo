@@ -220,6 +220,8 @@ Publish the observed profile to executor-owned rolling health metadata using sha
 health record serialization: locate the single reporter-owned open issue labelled
 `scheduled-health`, then create/update the single worker-login-owned comment whose
 `health` record matches repository name, numeric repository ID and executor ID.
+The same reporter-owned issue also carries `scheduled-coverage`; do not require
+separate issues for the two labels.
 Never create a replacement issue, overwrite reporter-owned evidence or human
 discussion, or append duplicate executor records. Missing/duplicate issues,
 ambiguous comment ownership or a lost write outcome require reconciliation. If

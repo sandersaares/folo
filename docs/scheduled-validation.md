@@ -220,7 +220,7 @@ The example identities and path are placeholders, not enrollment defaults.
 | `register-branch` | Worker identity plus `expected_branch`, actual managed `branch`, unchanged `head_sha`; follows registration/acceptance and precedes source edits. |
 | `begin-dispatch` | `coordinator_token`, `attempt_id`; allowed only once for each reserved dispatch. |
 | `accept-dispatch` | `attempt_id`, `session_id`, `dispatch_token`; same-token acceptance is idempotent. |
-| `prepare-publication` | Worker identity plus `expected_head`, `head_sha`, `branch`, `check_contract_digest`; applies to initial creation and subsequent published heads. |
+| `prepare-publication` | Worker identity plus `expected_head`, `head_sha`, `branch`, `check_contract_digest`, nonempty causal `explanation` of at most 4000 characters; applies to initial creation and subsequent published heads. |
 | `register-pr` | Worker identity plus `pr_number`, `head_sha`, `branch`; never accepts a replacement PR. |
 | `record-version-plan` | Worker identity plus `version_evidence` containing current `head_sha`, `base_sha`, canonical `plan_digest`, `current`, `description_current`. |
 | `complete-dispatch` | Worker identity plus `phase` (`pr-open`, `awaiting-review`, `blocked`), `reason`, `handled_evidence` fingerprints, optional `proposed_responses` (`kind`, `id`, `fingerprint`, `body`, `status`). Preserve pending human proposals until approved/posted. |
@@ -259,6 +259,13 @@ publication intent is persisted. Both include numeric repository identity. Seria
 through shared `Write-ScheduledRecord`; do not handcraft markers. Every authored
 comment and PR body begins `[Copilot speaking]`. Update the single owned worker
 comment instead of appending a new ownership record every time.
+
+The repair marker also carries the persisted `explanation`: the diagnosed failure
+and why the specific change fixes it, grounded in evidence rather than a generic
+success statement. This bounded causal summary is present from the initial PR
+event and is refreshed when the repair changes. Unexplained nondeterminism remains
+blocked/needs-human; a green merged repair without a causal explanation is not
+eligible for automatic incident closure.
 
 The profile's repair model is passed through the supported native `kickoff.model`
 field during the inert bootstrap, not an invented `save_workflow` field. The
@@ -326,11 +333,12 @@ from reporter-owned state; preserve existing discussion and avoid repeated warni
 comments. Show the oldest eligible issue and active native session. Unchanged
 success skips do not prove recent complete deep execution.
 
-The surface is the single reporter-owned open issue labelled `scheduled-health`.
+The surface is the single reporter-owned open issue carrying both
+`scheduled-health` and `scheduled-coverage` labels.
 The local executor owns one separate worker-login comment, with a `health` marker
 matching repository name, numeric ID and executor ID. An absent/duplicate issue or
 ambiguous comment ownership blocks registration rather than creating a replacement.
-The reporter-owned `scheduled-coverage` issue's `coverage` record exposes
+That issue's reporter-owned `coverage` record exposes
 `last_plan.planned_at` separately from `receipt.completed_at`. Successful skips may
 advance planning history but never renew full-success age.
 Hosted planning freshness uses `coverage.expected_plan_gap_hours`, not the local

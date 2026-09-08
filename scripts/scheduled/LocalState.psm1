@@ -4,6 +4,9 @@ $PSNativeCommandUseErrorActionPreference = $true
 
 Import-Module (Join-Path $PSScriptRoot 'ScheduledContracts.psm1')
 
+# Keep publication rationale to concise causal paragraphs rather than copied execution logs.
+$script:MaxRepairExplanationLength = 4000
+
 # Short file transactions protect the durable protocol described in
 # docs/scheduled-validation.md. No file handle is expected to survive an App tool call.
 function Get-ScheduledStateRoot {
@@ -39,7 +42,7 @@ function Assert-ScheduledLocalState {
         Assert-LocalField $attempt @('attempt_id', 'issue_number', 'finding_id', 'generation',
             'started_at', 'session_id', 'branch', 'head_sha', 'pr_number', 'phase', 'dispatch',
             'continuations', 'handled_evidence', 'check_contract_digest', 'reason', 'version_evidence',
-            'proposed_responses', 'check_id', 'check_kind')
+            'proposed_responses', 'check_id', 'check_kind', 'explanation')
         if ($attempt.attempt_id -cne $entry.Key -or
             $attempt.phase -cnotin @('reserved', 'opening-session', 'session-registered',
                 'dispatching', 'working', 'publishing', 'pr-open', 'awaiting-review',
@@ -187,6 +190,7 @@ function Invoke-LocalStateChange {
                 pr_number = $null; phase = 'reserved'; reason = $null; continuations = @()
                 handled_evidence = @(); evidence_key = $Data.evidence_key; version_evidence = $null
                 proposed_responses = @()
+                explanation = $null
                 dispatch = @{ token = [guid]::NewGuid().ToString(); status = 'reserved' }
             }
             $State.health.last_admission = $stamp
@@ -252,14 +256,16 @@ function Invoke-LocalStateChange {
         'prepare-publication' {
             $attempt = Get-LocalAttempt $State $Data
             Assert-LocalWorker $attempt $Data
-            Assert-LocalField $Data @('expected_head', 'head_sha', 'branch', 'check_contract_digest')
+            Assert-LocalField $Data @('expected_head', 'head_sha', 'branch', 'check_contract_digest', 'explanation')
             if ($attempt.phase -cne 'working' -or $attempt.head_sha -cne $Data.expected_head -or
                 $attempt.branch -cne $Data.branch -or $Data.head_sha -cnotmatch '^[0-9a-f]{40}$' -or
                 -not $Data.branch.StartsWith($Policy.managed_branch_prefix, [StringComparison]::Ordinal)) {
                 throw 'Publication conflicts with the recorded branch/head or a previous unknown publication.'
             }
+            Assert-LocalRepairExplanation $Data.explanation
             $attempt.head_sha = $Data.head_sha
             $attempt.check_contract_digest = $Data.check_contract_digest
+            $attempt.explanation = $Data.explanation
             $attempt.phase = 'publishing'
         }
         'register-pr' {
@@ -474,6 +480,15 @@ function Get-ScheduledWorkerRecord {
         head_sha = $attempt.head_sha; pr_number = $attempt.pr_number; state = $attempt.phase
         check_id = $attempt.check_id; check_kind = $attempt.check_kind
         version_evidence = $attempt.version_evidence
+        explanation = $attempt.explanation
+    }
+}
+
+function Assert-LocalRepairExplanation {
+    param([AllowNull()][object] $Explanation)
+    if ($Explanation -isnot [string] -or [string]::IsNullOrWhiteSpace($Explanation) -or
+        $Explanation.Length -gt $script:MaxRepairExplanationLength) {
+        throw 'A nonempty bounded causal explanation is required before repair publication.'
     }
 }
 
@@ -482,11 +497,13 @@ function Get-ScheduledRepairRecord {
     param([Parameter(Mandatory)] $State, [Parameter(Mandatory)][string] $AttemptId)
     $attempt = Get-LocalAttempt $State @{ attempt_id = $AttemptId }
     if ($attempt.phase -cne 'publishing') { throw 'Persist publication intent before composing a PR record.' }
+    Assert-LocalRepairExplanation $attempt.explanation
     return @{
         schema_version = 1; repository = $State.repository; repository_id = $State.repository_id
         issue_number = $attempt.issue_number; finding_id = $attempt.finding_id; generation = $attempt.generation
         attempt_id = $attempt.attempt_id; branch = $attempt.branch; head_sha = $attempt.head_sha
         check_contract_digest = $attempt.check_contract_digest
+        explanation = $attempt.explanation
     }
 }
 

@@ -160,7 +160,18 @@ for publication; do not build the validation tool from candidate-modified source
 # Stage 5: Publish or update the same registered PR
 
 Persist `prepare-publication` with the previous expected head and new actual
-branch/head BEFORE the first push/PR opening. It fences an unknown previous
+branch/head BEFORE the first push/PR opening. Supply `explanation`: a nonempty
+causal account, at most 4000 characters, describing the diagnosed failure and why
+the specific code/test change fixes it. Link the explanation to observed evidence;
+do not substitute a green rerun, generic success statement or copied logs. Refresh
+it when the causal account or repair changes. The helper persists it in the worker
+record and the initial/update repair marker for hosted main confirmation.
+
+If the failure remains unexplained or nondeterminism has no justified causal
+account, record `blocked`/`needs-human` instead of manufacturing an explanation to
+obtain closure. Green checks alone do not establish this explanation.
+
+Publication preparation fences an unknown previous
 publication. Persist the complete canonical `version_evidence` with
 `record-version-plan` before writing the worker mirror, initially leaving
 `description_current` false until the published body is confirmed. The first PR
