@@ -41,9 +41,10 @@ contract. It is published only so sibling repositories can run the binary (via
   which passes the subcommand name back as the first argument. `main` drops that
   leading token so the argument grammar is identical whether run directly or via
   cargo.
-* **Version stays in the `cargo-bench-history` group** (see
-  `[workspace.metadata.release-plan.groups]` in the root `Cargo.toml`), so a faker-only change
-  increments the whole CLI family. That is accepted.
+* **Version independently from the `cargo-bench-history` implementation family.**
+  Do not add a synthetic exact dependency merely to group this test-support package
+  with the CLI. The repository's release behavior is defined in
+  [`docs/release-versioning.md`](../../docs/release-versioning.md).
 
 ## Building and testing
 

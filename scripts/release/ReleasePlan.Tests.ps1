@@ -8,9 +8,9 @@ $VerbosePreference = 'Continue'
 BeforeAll {
     Import-Module (Join-Path $PSScriptRoot 'ReleasePlan.psm1') -Force
 
-    $script:ValidReleasePlanSchemaVersion = [long] 2
+    $script:ValidReleasePlanSchemaVersion = [long] 3
     $script:ValidChangeDecisionSchemaVersion = [long] 1
-    $script:UnsupportedFutureReleasePlanSchemaVersion = [long] 3
+    $script:UnsupportedFutureReleasePlanSchemaVersion = [long] 4
     $script:UnsupportedExpandedPlanSchemaVersion = [long] 99
 
     # Report fixtures include package metadata, anchors, changed entries, dependencies, and groups.
@@ -57,16 +57,47 @@ BeforeAll {
         param(
             [Parameter(Mandatory)][string] $Path,
             [Parameter(Mandatory)][AllowEmptyCollection()][object[]] $Package,
+            [AllowEmptyCollection()][object[]] $NonPublishablePackage = @(),
             [hashtable] $Group = @{},
             [long] $SchemaVersion = $script:ValidReleasePlanSchemaVersion
         )
 
         [ordered]@{
-            schema_version = $SchemaVersion
-            packages       = @($Package)
-            groups         = $Group
+            schema_version           = $SchemaVersion
+            packages                 = @($Package)
+            non_publishable_packages = @($NonPublishablePackage)
+            groups                   = $Group
         } | ConvertTo-Json -Depth $script:ReleasePlanReportFixtureJsonDepth |
             Set-Content -LiteralPath $Path -Encoding utf8
+    }
+
+    function Get-TestNonPublishablePackage {
+        param(
+            [Parameter(Mandatory)][string] $Name,
+            [string] $Group,
+            [string] $DeclaredVersion = '1.0.0'
+        )
+
+        $package = [ordered]@{
+            name             = $Name
+            declared_version = $DeclaredVersion
+        }
+        if ($PSBoundParameters.ContainsKey('Group')) {
+            $package.group = $Group
+        }
+        return $package
+    }
+
+    function Get-TestWorkspaceMember {
+        param(
+            [Parameter(Mandatory)][string] $Name,
+            [bool] $Publishable = $true
+        )
+
+        [pscustomobject]@{
+            Name        = $Name
+            Publishable = $Publishable
+        }
     }
 
     function Write-TestDecision {
@@ -272,15 +303,22 @@ Describe 'Get-AffectedSemverCheckTarget' {
 
     It 'maps the real cargo-bench-history private group to only its public package' {
         $path = Join-Path $TestDrive 'cbh.json'
-        $members = @('cargo-bench-history', 'cargo-bench-history-faker', 'cbh_stats')
+        $members = @(
+            'cargo-bench-history',
+            'cargo-bench-history-figures',
+            'cargo-bench-history-stress',
+            'cbh_stats'
+        )
         Write-TestReport -Path $path -Package @(
             Get-TestPackage -Name 'cargo-bench-history' -Group 'cargo-bench-history'
-            Get-TestPackage -Name 'cargo-bench-history-faker' -Status 'pending-release' `
-                -Group 'cargo-bench-history' -ConsumerContract $false `
-                -Changed @(@{ path = 'src/lib.rs' })
             Get-TestPackage -Name 'cbh_stats' -Status 'needs-increment' `
                 -Group 'cargo-bench-history' -ConsumerContract $false `
                 -Changed @(@{ path = 'src/lib.rs' })
+        ) -NonPublishablePackage @(
+            Get-TestNonPublishablePackage -Name 'cargo-bench-history-figures' `
+                -Group 'cargo-bench-history'
+            Get-TestNonPublishablePackage -Name 'cargo-bench-history-stress' `
+                -Group 'cargo-bench-history'
         ) -Group @{
             'cargo-bench-history' = @{
                 members = $members
@@ -331,6 +369,82 @@ Describe 'Get-AffectedSemverCheckTarget' {
         $target = @(Get-TestAffectedSemverCheckTarget -ReportPath $path)
         $target.Count | Should -Be 0
         ($target -join ' ') | Should -BeExactly ''
+    }
+}
+
+Describe 'release-plan report schema 3 validation' {
+    It 'rejects the previous report schema' {
+        $path = Join-Path $TestDrive 'old-schema.json'
+        Write-TestReport -Path $path -Package @() -SchemaVersion 2
+
+        { Get-TestAffectedSemverCheckTarget -ReportPath $path } |
+            Should -Throw "*unsupported schema_version*expected 3*"
+    }
+
+    It 'requires the non-publishable package array' {
+        $path = Join-Path $TestDrive 'missing-non-publishable-array.json'
+        [ordered]@{
+            schema_version = $script:ValidReleasePlanSchemaVersion
+            packages       = @()
+            groups         = [ordered]@{}
+        } | ConvertTo-Json -Depth $script:ReleasePlanReportFixtureJsonDepth |
+            Set-Content -LiteralPath $path -Encoding utf8
+
+        { Get-TestAffectedSemverCheckTarget -ReportPath $path } |
+            Should -Throw '*non_publishable_packages must be an array*'
+    }
+
+    It 'rejects duplicate names across release and alignment-only records' {
+        $path = Join-Path $TestDrive 'duplicate-target.json'
+        Write-TestReport -Path $path `
+            -Package @(Get-TestPackage -Name 'nm') `
+            -NonPublishablePackage @(Get-TestNonPublishablePackage -Name 'nm')
+
+        { Get-TestAffectedSemverCheckTarget -ReportPath $path } |
+            Should -Throw '*duplicate package name*'
+    }
+
+    It 'rejects a group member with no full package record' {
+        $path = Join-Path $TestDrive 'missing-member.json'
+        Write-TestReport -Path $path -Package @(
+            Get-TestPackage -Name 'nm' -Group 'nm'
+        ) -Group @{
+            nm = @{
+                members = @('nm', 'nm_impl')
+                consistent = $true
+                version = '1.0.0'
+            }
+        }
+
+        { Get-TestAffectedSemverCheckTarget -ReportPath $path } |
+            Should -Throw "*names missing package 'nm_impl'*"
+    }
+
+    It 'rejects a package group reference absent from the exact member set' {
+        $path = Join-Path $TestDrive 'missing-reference.json'
+        Write-TestReport -Path $path -Package @(
+            Get-TestPackage -Name 'nm' -Group 'nm'
+            Get-TestPackage -Name 'nm_impl' -Group 'nm'
+            Get-TestPackage -Name 'nm_support' -Group 'nm'
+        ) -Group @{
+            nm = @{ members = @('nm', 'nm_impl'); consistent = $true; version = '1.0.0' }
+        }
+
+        { Get-TestAffectedSemverCheckTarget -ReportPath $path } |
+            Should -Throw "*package 'nm_support' has an invalid group reference*"
+    }
+
+    It 'rejects a group not keyed by its smallest ordinal member' {
+        $path = Join-Path $TestDrive 'invalid-key.json'
+        Write-TestReport -Path $path -Package @(
+            Get-TestPackage -Name 'nm' -Group 'nm_impl'
+            Get-TestPackage -Name 'nm_impl' -Group 'nm_impl'
+        ) -Group @{
+            nm_impl = @{ members = @('nm', 'nm_impl'); consistent = $true; version = '1.0.0' }
+        }
+
+        { Get-TestAffectedSemverCheckTarget -ReportPath $path } |
+            Should -Throw '*not keyed by its smallest member*'
     }
 }
 
@@ -754,6 +868,18 @@ Describe 'Get-ReleasePlanAnalysisBatch' {
         @($json[0].packages) | Should -Be @('events')
         $json[0].cyclic | Should -BeFalse
     }
+
+    It 'emits an empty JSON array when only alignment targets exist' {
+        $path = Join-Path $TestDrive 'helper-only-contract.json'
+        Write-TestReport -Path $path -Package @() -NonPublishablePackage @(
+            Get-TestNonPublishablePackage -Name 'helper'
+        )
+
+        $json = Get-ReleasePlanAnalysisBatchJson -ReportPath $path
+
+        $json | Should -Be '[]'
+        @($json | ConvertFrom-Json).Count | Should -Be 0
+    }
 }
 
 Describe 'Assert-IncrementPackagePublished' {
@@ -774,6 +900,14 @@ Describe 'Assert-IncrementPackagePublished' {
         }
     }
 
+    BeforeEach {
+        $script:workspaceMembers = @(
+            Get-TestWorkspaceMember -Name 'events'
+            Get-TestWorkspaceMember -Name 'nm'
+            Get-TestWorkspaceMember -Name 'nm_impl'
+        )
+    }
+
     It 'rejects a proposed plan, which names a narrower set than it reaches' {
         # A proposed plan may leave version-group members unnamed, so clearing publication
         # against one would check a narrower set than apply edits.
@@ -782,11 +916,12 @@ Describe 'Assert-IncrementPackagePublished' {
 
         {
             Assert-IncrementPackagePublished -ExpandedPath $planPath `
+                -GetWorkspaceMember { @($script:workspaceMembers) } `
                 -GetPublishStatus { 'Published' }
         } | Should -Throw '*proposed plan*'
     }
 
-    It 'checks every package the expansion reached, including group members' {
+    It 'checks every publishable package the expansion reached, including group members' {
         $expandedPath = Join-Path $TestDrive 'publish-expanded.json'
         Write-TestExpandedPlan -Path $expandedPath -Name @('nm', 'nm_impl')
         $script:queried = [System.Collections.Generic.List[string]]::new()
@@ -795,7 +930,7 @@ Describe 'Assert-IncrementPackagePublished' {
             param([string] $Name)
             $script:queried.Add($Name)
             'Published'
-        }
+        } -GetWorkspaceMember { @($script:workspaceMembers) }
 
         $script:queried | Should -Be @('nm', 'nm_impl')
     }
@@ -810,6 +945,7 @@ Describe 'Assert-IncrementPackagePublished' {
 
         Assert-IncrementPackagePublished -ExpandedPath $expandedPath `
             -PublishStatusRetryDelaySeconds 0 `
+            -GetWorkspaceMember { @($script:workspaceMembers) } `
             -GetPublishStatus {
                 $script:queryCount++
                 $script:statuses.Dequeue()
@@ -827,6 +963,7 @@ Describe 'Assert-IncrementPackagePublished' {
             Assert-IncrementPackagePublished -ExpandedPath $expandedPath `
                 -PublishStatusRetryAttempt 2 `
                 -PublishStatusRetryDelaySeconds 0 `
+                -GetWorkspaceMember { @($script:workspaceMembers) } `
                 -GetPublishStatus {
                     $script:queryCount++
                     'Unknown'
@@ -844,6 +981,7 @@ Describe 'Assert-IncrementPackagePublished' {
             Assert-IncrementPackagePublished -ExpandedPath $expandedPath `
                 -PublishStatusRetryAttempt 2 `
                 -PublishStatusRetryDelaySeconds 0 `
+                -GetWorkspaceMember { @($script:workspaceMembers) } `
                 -GetPublishStatus {
                     $script:queryCount++
                     'NeverPublished'
@@ -858,6 +996,7 @@ Describe 'Assert-IncrementPackagePublished' {
 
         {
             Assert-IncrementPackagePublished -ExpandedPath $expandedPath `
+                -GetWorkspaceMember { @($script:workspaceMembers) } `
                 -GetPublishStatus { 'NeverPublished' }
         } | Should -Throw '*never-published packages: events, nm.*Publish these packages manually first*RELEASING.md#first-publish-of-a-new-crate*'
     }
@@ -872,8 +1011,25 @@ Describe 'Assert-IncrementPackagePublished' {
 
         {
             Assert-IncrementPackagePublished -ExpandedPath $expandedPath `
+                -GetWorkspaceMember { @($script:workspaceMembers) } `
                 -GetPublishStatus { 'Published' }
         } | Should -Throw '*schema_version*'
+    }
+
+    It 'rejects an expanded plan from the previous schema revision' {
+        $expandedPath = Join-Path $TestDrive 'old-schema-expanded.json'
+        [ordered]@{
+            schema_version = 2
+            expanded       = $true
+            increments     = @()
+        } | ConvertTo-Json -Depth $script:ExpandedPlanFixtureJsonDepth |
+            Set-Content -LiteralPath $expandedPath -Encoding utf8
+
+        {
+            Assert-IncrementPackagePublished -ExpandedPath $expandedPath `
+                -GetWorkspaceMember { @($script:workspaceMembers) } `
+                -GetPublishStatus { 'Published' }
+        } | Should -Throw '*schema_version 3*'
     }
 
     It 'fails closed on an expanded increment without a name' {
@@ -887,8 +1043,56 @@ Describe 'Assert-IncrementPackagePublished' {
 
         {
             Assert-IncrementPackagePublished -ExpandedPath $expandedPath `
+                -GetWorkspaceMember { @($script:workspaceMembers) } `
                 -GetPublishStatus { 'Published' }
         } | Should -Throw '*without a name*'
+    }
+
+    It 'queries only publishable targets in a mixed group' {
+        $expandedPath = Join-Path $TestDrive 'mixed-expanded.json'
+        Write-TestExpandedPlan -Path $expandedPath -Name @('nopub-bin', 'pub-lib')
+        $script:queried = [System.Collections.Generic.List[string]]::new()
+        $manifestPath = Join-Path $PSScriptRoot 'fixtures/metadata-workspace/Cargo.toml'
+
+        Assert-IncrementPackagePublished -ExpandedPath $expandedPath `
+            -ManifestPath $manifestPath `
+            -GetPublishStatus {
+                param([string] $Name)
+                $script:queried.Add($Name)
+                'Published'
+            }
+
+        $script:queried | Should -Be @('pub-lib')
+    }
+
+    It 'performs no registry queries for helper-only targets' {
+        $expandedPath = Join-Path $TestDrive 'helpers-expanded.json'
+        Write-TestExpandedPlan -Path $expandedPath -Name @('helper', 'helper_support')
+        $script:workspaceMembers = @(
+            Get-TestWorkspaceMember -Name 'helper' -Publishable $false
+            Get-TestWorkspaceMember -Name 'helper_support' -Publishable $false
+        )
+        $script:queryCount = 0
+
+        Assert-IncrementPackagePublished -ExpandedPath $expandedPath `
+            -GetWorkspaceMember { @($script:workspaceMembers) } `
+            -GetPublishStatus {
+                $script:queryCount++
+                'Published'
+            }
+
+        $script:queryCount | Should -Be 0
+    }
+
+    It 'fails closed when a target is not a current tracked workspace member' {
+        $expandedPath = Join-Path $TestDrive 'unknown-target-expanded.json'
+        Write-TestExpandedPlan -Path $expandedPath -Name @('removed-package')
+
+        {
+            Assert-IncrementPackagePublished -ExpandedPath $expandedPath `
+                -GetWorkspaceMember { @($script:workspaceMembers) } `
+                -GetPublishStatus { 'Published' }
+        } | Should -Throw "*not a current Git-tracked workspace member*"
     }
 }
 
@@ -903,17 +1107,17 @@ Describe 'New-ReleasePlanFile' {
         $decisionPath = Join-Path $TestDrive 'align-decision.json'
         $planPath = Join-Path $TestDrive 'align-plan.json'
         Write-TestReport -Path $reportPath -Package @(
-            Get-TestPackage -Name 'lib' -Group 'lib' -DeclaredVersion '0.0.5' -AnchorVersion '0.0.5'
-            Get-TestPackage -Name 'lib_impl' -Group 'lib' -DeclaredVersion '0.0.4' `
+            Get-TestPackage -Name 'lib' -Group 'keeper' -DeclaredVersion '0.0.5' -AnchorVersion '0.0.5'
+            Get-TestPackage -Name 'lib_impl' -Group 'keeper' -DeclaredVersion '0.0.4' `
                 -AnchorVersion '0.0.4'
-            Get-TestPackage -Name 'keeper' -Group 'lib' -DeclaredVersion '0.0.5' `
+            Get-TestPackage -Name 'keeper' -Group 'keeper' -DeclaredVersion '0.0.5' `
                 -AnchorVersion '0.0.5' `
                 -Dependencies @(@{ name = 'lib_impl'; req = '=0.0.4'; exact_pin = $true; public = $false })
             Get-TestPackage -Name 'app' -DeclaredVersion '3.0.0' -AnchorVersion '3.0.0' `
                 -Dependencies @(@{ name = 'lib'; req = '^0.0.5'; exact_pin = $false; public = $true })
         ) -Group @{
-            lib = @{
-                members    = @('lib', 'lib_impl', 'keeper')
+            keeper = @{
+                members    = @('keeper', 'lib', 'lib_impl')
                 consistent = $false
                 version    = '0.0.5'
             }
@@ -925,7 +1129,7 @@ Describe 'New-ReleasePlanFile' {
         $plan = Get-Content -LiteralPath $planPath -Raw | ConvertFrom-Json
 
         # The group was patch-incremented rather than aligned exactly.
-        ($plan.increments | Where-Object name -EQ 'lib').level | Should -Be 'patch'
+        ($plan.increments | Where-Object name -EQ 'keeper').level | Should -Be 'patch'
         # And the dependent exposing it follows, because 0.0.5 -> 0.0.6 is incompatible.
         ($plan.increments | Where-Object name -EQ 'app').level | Should -Be 'major'
     }
@@ -1231,13 +1435,13 @@ Describe 'New-ReleasePlanFile' {
             Get-TestPackage -Name 'nm' -Group 'nm' -DeclaredVersion '1.1.0' -AnchorVersion '1.1.0'
             Get-TestPackage -Name 'nm_impl' -Group 'nm' -DeclaredVersion '1.0.0' `
                 -AnchorVersion '1.0.0'
-            Get-TestPackage -Name 'events' -Group 'other' -DeclaredVersion '3.0.0' `
+            Get-TestPackage -Name 'events' -Group 'events' -DeclaredVersion '3.0.0' `
                 -AnchorVersion '3.0.0' -Dependencies @(@{ name = 'nm_impl' })
-            Get-TestPackage -Name 'events_impl' -Group 'other' -DeclaredVersion '2.0.0' `
+            Get-TestPackage -Name 'events_impl' -Group 'events' -DeclaredVersion '2.0.0' `
                 -AnchorVersion '2.0.0'
         ) -Group @{
             nm    = @{ members = @('nm', 'nm_impl'); consistent = $false; version = '1.1.0' }
-            other = @{ members = @('events', 'events_impl'); consistent = $false; version = '3.0.0' }
+            events = @{ members = @('events', 'events_impl'); consistent = $false; version = '3.0.0' }
         }
         Write-TestDecision -Path $decisionPath -Change @()
 
@@ -1246,7 +1450,224 @@ Describe 'New-ReleasePlanFile' {
         $plan = Get-Content -LiteralPath $planPath -Raw | ConvertFrom-Json
 
         ($plan.increments | Where-Object name -EQ 'nm').version | Should -Be '1.1.0'
-        ($plan.increments | Where-Object name -EQ 'other').level | Should -Be 'patch'
+        ($plan.increments | Where-Object name -EQ 'events').level | Should -Be 'patch'
+    }
+
+    It 'uses a non-publishable smallest member as the mixed group key and highest version' {
+        $reportPath = Join-Path $TestDrive 'helper-leader-report.json'
+        $decisionPath = Join-Path $TestDrive 'helper-leader-decision.json'
+        $planPath = Join-Path $TestDrive 'helper-leader-plan.json'
+        Write-TestReport -Path $reportPath -Package @(
+            Get-TestPackage -Name 'library' -Group 'alignment-helper' `
+                -DeclaredVersion '1.0.0' -AnchorVersion '1.0.0'
+        ) -NonPublishablePackage @(
+            Get-TestNonPublishablePackage -Name 'alignment-helper' `
+                -Group 'alignment-helper' -DeclaredVersion '5.0.0'
+        ) -Group @{
+            'alignment-helper' = @{
+                members = @('alignment-helper', 'library')
+                consistent = $false
+                version = '5.0.0'
+            }
+        }
+        Write-TestDecision -Path $decisionPath -Change @()
+
+        New-ReleasePlanFile -ReportPath $reportPath -DecisionPath $decisionPath `
+            -PlanPath $planPath
+        $plan = Get-Content -LiteralPath $planPath -Raw | ConvertFrom-Json
+
+        @($plan.increments).Count | Should -Be 1
+        $plan.increments[0].name | Should -Be 'alignment-helper'
+        $plan.increments[0].version | Should -Be '5.0.0'
+    }
+
+    It 'uses a higher helper version when resolving public dependency propagation' {
+        $reportPath = Join-Path $TestDrive 'helper-resolution-report.json'
+        $decisionPath = Join-Path $TestDrive 'helper-resolution-decision.json'
+        $planPath = Join-Path $TestDrive 'helper-resolution-plan.json'
+        Write-TestReport -Path $reportPath -Package @(
+            Get-TestPackage -Name 'library' -Group 'alignment-helper' `
+                -Status 'needs-increment' -Changed @(@{ path = 'src/lib.rs' }) `
+                -DeclaredVersion '1.0.0' -AnchorVersion '1.0.0'
+            Get-TestPackage -Name 'application' -DeclaredVersion '2.0.0' `
+                -AnchorVersion '2.0.0' `
+                -Dependencies @(@{ name = 'library'; public = $true })
+        ) -NonPublishablePackage @(
+            Get-TestNonPublishablePackage -Name 'alignment-helper' `
+                -Group 'alignment-helper' -DeclaredVersion '5.0.0'
+        ) -Group @{
+            'alignment-helper' = @{
+                members = @('alignment-helper', 'library')
+                consistent = $false
+                version = '5.0.0'
+            }
+        }
+        Write-TestDecision -Path $decisionPath -Change @(
+            @{ name = 'library'; level = 'patch' }
+        )
+
+        New-ReleasePlanFile -ReportPath $reportPath -DecisionPath $decisionPath `
+            -PlanPath $planPath
+        $plan = Get-Content -LiteralPath $planPath -Raw | ConvertFrom-Json
+
+        ($plan.increments | Where-Object name -EQ 'library').level | Should -Be 'patch'
+        ($plan.increments | Where-Object name -EQ 'application').level | Should -Be 'major'
+    }
+
+    It 'aligns an all-helper group without release assessment fields' {
+        $reportPath = Join-Path $TestDrive 'helper-only-report.json'
+        $decisionPath = Join-Path $TestDrive 'helper-only-decision.json'
+        $planPath = Join-Path $TestDrive 'helper-only-plan.json'
+        Write-TestReport -Path $reportPath -Package @() -NonPublishablePackage @(
+            Get-TestNonPublishablePackage -Name 'helper' -Group 'helper' `
+                -DeclaredVersion '1.0.0'
+            Get-TestNonPublishablePackage -Name 'helper_support' -Group 'helper' `
+                -DeclaredVersion '1.1.0'
+        ) -Group @{
+            helper = @{
+                members = @('helper', 'helper_support')
+                consistent = $false
+                version = '1.1.0'
+            }
+        }
+        Write-TestDecision -Path $decisionPath -Change @()
+
+        New-ReleasePlanFile -ReportPath $reportPath -DecisionPath $decisionPath `
+            -PlanPath $planPath
+        $plan = Get-Content -LiteralPath $planPath -Raw | ConvertFrom-Json
+
+        @($plan.increments).Count | Should -Be 1
+        $plan.increments[0].name | Should -Be 'helper'
+        $plan.increments[0].version | Should -Be '1.1.0'
+    }
+
+    It 'rejects a semantic change decision for an alignment-only helper' {
+        $reportPath = Join-Path $TestDrive 'helper-decision-report.json'
+        $decisionPath = Join-Path $TestDrive 'helper-decision-decision.json'
+        Write-TestReport -Path $reportPath -Package @() -NonPublishablePackage @(
+            Get-TestNonPublishablePackage -Name 'helper'
+        )
+        Write-TestDecision -Path $decisionPath -Change @(
+            @{ name = 'helper'; level = 'patch' }
+        )
+
+        {
+            New-ReleasePlanFile -ReportPath $reportPath -DecisionPath $decisionPath `
+                -PlanPath (Join-Path $TestDrive 'helper-decision-plan.json')
+        } | Should -Throw "*unknown or non-publishable package 'helper'*"
+    }
+
+    It 'aligns unequal versions even when the report consistency exemption applies' {
+        $reportPath = Join-Path $TestDrive 'exempt-misaligned-report.json'
+        $decisionPath = Join-Path $TestDrive 'exempt-misaligned-decision.json'
+        $planPath = Join-Path $TestDrive 'exempt-misaligned-plan.json'
+        Write-TestReport -Path $reportPath -Package @(
+            Get-TestPackage -Name 'nm' -Group 'nm' `
+                -DeclaredVersion '1.0.0' -AnchorVersion '1.0.0'
+        ) -NonPublishablePackage @(
+            Get-TestNonPublishablePackage -Name 'nm_helper' -Group 'nm' `
+                -DeclaredVersion '0.0.0'
+        ) -Group @{
+            nm = @{
+                members = @('nm', 'nm_helper')
+                consistent = $true
+                version = '1.0.0'
+            }
+        }
+        Write-TestDecision -Path $decisionPath -Change @()
+
+        New-ReleasePlanFile -ReportPath $reportPath -DecisionPath $decisionPath `
+            -PlanPath $planPath
+        $plan = Get-Content -LiteralPath $planPath -Raw | ConvertFrom-Json
+
+        @($plan.increments).Count | Should -Be 1
+        $plan.increments[0].version | Should -Be '1.0.0'
+    }
+
+    It 'patch-increments a non-plain highest group version' {
+        $reportPath = Join-Path $TestDrive 'nonplain-alignment-report.json'
+        $decisionPath = Join-Path $TestDrive 'nonplain-alignment-decision.json'
+        $planPath = Join-Path $TestDrive 'nonplain-alignment-plan.json'
+        Write-TestReport -Path $reportPath -Package @() -NonPublishablePackage @(
+            Get-TestNonPublishablePackage -Name 'helper' -Group 'helper' `
+                -DeclaredVersion '1.2.3-alpha.1'
+            Get-TestNonPublishablePackage -Name 'helper_support' -Group 'helper' `
+                -DeclaredVersion '1.2.2'
+        ) -Group @{
+            helper = @{
+                members = @('helper', 'helper_support')
+                consistent = $false
+                version = '1.2.3-alpha.1'
+            }
+        }
+        Write-TestDecision -Path $decisionPath -Change @()
+
+        New-ReleasePlanFile -ReportPath $reportPath -DecisionPath $decisionPath `
+            -PlanPath $planPath
+        $plan = Get-Content -LiteralPath $planPath -Raw | ConvertFrom-Json
+
+        @($plan.increments).Count | Should -Be 1
+        $plan.increments[0].name | Should -Be 'helper'
+        $plan.increments[0].level | Should -Be 'patch'
+        $plan.increments[0].PSObject.Properties.Name | Should -Not -Contain 'version'
+    }
+
+    It 'patch-increments a highest group version with build metadata' {
+        $reportPath = Join-Path $TestDrive 'build-alignment-report.json'
+        $decisionPath = Join-Path $TestDrive 'build-alignment-decision.json'
+        $planPath = Join-Path $TestDrive 'build-alignment-plan.json'
+        Write-TestReport -Path $reportPath -Package @() -NonPublishablePackage @(
+            Get-TestNonPublishablePackage -Name 'helper' -Group 'helper' `
+                -DeclaredVersion '1.2.3+build'
+            Get-TestNonPublishablePackage -Name 'helper_support' -Group 'helper' `
+                -DeclaredVersion '1.2.2'
+        ) -Group @{
+            helper = @{
+                members = @('helper', 'helper_support')
+                consistent = $false
+                version = '1.2.3+build'
+            }
+        }
+        Write-TestDecision -Path $decisionPath -Change @()
+
+        New-ReleasePlanFile -ReportPath $reportPath -DecisionPath $decisionPath `
+            -PlanPath $planPath
+        $plan = Get-Content -LiteralPath $planPath -Raw | ConvertFrom-Json
+
+        $plan.increments[0].level | Should -Be 'patch'
+        $plan.increments[0].PSObject.Properties.Name | Should -Not -Contain 'version'
+    }
+
+    It 'normalizes an equal all-helper non-plain group to the next plain patch' {
+        $reportPath = Join-Path $TestDrive 'equal-build-alignment-report.json'
+        $decisionPath = Join-Path $TestDrive 'equal-build-alignment-decision.json'
+        $planPath = Join-Path $TestDrive 'equal-build-alignment-plan.json'
+        Write-TestReport -Path $reportPath -Package @() -NonPublishablePackage @(
+            Get-TestNonPublishablePackage -Name 'helper' -Group 'helper' `
+                -DeclaredVersion '1.2.3+build'
+            Get-TestNonPublishablePackage -Name 'helper_support' -Group 'helper' `
+                -DeclaredVersion '1.2.3+build'
+        ) -Group @{
+            helper = @{
+                members = @('helper', 'helper_support')
+                consistent = $true
+                version = '1.2.3+build'
+            }
+        }
+        Write-TestDecision -Path $decisionPath -Change @()
+
+        New-ReleasePlanFile -ReportPath $reportPath -DecisionPath $decisionPath `
+            -PlanPath $planPath
+        $plan = Get-Content -LiteralPath $planPath -Raw | ConvertFrom-Json
+
+        @($plan.increments).Count | Should -Be 1
+        $plan.increments[0].name | Should -Be 'helper'
+        $plan.increments[0].level | Should -Be 'patch'
+        InModuleScope ReleasePlan -Parameters @{ Level = [string] $plan.increments[0].level } {
+            param($Level)
+            (Get-IncrementedVersion -Version ([semver] '1.2.3+build') -Level $Level).
+                ToString() | Should -Be '1.2.4'
+        }
     }
 
     It 'refuses to realign a group that strands an outside published dependent' {
@@ -1361,8 +1782,10 @@ Describe 'New-ReleasePlanFile' {
         $planPath = Join-Path $TestDrive 'consistent-plan.json'
         Write-TestReport -Path $reportPath -Package @(
             Get-TestPackage -Name 'nm' -Group 'nm' -DeclaredVersion '1.0.0' -AnchorVersion '1.0.0'
+            Get-TestPackage -Name 'nm_impl' -Group 'nm' `
+                -DeclaredVersion '1.0.0' -AnchorVersion '1.0.0'
         ) -Group @{
-            nm = @{ members = @('nm'); consistent = $true; version = '1.0.0' }
+            nm = @{ members = @('nm', 'nm_impl'); consistent = $true; version = '1.0.0' }
         }
         Write-TestDecision -Path $decisionPath -Change @()
 
@@ -1377,10 +1800,8 @@ Describe 'New-ReleasePlanFile' {
         $reportPath = Join-Path $TestDrive 'unsupported-level-report.json'
         $decisionPath = Join-Path $TestDrive 'unsupported-level-decision.json'
         Write-TestReport -Path $reportPath -Package @(
-            Get-TestPackage -Name 'nm' -Group 'nm' -DeclaredVersion '1.0.0' -AnchorVersion '1.0.0'
-        ) -Group @{
-            nm = @{ members = @('nm'); consistent = $false; version = '1.0.0' }
-        }
+            Get-TestPackage -Name 'nm' -DeclaredVersion '1.0.0' -AnchorVersion '1.0.0'
+        )
         Write-TestDecision -Path $decisionPath -Change @(
             @{ name = 'nm'; level = 'align' }
         )
@@ -1873,15 +2294,15 @@ Describe 'Generated plan invariants' {
                 Change   = @(@{ name = 'nm'; level = 'breaking' })
             }
             @{
-                Name     = 'group keyed apart from its members, decision naming a member'
+                Name     = 'group key is its smallest member, decision naming another member'
                 Throws   = $false
                 Package  = @(
-                    @{ Name = 'nm'; Group = 'family'; Declared = '1.0.0'; Anchor = '1.0.0' }
-                    @{ Name = 'nm_impl'; Group = 'family'; Declared = '1.0.0'; Anchor = '1.0.0'; Status = 'needs-increment' }
-                    @{ Name = 'other'; Group = 'other-family'; Declared = '3.0.0'; Anchor = '3.0.0'; Deps = @('nm') }
-                    @{ Name = 'other_impl'; Group = 'other-family'; Declared = '2.0.0'; Anchor = '2.0.0' }
+                    @{ Name = 'nm'; Group = 'nm'; Declared = '1.0.0'; Anchor = '1.0.0' }
+                    @{ Name = 'nm_impl'; Group = 'nm'; Declared = '1.0.0'; Anchor = '1.0.0'; Status = 'needs-increment' }
+                    @{ Name = 'other'; Group = 'other'; Declared = '3.0.0'; Anchor = '3.0.0'; Deps = @('nm') }
+                    @{ Name = 'other_impl'; Group = 'other'; Declared = '2.0.0'; Anchor = '2.0.0' }
                 )
-                Group    = @{ family = @('nm', 'nm_impl'); 'other-family' = @('other', 'other_impl') }
+                Group    = @{ nm = @('nm', 'nm_impl'); other = @('other', 'other_impl') }
                 Change   = @(@{ name = 'nm_impl'; level = 'patch' })
             }
             @{
@@ -1897,10 +2318,10 @@ Describe 'Generated plan invariants' {
                 Name     = 'grouped package needing an increment covered by a sibling decision'
                 Throws   = $false
                 Package  = @(
-                    @{ Name = 'nm'; Group = 'family'; Declared = '1.0.0'; Anchor = '1.0.0'; Status = 'needs-increment' }
-                    @{ Name = 'nm_impl'; Group = 'family'; Declared = '1.0.0'; Anchor = '1.0.0'; Status = 'needs-increment' }
+                    @{ Name = 'nm'; Group = 'nm'; Declared = '1.0.0'; Anchor = '1.0.0'; Status = 'needs-increment' }
+                    @{ Name = 'nm_impl'; Group = 'nm'; Declared = '1.0.0'; Anchor = '1.0.0'; Status = 'needs-increment' }
                 )
-                Group    = @{ family = @('nm', 'nm_impl') }
+                Group    = @{ nm = @('nm', 'nm_impl') }
                 Change   = @(@{ name = 'nm'; level = 'patch' })
             }
             @{

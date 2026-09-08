@@ -89,16 +89,16 @@ pub(crate) fn run_apply(
         serde_json::from_str(&plan).map_err(|error| ParsePlanError::caused_by(plan_path, error))?;
 
     let (work_tree, _) = load_tracked_work_tree(manifest_path)?;
-    // Git-tracked publishable members decide which plan targets are valid and
-    // supply their increment bases. All Cargo-visible member manifests remain
+    // Git-tracked members decide which plan targets are valid and supply their
+    // increment bases. All Cargo-visible member manifests remain
     // available below for dependent-pin rewrites.
     // Ref: docs/implementation.md, "Plan resolution and application".
-    let publishable = work_tree.publishable_versions();
-    let resolved = resolve_plan(&plan, &work_tree.groups, &publishable, verbose)?;
+    let target_versions = work_tree.target_versions();
+    let resolved = resolve_plan(&plan, &work_tree.groups, &target_versions, verbose)?;
     verbose.note(|| {
         format!(
-            "plan expands to {}; group members are included even when the plan named only one of \
-         them, and never-published members on this branch are included in apply",
+            "plan expands to {}; every tracked group member is included even when the plan named \
+             only one of them",
             plural(resolved.packages.len(), "package version")
         )
     });

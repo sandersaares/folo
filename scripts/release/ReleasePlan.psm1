@@ -11,7 +11,7 @@ $ErrorActionPreference = "Stop"
 $PSNativeCommandUseErrorActionPreference = $true
 
 # Must match packages/cargo-release-plan/src/plan.rs. An incompatible report must fail closed.
-$script:ReleasePlanSchemaVersion = [long] 2
+$script:ReleasePlanSchemaVersion = [long] 3
 
 # Local working-file format used by the increment-versions skill. Advance it for incompatible
 # working-file shape changes, coordinated with the skill that reads and writes the same contract.
@@ -89,6 +89,10 @@ function Read-ReleasePlanReport {
     if ($field -notcontains 'packages' -or $report.packages -isnot [System.Array]) {
         throw "release-plan report at '$ReportPath' packages must be an array."
     }
+    if ($field -notcontains 'non_publishable_packages' -or
+        $report.non_publishable_packages -isnot [System.Array]) {
+        throw "release-plan report at '$ReportPath' non_publishable_packages must be an array."
+    }
     if ($field -notcontains 'groups' -or $null -eq $report.groups -or
         $report.groups -is [System.Array]) {
         throw "release-plan report at '$ReportPath' groups must be an object."
@@ -125,11 +129,94 @@ function Read-ReleasePlanReport {
         }
     }
 
+    foreach ($package in $report.non_publishable_packages) {
+        if ($null -eq $package) {
+            throw "release-plan report at '$ReportPath' contains a null non-publishable package."
+        }
+        $packageField = @($package.PSObject.Properties.Name)
+        foreach ($required in @('name', 'declared_version')) {
+            if ($packageField -notcontains $required) {
+                throw "release-plan report at '$ReportPath' non-publishable package is missing $required."
+            }
+        }
+        $name = [string] $package.name
+        if ([string]::IsNullOrWhiteSpace($name) -or -not $seen.Add($name)) {
+            throw "release-plan report at '$ReportPath' contains an empty or duplicate package name."
+        }
+        if ([string]::IsNullOrWhiteSpace([string] $package.declared_version)) {
+            throw "release-plan report at '$ReportPath' package '$name' has no declared_version."
+        }
+    }
+
+    $byName = [System.Collections.Generic.Dictionary[string, object]]::new(
+        [System.StringComparer]::Ordinal
+    )
+    foreach ($package in @($report.packages) + @($report.non_publishable_packages)) {
+        $byName.Add([string] $package.name, $package)
+    }
+    $groupByMember = [System.Collections.Generic.Dictionary[string, string]]::new(
+        [System.StringComparer]::Ordinal
+    )
     foreach ($group in $report.groups.PSObject.Properties) {
         if ($null -eq $group.Value -or
             $group.Value.PSObject.Properties.Name -notcontains 'members' -or
             $group.Value.members -isnot [System.Array]) {
             throw "release-plan report at '$ReportPath' group '$($group.Name)' members must be an array."
+        }
+        if ($group.Value.PSObject.Properties.Name -notcontains 'consistent' -or
+            $group.Value.consistent -isnot [bool]) {
+            throw "release-plan report at '$ReportPath' group '$($group.Name)' consistent must be a Boolean."
+        }
+        if ($group.Value.PSObject.Properties.Name -notcontains 'version' -or
+            [string]::IsNullOrWhiteSpace([string] $group.Value.version)) {
+            throw "release-plan report at '$ReportPath' group '$($group.Name)' has no version."
+        }
+
+        $members = @($group.Value.members | ForEach-Object { [string] $_ })
+        if ($members.Count -lt 2 -or
+            @($members | Where-Object { [string]::IsNullOrWhiteSpace($_) }).Count -gt 0) {
+            throw "release-plan report at '$ReportPath' group '$($group.Name)' must contain at least two non-empty members."
+        }
+        $sortedMembers = [string[]] @($members)
+        [Array]::Sort($sortedMembers, [StringComparer]::Ordinal)
+        if ($group.Name -cne $sortedMembers[0]) {
+            throw "release-plan report at '$ReportPath' group '$($group.Name)' is not keyed by its smallest member '$($sortedMembers[0])'."
+        }
+        $uniqueMembers = [System.Collections.Generic.HashSet[string]]::new(
+            [System.StringComparer]::Ordinal
+        )
+        for ($index = 0; $index -lt $members.Count; $index++) {
+            if (-not $uniqueMembers.Add($members[$index]) -or
+                $members[$index] -cne $sortedMembers[$index]) {
+                throw "release-plan report at '$ReportPath' group '$($group.Name)' members must be unique and ordinally sorted."
+            }
+        }
+        foreach ($member in $members) {
+            if (-not $byName.ContainsKey($member)) {
+                throw "release-plan report at '$ReportPath' group '$($group.Name)' names missing package '$member'."
+            }
+            if ($groupByMember.ContainsKey($member)) {
+                throw "release-plan report at '$ReportPath' package '$member' belongs to more than one group."
+            }
+            $package = $byName[$member]
+            if ($package.PSObject.Properties.Name -notcontains 'group' -or
+                [string]::IsNullOrWhiteSpace([string] $package.group) -or
+                [string] $package.group -cne $group.Name) {
+                throw "release-plan report at '$ReportPath' group '$($group.Name)' disagrees with package '$member' group reference."
+            }
+            $groupByMember.Add($member, $group.Name)
+        }
+    }
+
+    foreach ($package in $byName.Values) {
+        if ($package.PSObject.Properties.Name -notcontains 'group') {
+            continue
+        }
+        $groupName = [string] $package.group
+        if ([string]::IsNullOrWhiteSpace($groupName) -or
+            -not $groupByMember.ContainsKey([string] $package.name) -or
+            [string] $groupByMember[[string] $package.name] -cne $groupName) {
+            throw "release-plan report at '$ReportPath' package '$($package.name)' has an invalid group reference '$groupName'."
         }
     }
 
@@ -141,8 +228,26 @@ function Get-PackageByName {
         [Parameter(Mandatory)] $Report
     )
 
-    $byName = [ordered]@{}
+    $byName = [System.Collections.Specialized.OrderedDictionary]::new(
+        [System.StringComparer]::Ordinal
+    )
     foreach ($package in $Report.packages) {
+        $byName[[string] $package.name] = $package
+    }
+    return $byName
+}
+
+function Get-VersionTargetByName {
+    # Every tracked package whose declared version can be set by a plan. Release assessment
+    # records and alignment-only records deliberately retain their different shapes.
+    param(
+        [Parameter(Mandatory)] $Report
+    )
+
+    $byName = [System.Collections.Specialized.OrderedDictionary]::new(
+        [System.StringComparer]::Ordinal
+    )
+    foreach ($package in @($Report.packages) + @($Report.non_publishable_packages)) {
         $byName[[string] $package.name] = $package
     }
     return $byName
@@ -785,8 +890,8 @@ function Get-ReleasePlanAnalysisBatchJson {
     # The batch contract nests a package-name array inside each batch record.
     $analysisBatchJsonDepth = 3
 
-    return Get-ReleasePlanAnalysisBatch -ReportPath $ReportPath |
-        ConvertTo-Json -Depth $analysisBatchJsonDepth -AsArray
+    $batch = @(Get-ReleasePlanAnalysisBatch -ReportPath $ReportPath)
+    return ConvertTo-Json -InputObject $batch -Depth $analysisBatchJsonDepth
 }
 
 function Read-ChangeDecision {
@@ -932,11 +1037,17 @@ function Get-PublishStatusWithUnknownRetry {
 }
 
 function Assert-IncrementPackagePublished {
-    # Fails unless every package that apply would reach has a confirmed crates.io publication.
-    # Reads the expanded plan, so the checked set is exactly the set apply will edit.
+    # Fails unless every publishable package that apply would reach has a confirmed crates.io
+    # publication. Current tracked workspace membership decides publication eligibility; an
+    # absent name is not interpreted as a non-publishable helper.
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string] $ExpandedPath,
+        [string] $ManifestPath,
+        [scriptblock] $GetWorkspaceMember = {
+            param([AllowNull()][string] $SelectedManifestPath)
+            Get-TrackedWorkspaceMember -ManifestPath $SelectedManifestPath
+        },
         [scriptblock] $GetPublishStatus = {
             param([string] $Name)
             Get-CratePublishStatus -Name $Name
@@ -949,9 +1060,31 @@ function Assert-IncrementPackagePublished {
 
     Import-Module (Join-Path $PSScriptRoot 'ReleaseAutomation.psm1') -Force
     $packageNames = @(Read-ExpandedPlanPackageName -ExpandedPath $ExpandedPath)
+    $workspaceMemberByName = [System.Collections.Generic.Dictionary[string, object]]::new(
+        [System.StringComparer]::Ordinal
+    )
+    foreach ($member in @(& $GetWorkspaceMember $ManifestPath)) {
+        $name = [string] $member.Name
+        if ([string]::IsNullOrWhiteSpace($name) -or
+            $workspaceMemberByName.ContainsKey($name)) {
+            throw 'Current tracked workspace membership contains an empty or duplicate package name.'
+        }
+        $workspaceMemberByName.Add($name, $member)
+    }
+
     $neverPublished = [System.Collections.Generic.List[string]]::new()
     $unknown = [System.Collections.Generic.List[string]]::new()
     foreach ($name in $packageNames) {
+        if (-not $workspaceMemberByName.ContainsKey($name)) {
+            throw "Expanded plan target '$name' is not a current Git-tracked workspace member."
+        }
+        $member = $workspaceMemberByName[$name]
+        if ($member.PSObject.Properties.Name -notcontains 'Publishable') {
+            throw "Current workspace member '$name' is missing publication eligibility."
+        }
+        if (-not [bool] $member.Publishable) {
+            continue
+        }
         $status = Get-PublishStatusWithUnknownRetry -Name $name `
             -GetPublishStatus $GetPublishStatus `
             -Attempt $PublishStatusRetryAttempt `
@@ -980,7 +1113,7 @@ function Assert-IncrementPackagePublished {
         $noun = if ($unknown.Count -eq 1) { 'package' } else { 'packages' }
         throw "Could not confirm crates.io publication for $($noun): $($unknown -join ', ')."
     }
-    Write-Host 'Every package the expanded plan names is already published.'
+    Write-Host 'Every publishable package the expanded plan names is already published.'
 }
 
 function Get-MinimumVersionForChange {
@@ -1102,7 +1235,8 @@ function Get-ResolvedVersionForPackage {
     param(
         [Parameter(Mandatory)] $Package,
         [Parameter(Mandatory)] $Report,
-        [Parameter(Mandatory)] $ByName,
+        [Parameter(Mandatory)] $ReleaseByName,
+        [Parameter(Mandatory)] $TargetByName,
         [Parameter(Mandatory)] $LevelByName,
         [Parameter(Mandatory)] $Alignment
     )
@@ -1115,14 +1249,14 @@ function Get-ResolvedVersionForPackage {
     $rank = 0
     $level = ''
 
-    foreach ($member in (Get-VersionGroupMemberName -Report $Report -ByName $ByName `
+    foreach ($member in (Get-VersionGroupMemberName -Report $Report -TargetByName $TargetByName `
                 -Name ([string] $Package.name))) {
-        if (-not $ByName.Contains($member)) {
-            continue
+        if (-not $TargetByName.Contains($member)) {
+            throw "Version group for '$($Package.name)' names missing package '$member'."
         }
-        $memberPackage = $ByName[$member]
+        $memberTarget = $TargetByName[$member]
         try {
-            $declared = [semver] [string] $memberPackage.declared_version
+            $declared = [semver] [string] $memberTarget.declared_version
         } catch {
             throw "Package '$member' has an invalid semantic version in the release-plan report."
         }
@@ -1138,6 +1272,10 @@ function Get-ResolvedVersionForPackage {
         if ([string]::IsNullOrWhiteSpace($semanticLevel)) {
             continue
         }
+        if (-not $ReleaseByName.Contains($member)) {
+            throw "Change-level state unexpectedly names non-publishable package '$member'."
+        }
+        $memberPackage = $ReleaseByName[$member]
         if ($memberPackage.PSObject.Properties.Name -notcontains 'anchor' -or
             $null -eq $memberPackage.anchor -or
             [string]::IsNullOrWhiteSpace([string] $memberPackage.anchor.version)) {
@@ -1158,7 +1296,9 @@ function Get-ResolvedVersionForPackage {
         }
     }
 
-    $alignmentEntry = $Alignment[(Get-DecisionKey -ByName $ByName -Name ([string] $Package.name))]
+    $alignmentEntry = $Alignment[
+        (Get-DecisionKey -TargetByName $TargetByName -Name ([string] $Package.name))
+    ]
     if ($null -ne $alignmentEntry) {
         if ($alignmentEntry.Contains('version')) {
             $aligned = [semver] [string] $alignmentEntry['version']
@@ -1193,7 +1333,8 @@ function Test-PackageReleasesBreakingChange {
     param(
         [Parameter(Mandatory)] $Package,
         [Parameter(Mandatory)] $Report,
-        [Parameter(Mandatory)] $ByName,
+        [Parameter(Mandatory)] $ReleaseByName,
+        [Parameter(Mandatory)] $TargetByName,
         [Parameter(Mandatory)] $LevelByName,
         [Parameter(Mandatory)] $Alignment
     )
@@ -1211,22 +1352,23 @@ function Test-PackageReleasesBreakingChange {
     }
 
     $resolved = Get-ResolvedVersionForPackage -Package $Package -Report $Report `
-        -ByName $ByName -LevelByName $LevelByName -Alignment $Alignment
+        -ReleaseByName $ReleaseByName -TargetByName $TargetByName `
+        -LevelByName $LevelByName -Alignment $Alignment
 
     return (Get-VersionCompatibilityKey -Version $anchor) -cne
         (Get-VersionCompatibilityKey -Version $resolved)
 }
 
 function Get-VersionGroupMemberName {
-    # The packages that release at one version with $Name, including $Name itself.
+    # The packages whose declared versions resolve together with $Name, including $Name itself.
     [OutputType([string[]])]
     param(
         [Parameter(Mandatory)] $Report,
-        [Parameter(Mandatory)] $ByName,
+        [Parameter(Mandatory)] $TargetByName,
         [Parameter(Mandatory)][string] $Name
     )
 
-    $key = Get-DecisionKey -ByName $ByName -Name $Name
+    $key = Get-DecisionKey -TargetByName $TargetByName -Name $Name
     $group = $Report.groups.PSObject.Properties[$key]
     if ($null -eq $group) {
         return , @($Name)
@@ -1248,7 +1390,8 @@ function Get-ChangeLevelWithPublicDependency {
     [OutputType([System.Collections.IDictionary])]
     param(
         [Parameter(Mandatory)] $Report,
-        [Parameter(Mandatory)] $ByName,
+        [Parameter(Mandatory)] $ReleaseByName,
+        [Parameter(Mandatory)] $TargetByName,
         [Parameter(Mandatory)] $Decision,
         [Parameter(Mandatory)] $Alignment
     )
@@ -1280,7 +1423,8 @@ function Get-ChangeLevelWithPublicDependency {
                 continue
             }
             if (Test-PackageReleasesBreakingChange -Package $package -Report $Report `
-                    -ByName $ByName -LevelByName $level -Alignment $Alignment) {
+                    -ReleaseByName $ReleaseByName -TargetByName $TargetByName `
+                    -LevelByName $level -Alignment $Alignment) {
                 continue
             }
             if ($package.PSObject.Properties.Name -notcontains 'dependencies') {
@@ -1292,18 +1436,20 @@ function Get-ChangeLevelWithPublicDependency {
                     continue
                 }
                 $dependencyName = [string] $dependency.name
-                if (-not $ByName.Contains($dependencyName)) {
+                if (-not $ReleaseByName.Contains($dependencyName)) {
                     continue
                 }
-                if (-not (Test-PackageReleasesBreakingChange -Package $ByName[$dependencyName] `
-                            -Report $Report -ByName $ByName -LevelByName $level `
+                if (-not (Test-PackageReleasesBreakingChange `
+                            -Package $ReleaseByName[$dependencyName] `
+                            -Report $Report -ReleaseByName $ReleaseByName `
+                            -TargetByName $TargetByName -LevelByName $level `
                             -Alignment $Alignment)) {
                     continue
                 }
                 Write-Verbose (
                     "Package '$name' is raised to change level 'breaking' because its public API " +
                     "exposes '$dependencyName', which releases a version incompatible with its " +
-                    "anchor '$($ByName[$dependencyName].anchor.version)'. A consumer holding the " +
+                    "anchor '$($ReleaseByName[$dependencyName].anchor.version)'. A consumer holding the " +
                     'older dependency can no longer hand its types across.'
                 ) -Verbose
                 $level[$name] = 'breaking'
@@ -1323,7 +1469,7 @@ function Get-DecisionIncrement {
     # the existing increment already covers it.
     [OutputType([System.Collections.Generic.List[object]])]
     param(
-        [Parameter(Mandatory)] $ByName,
+        [Parameter(Mandatory)] $ReleaseByName,
         [Parameter(Mandatory)] $LevelByName,
         [switch] $Explain
     )
@@ -1331,10 +1477,10 @@ function Get-DecisionIncrement {
     $increment = [System.Collections.Generic.List[object]]::new()
     foreach ($entry in $LevelByName.GetEnumerator()) {
         $name = [string] $entry.Key
-        if (-not $ByName.Contains($name)) {
-            throw "Change decision names unknown package '$name'."
+        if (-not $ReleaseByName.Contains($name)) {
+            throw "Change decision names unknown or non-publishable package '$name'."
         }
-        $package = $ByName[$name]
+        $package = $ReleaseByName[$name]
         $level = [string] $entry.Value
         if ($package.PSObject.Properties.Name -notcontains 'anchor' -or
             $null -eq $package.anchor -or
@@ -1384,20 +1530,69 @@ function Get-DecisionIncrement {
     return , $increment
 }
 
+function Get-GroupVersionState {
+    # Computes the highest declared version and whether it can be emitted as an exact group
+    # target. Build metadata does not affect precedence, so a non-plain member tied with a plain
+    # highest member still requires a patch increment rather than an exact target.
+    param(
+        [Parameter(Mandatory)][string] $Name,
+        [Parameter(Mandatory)] $Group,
+        [Parameter(Mandatory)] $TargetByName
+    )
+
+    $version = [System.Collections.Generic.HashSet[string]]::new(
+        [System.StringComparer]::Ordinal
+    )
+    $highest = $null
+    $highestHasNonPlainMember = $false
+    foreach ($groupMember in $Group.members) {
+        $memberName = [string] $groupMember
+        if (-not $TargetByName.Contains($memberName)) {
+            throw "Version group '$Name' names missing package '$memberName'."
+        }
+        $declaredText = [string] $TargetByName[$memberName].declared_version
+        [void] $version.Add($declaredText)
+        try {
+            $declared = [semver] $declaredText
+        } catch {
+            throw "Package '$memberName' has an invalid semantic version in the release-plan report."
+        }
+        $declaredIsNonPlain =
+            -not [string]::IsNullOrEmpty($declared.PreReleaseLabel) -or
+            -not [string]::IsNullOrEmpty($declared.BuildLabel)
+        if ($null -eq $highest -or $declared -gt $highest) {
+            $highest = $declared
+            $highestHasNonPlainMember = $declaredIsNonPlain
+        } elseif ($declared -eq $highest -and $declaredIsNonPlain) {
+            $highestHasNonPlainMember = $true
+        }
+    }
+    if ($null -eq $highest) {
+        throw "Group '$Name' has no declared version to align its members on."
+    }
+
+    return [pscustomobject]@{
+        Highest                  = $highest
+        HighestHasNonPlainMember = $highestHasNonPlainMember
+        DistinctVersionCount     = $version.Count
+    }
+}
+
 function Get-GroupAlignment {
-    # The realignment entry for every inconsistent group no plan entry already reaches.
+    # The realignment entry for every version-misaligned group no plan entry already reaches.
     #
     # Every version group has to end up on one version, and expansion is plan-driven: a group
     # moves only when an entry names one of its members. The decisions can easily leave a drifted
     # group unnamed, because no member's content changed or because the decided level was already
     # covered by a pending increment, so the groups no entry reaches are realigned here. Leaving
-    # this to a decision instead would make an inconsistent group unrecoverable exactly when its
+    # this to a decision instead would make a misaligned group unrecoverable exactly when its
     # decision is skipped as already sufficient.
     # Ref: packages/cargo-release-plan/docs/design.md, "Version groups".
     [OutputType([System.Collections.IDictionary])]
     param(
         [Parameter(Mandatory)] $Report,
-        [Parameter(Mandatory)] $ByName,
+        [Parameter(Mandatory)] $ReleaseByName,
+        [Parameter(Mandatory)] $TargetByName,
         [Parameter(Mandatory)][AllowEmptyCollection()][System.Collections.IDictionary[]] $Increment
     )
 
@@ -1405,15 +1600,21 @@ function Get-GroupAlignment {
         [System.StringComparer]::Ordinal
     )
     foreach ($entry in $Increment) {
-        [void] $planned.Add((Get-DecisionKey -ByName $ByName -Name ([string] $entry['name'])))
+        [void] $planned.Add(
+            (Get-DecisionKey -TargetByName $TargetByName -Name ([string] $entry['name']))
+        )
     }
-    $unaligned = @($Report.groups.PSObject.Properties |
-            Sort-Object -Property Name |
-            Where-Object {
-                $_.Value.PSObject.Properties.Name -contains 'consistent' -and
-                -not $_.Value.consistent -and
-                -not $planned.Contains($_.Name)
-            })
+    $unaligned = [System.Collections.Generic.List[object]]::new()
+    foreach ($group in $Report.groups.PSObject.Properties | Sort-Object -Property Name) {
+        if ($planned.Contains($group.Name)) {
+            continue
+        }
+        $state = Get-GroupVersionState -Name $group.Name -Group $group.Value `
+            -TargetByName $TargetByName
+        if ($state.DistinctVersionCount -gt 1 -or $state.HighestHasNonPlainMember) {
+            $unaligned.Add($group)
+        }
+    }
 
     # Each group's alignment is decided against everything else the plan does, and deciding one
     # group can move packages that change another group's answer. Deciding them in one pass would
@@ -1441,7 +1642,9 @@ function Get-GroupAlignment {
             }
 
             $fresh = Get-GroupAlignmentIncrement -Name $group.Name -Group $group.Value `
-                -ByName $ByName -Report $Report -Increment ([System.Collections.IDictionary[]] $context.ToArray())
+                -ReleaseByName $ReleaseByName -TargetByName $TargetByName `
+                -Report $Report `
+                -Increment ([System.Collections.IDictionary[]] $context.ToArray())
             $current = $alignment[$group.Name]
             if ($null -eq $current -or
                 [string] $current['level'] -cne [string] $fresh['level'] -or
@@ -1490,18 +1693,18 @@ function Test-PlanStateSettled {
     return $true
 }
 function Get-DecisionKey {
-    # The key a plan entry folds onto: the package's version group when it has one, otherwise the
-    # package itself. Mirrors the tool's own decision keys, so a group counts as already planned
-    # whichever member named it.
+    # The key a plan entry folds onto: the target's version group when it has one, otherwise the
+    # target itself. The lookup includes alignment-only packages because the smallest group member
+    # can be non-publishable.
     param(
-        [Parameter(Mandatory)] $ByName,
+        [Parameter(Mandatory)] $TargetByName,
         [Parameter(Mandatory)][string] $Name
     )
 
-    if (-not $ByName.Contains($Name)) {
+    if (-not $TargetByName.Contains($Name)) {
         return $Name
     }
-    $package = $ByName[$Name]
+    $package = $TargetByName[$Name]
     if ($package.PSObject.Properties.Name -notcontains 'group' -or
         [string]::IsNullOrWhiteSpace([string] $package.group)) {
         return $Name
@@ -1550,7 +1753,7 @@ function Get-PackageMovedByIncrement {
     [OutputType([System.Collections.Generic.HashSet[string]])]
     param(
         [Parameter(Mandatory)] $Report,
-        [Parameter(Mandatory)] $ByName,
+        [Parameter(Mandatory)] $TargetByName,
         [Parameter(Mandatory)][AllowEmptyCollection()][System.Collections.IDictionary[]] $Increment
     )
 
@@ -1562,7 +1765,7 @@ function Get-PackageMovedByIncrement {
         # package rather than its group. Resolution folds that onto the group and moves every
         # member, so the entry name is normalized before the group is looked up; reading it
         # directly would see only the named member and miss the rest of the group.
-        $key = Get-DecisionKey -ByName $ByName -Name ([string] $entry['name'])
+        $key = Get-DecisionKey -TargetByName $TargetByName -Name ([string] $entry['name'])
         $reached = [System.Collections.Generic.List[string]]::new()
         $group = $Report.groups.PSObject.Properties[$key]
         if ($null -eq $group) {
@@ -1573,13 +1776,14 @@ function Get-PackageMovedByIncrement {
             }
         }
         foreach ($packageName in $reached) {
-            if (-not $ByName.Contains($packageName)) {
-                continue
+            if (-not $TargetByName.Contains($packageName)) {
+                throw "Plan entry '$key' reaches missing package '$packageName'."
             }
             # A level always raises the package; an exact version moves only those not already
             # declaring it.
             if ($entry.Contains('level') -or
-                [string] $ByName[$packageName].declared_version -cne [string] $entry['version']) {
+                [string] $TargetByName[$packageName].declared_version -cne
+                    [string] $entry['version']) {
                 [void] $moved.Add($packageName)
             }
         }
@@ -1620,8 +1824,8 @@ function Get-GroupAlignmentIncrement {
     #
     # Aligning is normally not an increment: the members simply have to agree, and the highest
     # version any of them already declares is the one they agree on, so raising it would publish
-    # every member for no substantive change. The target is the report's own
-    # highest-declared-member version, so the rule is not restated here.
+    # every publishable member for no substantive change. The target is derived from every
+    # member's declared version, including alignment-only helpers.
     #
     # That exact target is only safe while every package left at its current version keeps its
     # released content, and applying a plan rewrites the version requirement of any workspace
@@ -1633,31 +1837,29 @@ function Get-GroupAlignmentIncrement {
     param(
         [Parameter(Mandatory)][string] $Name,
         [Parameter(Mandatory)] $Group,
-        [Parameter(Mandatory)] $ByName,
+        [Parameter(Mandatory)] $ReleaseByName,
+        [Parameter(Mandatory)] $TargetByName,
         [Parameter(Mandatory)] $Report,
         [Parameter(Mandatory)][AllowEmptyCollection()][System.Collections.IDictionary[]] $Increment
     )
 
-    if ($Group.PSObject.Properties.Name -notcontains 'version' -or
-        [string]::IsNullOrWhiteSpace([string] $Group.version)) {
-        throw "Group '$Name' has no declared version to align its members on."
-    }
-    $target = [string] $Group.version
-
     $member = [System.Collections.Generic.HashSet[string]]::new(
         [System.StringComparer]::Ordinal
     )
+    $state = Get-GroupVersionState -Name $Name -Group $Group -TargetByName $TargetByName
+    $highest = [semver] $state.Highest
+    foreach ($groupMember in $Group.members) {
+        $memberName = [string] $groupMember
+        [void] $member.Add($memberName)
+    }
+    $target = $highest.ToString()
+
     $moving = [System.Collections.Generic.HashSet[string]]::new(
         [System.StringComparer]::Ordinal
     )
     $staying = [System.Collections.Generic.List[string]]::new()
-    foreach ($groupMember in $Group.members) {
-        $memberName = [string] $groupMember
-        if (-not $ByName.Contains($memberName)) {
-            continue
-        }
-        [void] $member.Add($memberName)
-        if ([string] $ByName[$memberName].declared_version -ceq $target) {
+    foreach ($memberName in $member) {
+        if ([string] $TargetByName[$memberName].declared_version -ceq $target) {
             $staying.Add($memberName)
         } else {
             [void] $moving.Add($memberName)
@@ -1668,13 +1870,16 @@ function Get-GroupAlignmentIncrement {
     # resulting plan is safe is settled once for the whole plan by
     # Assert-PlanMovesEveryRewrittenPublishedPackage, because a package can be endangered by an
     # entry belonging to some other group and no per-group view can see that.
-    $movedByPlan = Get-PackageMovedByIncrement -Report $Report -ByName $ByName -Increment $Increment
+    $movedByPlan = Get-PackageMovedByIncrement -Report $Report `
+        -TargetByName $TargetByName -Increment $Increment
 
     foreach ($memberName in $staying) {
-        if (-not (Test-PackageShipsPublishedVersion -Package $ByName[$memberName] -Moves $false)) {
+        if (-not $ReleaseByName.Contains($memberName) -or
+            -not (Test-PackageShipsPublishedVersion `
+                -Package $ReleaseByName[$memberName] -Moves $false)) {
             continue
         }
-        foreach ($dependency in $ByName[$memberName].dependencies) {
+        foreach ($dependency in $ReleaseByName[$memberName].dependencies) {
             $dependencyName = [string] $dependency.name
             # Both this group's own laggards and anything the rest of the plan already moves: a
             # member that keeps its version is endangered by either, and incrementing the group
@@ -1691,6 +1896,14 @@ function Get-GroupAlignmentIncrement {
             ) -Verbose
             return Get-PlanIncrement -Name $Name -Level 'patch'
         }
+    }
+
+    if ($state.HighestHasNonPlainMember) {
+        Write-Verbose (
+            "Group '$Name' has non-plain highest version '$target'; patch-incrementing the " +
+            'group so rewritten exact requirements retain the required plain version syntax.'
+        ) -Verbose
+        return Get-PlanIncrement -Name $Name -Level 'patch'
     }
 
     Write-Verbose (
@@ -1712,11 +1925,12 @@ function Assert-PlanMovesEveryPackageNeedingIncrement {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)] $Report,
-        [Parameter(Mandatory)] $ByName,
+        [Parameter(Mandatory)] $TargetByName,
         [Parameter(Mandatory)][AllowEmptyCollection()][System.Collections.IDictionary[]] $Increment
     )
 
-    $moved = Get-PackageMovedByIncrement -Report $Report -ByName $ByName -Increment $Increment
+    $moved = Get-PackageMovedByIncrement -Report $Report `
+        -TargetByName $TargetByName -Increment $Increment
     $missing = [System.Collections.Generic.List[string]]::new()
     foreach ($package in $Report.packages) {
         $packageName = [string] $package.name
@@ -1748,18 +1962,20 @@ function Assert-PlanMovesEveryRewrittenPublishedPackage {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)] $Report,
-        [Parameter(Mandatory)] $ByName,
+        [Parameter(Mandatory)] $ReleaseByName,
+        [Parameter(Mandatory)] $TargetByName,
         [Parameter(Mandatory)][AllowEmptyCollection()][System.Collections.IDictionary[]] $Increment
     )
 
-    $moved = Get-PackageMovedByIncrement -Report $Report -ByName $ByName -Increment $Increment
+    $moved = Get-PackageMovedByIncrement -Report $Report `
+        -TargetByName $TargetByName -Increment $Increment
     $stranded = [System.Collections.Generic.List[string]]::new()
-    foreach ($packageName in $ByName.Keys) {
-        if (-not (Test-PackageShipsPublishedVersion -Package $ByName[$packageName] `
+    foreach ($packageName in $ReleaseByName.Keys) {
+        if (-not (Test-PackageShipsPublishedVersion -Package $ReleaseByName[$packageName] `
                     -Moves $moved.Contains($packageName))) {
             continue
         }
-        foreach ($dependency in $ByName[$packageName].dependencies) {
+        foreach ($dependency in $ReleaseByName[$packageName].dependencies) {
             if ($moved.Contains([string] $dependency.name)) {
                 $stranded.Add($packageName)
                 break
@@ -1781,8 +1997,8 @@ function Assert-PlanMovesEveryRewrittenPublishedPackage {
 
 function New-ReleasePlanFile {
     # Writes the proposed plan: the approved change levels mapped to cargo-release-plan's
-    # mechanical increment levels, plus whatever it takes to make every inconsistent version
-    # group consistent. Existing pending-release increments are retained and raised only when
+    # mechanical increment levels, plus whatever it takes to align every group whose declared
+    # versions differ. Existing pending-release increments are retained and raised only when
     # insufficient. Expanding this proposal is a separate step, because only an expanded plan
     # names every package the plan reaches.
     [CmdletBinding(SupportsShouldProcess)]
@@ -1794,7 +2010,8 @@ function New-ReleasePlanFile {
 
     $report = Read-ReleasePlanReport -ReportPath $ReportPath
     $decision = Read-ChangeDecision -DecisionPath $DecisionPath
-    $byName = Get-PackageByName -Report $report
+    $releaseByName = Get-PackageByName -Report $report
+    $targetByName = Get-VersionTargetByName -Report $report
 
     # Levels and realignment each depend on the other's outcome, so neither can be decided first.
     # Exposing a dependency that breaks is itself a breaking change, which needs the versions the
@@ -1813,10 +2030,13 @@ function New-ReleasePlanFile {
         }
         $remainingPass--
 
-        $freshLevel = Get-ChangeLevelWithPublicDependency -Report $report -ByName $byName `
+        $freshLevel = Get-ChangeLevelWithPublicDependency -Report $report `
+            -ReleaseByName $releaseByName -TargetByName $targetByName `
             -Decision $decision -Alignment $alignment
-        $freshIncrement = Get-DecisionIncrement -ByName $byName -LevelByName $freshLevel
-        $freshAlignment = Get-GroupAlignment -Report $report -ByName $byName `
+        $freshIncrement = Get-DecisionIncrement -ReleaseByName $releaseByName `
+            -LevelByName $freshLevel
+        $freshAlignment = Get-GroupAlignment -Report $report `
+            -ReleaseByName $releaseByName -TargetByName $targetByName `
             -Increment ([System.Collections.IDictionary[]] $freshIncrement.ToArray())
 
         $settled = (Test-PlanStateSettled -Left $levelByName -Right $freshLevel) -and
@@ -1828,14 +2048,17 @@ function New-ReleasePlanFile {
     }
 
     # Rebuilt once the inputs have settled so each decision is explained exactly once.
-    $increment = Get-DecisionIncrement -ByName $byName -LevelByName $levelByName -Explain
+    $increment = Get-DecisionIncrement -ReleaseByName $releaseByName `
+        -LevelByName $levelByName -Explain
     foreach ($decided in $alignment.GetEnumerator()) {
         $increment.Add($decided.Value)
     }
 
-    Assert-PlanMovesEveryPackageNeedingIncrement -Report $report -ByName $byName `
+    Assert-PlanMovesEveryPackageNeedingIncrement -Report $report `
+        -TargetByName $targetByName `
         -Increment $increment
-    Assert-PlanMovesEveryRewrittenPublishedPackage -Report $report -ByName $byName `
+    Assert-PlanMovesEveryRewrittenPublishedPackage -Report $report `
+        -ReleaseByName $releaseByName -TargetByName $targetByName `
         -Increment $increment
 
     if ($PSCmdlet.ShouldProcess($PlanPath, 'write generated cargo-release-plan input')) {

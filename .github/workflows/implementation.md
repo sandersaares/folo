@@ -22,12 +22,14 @@ from, which is not the branch a pull request targets, so the workflow passes the
 on a pull request and the merge-group base commit on a queue run.
 
 `scripts/release/ReleasePlan.psm1` is the PowerShell boundary between that report and hosted
-validation. It accepts only the report schema revision it understands and selects SemVer targets
-from the `consumer_contract` field the report carries for each package. That field comes from the
-package's own manifest, so adding a package to the workspace requires no edit here and no list
-goes stale; the same target selection drives both the CI SemVer job and evidence collection by
-the increment-versions skill. Package-name patterns do not determine whether a crate has a
-consumer contract.
+validation. It accepts only the report schema revision it understands and keeps separate lookups
+for publishable release assessments and all tracked version targets. The report's `packages`
+array supplies released-content evidence and consumer-contract selection for publishable members;
+`non_publishable_packages` supplies only names, declared versions, and derived group membership.
+SemVer analysis and change-level decisions use the former, while grouping and alignment use their
+union. The pre-apply publication gate resolves every approved target against current workspace
+metadata and queries crates.io only for targets Cargo says are publishable. Package-name patterns
+do not determine whether a crate has a consumer contract or is publishable.
 
 The module also owns the skill's deterministic mechanics: dependency-order presentation,
 publication eligibility, change-level validation, version-group realignment, and

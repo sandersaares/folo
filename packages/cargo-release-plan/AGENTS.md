@@ -44,11 +44,16 @@ tests (packaging rules, group verdicts, plan expansion, inherited-value
 comparison, anchor resolution over a synthetic timeline) must keep running
 under Miri.
 
-## Version groups live in the workspace manifest
+## Version groups come from exact dependencies
 
-Group membership is `[workspace.metadata.release-plan.groups]` in the repo-root
-`Cargo.toml`. `release-plz.toml` does not declare version groups. When adding a
-grouped crate, update that table. See `docs/release-versioning.md`.
+Every Git-tracked workspace member participates in version grouping, including
+`publish = false` helpers. A valid exact local dependency
+`=major.minor.patch` creates an undirected edge; connected components with more
+than one member are groups. Preserve raw manifest syntax through validation
+because Cargo metadata normalizes away distinctions the contract rejects. Keep
+release classification publishable-only and keep the broader Cargo-visible
+member set for dependent requirement rewrites. See `docs/design.md`, "Version
+groups", and `docs/implementation.md`, "Workspace snapshots".
 
 ## Release-process ownership
 

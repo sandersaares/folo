@@ -69,42 +69,29 @@ feature table mirrors `foo`'s exactly.
 SemVer boundary between them, and we do not want downstream consumers to ever
 end up with a mismatched pair (e.g. `foo 1.5.0` paired with `foo_impl 1.4.7`).
 Both packages always carry the **same** version number, and that number bumps
-together on every release. Two mechanisms enforce this:
+together on every release. The shell's exact dependency on its implementation
+crate enforces both Cargo resolution and release planning:
 
-1. **`[workspace.dependencies]` exact-pins `foo_impl`** using the `=X.Y.Z`
-   constraint form:
+```toml
+# workspace Cargo.toml
+[workspace.dependencies]
+foo = { version = "1.5.0", path = "packages/foo", default-features = false }
+foo_impl = { version = "=1.5.0", path = "packages/foo_impl", default-features = false }
+```
 
-   ```toml
-   # workspace Cargo.toml
-   [workspace.dependencies]
-   foo = { version = "1.5.0", path = "packages/foo", default-features = false }
-   foo_impl = { version = "=1.5.0", path = "packages/foo_impl", default-features = false }
-   ```
+`foo/Cargo.toml` inherits the dependency in the usual workspace way:
 
-   `foo/Cargo.toml` inherits the dependency in the usual workspace way:
+```toml
+# packages/foo/Cargo.toml
+[dependencies]
+foo_impl = { workspace = true }
+```
 
-   ```toml
-   # packages/foo/Cargo.toml
-   [dependencies]
-   foo_impl = { workspace = true }
-   ```
-
-   The `=` constraint propagates through workspace inheritance, so downstream
-   consumers of `foo` are locked to exactly the matching `foo_impl` version.
-
-2. **`[workspace.metadata.release-plan.groups]` puts both packages in the same
-   group**, which makes `cargo-release-plan` expand an increment across them:
-
-   ```toml
-   # Cargo.toml (workspace)
-   [workspace.metadata.release-plan.groups]
-   foo = ["foo", "foo_impl"]
-   ```
-
-   The `=` pin in `[workspace.dependencies]` is the Cargo-level complement:
-   even if a future change dropped the group, the published `foo` would still
-   refuse to install with a different `foo_impl` version. See
-   [release-versioning.md](release-versioning.md).
+The `=` constraint propagates through workspace inheritance, so downstream
+consumers of `foo` are locked to exactly the matching `foo_impl` version.
+`cargo-release-plan` derives a version group from that same exact dependency
+and expands an increment across both packages. See
+[release-versioning.md](release-versioning.md).
 
 When a pull request increments the pair, the `increment-versions` skill rewrites
 the `=X.Y.Z` constraint with the new version. The pair is initialized at the
@@ -168,10 +155,11 @@ opt into those markings — to discourage external dependents on crates.io — a
 - Plain `pub` on internal items that out-of-crate benches/tests must reach,
   without a public feature gate, since the package is not a surface anyone is
   expected to depend on directly.
-- Lockstep versioning, **if** the `-core` package is published and the shell
-  pins it: the group in `[workspace.metadata.release-plan.groups]` plus the
-  `=X.Y.Z` pin in `[workspace.dependencies]` keep the pair from ever drifting
-  apart, exactly as for a `foo`/`foo_impl` pair (see "Versioning" above).
+- Lockstep versioning, **if** the shell exact-pins the `-core` package: the
+  `=X.Y.Z` pin in `[workspace.dependencies]` derives their version group and
+  keeps the pair from drifting apart, exactly as for a `foo`/`foo_impl` pair
+  (see "Versioning" above). Publication eligibility is independent of group
+  membership.
 
 See the `cbh_*` crates under "Canonical examples" for a worked instance.
 
@@ -188,7 +176,7 @@ happens to need today.
 | `tests/**` (integration tests)    | `foo_impl` | Same reasoning as benches: they are for maintainers, and proximity to `foo_impl` internals is occasionally needed. |
 | `examples/**` (user-facing)       | `foo`      | Examples are a form of end-user documentation. They must compile against the same public API a user gets from `cargo add foo`. Keeping them in the public crate is what enforces that they cannot accidentally reach for internals. |
 | Maintainer-only demo/dev binaries | `foo_impl/examples/` (optional) | If you do want a runnable internal demo (e.g. a load-generator, a profiling harness, a "wire up the internals to see what they do" app), put it under `foo_impl/examples/`. Treat it explicitly as "examples and dev apps for maintainers", a different category from end-user examples. |
-| Re-export smoke test              | `foo`      | The one and only `tests/` file in `foo`. It exists specifically to assert that the explicit re-export list in `foo/src/lib.rs` keeps reaching every advertised item. See step 9 below. |
+| Re-export smoke test              | `foo`      | The one and only `tests/` file in `foo`. It exists specifically to assert that the explicit re-export list in `foo/src/lib.rs` keeps reaching every advertised item. See "How to do the split" below. |
 
 Two principles fall out of the table:
 
@@ -379,25 +367,13 @@ unreachable from `foo` and stay in the impl crate's internal scope.
 
    Forward any functional features of `foo` to `foo_impl` 1:1 in `[features]`.
 
-6. Add both packages to `[workspace.metadata.release-plan.groups]` in the root
-   `Cargo.toml`:
-
-   ```toml
-   [workspace.metadata.release-plan.groups]
-   foo = ["foo", "foo_impl"]
-   ```
-
-   This makes `cargo-release-plan` expand an increment across both packages, and
-   the `increment-versions` skill rewrites the `=X.Y.Z` pin in
-   `[workspace.dependencies]` so it always points at the matching `foo_impl`.
-
-7. Inside `foo_impl/src/lib.rs`:
+6. Inside `foo_impl/src/lib.rs`:
    - Put `#![cfg_attr(docsrs, doc(hidden))]` at the top.
    - Add a brief crate-level doc comment that points to `foo`.
    - Declare modules and re-export items just as the original `foo` lib.rs
      did.
 
-8. Convert any internal-only API surface that already existed in `foo`
+7. Convert any internal-only API surface that already existed in `foo`
    (typically gated behind a workspace-internal `test-util` feature) so it
    lives in `foo_impl` instead. Add a `private-test-util = []` feature to
    `foo_impl/Cargo.toml`. Keep the
@@ -414,7 +390,7 @@ unreachable from `foo` and stay in the impl crate's internal scope.
    — see "Public testing APIs that the shell crate exposes (`test-util`)"
    above.
 
-9. Update in-workspace consumers (dev-dependencies that previously activated
+8. Update in-workspace consumers (dev-dependencies that previously activated
    an internal feature on `foo` to reach these items) to instead declare
    `foo_impl = { path = "../foo_impl", features = ["private-test-util"] }`
    as a dev-dependency. Call sites continue to name types through `foo`
@@ -422,12 +398,12 @@ unreachable from `foo` and stay in the impl crate's internal scope.
    is needed because gated inherent methods are reachable via any path that
    names the type, and `foo` re-exports the type.
 
-10. Add `foo` itself as a dev-dependency of `foo_impl` so doctests written
+9. Add `foo` itself as a dev-dependency of `foo_impl` so doctests written
     from the user's perspective (`use foo::Event;`) compile in
     `cargo test --doc -p foo_impl`. This is an allowed dev-dependency-only
     cycle.
 
-11. Add a small re-export smoke test in `packages/foo/tests/foo_reexports.rs`
+10. Add a small re-export smoke test in `packages/foo/tests/foo_reexports.rs`
     that pulls every re-exported item by name and exercises just enough of it
     to confirm the contract. This catches regressions if a re-export is
     accidentally dropped from the list in step 4.
@@ -470,8 +446,8 @@ The original worked example. Concrete files to study:
   `#[cfg(any(test, feature = "private-test-util"))] #[doc(hidden)] pub fn fake(...)`
   constructors on `Report`, `EventMetrics`, and `Histogram`.
 - `packages/nm_impl/README.md` — "do not depend on this directly" notice.
-- `Cargo.toml` (workspace) — `nm = ["nm", "nm_impl"]` in
-  `[workspace.metadata.release-plan.groups]`.
+- `Cargo.toml` (workspace) — the exact `nm_impl` entry in
+  `[workspace.dependencies]` derives the pair's version group.
 
 ### `nm_otel` / `nm_otel_impl`
 
@@ -493,8 +469,8 @@ The second worked example. Concrete files to study:
   the public-API subset for the shell crate plus feature-gated `EventState` for
   the alloc-tracking integration test.
 - `packages/nm_otel_impl/README.md` — "do not depend on this directly" notice.
-- `Cargo.toml` (workspace) — `nm_otel = ["nm_otel", "nm_otel_impl"]` in
-  `[workspace.metadata.release-plan.groups]`.
+- `Cargo.toml` (workspace) — the exact `nm_otel_impl` entry in
+  `[workspace.dependencies]` derives the pair's version group.
 
 ### `many_cpus` / `many_cpus_impl`
 
@@ -535,8 +511,8 @@ Concrete files to study:
   docs.rs).
 - `packages/many_cpus_impl/README.md` — "do not depend on this directly"
   notice.
-- `Cargo.toml` (workspace) — `many_cpus = ["many_cpus", "many_cpus_impl"]` in
-  `[workspace.metadata.release-plan.groups]`.
+- `Cargo.toml` (workspace) — the exact `many_cpus_impl` entry in
+  `[workspace.dependencies]` derives the pair's version group.
 
 ### `cbh_*` (private-use impl crates, no shell)
 
@@ -571,8 +547,7 @@ deferring their documentation. Concrete files to study:
   `[dev-dependencies]` entries with `features = ["private-test-util"]` (on
   `cbh_git`, `cbh_storage`, `cbh_diag`) activate it for the shell's own
   tests.
-- `Cargo.toml` (workspace) — the lockstep machinery applies to every crate in
-  the family: each `cbh_*` package is pinned with an exact `=` version in
-  `[workspace.dependencies]` and shares the `cargo-bench-history` group in
-  `[workspace.metadata.release-plan.groups]` with the CLI, so the published set
-  can never drift to mismatched versions.
+- `Cargo.toml` (workspace) — the exact `=` references among the CLI's
+  implementation packages form one connected version group. Every member's
+  declared version stays aligned even when a member is not publishable; only
+  publishable members are released.
