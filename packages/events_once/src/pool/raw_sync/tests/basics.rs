@@ -1,20 +1,20 @@
 #[cfg(debug_assertions)]
-pub(in crate::pool::raw_sync) use std::cell::RefCell;
-pub(in crate::pool::raw_sync) use std::panic::{RefUnwindSafe, UnwindSafe};
-pub(in crate::pool::raw_sync) use std::sync::{Arc, Barrier};
-pub(in crate::pool::raw_sync) use std::task::{self, Poll, Waker};
-pub(in crate::pool::raw_sync) use std::{iter, thread};
+pub(crate) use std::cell::RefCell;
+pub(crate) use std::panic::{RefUnwindSafe, UnwindSafe};
+pub(crate) use std::sync::{Arc, Barrier};
+pub(crate) use std::task::{self, Poll, Waker};
+pub(crate) use std::{iter, thread};
 
-pub(in crate::pool::raw_sync) use futures::executor::block_on;
+pub(crate) use futures::executor::block_on;
 use static_assertions::assert_impl_all;
 #[cfg(debug_assertions)]
-pub(in crate::pool::raw_sync) use testing::assert_panics_with;
-pub(in crate::pool::raw_sync) use testing::with_watchdog;
+pub(crate) use testing::assert_panics_with;
+pub(crate) use testing::with_watchdog;
 
-pub(in crate::pool::raw_sync) use super::super::*;
+pub(crate) use super::super::*;
 #[cfg(debug_assertions)]
-pub(in crate::pool::raw_sync) use crate::assert_inspect_awaiters_is_reentrant;
-pub(in crate::pool::raw_sync) use crate::{
+pub(crate) use crate::assert_inspect_awaiters_is_reentrant;
+pub(crate) use crate::{
     Disconnected,
     PanickingPayload,
     RawPooledSender,

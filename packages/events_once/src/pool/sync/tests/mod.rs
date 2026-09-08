@@ -5,4 +5,4 @@ mod concurrency;
 mod diagnostics;
 mod lifecycle;
 
-pub(super) use basics::*;
+pub(crate) use basics::*;

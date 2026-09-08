@@ -1,26 +1,26 @@
-pub(in crate::core::sync) use std::cell::RefCell;
-pub(in crate::core::sync) use std::panic::{
+pub(crate) use std::cell::RefCell;
+pub(crate) use std::panic::{
     AssertUnwindSafe, RefUnwindSafe, UnwindSafe, catch_unwind, resume_unwind,
 };
-pub(in crate::core::sync) use std::pin::Pin;
-pub(in crate::core::sync) use std::rc::Rc;
-pub(in crate::core::sync) use std::sync::{Arc, Barrier, Mutex, atomic};
-pub(in crate::core::sync) use std::task::{Poll, Waker};
-pub(in crate::core::sync) use std::{mem, task, thread};
+pub(crate) use std::pin::Pin;
+pub(crate) use std::rc::Rc;
+pub(crate) use std::sync::{Arc, Barrier, Mutex, atomic};
+pub(crate) use std::task::{Poll, Waker};
+pub(crate) use std::{mem, task, thread};
 
-pub(in crate::core::sync) use futures::executor::block_on;
+pub(crate) use futures::executor::block_on;
 use static_assertions::assert_impl_all;
-pub(in crate::core::sync) use testing::{
+pub(crate) use testing::{
     DropOnWakerRelease, assert_panics, assert_panics_with, clone_action_waker,
     clone_action_waker_panicking_on_clone_release, drop_waker, wake_action_waker, with_watchdog,
 };
 
-pub(in crate::core::sync) use super::super::event::test_hooks::{
+pub(crate) use super::super::event::test_hooks::{
     HOOK_PARTICIPANT, HOOK_POLL_AWAITING_PRE_CAS, HOOK_POLL_BOUND_PRE_CAS,
     HOOK_SERIALIZATION_MUTEX, HOOK_SET_IN_SIGNALING, HookFn,
 };
-pub(in crate::core::sync) use super::super::*;
-pub(in crate::core::sync) use crate::{BoxedReceiver, Disconnected, EmbeddedEvent, IntoValueError};
+pub(crate) use super::super::*;
+pub(crate) use crate::{BoxedReceiver, Disconnected, EmbeddedEvent, IntoValueError};
 
 assert_impl_all!(Event<u32>: Send, Sync, UnwindSafe, RefUnwindSafe);
 

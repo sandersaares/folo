@@ -43,7 +43,7 @@ mod sealed {
     /// [`ReporterExt`](super::ReporterExt) — which are the only surface that can
     /// reach these methods — so the `--verbose` guard is applied in exactly one
     /// place and can never be bypassed or forgotten at a call site.
-    pub(in crate::report) trait Sink {
+    pub(crate) trait Sink {
         /// Whether notes are consumed at all, gating the guarded helpers.
         fn enabled(&self) -> bool;
 

@@ -20,7 +20,7 @@ const BALANCED_GROUP_ORDER: usize = 259_200;
 /// When every distinct ordering of the tied rank multiset fits the budget, the full
 /// orbit gives maximum resolution. Otherwise a complete finite subgroup keeps work
 /// bounded without replacing exact randomization by a sample.
-pub(super) enum PermutationOrbit {
+pub(crate) enum PermutationOrbit {
     Distinct { current: Vec<usize>, order: usize },
     Subgroup(PermutationGroup),
 }
@@ -30,7 +30,7 @@ pub(super) enum PermutationOrbit {
 /// Each factor contributes a symmetric group over one mixed-radix coordinate.
 /// Their direct product acts on evenly distributed series positions, so every
 /// group element is enumerated exactly once and the identity is included.
-pub(super) struct PermutationGroup {
+pub(crate) struct PermutationGroup {
     coordinates: Vec<Vec<usize>>,
     positions: Vec<usize>,
     grid_size: usize,
@@ -65,7 +65,7 @@ struct Factorization {
 }
 
 impl PermutationOrbit {
-    pub(super) fn new(sorted: Vec<usize>, series_len: usize, order_budget: usize) -> Self {
+    pub(crate) fn new(sorted: Vec<usize>, series_len: usize, order_budget: usize) -> Self {
         if let Some(order) = distinct_permutation_count(&sorted, order_budget) {
             Self::Distinct {
                 current: sorted,
@@ -76,21 +76,21 @@ impl PermutationOrbit {
         }
     }
 
-    pub(super) fn order(&self) -> usize {
+    pub(crate) fn order(&self) -> usize {
         match self {
             Self::Distinct { order, .. } => *order,
             Self::Subgroup(group) => group.order(),
         }
     }
 
-    pub(super) fn apply(&self, source: &[usize], target: &mut [usize]) {
+    pub(crate) fn apply(&self, source: &[usize], target: &mut [usize]) {
         match self {
             Self::Distinct { current, .. } => target.copy_from_slice(current),
             Self::Subgroup(group) => group.apply(source, target),
         }
     }
 
-    pub(super) fn advance(&mut self) -> bool {
+    pub(crate) fn advance(&mut self) -> bool {
         match self {
             Self::Distinct { current, .. } => next_permutation(current),
             Self::Subgroup(group) => group.advance(),
@@ -99,7 +99,7 @@ impl PermutationOrbit {
 }
 
 impl PermutationGroup {
-    pub(super) fn new(series_len: usize, order_budget: usize) -> Self {
+    pub(crate) fn new(series_len: usize, order_budget: usize) -> Self {
         let factorization = best_factorization(series_len, order_budget);
         if uses_balanced_group(series_len, order_budget, &factorization) {
             assert!(
@@ -131,12 +131,12 @@ impl PermutationGroup {
         }
     }
 
-    pub(super) fn order(&self) -> usize {
+    pub(crate) fn order(&self) -> usize {
         self.order
     }
 
     /// Applies the current group element to `source`.
-    pub(super) fn apply(&self, source: &[usize], target: &mut [usize]) {
+    pub(crate) fn apply(&self, source: &[usize], target: &mut [usize]) {
         if let Some(group) = &self.disjoint {
             group.apply(source, target);
             return;
@@ -171,7 +171,7 @@ impl PermutationGroup {
     }
 
     /// Advances to the next group element, returning `false` after the last.
-    pub(super) fn advance(&mut self) -> bool {
+    pub(crate) fn advance(&mut self) -> bool {
         if let Some(group) = &mut self.disjoint {
             return group.advance();
         }
@@ -298,7 +298,7 @@ impl Factorization {
     }
 }
 
-pub(super) fn group_order(series_len: usize, order_budget: usize) -> usize {
+pub(crate) fn group_order(series_len: usize, order_budget: usize) -> usize {
     let factorization = best_factorization(series_len, order_budget);
     if uses_balanced_group(series_len, order_budget, &factorization) {
         BALANCED_GROUP_ORDER

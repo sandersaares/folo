@@ -742,7 +742,7 @@ fn direction_of(delta: f64) -> Direction {
 ///
 /// A move away from a (near-)zero baseline is proportionally unbounded; its sign
 /// is returned as a full-magnitude move so it ranks as major.
-pub(super) fn relative_delta_of(delta: f64, baseline: f64) -> f64 {
+pub(crate) fn relative_delta_of(delta: f64, baseline: f64) -> f64 {
     if baseline.abs() <= f64::EPSILON {
         delta.signum()
     } else {
@@ -1044,7 +1044,7 @@ fn max_selection_adjusted_chance_level() -> f64 {
     noise_gates::MAX_CHANGE_CHANCE_LEVEL / count_to_f64(noise_gates::HISTORY_DETECTOR_COUNT)
 }
 
-pub(super) fn passes_significance(chance_level: f64, limit: f64) -> bool {
+pub(crate) fn passes_significance(chance_level: f64, limit: f64) -> bool {
     chance_level < limit
 }
 
