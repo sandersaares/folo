@@ -60,7 +60,7 @@ pub enum RunInput {
         /// When set, print explanatory decision notes to stderr.
         verbose: bool,
     },
-    /// `apply` — rewrite manifests according to an approved plan.
+    /// `apply` — rewrite manifests according to a plan.
     Apply {
         /// Path to the plan JSON file.
         plan: PathBuf,

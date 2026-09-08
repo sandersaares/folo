@@ -140,9 +140,9 @@ enum Command {
     /// or when a package whose public API exposes a workspace dependency stays compatible while
     /// that dependency releases a breaking change.
     Check(CheckArgs),
-    /// Produce the explicit plan reviewed and then passed to apply.
+    /// Produce the explicit package/version plan to pass to apply.
     Expand(ExpandArgs),
-    /// Apply an approved increment plan to manifests and the lockfile.
+    /// Apply an increment plan to manifests and the lockfile.
     Apply(ApplyArgs),
 }
 
@@ -219,7 +219,7 @@ struct ExpandArgs {
 /// Arguments for `apply`.
 #[derive(Debug, Parser)]
 struct ApplyArgs {
-    /// Path to the approved plan JSON file.
+    /// Path to the plan JSON file.
     #[arg(long)]
     plan: PathBuf,
 

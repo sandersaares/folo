@@ -169,13 +169,13 @@ shell_impl = { workspace = true }
     assert!(passed, "{message}");
 }
 
-/// A group that gained a member after approval is rejected at apply time.
+/// A group that gained a member after expansion is rejected at apply time.
 ///
-/// The expanded document is what a reviewer approved and what the publication
-/// check ran over, so `apply` must not quietly reach a package it does not name.
+/// The expanded document is what gets presented and what the publication check
+/// ran over, so `apply` must not quietly reach a package it does not name.
 /// Expansion resolves entries through the group configuration as it stands at
 /// apply time, which is where a membership change between the two commands would
-/// otherwise widen the approved set.
+/// otherwise widen the recorded set.
 /// Ref: docs/design.md, "Version groups".
 #[cfg_attr(miri, ignore)] // Spawns git and cargo, which Miri cannot emulate.
 #[test]
@@ -219,7 +219,7 @@ release-family = ["shell"]
         .collect();
     assert_eq!(names, vec!["shell"]);
 
-    // The group gains a member between approval and application.
+    // The group gains a member between expansion and application.
     let manifest = fs::read_to_string(fixture.manifest()).unwrap();
     fs::write(
         fixture.manifest(),
@@ -236,7 +236,7 @@ release-family = ["shell"]
         manifest_path: fixture.manifest(),
         verbose: false,
     })
-    .expect_err("an approved expansion cannot widen to a newly added group member");
+    .expect_err("an expanded plan cannot widen to a newly added group member");
     assert!(error.to_string().contains("shell_impl"), "{error}");
 
     // Nothing was written: the rejection precedes every manifest edit.

@@ -219,11 +219,11 @@ impl UnknownPlanTargetError {
 
 /// An expanded plan no longer names every package it reaches.
 ///
-/// An expanded plan is an approval artifact: it lists every package the decision
-/// moves, so a reviewer can see the whole set before it is applied. Expanding it
-/// again must therefore reproduce exactly that set. Reaching a package it does
-/// not name means the workspace's group configuration changed after the
-/// document was produced, so applying it would edit a package nobody approved.
+/// An expanded plan lists every package the decision moves, so presentation and
+/// application use the same set. Expanding it again must therefore reproduce
+/// exactly that set. Reaching a package it does not name means the workspace's
+/// group configuration changed after the document was produced, so applying it
+/// would edit an unlisted package.
 #[ohno::error]
 #[display(
     "Expanded plan reaches packages it does not name: {}. The workspace's version groups changed \
@@ -248,7 +248,7 @@ impl ExpandedPlanDriftError {
 ///
 /// An expanded plan records the version each package will take, which is what
 /// makes reviewing one meaningful. A level is resolved against the manifests as
-/// they stand when it is applied, so the same approved document could apply a
+/// they stand when it is applied, so the same expanded document could apply a
 /// different version than the one that was reviewed.
 #[ohno::error]
 #[display(
