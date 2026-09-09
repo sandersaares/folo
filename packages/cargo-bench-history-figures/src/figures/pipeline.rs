@@ -1093,10 +1093,28 @@ mod tests {
     /// A before/after figure whose panes are identical shows an operation that did
     /// nothing, and the rendered markup gives no sign of it.
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "renders every complete before-and-after figure to compare SVG geometry; small plot geometry is tested separately"
+    )]
     fn every_operation_figure_changes_the_data_it_acts_on() {
         for (path, panes) in operations() {
             assert!(panes.changes_the_data(), "{path} draws the same data twice");
         }
+    }
+
+    #[test]
+    fn geometry_ignores_captions_but_keeps_drawing_elements() {
+        let before = "<svg><path d=\"M0 0\"/><text>before</text><circle r=\"1\"/></svg>";
+        let renamed = "<svg><path d=\"M0 0\"/><text>after</text><circle r=\"1\"/></svg>";
+        let changed = "<svg><path d=\"M0 0\"/><text>before</text><circle r=\"2\"/></svg>";
+
+        assert_eq!(geometry(before), geometry(renamed));
+        assert_ne!(geometry(before), geometry(changed));
+        assert_eq!(
+            geometry(before),
+            "<svg><path d=\"M0 0\"/><circle r=\"1\"/></svg>"
+        );
     }
 
     #[test]

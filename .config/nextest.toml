@@ -7,6 +7,12 @@ leak-timeout = "10s"
 [profile.default.junit]
 path = "junit.xml"
 
+# Nextest selects this profile automatically under Miri, including for `just miri`.
+# Enforce the workload budget in docs/testing.md without imposing a wall-clock
+# deadline on native or mutation tests. Slow tests fail rather than passing on timeout.
+[profile.default-miri]
+slow-timeout = { period = "10s", terminate-after = 6, grace-period = "0s" }
+
 # These end-to-end tests each nest child processes inside pseudoconsoles.
 # Letting them overlap under coverage can starve console-host progress long
 # enough to hit the last-chance watchdog, so they share one execution slot.

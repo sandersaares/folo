@@ -988,15 +988,6 @@ mod tests {
         "gates-interval-overlap.svg",
     ];
 
-    /// The content of the asset at `path`.
-    fn content(path: &str) -> String {
-        assets()
-            .into_iter()
-            .find(|asset| asset.path == path)
-            .unwrap_or_else(|| panic!("{path} is not produced"))
-            .content
-    }
-
     #[test]
     #[cfg_attr(
         miri,
@@ -1054,7 +1045,8 @@ mod tests {
             .declined_by_stage(GateStage::ChangePoint)
             .expect("the example must not report");
 
-        let fragment = content("gates-ladder-declined.md");
+        let rungs = rungs(&log, GateStage::ChangePoint, series.kind);
+        let fragment = declined_fragment(&log, series.kind, &rungs);
 
         assert!(fragment.contains(declining.label()), "{fragment}");
         assert!(fragment.contains("Declined"));
@@ -1062,12 +1054,16 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "evaluates the full scattered passing example through both history detectors and their exact rank tests"
+    )]
     fn the_passing_ladder_table_shows_every_gate_passing() {
         let series = passing_candidate();
         let (finding, log) = judge(&series);
 
         let rungs = rungs(&log, GateStage::ChangePoint, series.kind);
-        let table = content("gates-ladder-pass.md");
+        let table = ladder_table(&rungs);
 
         assert!(finding.is_some(), "the passing example must report");
         assert_eq!(log.declined_by_stage(GateStage::ChangePoint), None);
@@ -1090,6 +1086,10 @@ mod tests {
     /// The passing candidate is the chapter's complete-shape ladder, so it has to reach
     /// the end of its detector's sequence rather than merely avoid being declined.
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "evaluates the full scattered passing example through both history detectors and their exact rank tests"
+    )]
     fn the_passing_ladder_covers_the_whole_change_point_sequence() {
         let series = passing_candidate();
         let (_, log) = judge(&series);
@@ -1104,6 +1104,10 @@ mod tests {
     /// sequence the detectors actually apply. A prefix would leave optional trailing
     /// gates unchecked against the table.
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "evaluates complete change-point, drift and branch fixtures to reach every detector gate"
+    )]
     fn every_declared_order_matches_what_the_detector_records() {
         let cases: [(GateStage, GateLog); 3] = [
             (GateStage::ChangePoint, judge(&passing_candidate()).1),
@@ -1159,7 +1163,7 @@ mod tests {
     /// so a tuned policy rewrites the chapter instead of leaving it behind.
     #[test]
     fn every_threshold_in_the_order_table_is_the_policy_one() {
-        let table = content("gates-order.md");
+        let table = order_table();
 
         for expected in [
             points(DRIFT_MIN_POINTS),
@@ -1183,7 +1187,7 @@ mod tests {
 
     #[test]
     fn every_gate_appears_in_the_order_table_under_the_stage_that_applies_it() {
-        let table = content("gates-order.md");
+        let table = order_table();
 
         for stage in STAGES {
             assert!(
@@ -1204,8 +1208,12 @@ mod tests {
     /// The floors table is the other half of the lockstep guard: the numbers it prints are
     /// the numbers the gates compared against, per metric.
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "runs the full history detector separately for every metric to derive and verify the floor table"
+    )]
     fn every_absolute_floor_is_the_policy_one_for_its_metric() {
-        let table = content("gates-floors.md");
+        let table = floors_table();
 
         for kind in MetricKind::ALL {
             let expected = match kind {
@@ -1232,8 +1240,12 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "derives the floor table by evaluating the full history detector for every metric"
+    )]
     fn every_metric_is_listed_with_a_reason() {
-        let table = content("gates-floors.md");
+        let table = floors_table();
 
         for kind in MetricKind::ALL {
             assert!(
@@ -1248,6 +1260,10 @@ mod tests {
     /// The two grids exist to show the gate's floor doing its work, which they only do if
     /// they land either side of it.
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "locates splits with exact permutation tests on both full agreement-grid examples; small pair classifications are tested separately"
+    )]
     fn the_agreement_grids_straddle_the_policy_separation_floor() {
         let floor = MIN_REGIME_SEPARATION;
 
@@ -1267,8 +1283,13 @@ mod tests {
     /// The grid's caption is where the two numbers the gate compared appear, so they have
     /// to be the numbers it really compared.
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "renders both complete agreement grids and repeats their exact permutation split searches"
+    )]
     fn each_agreement_grid_states_its_own_share_and_the_policy_floor() {
         let floor = MIN_REGIME_SEPARATION;
+        let assets = agreement_grids();
 
         for (path, values) in [
             ("gates-agreement-separated.svg", examples::clean_step()),
@@ -1277,7 +1298,11 @@ mod tests {
                 examples::overlapping_regimes(),
             ),
         ] {
-            let svg = content(path);
+            let svg = &assets
+                .iter()
+                .find(|asset| asset.path == path)
+                .unwrap()
+                .content;
             let drawn = agreement("", &values).share();
 
             assert!(svg.contains(&share(drawn)), "{path} omits its own share");
@@ -1287,6 +1312,10 @@ mod tests {
 
     /// The grid is only evidence if it is drawing the same quantity the gate judged.
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "repeats an exact permutation split search on the full oscillating agreement-grid example"
+    )]
     fn the_oscillating_grid_draws_the_share_the_detector_computed() {
         let values = examples::overlapping_regimes();
         let series = examples::series("bimodal", &values, EXAMPLE_KIND, 0);
@@ -1342,6 +1371,10 @@ mod tests {
     /// The scale figure's whole claim is that the same proportional move is declined at one
     /// magnitude and reported at the other.
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "evaluates both full scale-figure histories, including the exact rank test for the reported step"
+    )]
     fn the_small_move_is_declined_by_the_absolute_floor_and_the_large_one_reported() {
         let regime = MIN_REGIME.saturating_mul(2);
         let small: Vec<f64> = iter::repeat_n(SMALL_BASELINE, regime)
@@ -1380,12 +1413,16 @@ mod tests {
     /// A gate with nothing to measure must not acquire a number on the way to the page.
     #[test]
     fn a_boolean_gate_reads_as_held_rather_than_as_a_number() {
-        let series = passing_candidate();
-        let (_, log) = judge(&series);
-        let outcome = outcome_of(&log, GateStage::ChangePoint, Gate::SplitLocated)
-            .expect("the split gate is the first one recorded");
+        // Rendering a boolean outcome does not require discovering a split first.
+        let outcome = GateOutcome {
+            stage: GateStage::ChangePoint,
+            gate: Gate::SplitLocated,
+            value: None,
+            threshold: None,
+            passed: true,
+        };
 
-        let (value, threshold) = reading_of(&outcome, series.kind);
+        let (value, threshold) = reading_of(&outcome, EXAMPLE_KIND);
 
         assert_eq!(value, "held");
         assert_eq!(threshold, "must hold");
