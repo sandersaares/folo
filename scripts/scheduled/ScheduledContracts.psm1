@@ -31,9 +31,9 @@ function ConvertTo-ScheduledCanonicalValue {
         return ConvertTo-ScheduledCanonicalValue $values
     }
     if ($Value -is [System.Collections.IEnumerable] -and $Value -isnot [string]) {
-        $items = @()
-        foreach ($item in $Value) { $items += ,(ConvertTo-ScheduledCanonicalValue $item) }
-        return ,$items
+        $items = [Collections.Generic.List[object]]::new()
+        foreach ($item in $Value) { $items.Add((ConvertTo-ScheduledCanonicalValue $item)) }
+        return ,$items.ToArray()
     }
     return $Value
 }

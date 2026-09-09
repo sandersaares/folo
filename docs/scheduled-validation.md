@@ -110,28 +110,65 @@ linked failures without evidence that the confirmation covers their shared cause
 
 ### Marking a run triaged
 
-The triager writes a completion record for the exact run ID, attempt number and
-evidence digest it analyzed. The record links every failed job to problem issues
-or explains why it is only a blocked/cancelled consequence. It is complete only
-after the linked issue writes succeed. Unfinished analysis stays pending; a fully
-analyzed problem with an operator hold can be linked without holding up the run.
-Creating no new issues is valid when all problems are already reported.
+The GitHub Actions run has already finished when triage begins. Triage updates
+GitHub issues; it does not control whether that Actions run can finish.
+The following structured JSON records are stored in GitHub, not just in a local
+file or the AI's conversation:
 
-The run issue receives the `scheduled-triaged` label and is closed when every
-failed attempt/evidence revision in its hosted record has a matching completion
-record. This is a visible summary, not the authority for queue selection: every
-poll compares the hosted evidence with the triage records, including closed issues.
-Closing run intake does not resolve the linked problems.
+| Record | Writer and location | Contents |
+|---|---|---|
+| Run record | Hosted reporter, in the body of the run-level `scheduled-run-failure` issue. | Run/attempt identity, source/check identity, failed jobs and steps, diagnostic summaries, log/artifact links, evidence gaps and evidence digests. |
+| Triage record | Local triage automation, in one dedicated automation-owned comment on that same run-level issue. | Analysis status for each exact run ID, attempt number and evidence digest, plus each failed job's problem-issue links or explanation of a blocked/cancelled consequence. |
+| Problem record | Local triage automation, in the body of each canonical `scheduled-finding` issue. | Diagnosis, supporting evidence, affected scope and whether automated repair may proceed or needs human action. |
+
+Each writer updates its own record without replacing human discussion or another
+writer's data. The triage comment starts with `[Copilot speaking]`; updates reuse
+that comment rather than posting another status comment each poll.
+
+Before marking an analysis complete, the triager must finish creating any new
+problem issues and updating matched problem issues with the evidence, diagnosis
+and repair disposition from this analysis. The resulting issue numbers are saved
+in the triage record. If a GitHub create/update result is uncertain, the triager
+reconciles that operation before recording completion. Creating no new issues is
+valid when existing problem issues already account for every failure.
+
+| Analysis status in the triage record | Meaning and next action |
+|---|---|
+| `in-progress` | Analysis or problem-issue updates are unfinished. The run-level issue stays open without `scheduled-triaged`; local state retains the triage session and progress so a later poll can resume that session. |
+| `blocked` | Analysis cannot continue, for example because required logs are unavailable or GitHub access failed. Record the reason in the triage comment and health output. Keep the run-level issue open and unlabelled; resume only after the condition is resolved. |
+| `complete` | Every failed job has been explained and all required problem-issue changes are confirmed. This entry covers only its recorded run, attempt and evidence digest. |
+
+A problem may be fully analyzed but require a human decision before repair, such
+as approval for a design change. The problem issue records that reason and remains
+open; automation must not start or continue its repair until the operator releases
+the restriction. This does not prevent marking the run's *analysis* complete once
+all failures are explained and their problem issues are up to date.
+
+The run-level issue receives `scheduled-triaged` and is closed when every failed
+attempt/evidence revision in its run record has a matching `complete` entry in its
+triage record. Closing that issue does not resolve its linked problems.
+
+To find unfinished analysis, every triage poll paginates the configured repository's
+issues API with `state=all` and `labels=scheduled-run-failure`, with no creation-date
+filter. It also fetches run-level issue IDs retained in local triage claims, so a
+removed label cannot abandon owned work. For each selected issue, it reads the run
+record from the body and the triage record from the automation-owned comment,
+paginating comments as needed, and compares attempt numbers and evidence digests.
+This query includes open and closed *run-level issues*, not every issue in the
+repository and not the `scheduled-finding` problem-discovery query described below.
+Missing or incomplete triage entries require analysis regardless of the issue's
+label or closed state. API errors or malformed records are reported as blockers,
+not interpreted as an empty queue.
 
 | Incoming evidence | Run issue and triage result |
 |---|---|
-| Reporter retries the same attempt with identical evidence. | Preserve the completion record, label and closed state. |
-| A rerun of the same run fails with a new attempt number. | Reopen the same run issue and remove `scheduled-triaged`. Analyze the new attempt, retaining earlier completion records. |
-| More evidence changes an already reported failed attempt's digest. | Reopen and remove the label; the previous completion does not cover the changed evidence. |
+| Reporter retries the same attempt with identical evidence. | Preserve the triage record, label and closed state. |
+| A rerun of the same run fails with a new attempt number. | Reopen the same run issue and remove `scheduled-triaged`. Analyze the new attempt, retaining earlier triage entries. |
+| More evidence changes an already reported failed attempt's digest. | Reopen and remove the label; the previous complete triage entry does not cover the changed evidence. |
 | A rerun passes. | Record the pass without erasing unprocessed failure evidence or claiming that earlier failures were triaged. |
 
 The reporter clears stale presentation when it appends unprocessed failure
-evidence. The triager rereads the hosted record before marking completion and
+evidence. The triager rereads the reporter's run record before marking triage complete and
 reconciles the label/state with that record. If evidence arrives concurrently,
 the next poll still detects the unmatched revision even if a label update races.
 An old analysis can never acknowledge the new attempt merely by closing the issue.
@@ -388,17 +425,19 @@ publication rather than creating another issue. Commit the run's triaged evidenc
 revision only after every disposition and resulting issue write is accounted for.
 Newer evidence cannot be acknowledged by an older analysis checkpoint.
 
-Hosted records own run evidence, coverage and authoritative confirmation. Triage
-records own problem identity, causal grouping and run-to-problem links. Repair
+The reporter owns run records, coverage and authoritative confirmation. The triage
+automation owns triage records on run-level issues and problem records on problem
+issues, including causal grouping and run-to-problem links. Repair
 records own repair-session/PR state. Each writer preserves the others' records.
 A shared personal account name does not substitute for validated role, record,
 source-run and issue identity.
 
 ### Repair admission
 
-The repair backlog is the complete set of open `scheduled-finding` issues with a
-validated, completed triage record for their current occurrence, an actionable
-source-repair disposition, and links to the hosted evidence and required scope.
+The repair backlog is the complete set of open `scheduled-finding` issues whose
+problem record permits source repair for the current occurrence and identifies
+the required scope. The problem record must link to reporter-supplied evidence
+and a matching complete analysis entry in the run-level issue's triage record.
 Raw `scheduled-run-failure` issues, incomplete analysis and operator/infrastructure
 recovery dispositions are not repair tasks. Holds, scope limits, budgets and existing
 session/PR ownership are then applied to decide which backlog item may start.

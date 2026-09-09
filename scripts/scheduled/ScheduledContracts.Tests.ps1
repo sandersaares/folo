@@ -27,6 +27,38 @@ Describe 'Scheduled records' {
         (Get-ScheduledDigest @('a', 'b')) | Should -Not -Be (Get-ScheduledDigest @('b', 'a'))
         (Get-ScheduledDigest 'Path') | Should -Not -Be (Get-ScheduledDigest 'path')
     }
+    It 'preserves empty singleton nested and null array entries' {
+        InModuleScope ScheduledContracts {
+            $values = @(
+                @{ b = 2; a = 1 },
+                @(),
+                @('only'),
+                @(@('inner'), @()),
+                $null
+            )
+            $canonical = ConvertTo-ScheduledCanonicalValue $values
+            $canonical -is [object[]] | Should -BeTrue
+            $canonical.Count | Should -Be 5
+            ConvertTo-Json -InputObject $canonical -Depth 10 -Compress |
+                Should -BeExactly '[{"a":1,"b":2},[],["only"],[["inner"],[]],null]'
+            $record = @{ schema_version = 1; empty = @(); values = $values }
+            $parsed = Read-ScheduledRecord -Kind reporter -Text (Write-ScheduledRecord -Kind reporter -Record $record)
+            $parsed.empty -is [array] | Should -BeTrue
+            $parsed.empty.Count | Should -Be 0
+            $parsed.values.Count | Should -Be 5
+            Get-ScheduledDigest $parsed | Should -BeExactly (Get-ScheduledDigest $record)
+        }
+    }
+    It 'preserves ordered records in a large array' {
+        # Exercise a sizable issue/check list without measuring elapsed time.
+        $values = @(foreach ($index in 1..4096) { @{ z = $index; a = "item-$index" } })
+        $canonical = & (Get-Module ScheduledContracts) {
+            param($Items)
+            ConvertTo-ScheduledCanonicalValue $Items
+        } $values
+        $canonical.Count | Should -Be $values.Count
+        @($canonical | ForEach-Object { $_.z }) | Should -Be (1..4096)
+    }
     It 'keeps hosted execution reporting and Local admission disabled in staged policy' {
         $policy = Get-ScheduledPolicy
         $policy.rollout.hosted_execution_enabled | Should -BeFalse

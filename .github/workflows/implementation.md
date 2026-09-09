@@ -120,9 +120,12 @@ trusts pull-request and `main` subjects, not merge-group subjects.
 ## Scheduled controller ownership
 
 `scripts/scheduled/ScheduledContracts.psm1` owns versioned record validation and stable
-identities, not AI root-cause decisions. Hosted records describe run evidence, coverage
-and authoritative confirmation. Local triage records describe problem identity, causal
-grouping, actionable scope and links to source evidence. Repair-session and PR records
+identities, not AI root-cause decisions. Reporter-owned run records in run-level
+issue bodies contain execution evidence; separate hosted records retain coverage
+and authoritative confirmation. Triage records in dedicated comments on run-level
+issues contain analysis status and problem-issue links. Triage-owned problem records
+in problem-issue bodies contain diagnosis, actionable scope and supporting evidence.
+Repair-session and PR records
 describe repair ownership. Replacing one record preserves surrounding prose and other
 owners' records.
 
@@ -218,11 +221,16 @@ Retain valid structured observations even when another leg cannot be decoded.
 The run issue key is repository/workflow/run identity. Run attempts and their evidence
 revisions are distinct inputs within that issue. A repeated completion notification must
 not duplicate intake; a new attempt must not inherit a prior attempt's triaged checkpoint.
-The triage completion record binds run ID, attempt number and evidence digest. The
+The triage record in the run-level issue's automation-owned comment binds each
+analysis entry to run ID, attempt number and evidence digest. Its status is
+`in-progress`, `blocked` or `complete`; only `complete` acknowledges analyzed evidence. The
 `scheduled-triaged` label and closed issue state summarize that every failed revision
-has a matching completion record. A new failed attempt or changed failed-attempt
+has a matching complete triage entry. A new failed attempt or changed failed-attempt
 evidence reopens the issue and removes the label while preserving prior completions.
-Queue reads compare records across open and closed issues rather than trusting labels.
+Queue reads paginate this repository's open and closed `scheduled-run-failure`
+issues and refresh locally claimed run-level issue IDs. They compare the reporter's
+run record in each body with the triage record in its owned comment, rather than
+trusting the label or closed state. This is separate from problem-issue discovery.
 See [marking a run triaged](../../docs/scheduled-validation.md#marking-a-run-triaged)
 for idempotency, concurrent evidence and green-rerun behavior.
 An unsuccessful or unexpectedly incomplete execution requires intake. A legitimate disabled
@@ -230,7 +238,7 @@ or reusable-coverage skip does not. The reporter may supply parsed observations,
 not decide how many real problems exist or whether different symptoms share a cause.
 
 Coverage and registered repair confirmation remain deterministic hosted responsibilities.
-An AI triage-complete record cannot mint a success receipt or declare a repair verified.
+An analysis marked complete in a triage record cannot mint a success receipt or declare a repair verified.
 Conversely, a green rerun cannot acknowledge analysis of earlier failure evidence.
 
 #### Local AI triage and problem publication
@@ -260,11 +268,14 @@ execution problems with blocked downstream scope, not fictitious per-package cod
 One active triage session per repository serializes matching and publication. Durable
 run claims, issue-write intents and per-attempt checkpoints make retries recoverable.
 Before creating a problem issue, check existing identities and aliases, including resolved
-records. Reconcile a lost response before retrying. Only after the issue mutations and
-every failed-job disposition are recorded can the intake become triaged. Further evidence
-or ambiguous publication remains pending rather than starting competing analysis.
-Incomplete job analysis also keeps the revision pending. A fully analyzed problem
-awaiting operator action can be linked with a hold without blocking intake completion.
+records. Reconcile a lost response before retrying. Finish creating new problem issues
+and updating matched issues with this analysis's evidence, diagnosis and repair disposition
+before marking its triage entry complete. Unfinished analysis or uncertain publication
+keeps the run-level issue open without `scheduled-triaged`; the retained triage session
+resumes from its checkpoint. If analysis cannot continue, its triage record and health
+output identify the blocker. A fully analyzed problem awaiting a human repair decision
+remains open with that restriction on its own issue, but does not prevent closing the
+run-level issue once its analysis is complete.
 
 The repair automation consumes only validated actionable problem records. A consolidation
 or materially changed diagnosis must reconcile existing worker/PR ownership before
