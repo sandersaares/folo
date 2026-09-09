@@ -138,7 +138,13 @@ Run changed tests with `just package=<name> miri` and inspect their durations.
 If a test takes more than 10 seconds under Miri, reduce its workload. Prefer
 smaller fixtures for every runner when they preserve the same assertions.
 Otherwise, select smaller test-only parameters with `cfg!(miri)` while keeping
-the native coverage. Do not change production algorithms, limits, or behavior
+the native coverage.
+
+Production constants that only tune performance, such as cache capacities or
+inline-storage sizes, may use smaller values under `cfg(miri)` when exposing them
+as test parameters is impractical. Document why the smaller value preserves
+correctness and retain representative coverage of the affected implementation
+paths. Do not change correctness-relevant parameters or production semantics
 under `cfg(miri)` or `cfg(test)` to make tests cheaper.
 
 When the property genuinely requires exhaustive enumeration, statistical
