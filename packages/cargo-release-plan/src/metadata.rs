@@ -3,7 +3,7 @@
 // The design forbids resolving a full graph or compiling. `--no-deps` is the
 // only Cargo invocation used for classification.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -22,7 +22,7 @@ use crate::inherited::InheritedKeys;
 use crate::manifest::TargetDiscovery;
 use crate::manifest::{
     PackageManifest, PathCase, WorkspaceInherit, for_each_dependency_table,
-    for_each_dependency_table_with_context, parse_document, parse_package_manifest,
+    for_each_dependency_table_with_context, package_manifest_from_document, parse_document,
     workspace_relative_path,
 };
 #[cfg(test)]
@@ -214,6 +214,102 @@ struct MetadataDep {
     kind: Option<String>,
 }
 
+/// Parsed current manifests shared by every work-tree projection.
+///
+/// The root and selected member paths may overlap, so loading deduplicates by
+/// path before deriving package facts from the parsed documents.
+struct ManifestSnapshot {
+    documents: BTreeMap<PathBuf, DocumentMut>,
+    packages: BTreeMap<PathBuf, Option<PackageManifest>>,
+}
+
+impl ManifestSnapshot {
+    fn load(
+        metadata: &MetadataJson,
+        selected_member_ids: &HashSet<&str>,
+        workspace_root: &Path,
+    ) -> Result<Self, AppError> {
+        Self::load_with(
+            metadata,
+            selected_member_ids,
+            workspace_root,
+            |path| {
+                fs::read_to_string(path)
+                    .map_err(|error| ReadFileError::caused_by(path, error).into())
+            },
+            parse_document,
+        )
+    }
+
+    fn load_with(
+        metadata: &MetadataJson,
+        selected_member_ids: &HashSet<&str>,
+        workspace_root: &Path,
+        mut read: impl FnMut(&Path) -> Result<String, AppError>,
+        mut parse: impl FnMut(&Path, &str) -> Result<DocumentMut, AppError>,
+    ) -> Result<Self, AppError> {
+        let root_manifest_path = workspace_root.join("Cargo.toml");
+        let mut paths = BTreeSet::from([root_manifest_path.clone()]);
+        paths.extend(
+            metadata
+                .packages
+                .iter()
+                .filter(|package| selected_member_ids.contains(package.id.as_str()))
+                .map(|package| PathBuf::from(&package.manifest_path)),
+        );
+
+        let mut documents = BTreeMap::new();
+        for path in paths {
+            let text = read(&path)?;
+            documents.insert(path.clone(), parse(&path, &text)?);
+        }
+
+        let root_manifest = documents
+            .get(&root_manifest_path)
+            .expect("the root manifest path is always loaded into this snapshot");
+        let workspace = WorkspaceInherit::from_root(root_manifest);
+        let mut packages = BTreeMap::new();
+        for package in &metadata.packages {
+            if !selected_member_ids.contains(package.id.as_str()) {
+                continue;
+            }
+            let path = PathBuf::from(&package.manifest_path);
+            let document = documents
+                .get(&path)
+                .expect("every selected member manifest is loaded into this snapshot");
+            let git_manifest_path = workspace_relative_path(workspace_root, &path).expect(
+                "a selected manifest already matched a tracked path after this same conversion",
+            );
+            packages.insert(
+                path,
+                package_manifest_from_document(document, &git_manifest_path, &workspace)?,
+            );
+        }
+
+        Ok(Self {
+            documents,
+            packages,
+        })
+    }
+
+    fn root(&self, workspace_root: &Path) -> &DocumentMut {
+        self.document(&workspace_root.join("Cargo.toml"))
+    }
+
+    fn document(&self, path: &Path) -> &DocumentMut {
+        self.documents
+            .get(path)
+            .expect("the requested manifest belongs to this snapshot")
+    }
+
+    fn package(&self, path: &Path) -> Option<&PackageManifest> {
+        self.packages
+            .get(path)
+            .expect("the requested package manifest belongs to this snapshot")
+            .as_ref()
+    }
+}
+
 /// Git-tracked inputs that constrain Cargo's work-tree metadata.
 ///
 /// Cargo still supplies manifest normalization and dependency relationships,
@@ -361,25 +457,15 @@ fn work_tree_from_metadata(
         .filter(|package| cargo_member_ids.contains(package.id.as_str()))
         .filter_map(|package| library_crate_name(package).map(|lib| (package.name.as_str(), lib)))
         .collect();
-    let root_manifest_path = workspace_root.join("Cargo.toml");
-    let root_manifest = fs::read_to_string(&root_manifest_path)
-        .map_err(|error| ReadFileError::caused_by(&root_manifest_path, error))?;
-    let root_manifest = parse_document(&root_manifest_path, &root_manifest)?;
-    let workspace = WorkspaceInherit::from_root(&root_manifest);
+    let manifests = ManifestSnapshot::load(metadata, &selected_member_ids, &workspace_root)?;
+    let root_manifest = manifests.root(&workspace_root);
     let mut version_targets = Vec::new();
     for package in &metadata.packages {
         if !selected_member_ids.contains(package.id.as_str()) {
             continue;
         }
         let path = PathBuf::from(&package.manifest_path);
-        let manifest_text =
-            fs::read_to_string(&path).map_err(|error| ReadFileError::caused_by(&path, error))?;
-        let git_manifest_path = workspace_relative_path(&workspace_root, &path).expect(
-            "a selected manifest already matched a tracked path after this same conversion",
-        );
-        let Some(manifest) =
-            parse_package_manifest(&manifest_text, &git_manifest_path, &workspace)?
-        else {
+        let Some(manifest) = manifests.package(&path) else {
             continue;
         };
         let version = package.version.parse::<Version>().map_err(|error| {
@@ -401,7 +487,8 @@ fn work_tree_from_metadata(
         &selected_member_ids,
         &tracked_members_by_dir,
         &canonical_tracked_members_by_dir,
-        &root_manifest,
+        &manifests,
+        root_manifest,
         &workspace_root,
     )?;
     exact_dependencies.sort_by(|left, right| {
@@ -436,20 +523,13 @@ fn work_tree_from_metadata(
             continue;
         }
         let path = PathBuf::from(&package.manifest_path);
-        let manifest_text =
-            fs::read_to_string(&path).map_err(|error| ReadFileError::caused_by(&path, error))?;
-        let git_manifest_path = workspace_relative_path(&workspace_root, &path).expect(
-            "a selected manifest already matched a tracked path after this same conversion",
-        );
-        let Some(mut manifest) =
-            parse_package_manifest(&manifest_text, &git_manifest_path, &workspace)?
-        else {
+        let Some(mut manifest) = manifests.package(&path).cloned() else {
             continue;
         };
         if !manifest.publish {
             continue;
         }
-        let manifest_doc = parse_document(&path, &manifest_text)?;
+        let manifest_doc = manifests.document(&path);
         manifest.version = package.version.parse::<Version>().map_err(|error| {
             InvalidVersionError::caused_by(&package.name, &package.version, error)
         })?;
@@ -463,8 +543,8 @@ fn work_tree_from_metadata(
                 is_intra_workspace_released(
                     dep,
                     &tracked_members_by_dir,
-                    &manifest_doc,
-                    &root_manifest,
+                    manifest_doc,
+                    root_manifest,
                 )
             })
             .map(|dep| ReportedDep {
@@ -537,6 +617,7 @@ fn discover_exact_dependencies(
     selected_member_ids: &HashSet<&str>,
     tracked_members_by_dir: &BTreeMap<PathBuf, String>,
     canonical_tracked_members_by_dir: &BTreeMap<PathBuf, String>,
+    manifests: &ManifestSnapshot,
     workspace_manifest: &DocumentMut,
     workspace_root: &Path,
 ) -> Result<Vec<ExactDependency>, AppError> {
@@ -546,9 +627,7 @@ fn discover_exact_dependencies(
             continue;
         }
         let manifest_path = PathBuf::from(&package.manifest_path);
-        let text = fs::read_to_string(&manifest_path)
-            .map_err(|error| ReadFileError::caused_by(&manifest_path, error))?;
-        let manifest = parse_document(&manifest_path, &text)?;
+        let manifest = manifests.document(&manifest_path);
         let manifest_dir = manifest_path
             .parent()
             .expect("Cargo reports a manifest path with a parent directory");
@@ -1072,12 +1151,106 @@ pub(crate) fn dependents_of(packages: &[WorkPackage], name: &str) -> Vec<String>
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
+    use std::cell::RefCell;
+
     use serde_json::json;
 
     use super::*;
 
     fn doc(text: &str) -> DocumentMut {
         parse_document(Path::new("Cargo.toml"), text).unwrap()
+    }
+
+    #[test]
+    fn manifest_snapshot_loads_and_parses_each_path_once() {
+        let workspace_root = Path::new("/workspace");
+        let root_path = workspace_root.join("Cargo.toml");
+        let member_path = workspace_root.join("packages/member/Cargo.toml");
+        let untracked_path = workspace_root.join("packages/untracked/Cargo.toml");
+        let metadata = MetadataJson {
+            packages: vec![
+                MetadataPackage {
+                    name: "root".to_string(),
+                    version: "0.1.0".to_string(),
+                    id: "root".to_string(),
+                    manifest_path: root_path.to_string_lossy().into_owned(),
+                    publish: None,
+                    dependencies: Vec::new(),
+                    targets: Vec::new(),
+                    metadata: Value::Null,
+                },
+                MetadataPackage {
+                    name: "member".to_string(),
+                    version: "0.1.0".to_string(),
+                    id: "member".to_string(),
+                    manifest_path: member_path.to_string_lossy().into_owned(),
+                    publish: None,
+                    dependencies: Vec::new(),
+                    targets: Vec::new(),
+                    metadata: Value::Null,
+                },
+                MetadataPackage {
+                    name: "untracked".to_string(),
+                    version: "0.1.0".to_string(),
+                    id: "untracked".to_string(),
+                    manifest_path: untracked_path.to_string_lossy().into_owned(),
+                    publish: None,
+                    dependencies: Vec::new(),
+                    targets: Vec::new(),
+                    metadata: Value::Null,
+                },
+            ],
+            workspace_members: vec![
+                "root".to_string(),
+                "member".to_string(),
+                "untracked".to_string(),
+            ],
+            workspace_root: workspace_root.to_string_lossy().into_owned(),
+            metadata: Value::Null,
+        };
+        let selected_member_ids = HashSet::from(["root", "member"]);
+        let reads = RefCell::new(BTreeMap::<PathBuf, usize>::new());
+        let parses = RefCell::new(BTreeMap::<PathBuf, usize>::new());
+
+        let snapshot = ManifestSnapshot::load_with(
+            &metadata,
+            &selected_member_ids,
+            workspace_root,
+            |path| {
+                let mut reads = reads.borrow_mut();
+                *reads.entry(path.to_path_buf()).or_default() += 1;
+                if path == root_path {
+                    Ok(
+                        "[workspace]\nmembers = [\"packages/member\"]\n\n[package]\nname = \"root\"\nversion = \"0.1.0\"\n"
+                            .to_string(),
+                    )
+                } else if path == member_path {
+                    Ok("[package]\nname = \"member\"\nversion = \"0.1.0\"\n".to_string())
+                } else {
+                    panic!("unselected manifest was read")
+                }
+            },
+            |path, text| {
+                let mut parses = parses.borrow_mut();
+                *parses.entry(path.to_path_buf()).or_default() += 1;
+                parse_document(path, text)
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            reads.into_inner(),
+            BTreeMap::from([(root_path.clone(), 1), (member_path.clone(), 1)])
+        );
+        assert_eq!(
+            parses.into_inner(),
+            BTreeMap::from([(root_path.clone(), 1), (member_path.clone(), 1)])
+        );
+        assert_eq!(snapshot.package(&root_path).unwrap().name, "root");
+        assert_eq!(snapshot.package(&member_path).unwrap().name, "member");
+        assert!(snapshot.document(&member_path).get("package").is_some());
+        assert!(!snapshot.documents.contains_key(&untracked_path));
+        assert!(!snapshot.packages.contains_key(&untracked_path));
     }
 
     #[test]

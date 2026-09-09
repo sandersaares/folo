@@ -55,8 +55,11 @@ dependency relationships. Git-tracked manifests constrain that candidate set.
 The current model keeps both every tracked version target and the publishable
 `WorkPackage` projection used for classification. An untracked or ignored
 manifest found through a member glob can become neither a version target nor a
-release assessment. Historical workspaces cannot use Cargo without checking out
-each commit, so `SnapshotCache` reconstructs them from tracked manifests.
+release assessment. Each tracked current member manifest is loaded and parsed
+once per work-tree snapshot; its parsed document and derived package facts are
+shared by version-target construction, exact-dependency discovery, and the
+publishable projection. Historical workspaces cannot use Cargo without checking
+out each commit, so `SnapshotCache` reconstructs them from tracked manifests.
 
 The reconstruction starts from the root package and declared member patterns,
 then follows in-workspace path dependencies to a fixed point while honoring
