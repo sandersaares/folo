@@ -15,16 +15,20 @@ Cli -> RunInput -> run()
                     +-> classify -> check diagnostics
                     |           \-> report JSON + patches
                     |
-                    \-> load workspace -> normalize plan
-                                       |-> expanded-plan JSON
-                                       \-> compute edits -> write manifests
-                                                         -> refresh lockfile
+                    +-> prepare -> offline workspace resolution -> evidence + input snapshot
+                    |
+                    +-> preview -> normalize plan -> disposable prospective workspace
+                    |                            \-> rewrite + resolve + classify to fixed point
+                    |                              -> expanded plan + captured files
+                    |                              -> retained compatibility workspace
+                    |
+                    \-> apply -> validate original or fully applied snapshot -> install files
 ```
 
 Modules own subjects rather than syntactic categories. `metadata` and `manifest`
 build the work-tree model, `git` owns repository facts, `anchor` resolves release
 history, `classify` combines those inputs, `groups` and `plan` expand release
-decisions, and `apply`, `check`, `expand`, and `report` own their command outputs.
+decisions, and the command-specific modules own preparation, preview, application, and reporting.
 
 ## Subprocess boundaries
 
@@ -34,7 +38,7 @@ extensions the maintainer's Git understands instead of maintaining a second Git
 implementation.
 
 The subprocess boundary also covers `cargo metadata --no-deps`,
-`cargo package --list`, and the offline lockfile refresh. Classification never
+`cargo package --list`, and explicit offline preparation/preview. Classification never
 runs a build or a full dependency resolution.
 
 Git paths remain repository-relative and `/`-separated. Operating-system paths
@@ -88,7 +92,7 @@ baseline first-parent commits
                                       |
 work-tree metadata -------------------+-> released-content comparison
                                       +-> inherited-value comparison
-workspace lockfiles ------------------+-> binary/example closure comparison
+workspace lockfiles ------------------+-> installable binary closure comparison
 ```
 
 ### Anchor and change set
@@ -160,7 +164,7 @@ no textual hunk.
 ### Lockfile closures
 
 `lockfile` parses only package identities and dependency references. Each
-package with a binary or example target starts a breadth-first walk from the
+package with an installable binary target starts a breadth-first walk from the
 source-less entry matching both its name and declared version. Name alone is
 insufficient because another path dependency can share it; missing source alone
 is insufficient because that dependency can also be source-less.
@@ -172,18 +176,43 @@ search the package list. An unresolved or ambiguous edge makes the lockfile
 incomplete and stops classification. A visited set terminates cycles. The root
 is excluded from the result even if a dependency cycle reaches it.
 
-The parsed work-tree lockfile is shared across all lockfile-bearing packages.
+The parsed work-tree lockfile is shared across all binary packages.
 Historical lockfiles are shared by packages with the same anchor commit, so a
 workspace-sized endpoint is parsed once rather than once per package.
 
-Both endpoint target shapes come from explicit manifest target declarations and
-Cargo's automatic target layouts, while respecting the manifest's `autobins` and
-`autoexamples` controls. Work-tree automatic discovery considers only tracked
-paths that remain present, so an untracked or ignored source file cannot turn a
-library artifact into a lockfile-bearing artifact.
+An endpoint-specific installation graph supplies effective normal and build
+declarations for every tracked workspace member, including unpublished members.
+At each matching source-less lockfile node, outgoing edges must satisfy the
+declaration's package name, version requirement, and source identity. Checking
+only name and version would admit a same-named development dependency from a
+different source. Applicable patches and named-registry configuration participate
+in that source comparison. Direct path declarations and path patches retain their
+manifests' exact package names and versions, including excluded targets. A broad
+compatible requirement cannot distinguish separate source-less packages.
 
-Each endpoint that has a binary or example target must have a lockfile resolving
-the package at its corresponding declared version. An endpoint without either
+An unavailable installation-only path identity is required only when a binary
+closure actually reaches that declaration. Unrelated library assessment does not
+depend on reconstructing install-time resolution.
+
+Source comparison accepts identical URLs directly and otherwise supports Cargo's
+ordinary ASCII hierarchical spellings, including trailing-slash, `.git`, and
+GitHub normalization. Missing registry mappings, unknown protocols, and unequal
+URLs needing unsupported normalization produce operational errors rather than
+silently excluding an installation dependency.
+
+The dependency-table selector is shared with manifest rewriting. Canonical
+hyphenated table names take precedence, including when empty; otherwise supported
+legacy underscore spellings participate. Reading and rewriting therefore agree
+about which declaration Cargo uses.
+
+Both endpoint target shapes come from explicit manifest target declarations and
+Cargo's automatic binary layouts, while respecting the manifest's `autobins`
+control. Work-tree automatic discovery considers only tracked
+paths that remain present, so an untracked or ignored source file cannot turn a
+library artifact into an installable binary artifact.
+
+Each endpoint that has an installable binary target must have a lockfile resolving
+the package at its corresponding declared version. An endpoint without such a
 target contributes an empty closure and does not require a lockfile. Missing or
 incomplete required lockfile data stops classification because regenerating
 historical resolution would violate the offline, no-full-resolution boundary. A
@@ -258,16 +287,14 @@ A plan's stage decides what resolution guarantees. A proposed plan may reach
 packages it does not name, which is how a decision about one group member moves
 the group. An expanded plan must resolve to exactly the set it names and must
 already carry a version for each, because that document is what a caller
-reviewed; reaching another package means the exact dependency graph changed after it
+recorded; reaching another package means the exact dependency graph changed after it
 was written, and a surviving increment level would be re-resolved against the
 manifests of the day. Both are rejected. The stage is matched on rather than
 tested as a condition, so a new code path has to state which rule it wants.
 
-`expand` and `apply` share that resolution and both read the same Git-tracked
-version-target set. The resolved versions branch to expanded-plan output for
-`expand`, and to manifest edits, writes, and lockfile processing for `apply`. The
-resolved versions are not themselves the expanded plan: `apply` resolves a
-proposed plan to the same shape without any expanded plan existing.
+Structural expansion and prospective preview share version-target resolution.
+Both read the same Git-tracked version-target set. Preview also computes manifest
+edits and resolves the resulting lockfile before writing the complete artifact.
 
 `apply` accepts plan targets and validates groups against the Git-tracked
 version-target set. It parses and rewrites every affected
@@ -291,10 +318,33 @@ that member's dependents under an unchanged version.
 Paths are normalized lexically first and canonicalized only for link or
 case-variant spellings, keeping the ordinary path free of filesystem calls.
 
-After manifest writes, `cargo update --offline --workspace` refreshes an existing
-workspace lockfile. A workspace-wide update avoids ambiguous bare package names
-when the lockfile also contains a registry package of the same name. Empty plans
-and workspaces without a lockfile skip the refresh.
+### Prepared and prospective resolution
+
+Preparation owns the intended `cargo update --offline --workspace` refresh before
+the report is graded. A workspace-wide update avoids ambiguous bare package names
+when the lockfile also contains a registry package of the same name. Offline
+resolution may reselect transitive edges among versions already locked; it is not
+limited to replacing workspace package identities.
+
+Preview uses a disposable prospective workspace so version and requirement
+rewrites never become original planning inputs. Each iteration derives its
+candidate from the prepared input rather than incrementing the preceding
+candidate again. Classification uses the same pinned release baseline throughout.
+New binary closure effects and their dependent/group consequences expand the
+candidate until it is stable. Existing sufficient versions are retained.
+
+The final prospective checkout is retained for external compatibility tools.
+Its evidence manifest path is separate from the original input identity used by
+application. Compatibility tooling uses both that manifest and its working
+directory; a subsequent read-only verification compares the retained checkout
+with the captured state. Generated build products do not become released inputs.
+
+The resolved artifact binds the original input snapshot to captured output
+files, not to temporary workspace paths. Application recognizes either the
+original snapshot or the fully applied snapshot. It rejects other states before
+writes and installs captured bytes without invoking Cargo resolution. Lockfile
+maintenance is independent of binary relevance: a library-only workspace still
+receives a consistent resolved lockfile after version rewrites.
 
 ## Diagnostics
 

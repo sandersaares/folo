@@ -43,14 +43,17 @@ version.
 The question is not whether files in a package directory changed. It is whether
 the content Cargo would publish changed. Package rules, inherited manifest
 values, executable bits, manifest-named resources, package boundaries, and
-binary and example lockfile closures therefore participate where they affect
-the artifact.
+installable binary lockfile closures therefore participate where they affect
+the consumer's build. Physical inclusion of a lockfile alone does not make its
+contents release-relevant.
 
 ### Evidence and judgement stay separate
 
 The tool determines whether an increment is required and records the evidence.
-It does not infer API compatibility or choose an increment level. A maintainer or
-automation with knowledge of the package's promises makes that judgement.
+It does not infer API compatibility. A maintainer or automation with knowledge of
+the package's promises chooses semantic increment levels. Resolution preview
+completes their mechanical release effects and exposes the resulting evidence
+before application.
 
 ### Consumer contracts
 
@@ -131,6 +134,20 @@ Plan targets, version direction, and group expansion are validated before any
 manifest is written. Files are then edited structurally so comments and layout
 survive.
 
+### Resolution precedes application
+
+Dependency resolution is explicit preparation, not part of classification or
+application. The intended offline workspace refresh precedes semantic assessment.
+Prospective version and requirement changes are resolved before application as well:
+resolving unchanged manifests alone cannot predict their effects.
+
+The proposal settles version groups, requirement propagation, and binary
+dependency-closure effects internally. It retains adequate existing increments
+instead of repeatedly increasing a package at each resolution pass. The captured
+state includes resolved file contents and the inputs they depend on. Application
+uses that state without a late dependency refresh or unlisted version targets.
+Changed inputs require fresh preparation and assessment.
+
 ## Commands
 
 ### Produce evidence for versioning decisions with `report`
@@ -177,30 +194,28 @@ A **proposed plan** is what a planner writes. Its entries may name a version
 group, or a single member of one, and leave resolution to reach the rest, so what
 it names is a starting point rather than the full set it moves.
 
-An **expanded plan** is what `expand` writes. It names every package whose
+An **expanded plan** names every package whose
 version the plan sets and records the version each will carry. Both halves
-matter: the first makes the reviewed set complete with respect to the release
+matter: the first makes the documented set complete with respect to the release
 decision, and the second makes it stable, since an increment level would be
 resolved again against whatever the manifests say when the document is applied.
 Resolving an expanded plan must therefore reproduce it exactly.
 
 Applying a plan also rewrites the requirements that dependents declare on the
-packages it moves, which edits manifests the document does not name. Those
-dependents take no version from the plan, so naming them would claim a release
-they are not making. Their safety is a separate rule: a dependent that would
-keep an already-published version while its manifest is rewritten needs a
-change level of its own, and `check` rejects the result if one is missed.
+packages it moves. A dependent whose existing pending increment is sufficient
+need not receive another one. A dependent that would otherwise keep an
+already-published version needs its own release decision before application.
 
-Approval is not a third stage. The expanded plan a caller approves is applied
-unchanged, so the reviewed document and the applied document are the same bytes,
-rather than one being a rendering of the other.
+The expanded plan is applied unchanged, so the documented package/version set
+and applied document are the same artifact. Review and approval policy belong
+to the caller, not the tool.
 
-### Preview a decision with `expand`
+### Expand version choices with `expand`
 
 `expand --plan <plan.json> --out <expanded.json>` resolves a proposed plan's
 version groups and increment levels into one explicit entry per package. A
 proposed plan may omit version-group members that `apply` will update; `expand`
-writes the explicit package/version set for review.
+writes the explicit package/version set without resolving dependencies.
 
 That set is the packages whose versions move. Applying it also rewrites
 requirements inside their dependents, which the document does not name because
@@ -208,22 +223,46 @@ the plan gives them no version.
 
 An expanded plan records its stage, which binds it to the package set it names:
 applying it after a version group gained a member fails rather than quietly
-editing a package that was never reviewed. Recovering from that means expanding
-the proposal again and reviewing the wider set. A proposed plan keeps the
+editing an unlisted package. Recovering from that means refreshing the planning
+inputs and expanding the proposal again to document the wider set. A proposed plan keeps the
 opposite behavior, since naming a group and letting resolution reach its members
 is how such a plan is written.
 
+Structural expansion alone is not a complete resolved artifact. A release
+proposal must also account for the actual lockfile effects of those versions.
+
+### Prepare evidence and preview resolution
+
+Preparation performs the workflow's intended offline workspace resolution before
+collecting released-content evidence. It does not request blanket third-party
+upgrades. The report and compatibility assessment used for semantic decisions
+describe that prepared state.
+
+Preview applies candidate versions and requirement rewrites in a disposable
+workspace and resolves there under the same offline policy. It classifies the
+prospective tree against the fixed release baseline and expands release effects
+until versions and resolution agree. Transitive binary lockfile effects and
+re-selection among already-locked dependency versions therefore appear before
+application, not as a request for a second versioning pass.
+
+Automatically required releases are visible in the final proposal and its
+evidence. They establish minimum release requirements, not a claim of semantic
+compatibility: the caller assesses newly exposed dependency changes and raises
+levels when the package's contract requires it, then previews again before
+applying the stable proposal.
+
 ### Carry out a decision with `apply`
 
-`apply --plan <plan.json>` turns approved version choices into manifest edits,
-and accepts a plan of either stage. A proposed plan is created after reading the
-report: the maintainer or the `increment-versions` skill records a `patch`,
-`minor`, or `major` level (or an exact target version) for each selected package
-or version group, using the JSON format documented in the package README.
+`apply --plan <plan.json>` applies an expanded plan using the resolved
+state captured by preview. It validates the input
+snapshot and target set before installing the captured manifest and lockfile
+contents. It does not run dependency resolution. An already-applied resolved
+plan is an idempotent no-op; a partially changed or stale input is not treated as
+the captured state. `--dry-run` reports what would change without writing.
 
-The command resolves groups, calculates target versions, updates package versions
-and affected intra-workspace requirements, and refreshes the workspace lockfile.
-`--dry-run` reports what would change without writing.
+Proposed plans support a separate low-level manifest-only application. That path
+does not resolve or install lockfiles and is not the complete release workflow.
+The guided release workflow accepts only the resolved expanded artifact.
 
 ### Between report and apply
 
@@ -233,9 +272,11 @@ dependencies, and workspace relationships needed for that judgement. It does
 not compile code, compare API surfaces, or infer compatibility from a textual
 diff.
 
-After a person or an agent records the choices in a plan, `apply` owns the
-mechanical consequences. It expands version groups, derives new versions,
-rewrites requirements that must follow, and refreshes the lockfile.
+After a person or an agent records the choices in a plan, preview accounts for
+the mechanical consequences. It expands version groups, derives new versions,
+rewrites requirements that must follow, and resolves the lockfile before the
+complete result is applied. Post-application verification confirms that result;
+it is not a routine source of additional lockfile-only release decisions.
 
 All commands use the workspace selected by `--manifest-path`. `report` and
 `check` accept `--base` to name the shared release baseline.
@@ -355,21 +396,33 @@ not constrain consumers of a library-only package: those consumers resolve the
 library in their own dependency graph. Its dependency changes are therefore not
 released content for this purpose.
 
-A **lockfile-bearing target** is a binary or example target for which the
-package's recorded dependency resolution is operationally relevant. Such a
-target releases its package-specific dependency closure.
+An installable binary target makes its package's recorded dependency resolution
+release-relevant, including when that package also contains a library. Examples,
+benchmarks, tests, and build scripts do not qualify, even when they are executable
+or physically included in an archive.
 
 The package-specific closure is compared rather than the workspace lockfile's
-bytes, so unrelated dependency movement does not affect every lockfile-bearing
+bytes, so unrelated dependency movement does not affect every binary
 package. Entries are identified by name, version, and source. The root package
 is selected by its name and declared version, and excluded from its own closure
 so incrementing it does not create another change.
 
+The closure covers installation dependencies, including normal and build
+dependencies across target platforms. Development-only dependency edges of
+workspace members do not participate, either at the binary root or through a
+transitive workspace dependency.
+
+Dependency identity includes its source, so a same-named development dependency
+from another source does not enter an installation closure. Workspace patches,
+registry configuration, and Cargo-supported legacy dependency tables participate.
+If source identity cannot be reconstructed without guessing, assessment stops
+instead of reporting the dependency as unchanged or irrelevant.
+
 Target shape is resolved independently at the anchor and in the work tree. An
-endpoint with a lockfile-bearing target requires a workspace lockfile that
+endpoint with an installable binary target requires a workspace lockfile that
 resolves the package at the version declared there. An endpoint without one
 contributes an empty closure and requires no lockfile. This makes adding the
-first binary or example compare an empty anchor closure with the current
+first binary compare an empty anchor closure with the current
 resolution, while removing the last one compares the historical resolution with
 an empty work-tree closure. If a required closure cannot be reconstructed, the
 assessment stops rather than treating unknown released content as unchanged. A
@@ -436,9 +489,8 @@ new members, and applies the highest chosen increment level. Entries that expand
 to the same group must all use increment levels or all use one matching exact
 version.
 
-`expand` exposes that resolution as a document so a caller can present the
-complete set of affected packages before approving a plan that omits packages
-`apply` will update.
+`expand` exposes that resolution as a document so a caller can present and apply
+the complete package/version set rather than leave group members implicit.
 
 An inconsistent group is a check failure in its own right, independent of any
 content change. A plan entry naming any member resolves it, and expansion is

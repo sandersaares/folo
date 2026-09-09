@@ -616,7 +616,7 @@ Describe 'Invoke-BinaryReleaseReconciliation' {
 
             $outDirIndex = [array]::IndexOf($Argument, '--out-dir')
             $report = [ordered]@{
-                schema_version           = 3
+                schema_version           = 4
                 head                     = 'current'
                 packages                 = @(
                     [ordered]@{

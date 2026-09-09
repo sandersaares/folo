@@ -126,7 +126,7 @@ fn apply_writes_its_summary_to_stdout() {
     let plan_path = fixture.path().join("plan.json");
     fs::write(
         &plan_path,
-        r#"{ "schema_version": 3, "increments": [{ "name": "demo", "level": "patch" }] }"#,
+        r#"{ "schema_version": 4, "increments": [{ "name": "demo", "level": "patch" }] }"#,
     )
     .unwrap();
     let output = release_plan(

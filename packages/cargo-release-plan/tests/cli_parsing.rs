@@ -151,6 +151,126 @@ fn apply_parses_dry_run() {
             assert_eq!(manifest_path, PathBuf::from("Cargo.toml"));
             assert!(!verbose);
         }
+
         other => panic!("expected apply, got {other:?}"),
+    }
+}
+
+#[test]
+fn preparation_requires_output_and_preserves_baseline_selection() {
+    assert!(parse(&["prepare"]).unwrap_err().status.is_err());
+    let input = parse(&[
+        "prepare",
+        "--output",
+        "evidence",
+        "--base",
+        "main",
+        "--verbose",
+    ])
+    .unwrap()
+    .into_input();
+    match input {
+        RunInput::Prepare {
+            output,
+            base,
+            manifest_path,
+            verbose,
+        } => {
+            assert_eq!(output, PathBuf::from("evidence"));
+            assert_eq!(base.as_deref(), Some("main"));
+            assert_eq!(manifest_path, PathBuf::from("Cargo.toml"));
+            assert!(verbose);
+        }
+        other => panic!("expected prepare, got {other:?}"),
+    }
+}
+
+#[test]
+fn preview_requires_the_prepared_state_proposal_and_output() {
+    for args in [
+        vec![
+            "preview",
+            "--plan",
+            "proposal.json",
+            "--output",
+            "candidate",
+        ],
+        vec![
+            "preview",
+            "--prepared",
+            "prepared.json",
+            "--output",
+            "candidate",
+        ],
+        vec![
+            "preview",
+            "--prepared",
+            "prepared.json",
+            "--plan",
+            "proposal.json",
+        ],
+    ] {
+        assert!(parse(&args).unwrap_err().status.is_err());
+    }
+
+    let input = parse(&[
+        "preview",
+        "--prepared",
+        "prepared.json",
+        "--plan",
+        "proposal.json",
+        "--output",
+        "candidate",
+        "--manifest-path",
+        "workspace/Cargo.toml",
+    ])
+    .unwrap()
+    .into_input();
+    match input {
+        RunInput::Preview {
+            plan,
+            prepared,
+            output,
+            manifest_path,
+            verbose,
+        } => {
+            assert_eq!(plan, PathBuf::from("proposal.json"));
+            assert_eq!(prepared, PathBuf::from("prepared.json"));
+            assert_eq!(output, PathBuf::from("candidate"));
+            assert_eq!(manifest_path, PathBuf::from("workspace/Cargo.toml"));
+            assert!(!verbose);
+        }
+        other => panic!("expected preview, got {other:?}"),
+    }
+}
+
+#[test]
+fn verify_preview_requires_an_explicit_candidate_manifest() {
+    assert!(
+        parse(&["verify-preview", "--plan", "plan.json"])
+            .unwrap_err()
+            .status
+            .is_err()
+    );
+    let input = parse(&[
+        "verify-preview",
+        "--plan",
+        "plan.json",
+        "--manifest-path",
+        "candidate/Cargo.toml",
+    ])
+    .unwrap()
+    .into_input();
+    match input {
+        RunInput::VerifyPreview {
+            plan,
+            manifest_path,
+            verbose,
+        } => {
+            assert_eq!(plan, PathBuf::from("plan.json"));
+            assert_eq!(manifest_path, PathBuf::from("candidate/Cargo.toml"));
+            assert!(!verbose);
+        }
+        other => panic!("expected verify-preview, got {other:?}"),
     }
 }

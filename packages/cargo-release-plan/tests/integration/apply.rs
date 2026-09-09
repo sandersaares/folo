@@ -36,7 +36,7 @@ shell_impl = { workspace = true }
     let plan_path = fixture.path().join("plan.json");
     fs::write(
         &plan_path,
-        r#"{ "schema_version": 3, "increments": [{ "name": "shell", "level": "patch" }] }"#,
+        r#"{ "schema_version": 4, "increments": [{ "name": "shell", "level": "patch" }] }"#,
     )
     .unwrap();
 
@@ -63,9 +63,9 @@ shell_impl = { workspace = true }
 /// Apply replaces a workspace-inherited version.
 ///
 /// The alternative would be to raise the shared `[workspace.package] version`,
-/// which every inheriting member reads, so one approved target would silently
+/// which every inheriting member reads, so one planned target would silently
 /// increment packages the plan never named. Localizing the value keeps the
-/// increment inside the approved plan.
+/// increment inside the supplied plan.
 /// Ref: docs/implementation.md, "Plan expansion and application".
 #[cfg_attr(miri, ignore)] // Spawns git and cargo, which Miri cannot emulate.
 #[test]
@@ -90,7 +90,7 @@ edition = "2021"
     let plan_path = fixture.path().join("plan.json");
     fs::write(
         &plan_path,
-        r#"{ "schema_version": 3, "increments": [{ "name": "demo", "level": "patch" }] }"#,
+        r#"{ "schema_version": 4, "increments": [{ "name": "demo", "level": "patch" }] }"#,
     )
     .unwrap();
     run(&RunInput::Apply {
@@ -127,7 +127,7 @@ fn apply_rewrites_pins_declared_by_a_non_publishable_member() {
     let plan_path = fixture.path().join("plan.json");
     fs::write(
         &plan_path,
-        r#"{ "schema_version": 3, "increments": [{ "name": "demo", "level": "minor" }] }"#,
+        r#"{ "schema_version": 4, "increments": [{ "name": "demo", "level": "minor" }] }"#,
     )
     .unwrap();
 
@@ -155,7 +155,7 @@ fn apply_rejects_an_untracked_package_as_a_plan_target() {
     write_package(&fixture, "untracked", "0.1.0", "");
     fixture.write(
         "plan.json",
-        r#"{ "schema_version": 3, "increments": [{ "name": "untracked", "level": "patch" }] }"#,
+        r#"{ "schema_version": 4, "increments": [{ "name": "untracked", "level": "patch" }] }"#,
     );
 
     let result = run(&RunInput::Apply {
@@ -207,7 +207,7 @@ fn an_ignored_helper_does_not_bridge_groups() {
     );
     fixture.write(
         "plan.json",
-        r#"{ "schema_version": 3, "increments": [{ "name": "demo", "level": "patch" }] }"#,
+        r#"{ "schema_version": 4, "increments": [{ "name": "demo", "level": "patch" }] }"#,
     );
 
     run(&RunInput::Apply {
@@ -241,7 +241,7 @@ fn apply_rewrites_a_pin_under_a_target_specific_dependency_table() {
     let plan_path = fixture.path().join("plan.json");
     fs::write(
         &plan_path,
-        r#"{ "schema_version": 3, "increments": [{ "name": "demo", "level": "minor" }] }"#,
+        r#"{ "schema_version": 4, "increments": [{ "name": "demo", "level": "minor" }] }"#,
     )
     .unwrap();
     run(&RunInput::Apply {
@@ -290,7 +290,7 @@ fn apply_rewrites_a_pin_through_a_symbolic_link() {
 
 #[cfg_attr(miri, ignore)] // Spawns git and cargo, which Miri cannot emulate.
 #[test]
-fn apply_refreshes_the_workspace_lockfile() {
+fn proposed_apply_leaves_the_workspace_lockfile_untouched() {
     let fixture = Fixture::new("");
     write_package(&fixture, "demo", "0.1.0", "");
     fixture.cargo(&["generate-lockfile", "--offline"]);
@@ -300,16 +300,13 @@ fn apply_refreshes_the_workspace_lockfile() {
 
     apply_increment(&fixture, "demo", "minor");
 
-    // `--locked` builds read the lockfile, so leaving the old version there
-    // would fail every build that apply was supposed to unblock.
     let after = fs::read_to_string(fixture.path().join("Cargo.lock")).unwrap();
-    assert!(after.contains("0.2.0"), "{after}");
+    assert_eq!(after, before);
 }
 
 /// Apply with an empty plan changes nothing.
 ///
-/// A plan that expands to nothing is a no-op, not an error: rewriting no manifests means there is
-/// no lockfile drift to refresh either.
+/// An empty manifest-only plan leaves both manifests and the lockfile untouched.
 #[cfg_attr(miri, ignore)] // Spawns git and cargo, which Miri cannot emulate.
 #[test]
 fn apply_with_an_empty_plan_changes_nothing() {
@@ -320,7 +317,7 @@ fn apply_with_an_empty_plan_changes_nothing() {
     let manifest = fixture.path().join("packages/demo/Cargo.toml");
     let before = fs::read_to_string(&manifest).unwrap();
     let plan_path = fixture.path().join("plan.json");
-    fs::write(&plan_path, r#"{ "schema_version": 3, "increments": [] }"#).unwrap();
+    fs::write(&plan_path, r#"{ "schema_version": 4, "increments": [] }"#).unwrap();
 
     run(&RunInput::Apply {
         plan: plan_path,
@@ -340,7 +337,7 @@ fn apply_dry_run_does_not_write() {
     let plan_path = fixture.path().join("plan.json");
     fs::write(
         &plan_path,
-        r#"{ "schema_version": 3, "increments": [{ "name": "demo", "level": "minor" }] }"#,
+        r#"{ "schema_version": 4, "increments": [{ "name": "demo", "level": "minor" }] }"#,
     )
     .unwrap();
     let before = fs::read_to_string(fixture.path().join("packages/demo/Cargo.toml")).unwrap();
@@ -379,7 +376,7 @@ fn apply_rejects_a_non_plain_group_target_before_writes() {
     let plan = fixture.path().join("plan.json");
     fs::write(
         &plan,
-        r#"{ "schema_version": 3, "increments": [{ "name": "facade", "version": "0.2.0-alpha.1" }] }"#,
+        r#"{ "schema_version": 4, "increments": [{ "name": "facade", "version": "0.2.0-alpha.1" }] }"#,
     )
     .unwrap();
 

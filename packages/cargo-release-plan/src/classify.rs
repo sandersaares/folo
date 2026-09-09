@@ -17,11 +17,12 @@ use crate::diff::{FileVersion, file_diff, mode_change_diff};
 use crate::git::{DefaultBase, GitRepo, TreeEntry, WorkTreeModes, join_git_rel, tree_mode};
 use crate::groups::GroupVerdict;
 use crate::inherited::{InheritedChange, inherited_changes};
-use crate::lockfile::{Closure, ClosureChange, Lockfile, closure_changes};
+use crate::lockfile::{Closure, ClosureChange, InstallationGraph, Lockfile, closure_changes};
 use crate::manifest::{
-    DEFAULT_README_FILES, PackageManifest, PathCase, WorkspaceInherit, WorkspaceMembers,
-    is_workspace_excluded, is_workspace_member, parse_document, parse_package_manifest,
-    parse_workspace_members, to_git_separators,
+    DEFAULT_README_FILES, PackageIdentity, PackageManifest, PathCase, WorkspaceInherit,
+    WorkspaceMembers, cargo_config_paths, collect_registry_indices, installation_error,
+    installation_patches, is_workspace_excluded, is_workspace_member, parse_document,
+    parse_package_manifest, parse_workspace_members, path_package_identity, to_git_separators,
 };
 use crate::metadata::{ReportedDep, WorkPackage, WorkTree, dependents_of, load_tracked_work_tree};
 use crate::packaging::{PackagingRules, relativize};
@@ -363,7 +364,10 @@ pub(crate) fn classify(
         )
     });
 
-    let mut cache = SnapshotCache::new(&work_tree.workspace_root);
+    let mut cache = SnapshotCache::new(
+        &work_tree.workspace_root,
+        work_tree.installation.registries.clone(),
+    );
     let base_snapshot = cache.snapshot(&git, &base_sha)?;
     let work_root_path = work_tree.workspace_root.join("Cargo.toml");
     let work_root_doc = parse_document(
@@ -554,11 +558,12 @@ fn classify_one(
             anchor_pkg,
             package,
             &anchor.commit,
+            &anchor_snapshot.installation,
         )? {
             verbose.note(|| {
                 format!(
                     "{shown}: the locked identity of {} is {} between the anchor and the work \
-                     tree, and this package has a binary or example target at one or both \
+                     tree, and this package has an installable binary target at one or both \
                      endpoints, so the dependency is released content",
                     quote_path(&dependency),
                     change.as_str()
@@ -1314,7 +1319,7 @@ struct HistoricalPackage {
     resources: BTreeMap<String, String>,
     /// Whether Cargo picks this package's README by probing its directory.
     auto_readme: bool,
-    /// Whether Cargo ships this package's resolved dependency closure.
+    /// Whether an installable binary makes this endpoint's closure relevant.
     has_lockfile_target: bool,
 }
 
@@ -1329,20 +1334,23 @@ struct CommitSnapshot {
     /// here". Ref: docs/implementation.md, "Anchor and change set".
     unpublished: BTreeSet<String>,
     root_doc: DocumentMut,
+    installation: InstallationGraph,
 }
 
 /// Cache of [`CommitSnapshot`] values so a first-parent walk does not re-parse.
 struct SnapshotCache {
     inner: HashMap<String, Rc<CommitSnapshot>>,
     case: PathCase,
+    registries: BTreeMap<String, String>,
 }
 
 impl SnapshotCache {
     /// Probes the work tree once; every snapshot matches members the same way.
-    fn new(workspace_root: &Path) -> Self {
+    fn new(workspace_root: &Path, registries: BTreeMap<String, String>) -> Self {
         Self {
             inner: HashMap::new(),
             case: PathCase::probe(workspace_root),
+            registries,
         }
     }
 
@@ -1355,13 +1363,18 @@ impl SnapshotCache {
         if let Some(existing) = self.inner.get(commit) {
             return Ok(Rc::clone(existing));
         }
-        let built = Rc::new(load_snapshot(git, commit, self.case)?);
+        let built = Rc::new(load_snapshot(git, commit, self.case, &self.registries)?);
         self.inner.insert(commit.to_string(), Rc::clone(&built));
         Ok(built)
     }
 }
 
-fn load_snapshot(git: &GitRepo, commit: &str, case: PathCase) -> Result<CommitSnapshot, AppError> {
+fn load_snapshot(
+    git: &GitRepo,
+    commit: &str,
+    case: PathCase,
+    registries: &BTreeMap<String, String>,
+) -> Result<CommitSnapshot, AppError> {
     let root_rel = root_manifest_rel(git);
     // History before the workspace existed has no root manifest. An empty
     // `[workspace]` reproduces that state exactly: no members, so every current
@@ -1400,10 +1413,21 @@ fn load_snapshot(git: &GitRepo, commit: &str, case: PathCase) -> Result<CommitSn
     let member_dirs = resolve_members(&mut manifests, &members)?;
     let mut packages = BTreeMap::new();
     let mut unpublished = BTreeSet::new();
+    let mut installation = InstallationGraph::default();
+    let mut path_identities = BTreeMap::new();
     for member_dir in &member_dirs {
         let Some(parsed) = manifests.manifest(member_dir)? else {
             continue;
         };
+        installation.insert(
+            parsed.name.clone(),
+            parsed.version.clone(),
+            parsed.installation_dependencies.clone(),
+        );
+        path_identities.insert(
+            join_git_rel(&parsed.directory, MANIFEST_FILE_NAME),
+            Some(parsed.identity()),
+        );
         if !parsed.publish {
             unpublished.insert(parsed.name.clone());
             continue;
@@ -1425,11 +1449,96 @@ fn load_snapshot(git: &GitRepo, commit: &str, case: PathCase) -> Result<CommitSn
             },
         );
     }
+    if packages.values().any(|package| package.has_lockfile_target) {
+        match historical_registries(git, commit, registries, &tree_paths) {
+            Ok(registries) => installation.registries = registries,
+            Err(error) => installation.registry_error = Some(installation_error(error)),
+        }
+        installation.patches = installation_patches(&root_doc);
+        resolve_historical_installation_paths(
+            &mut installation,
+            path_identities,
+            git,
+            commit,
+            &tree_paths,
+            case,
+        );
+    }
     Ok(CommitSnapshot {
         packages,
         unpublished,
         root_doc,
+        installation,
     })
+}
+
+fn resolve_historical_installation_paths(
+    installation: &mut InstallationGraph,
+    mut identities: BTreeMap<String, Option<PackageIdentity>>,
+    git: &GitRepo,
+    commit: &str,
+    tree_paths: &[String],
+    case: PathCase,
+) {
+    let mut documents = BTreeMap::<String, Option<DocumentMut>>::new();
+    installation.resolve_paths(|reference| {
+        let Some(directory) = reference.directory(git.root(), git.prefix(), "") else {
+            return Ok(None);
+        };
+        let path = join_git_rel(&directory, MANIFEST_FILE_NAME);
+        if let Some((_, identity)) = identities
+            .iter()
+            .find(|(candidate, _)| case.same_path(candidate, &path))
+        {
+            return Ok(identity.clone());
+        }
+        let identity = path_package_identity(&path, case, |path| {
+            let Some(path) = tree_paths
+                .iter()
+                .find(|candidate| case.same_path(candidate, path))
+            else {
+                return Ok(None);
+            };
+            if let Some(document) = documents.get(path) {
+                return Ok(document.clone());
+            }
+            let document = git
+                .show_file(commit, path)?
+                .map(|content| parse_document(Path::new(path), &content))
+                .transpose()?;
+            documents.insert(path.clone(), document.clone());
+            Ok(document)
+        })?;
+        identities.insert(path, identity.clone());
+        Ok(identity)
+    });
+}
+
+/// Reconstructs tracked registry configuration over Cargo's ambient configuration.
+///
+/// Cargo loads ancestor configurations from outermost to innermost and prefers
+/// the extensionless filename when both names exist in the same directory.
+fn historical_registries(
+    git: &GitRepo,
+    commit: &str,
+    ambient: &BTreeMap<String, String>,
+    tree_paths: &[String],
+) -> Result<BTreeMap<String, String>, AppError> {
+    let mut registries = ambient.clone();
+    for candidates in cargo_config_paths(git.prefix()) {
+        for path in candidates {
+            if !tree_paths.contains(&path) {
+                continue;
+            }
+            let Some(content) = git.show_file(commit, &path)? else {
+                continue;
+            };
+            let doc = parse_document(Path::new(&path), &content)?;
+            collect_registry_indices(&doc, &mut registries);
+            break;
+        }
+    }
+    Ok(registries)
 }
 
 /// Supplies historical member manifests to membership resolution.
@@ -1583,11 +1692,11 @@ fn join_relative(base: &str, relative: &str) -> Option<String> {
     Some(segments.join("/"))
 }
 
-/// Parsed lockfiles shared by lockfile-bearing package classifications.
+/// Parsed lockfiles shared by binary package classifications.
 ///
 /// The work-tree endpoint is common to every package, while packages that share
 /// an anchor commit also share its historical endpoint. Retaining both avoids
-/// reparsing workspace-sized lockfiles for every lockfile-bearing package.
+/// reparsing workspace-sized lockfiles for every binary package.
 /// Ref: docs/implementation.md, "Lockfile closures".
 #[derive(Debug, Default)]
 struct LockfileCache {
@@ -1649,10 +1758,14 @@ impl LockfileCache {
 
 /// Dependencies whose locked identity changed between the anchor and the work tree.
 ///
-/// Each endpoint that has a binary or example target must have a lockfile that
+/// Each endpoint that has an installable binary target must have a lockfile that
 /// resolves the package at its corresponding declared version. An endpoint without
-/// either target releases no closure and therefore contributes an empty closure.
+/// that target releases no closure and therefore contributes an empty closure.
 /// Ref: docs/design.md, "Relevant lockfile closures".
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each endpoint supplies its target, lockfile and installation declarations"
+)]
 fn lockfile_closure_changes(
     cache: &mut LockfileCache,
     git: &GitRepo,
@@ -1661,14 +1774,20 @@ fn lockfile_closure_changes(
     anchor_package: &HistoricalPackage,
     work_package: &WorkPackage,
     anchor_commit: &str,
+    anchor_installation: &InstallationGraph,
 ) -> Result<Vec<(String, ClosureChange)>, AppError> {
     let git_path = join_git_rel(git.prefix(), LOCKFILE_FILE_NAME);
     let anchor = if anchor_package.has_lockfile_target {
         let lockfile = cache.anchor(git, name, anchor_commit, &git_path)?;
-        let Some(closure) = lockfile.closure(name, &anchor_package.version.to_string()) else {
+        let Some(closure) = lockfile.closure(
+            name,
+            &anchor_package.version.to_string(),
+            anchor_installation,
+        )?
+        else {
             return Err(LockfileClosureUnavailableError::new(
                 name,
-                "the anchor Cargo.lock does not resolve the package at its declared version",
+                "the anchor Cargo.lock does not identify an installation closure at the declared version and configured sources",
             )
             .into());
         };
@@ -1678,11 +1797,15 @@ fn lockfile_closure_changes(
     };
     let work = if work_package.has_lockfile_target {
         let lockfile = cache.work(work_tree, name, &git_path)?;
-        let Some(closure) = lockfile.closure(name, &work_package.manifest.version.to_string())
+        let Some(closure) = lockfile.closure(
+            name,
+            &work_package.manifest.version.to_string(),
+            &work_tree.installation,
+        )?
         else {
             return Err(LockfileClosureUnavailableError::new(
                 name,
-                "the work-tree Cargo.lock does not resolve the package at its declared version; refresh Cargo.lock",
+                "the work-tree Cargo.lock does not identify an installation closure at the declared version and configured sources; refresh Cargo.lock",
             )
             .into());
         };
@@ -1817,6 +1940,7 @@ mod tests {
 
     use super::*;
     use crate::inherited::InheritedKeys;
+    use crate::manifest::{InstallationDependencies, TargetDiscovery};
 
     #[test]
     fn workspace_relative_dir_rebases_onto_the_workspace_root() {
@@ -1845,6 +1969,7 @@ mod tests {
             packages: BTreeMap::new(),
             unpublished: BTreeSet::new(),
             root_doc: DocumentMut::new(),
+            installation: InstallationGraph::default(),
         };
         base.packages.insert(
             "released".to_string(),
@@ -2320,10 +2445,11 @@ mod tests {
             publish: true,
             path_dependencies: Vec::new(),
             inherited_path_dependencies: Vec::new(),
+            installation_dependencies: InstallationDependencies::default(),
             resource_paths: local.iter().map(|path| (*path).to_string()).collect(),
             inherited_resource_paths: inherited.iter().map(|path| (*path).to_string()).collect(),
             auto_readme: false,
-            targets: crate::manifest::TargetDiscovery::default(),
+            targets: TargetDiscovery::default(),
         }
     }
 

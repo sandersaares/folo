@@ -1,16 +1,18 @@
 // Manifest parsing for versions, packaging rules, members, and pins.
 
 use std::borrow::Cow;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
+use std::error::Error;
 use std::path::{Component, MAIN_SEPARATOR, Path, PathBuf};
+use std::sync::Arc;
 use std::{fmt, fs};
 
 use ignore::overrides::{Override, OverrideBuilder};
 use ohno::AppError;
-use semver::Version;
+use semver::{Version, VersionReq};
 use toml_edit::{DocumentMut, Item, TableLike, Value};
 
-use crate::git::os_path;
+use crate::git::{join_git_rel, os_path};
 use crate::inherited::{InheritedKeys, collect_inherited_keys, is_workspace_inherit};
 use crate::packaging::PackagingRules;
 use crate::text::short_type_name;
@@ -33,6 +35,8 @@ pub(crate) struct PackageManifest {
     /// root, so these cannot be joined onto the member directory the way a
     /// locally declared path is.
     pub(crate) inherited_path_dependencies: Vec<String>,
+    /// Effective normal and build declarations used to filter locked workspace edges.
+    pub(crate) installation_dependencies: InstallationDependencies,
     /// Packaged files named by a manifest key, package-relative.
     ///
     /// Cargo packs the file named by `readme` or `license-file` into the package
@@ -52,11 +56,20 @@ pub(crate) struct PackageManifest {
     /// the first that exists. Which name that is depends on what the end being
     /// examined holds, so only the choice to probe is recorded here.
     pub(crate) auto_readme: bool,
-    /// How Cargo discovers lockfile-bearing targets for this package.
+    /// How Cargo discovers installable binary targets for this package.
     pub(crate) targets: TargetDiscovery,
 }
 
-/// Manifest controls for discovering binary and example targets.
+impl PackageManifest {
+    pub(crate) fn identity(&self) -> PackageIdentity {
+        PackageIdentity {
+            name: self.name.clone(),
+            version: self.version.clone(),
+        }
+    }
+}
+
+/// Manifest controls for discovering installable binary targets.
 ///
 /// Historical snapshots cannot ask Cargo about an old tree, so they combine
 /// these controls with that tree's paths to reconstruct whether the packaged
@@ -66,21 +79,20 @@ pub(crate) struct PackageManifest {
 pub(crate) struct TargetDiscovery {
     explicit: bool,
     autobins: bool,
-    autoexamples: bool,
 }
 
 impl TargetDiscovery {
-    /// Whether `package_paths` contain any target that ships a lockfile.
+    /// Whether the manifest or tracked file paths define an installable binary.
     pub(crate) fn has_lockfile_target<'a>(
         self,
         package_paths: impl IntoIterator<Item = &'a str>,
         case: PathCase,
     ) -> bool {
         self.explicit
-            || package_paths.into_iter().any(|path| {
-                (self.autobins && is_auto_binary(path, case))
-                    || (self.autoexamples && is_auto_example(path, case))
-            })
+            || (self.autobins
+                && package_paths
+                    .into_iter()
+                    .any(|path| is_auto_binary(path, case)))
     }
 }
 
@@ -91,10 +103,224 @@ impl Default for TargetDiscovery {
             // Ref: Cargo reference, "Target auto-discovery".
             explicit: false,
             autobins: true,
-            autoexamples: true,
         }
     }
 }
+
+/// An effective dependency declaration needed when installing a package.
+///
+/// Cargo.lock merges workspace members' development dependencies into their
+/// edges. Matching normal and build declarations by package name, requirement,
+/// and source recovers installation edges without resolving dependencies.
+/// Ref: docs/implementation.md, "Lockfile closures".
+#[derive(Clone, Debug)]
+pub(crate) struct InstallationDependency {
+    pub(crate) name: String,
+    /// Path and Git declarations may omit a registry version constraint.
+    pub(crate) requirement: Option<VersionReq>,
+    pub(crate) source: DependencySource,
+}
+
+impl InstallationDependency {
+    pub(crate) fn matches_package(&self, name: &str, version: &Version) -> bool {
+        self.name == name
+            && match &self.source {
+                DependencySource::Path(identity) => {
+                    identity.name == name && &identity.version == version
+                }
+                _ => true,
+            }
+            && self
+                .requirement
+                .as_ref()
+                .is_none_or(|requirement| requirement.matches(version))
+    }
+}
+
+/// Installation declarations, or a deferred error interpreting them.
+///
+/// Library release assessment does not consume installation facts. Historical
+/// declaration errors therefore belong to the binary closure that needs them,
+/// not to workspace discovery or unrelated member classification.
+#[derive(Clone, Debug)]
+pub(crate) enum InstallationDependencies {
+    Parsed(Vec<InstallationDependency>),
+    Invalid(InstallationError),
+}
+
+impl Default for InstallationDependencies {
+    fn default() -> Self {
+        Self::Parsed(Vec::new())
+    }
+}
+
+impl From<Vec<InstallationDependency>> for InstallationDependencies {
+    fn from(declarations: Vec<InstallationDependency>) -> Self {
+        Self::Parsed(declarations)
+    }
+}
+
+impl From<Result<Vec<InstallationDependency>, AppError>> for InstallationDependencies {
+    fn from(result: Result<Vec<InstallationDependency>, AppError>) -> Self {
+        match result {
+            Ok(declarations) => Self::Parsed(declarations),
+            Err(error) => Self::Invalid(installation_error(error)),
+        }
+    }
+}
+
+/// Shared original cause retained until installation facts are actually needed.
+pub(crate) type InstallationError = Arc<dyn Error + Send + Sync>;
+
+pub(crate) fn installation_error(error: AppError) -> InstallationError {
+    let error: Box<dyn Error + Send + Sync> = error.into();
+    Arc::from(error)
+}
+
+/// The exact package identity read from a path dependency's manifest.
+///
+/// A Cargo requirement can accept several path packages in the lockfile. The
+/// referenced manifest, rather than that range, determines which one is used.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct PackageIdentity {
+    pub(crate) name: String,
+    pub(crate) version: Version,
+}
+
+/// A path declaration whose target identity an endpoint must read.
+///
+/// Local declarations retain their package directory in that endpoint's path
+/// space. Inherited dependencies and root patches are workspace-relative and
+/// therefore have no package-directory override.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(crate) struct DependencyPath {
+    pub(crate) path: String,
+    pub(crate) package_directory: Option<String>,
+}
+
+impl DependencyPath {
+    /// Resolves the declaration into the repository's tracked path space.
+    ///
+    /// Current package directories are workspace-relative; historical package
+    /// directories are already repository-relative. The caller supplies the
+    /// corresponding prefix rather than reinterpreting the declaration's base.
+    pub(crate) fn directory(
+        &self,
+        repository_root: &Path,
+        workspace_prefix: &str,
+        package_prefix: &str,
+    ) -> Option<String> {
+        let path = Path::new(&self.path);
+        let directory = if path.is_absolute() {
+            workspace_relative_path(repository_root, path)?
+        } else {
+            let base = self.package_directory.as_ref().map_or_else(
+                || workspace_prefix.to_owned(),
+                |directory| join_git_rel(package_prefix, directory),
+            );
+            join_git_rel(&base, &to_git_separators(&self.path, MAIN_SEPARATOR))
+        };
+        (directory != ".." && !directory.starts_with("../")).then_some(directory)
+    }
+}
+
+/// The source identity of an effective dependency declaration.
+///
+/// Cargo.lock does not store paths: a path package is identified there by its
+/// source-less name and version. Git references remain distinct while their
+/// resolved commit is compared as released content, not as a declaration.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum DependencySource {
+    Path(PackageIdentity),
+    UnresolvedPath(DependencyPath),
+    Registry(String),
+    NamedRegistry(String),
+    Git {
+        repository: String,
+        reference: GitReference,
+    },
+}
+
+impl DependencySource {
+    pub(crate) fn matches_locked(
+        &self,
+        source: Option<&str>,
+        registries: &BTreeMap<String, String>,
+    ) -> Option<bool> {
+        if source.is_some_and(|source| {
+            locked_registry_index(source).is_none() && !source.starts_with("git+")
+        }) {
+            return None;
+        }
+        Some(match self {
+            Self::Path(_) => source.is_none(),
+            Self::UnresolvedPath(_) => return None,
+            Self::Registry(index) => match source.and_then(locked_registry_index) {
+                Some(locked) => same_registry_index(index, locked)?,
+                None => false,
+            },
+            Self::NamedRegistry(name) => match source.and_then(locked_registry_index) {
+                Some(locked) => same_registry_index(registries.get(name)?, locked)?,
+                None => {
+                    registries.get(name)?;
+                    false
+                }
+            },
+            Self::Git {
+                repository,
+                reference,
+            } => {
+                let Some(source) = source.and_then(|source| source.strip_prefix("git+")) else {
+                    return Some(false);
+                };
+                let (locked_repository, locked_reference) = parse_locked_git_source(source)?;
+                reference == &locked_reference && same_source_url(repository, locked_repository)?
+            }
+        })
+    }
+
+    pub(crate) fn accepts_patch(
+        &self,
+        origin: &str,
+        registries: &BTreeMap<String, String>,
+    ) -> Option<bool> {
+        let origin = if origin == "crates-io" {
+            CRATES_IO_INDEX
+        } else {
+            registries.get(origin).map_or(origin, String::as_str)
+        };
+        Some(match self {
+            Self::Path(_) | Self::UnresolvedPath(_) => false,
+            Self::Registry(index) => same_registry_index(index, origin)?,
+            Self::NamedRegistry(name) => same_registry_index(registries.get(name)?, origin)?,
+            Self::Git { repository, .. } => same_source_url(repository, origin)?,
+        })
+    }
+}
+
+/// Git's requested reference, separate from its resolved lockfile commit.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum GitReference {
+    Default,
+    Branch(String),
+    Tag(String),
+    Rev(String),
+}
+
+/// A workspace-root replacement declaration and the source it applies to.
+///
+/// Path replacements use the same exact target-identity lookup as direct paths,
+/// so another source-less package cannot stand in for the referenced directory.
+/// Invalid declarations retain their target name so unrelated closures can ignore them.
+#[derive(Clone, Debug)]
+pub(crate) struct DependencyPatch {
+    pub(crate) origin: String,
+    pub(crate) name: String,
+    pub(crate) replacement: Result<InstallationDependency, InstallationError>,
+}
+
+/// Cargo's canonical crates.io source identity, including sparse registry usage.
+const CRATES_IO_INDEX: &str = "https://github.com/rust-lang/crates.io-index";
 
 /// Workspace member patterns from the root manifest, compiled for repeated queries.
 ///
@@ -235,32 +461,16 @@ pub(crate) fn package_manifest_from_document(
     let Some(package) = doc.get("package").and_then(Item::as_table_like) else {
         return Ok(None);
     };
-    let Some(name) = package.get("name").and_then(Item::as_str) else {
+    let Some(PackageIdentity { name, version }) = package_identity_from_document(doc, workspace)?
+    else {
         return Ok(None);
     };
-    let Some(version_item) = package.get("version") else {
-        return Ok(None);
-    };
-    let version = if is_workspace_inherit(version_item) {
-        let Some(version) = workspace.package_version() else {
-            return Ok(None);
-        };
-        version
-    } else {
-        let Some(version) = version_item.as_str() else {
-            return Ok(None);
-        };
-        version
-    };
-    let version = version
-        .parse::<Version>()
-        .map_err(|error| InvalidVersionError::caused_by(name, version, error))?;
     let directory = directory_of(manifest_path);
     let (resource_paths, inherited_resource_paths, auto_readme) =
         resource_paths(package, workspace);
     let targets = target_discovery(doc, package);
     Ok(Some(PackageManifest {
-        name: name.to_string(),
+        name,
         version,
         directory,
         packaging: packaging_from_package(package, workspace)?,
@@ -268,6 +478,12 @@ pub(crate) fn package_manifest_from_document(
         publish: publish_allowed(package, workspace),
         path_dependencies: path_dependencies(doc),
         inherited_path_dependencies: inherited_path_dependencies(doc, workspace),
+        installation_dependencies: installation_dependencies(
+            doc,
+            workspace,
+            Path::new(manifest_path),
+        )
+        .into(),
         resource_paths,
         inherited_resource_paths,
         auto_readme,
@@ -275,31 +491,116 @@ pub(crate) fn package_manifest_from_document(
     }))
 }
 
+/// Reads only a package's declared identity, without unrelated packaging facts.
+fn package_identity_from_document(
+    doc: &DocumentMut,
+    workspace: &WorkspaceInherit<'_>,
+) -> Result<Option<PackageIdentity>, AppError> {
+    let Some(package) = doc.get("package").and_then(Item::as_table_like) else {
+        return Ok(None);
+    };
+    let Some(name) = package.get("name").and_then(Item::as_str) else {
+        return Ok(None);
+    };
+    let Some(version_item) = package.get("version") else {
+        return Ok(None);
+    };
+    let version = if is_workspace_inherit(version_item) {
+        workspace.package_version()
+    } else {
+        version_item.as_str()
+    };
+    let Some(version) = version else {
+        return Ok(None);
+    };
+    Ok(Some(PackageIdentity {
+        name: name.to_owned(),
+        version: version
+            .parse()
+            .map_err(|error| InvalidVersionError::caused_by(name, version, error))?,
+    }))
+}
+
+/// Identifies a tracked path package and, when needed, its owning workspace.
+///
+/// Excluded packages may belong to a nested workspace. Their version must not
+/// inherit from the caller's workspace merely because it supplies the dependency.
+pub(crate) fn path_package_identity(
+    manifest_path: &str,
+    case: PathCase,
+    mut read: impl FnMut(&str) -> Result<Option<DocumentMut>, AppError>,
+) -> Result<Option<PackageIdentity>, AppError> {
+    // Cargo requires this filename for both packages and workspace roots.
+    const MANIFEST_FILE_NAME: &str = "Cargo.toml";
+
+    let Some(document) = read(manifest_path)? else {
+        return Ok(None);
+    };
+    if let Some(identity) = package_identity_from_document(&document, &WorkspaceInherit::default())?
+    {
+        return Ok(Some(identity));
+    }
+    let Some(package) = document.get("package").and_then(Item::as_table_like) else {
+        return Ok(None);
+    };
+    let package_directory = directory_of(manifest_path);
+    if let Some(workspace) = package.get("workspace").and_then(Item::as_str) {
+        let workspace = join_git_rel(
+            &package_directory,
+            &to_git_separators(workspace, MAIN_SEPARATOR),
+        );
+        let Some(root) = read(&join_git_rel(&workspace, MANIFEST_FILE_NAME))? else {
+            return Ok(None);
+        };
+        return package_identity_from_document(&document, &WorkspaceInherit::from_root(&root));
+    }
+    let mut directory = package_directory.clone();
+    loop {
+        let path = join_git_rel(&directory, MANIFEST_FILE_NAME);
+        if let Some(root) = read(&path)?
+            && root.get("workspace").is_some()
+        {
+            let members = parse_workspace_members(&root.to_string(), Path::new(&path), case)?;
+            let relative = relativize_directory(&package_directory, &directory);
+            if !relative.is_empty() && is_workspace_excluded(relative, &members) {
+                return Ok(None);
+            }
+            return package_identity_from_document(&document, &WorkspaceInherit::from_root(&root));
+        }
+        if directory.is_empty() {
+            return Ok(None);
+        }
+        let parent = directory_of(&directory);
+        debug_assert!(parent.len() < directory.len());
+        directory = parent;
+    }
+}
+
+fn relativize_directory<'a>(directory: &'a str, ancestor: &str) -> &'a str {
+    directory
+        .strip_prefix(ancestor)
+        .unwrap_or(directory)
+        .trim_start_matches('/')
+}
+
 /// Conventional source path for a package's default binary.
 const AUTO_BINARY_MAIN: &str = "src/main.rs";
 /// Directory in which Cargo discovers additional binary targets.
 const AUTO_BINARY_DIR: &str = "src/bin";
-/// Directory in which Cargo discovers example targets.
-const AUTO_EXAMPLE_DIR: &str = "examples";
 /// Rust source suffix Cargo recognises during target auto-discovery.
 const RUST_SOURCE_SUFFIX: &str = ".rs";
 /// File name Cargo recognises as a directory target's entry point.
 const TARGET_MAIN_FILE: &str = "main.rs";
 
 fn target_discovery(doc: &DocumentMut, package: &dyn TableLike) -> TargetDiscovery {
-    let explicit = ["bin", "example"].iter().any(|key| {
-        doc.get(key)
-            .and_then(Item::as_array_of_tables)
-            .is_some_and(|targets| !targets.is_empty())
-    });
+    let explicit = doc
+        .get("bin")
+        .and_then(Item::as_array_of_tables)
+        .is_some_and(|targets| !targets.is_empty());
     TargetDiscovery {
         explicit,
         autobins: package
             .get("autobins")
-            .and_then(Item::as_bool)
-            .unwrap_or(true),
-        autoexamples: package
-            .get("autoexamples")
             .and_then(Item::as_bool)
             .unwrap_or(true),
     }
@@ -309,25 +610,11 @@ fn is_auto_binary(path: &str, case: PathCase) -> bool {
     case.same_path(path, AUTO_BINARY_MAIN) || is_auto_directory_target(path, AUTO_BINARY_DIR, case)
 }
 
-fn is_auto_example(path: &str, case: PathCase) -> bool {
-    is_auto_directory_target(path, AUTO_EXAMPLE_DIR, case)
-}
-
 /// Whether `path` follows either auto-discovered layout beneath `directory`.
 fn is_auto_directory_target(path: &str, directory: &str, case: PathCase) -> bool {
     let path_parts: Vec<&str> = path.split('/').collect();
     let directory_parts: Vec<&str> = directory.split('/').collect();
     match (directory_parts.as_slice(), path_parts.as_slice()) {
-        ([directory], [held, file]) => {
-            case.same_path(directory, held)
-                && is_visible_target_name(file)
-                && file.ends_with(RUST_SOURCE_SUFFIX)
-        }
-        ([directory], [held, name, main]) => {
-            case.same_path(directory, held)
-                && is_visible_target_name(name)
-                && case.same_path(main, TARGET_MAIN_FILE)
-        }
         ([parent, directory], [held_parent, held_directory, file]) => {
             case.same_path(parent, held_parent)
                 && case.same_path(directory, held_directory)
@@ -450,9 +737,320 @@ impl<'a> WorkspaceInherit<'a> {
     }
 
     fn dependency(&self, name: &str) -> Option<&'a dyn TableLike> {
-        let dependencies = self.dependencies?;
-        dependencies.get(name).and_then(Item::as_table_like)
+        self.dependency_item(name).and_then(Item::as_table_like)
     }
+
+    fn dependency_item(&self, name: &str) -> Option<&'a Item> {
+        self.dependencies?.get(name)
+    }
+}
+
+/// Resolves dependency inheritance before discarding development-only edges.
+fn installation_dependencies(
+    doc: &DocumentMut,
+    workspace: &WorkspaceInherit<'_>,
+    path: &Path,
+) -> Result<Vec<InstallationDependency>, AppError> {
+    let mut declarations = Vec::new();
+    for_each_dependency_table(doc.as_table(), &mut |kind, dependencies| {
+        if kind == "dev-dependencies" {
+            return;
+        }
+        for (alias, dependency) in dependencies.iter() {
+            let inherited = is_workspace_inherit(dependency);
+            let dependency = if inherited {
+                workspace.dependency_item(alias)
+            } else {
+                Some(dependency)
+            };
+            declarations.push(parse_installation_dependency(
+                alias, dependency, path, inherited,
+            ));
+        }
+    });
+    declarations.into_iter().collect()
+}
+
+fn parse_installation_dependency(
+    alias: &str,
+    dependency: Option<&Item>,
+    path: &Path,
+    inherited: bool,
+) -> Result<InstallationDependency, AppError> {
+    let dependency = dependency.ok_or_else(|| ParseTomlError::new(path))?;
+    let table = dependency.as_table_like();
+    let name = table
+        .and_then(|table| table.get("package"))
+        .and_then(Item::as_str)
+        .unwrap_or(alias);
+    let requirement = dependency
+        .as_str()
+        .or_else(|| {
+            table
+                .and_then(|table| table.get("version"))
+                .and_then(Item::as_str)
+        })
+        .map(VersionReq::parse)
+        .transpose()
+        .map_err(|error| ParseTomlError::caused_by(path, error))?;
+    Ok(InstallationDependency {
+        name: name.to_owned(),
+        requirement,
+        source: dependency_source(table, (!inherited).then_some(path)),
+    })
+}
+
+fn dependency_source(
+    table: Option<&dyn TableLike>,
+    declaring_manifest: Option<&Path>,
+) -> DependencySource {
+    let field = |key| {
+        table
+            .and_then(|table| table.get(key))
+            .and_then(Item::as_str)
+    };
+    if let Some(path) = field("path") {
+        return DependencySource::UnresolvedPath(DependencyPath {
+            path: path.to_owned(),
+            package_directory: declaring_manifest
+                .map(|manifest| manifest.parent().map_or_else(String::new, os_path)),
+        });
+    }
+    if let Some(repository) = field("git") {
+        let reference = if let Some(branch) = field("branch") {
+            GitReference::Branch(branch.to_owned())
+        } else if let Some(tag) = field("tag") {
+            GitReference::Tag(tag.to_owned())
+        } else if let Some(rev) = field("rev") {
+            GitReference::Rev(rev.to_owned())
+        } else {
+            GitReference::Default
+        };
+        return DependencySource::Git {
+            repository: repository.to_owned(),
+            reference,
+        };
+    }
+    if let Some(index) = field("registry-index") {
+        return DependencySource::Registry(index.to_owned());
+    }
+    if let Some(name) = field("registry").filter(|name| *name != "crates-io") {
+        return DependencySource::NamedRegistry(name.to_owned());
+    }
+    DependencySource::Registry(CRATES_IO_INDEX.to_owned())
+}
+
+/// Reads replacement declarations from the endpoint's workspace-root patch table.
+pub(crate) fn installation_patches(root: &DocumentMut) -> Vec<DependencyPatch> {
+    let Some(patches) = root.get("patch").and_then(Item::as_table_like) else {
+        return Vec::new();
+    };
+    let mut resolved = Vec::new();
+    for (origin, dependencies) in patches.iter() {
+        let Some(dependencies) = dependencies.as_table_like() else {
+            continue;
+        };
+        for (alias, item) in dependencies.iter() {
+            let name = item
+                .as_table_like()
+                .and_then(|table| table.get("package"))
+                .and_then(Item::as_str)
+                .unwrap_or(alias);
+            let replacement =
+                parse_installation_dependency(alias, Some(item), Path::new("Cargo.toml"), true)
+                    .map_err(installation_error);
+            resolved.push(DependencyPatch {
+                origin: origin.to_owned(),
+                name: name.to_owned(),
+                replacement,
+            });
+        }
+    }
+    resolved
+}
+
+/// Cargo configuration candidates, from repository root to workspace directory.
+///
+/// Cargo prefers the extensionless filename when both names are present.
+pub(crate) fn cargo_config_paths(workspace_prefix: &str) -> Vec<[String; 2]> {
+    let mut directories = vec![String::new()];
+    let mut directory = String::new();
+    for component in workspace_prefix.split('/').filter(|part| !part.is_empty()) {
+        directory = join_git_rel(&directory, component);
+        directories.push(directory.clone());
+    }
+    directories
+        .into_iter()
+        .map(|directory| {
+            [
+                join_git_rel(&directory, ".cargo/config"),
+                join_git_rel(&directory, ".cargo/config.toml"),
+            ]
+        })
+        .collect()
+}
+
+/// Overlays registry indices declared in one Cargo configuration file.
+pub(crate) fn collect_registry_indices(doc: &DocumentMut, indices: &mut BTreeMap<String, String>) {
+    let Some(registries) = doc.get("registries").and_then(Item::as_table_like) else {
+        return;
+    };
+    for (name, entry) in registries.iter() {
+        if let Some(index) = entry
+            .as_table_like()
+            .and_then(|entry| entry.get("index"))
+            .and_then(Item::as_str)
+        {
+            indices.insert(name.to_owned(), index.to_owned());
+        }
+    }
+}
+
+/// The index spelling Cargo uses for registry and sparse source identifiers.
+pub(crate) fn locked_registry_index(source: &str) -> Option<&str> {
+    source
+        .strip_prefix("registry+")
+        .filter(|index| !index.starts_with("sparse+"))
+        .or_else(|| source.starts_with("sparse+").then_some(source))
+}
+
+fn same_source_url(left: &str, right: &str) -> Option<bool> {
+    if left == right {
+        return Some(true);
+    }
+    Some(canonical_source_url(left)? == canonical_source_url(right)?)
+}
+
+fn same_registry_index(left: &str, right: &str) -> Option<bool> {
+    if left.starts_with("sparse+") != right.starts_with("sparse+") {
+        return Some(false);
+    }
+    same_source_url(left, right)
+}
+
+/// Applies Cargo's source canonicalization to already URL-normalized input.
+///
+/// General URL parsing belongs to Cargo. When nonidentical spellings need URL
+/// normalization outside this supported subset, comparison is unavailable rather
+/// than guessing that a legitimate installation edge is absent. Exact URL
+/// spellings remain comparable. Ref: Cargo's `util::CanonicalUrl`.
+fn canonical_source_url(url: &str) -> Option<String> {
+    // URL serialization omits default HTTP transport ports.
+    const HTTP_PORT: u16 = 80;
+    const HTTPS_PORT: u16 = 443;
+    // Canonical IPv4 addresses retain every decimal octet.
+    const IPV4_OCTETS: usize = 4;
+
+    let (scheme, remainder) = url.split_once("://")?;
+    if !matches!(
+        scheme,
+        "https" | "http" | "ssh" | "git" | "file" | "sparse+https" | "sparse+http"
+    ) || !url.is_ascii()
+        || url.chars().any(|ch| {
+            ch.is_ascii_control() || ch.is_ascii_whitespace() || "%\\?#\"<>`{}|^[]".contains(ch)
+        })
+    {
+        return None;
+    }
+    let (authority, path) = remainder
+        .split_once('/')
+        .map_or((remainder, ""), |(authority, path)| (authority, path));
+    let host_port = authority.rsplit('@').next()?;
+    if authority
+        .rsplit_once('@')
+        .is_some_and(|(credentials, _)| credentials.is_empty() || credentials.ends_with(':'))
+    {
+        return None;
+    }
+    let (host, port) = host_port
+        .split_once(':')
+        .map_or((host_port, None), |(host, port)| (host, Some(port)));
+    if host.bytes().any(|byte| byte.is_ascii_uppercase())
+        || (host.is_empty() && scheme != "file")
+        || (scheme == "file" && !authority.is_empty())
+        || path.split('/').any(|part| matches!(part, "." | ".."))
+    {
+        return None;
+    }
+    if let Some(port) = port {
+        let number = port.parse::<u16>().ok()?;
+        // URL parsing removes default HTTP ports and normalizes numeric spelling.
+        if number.to_string() != port
+            || matches!(
+                (scheme, number),
+                ("http", HTTP_PORT) | ("https", HTTPS_PORT)
+            )
+            || (host == "github.com" && number == HTTPS_PORT)
+        {
+            return None;
+        }
+    }
+    let last_label = host.trim_end_matches('.').rsplit('.').next()?;
+    if !last_label.is_empty()
+        && (last_label.bytes().all(|byte| byte.is_ascii_digit()) || last_label.starts_with("0x"))
+    {
+        let octets: Vec<_> = host.split('.').collect();
+        if octets.len() != IPV4_OCTETS
+            || octets.iter().any(|octet| {
+                octet
+                    .parse::<u8>()
+                    .ok()
+                    .is_none_or(|number| number.to_string() != *octet)
+            })
+        {
+            return None;
+        }
+    }
+    let mut path = path.strip_suffix('/').unwrap_or(path).to_owned();
+    let scheme = if !scheme.contains('+') && host == "github.com" {
+        path.make_ascii_lowercase();
+        "https"
+    } else {
+        scheme
+    };
+    if !scheme.contains('+')
+        && let Some(stripped) = path.strip_suffix(".git")
+    {
+        path = stripped.to_owned();
+    }
+    Some(format!("{scheme}://{authority}/{path}"))
+}
+
+fn parse_locked_git_source(source: &str) -> Option<(&str, GitReference)> {
+    let source = source.split('#').next()?;
+    let Some((repository, query)) = source.split_once('?') else {
+        return Some((source, GitReference::Default));
+    };
+    let (kind, value) = query.split_once('=')?;
+    let value = decode_git_reference(value)?;
+    let reference = match kind {
+        "branch" => GitReference::Branch(value),
+        "tag" => GitReference::Tag(value),
+        "rev" => GitReference::Rev(value),
+        _ => return None,
+    };
+    Some((repository, reference))
+}
+
+fn decode_git_reference(encoded: &str) -> Option<String> {
+    // A percent escape encodes a byte as hexadecimal nibbles.
+    const HEX_RADIX: u32 = 16;
+    const NIBBLE_BITS: u32 = 4;
+
+    let mut bytes = encoded.bytes();
+    let mut decoded = Vec::with_capacity(encoded.len());
+    while let Some(byte) = bytes.next() {
+        decoded.push(match byte {
+            b'%' => {
+                let high = char::from(bytes.next()?).to_digit(HEX_RADIX)?;
+                let low = char::from(bytes.next()?).to_digit(HEX_RADIX)?;
+                u8::try_from((high << NIBBLE_BITS) | low).ok()?
+            }
+            b'+' => b' ',
+            other => other,
+        });
+    }
+    String::from_utf8(decoded).ok()
 }
 
 /// Collects every `path` a package reaches through `[workspace.dependencies]`.
@@ -547,10 +1145,29 @@ fn visit_dependency_tables(
     visit: &mut dyn FnMut(&str, &str, &dyn TableLike),
 ) {
     for name in DEPENDENCY_TABLES {
-        if let Some(dependencies) = table.get(name).and_then(Item::as_table_like) {
-            visit(&format!("{prefix}{name}"), name, dependencies);
+        let Some(actual) = dependency_table_name(table, name) else {
+            continue;
+        };
+        if let Some(dependencies) = table.get(actual).and_then(Item::as_table_like) {
+            visit(&format!("{prefix}{actual}"), name, dependencies);
         }
     }
+}
+
+/// Selects Cargo's effective spelling, preserving the raw edit location.
+///
+/// Cargo prefers the hyphenated spelling even when that table is empty. The
+/// underscore aliases remain valid in editions before 2024.
+pub(crate) fn dependency_table_name<'a>(table: &dyn TableLike, name: &'a str) -> Option<&'a str> {
+    if table.contains_key(name) {
+        return Some(name);
+    }
+    let legacy = match name {
+        "build-dependencies" => "build_dependencies",
+        "dev-dependencies" => "dev_dependencies",
+        _ => return None,
+    };
+    table.contains_key(legacy).then_some(legacy)
 }
 
 /// The dependency table names Cargo recognises, at the root and under `[target]`.
@@ -1511,24 +2128,18 @@ b.workspace = true
         assert!(parsed.inherited_path_dependencies.is_empty());
     }
 
-    /// Cargo's conventional binary and example layouts are reconstructed.
+    /// Cargo's conventional installable binary layouts are reconstructed.
     ///
     /// Historical target shape is inferred without invoking Cargo, so every layout
-    /// that can make Cargo package a lockfile must be recognised from tree paths.
+    /// that can install a binary must be recognised from tree paths.
     #[test]
     fn conventional_lockfile_targets_are_discovered() {
         let targets = TargetDiscovery::default();
 
-        for path in [
-            "src/main.rs",
-            "src/bin/tool.rs",
-            "src/bin/tool/main.rs",
-            "examples/demo.rs",
-            "examples/demo/main.rs",
-        ] {
+        for path in ["src/main.rs", "src/bin/tool.rs", "src/bin/tool/main.rs"] {
             assert!(
                 targets.has_lockfile_target([path], PathCase::Sensitive),
-                "{path} should be a lockfile-bearing target"
+                "{path} should be an installable binary target"
             );
         }
         for path in [
@@ -1536,14 +2147,18 @@ b.workspace = true
             "src/bin/tool/data.rs",
             "src/bin/.scratch.rs",
             "src/bin/.scratch/main.rs",
+            "examples/demo.rs",
+            "examples/demo/main.rs",
             "examples/demo/data.rs",
             "examples/.scratch.rs",
             "examples/.scratch/main.rs",
             "tests/demo.rs",
+            "benches/demo.rs",
+            "build.rs",
         ] {
             assert!(
                 !targets.has_lockfile_target([path], PathCase::Sensitive),
-                "{path} should not be a lockfile-bearing target"
+                "{path} should not be an installable binary target"
             );
         }
         assert!(targets.has_lockfile_target(["SRC/MAIN.rs"], PathCase::Insensitive));
@@ -1561,7 +2176,7 @@ version = "0.1.0"
 autobins = false
 autoexamples = false
 
-[[example]]
+[[bin]]
 name = "demo"
 path = "demo.rs"
 "#,
@@ -1594,6 +2209,386 @@ autoexamples = false
                 .targets
                 .has_lockfile_target(["src/main.rs", "examples/demo.rs"], PathCase::Sensitive)
         );
+    }
+
+    #[test]
+    fn auxiliary_targets_do_not_create_an_installation_closure() {
+        for target in ["example", "bench", "test"] {
+            let content = format!(
+                "[package]\nname = \"foo\"\nversion = \"0.1.0\"\nbuild = \"build.rs\"\n\
+                 [[{target}]]\nname = \"demo\"\npath = \"demo.rs\"\n"
+            );
+            let manifest =
+                parse_package_manifest(&content, "Cargo.toml", &WorkspaceInherit::default())
+                    .unwrap()
+                    .unwrap();
+            assert!(!manifest.targets.has_lockfile_target(
+                [
+                    "src/lib.rs",
+                    "examples/demo.rs",
+                    "benches/demo.rs",
+                    "tests/demo.rs",
+                    "build.rs"
+                ],
+                PathCase::Sensitive,
+            ));
+        }
+    }
+
+    #[test]
+    fn installation_declarations_resolve_aliases_inheritance_and_dependency_kinds() {
+        let root = root_doc(
+            "[workspace.dependencies]\nshared = \"1\"\n\
+             renamed = { package = \"actual\", version = \"2\" }\n\
+             development = { package = \"dev-only\", version = \"3\" }\n",
+        );
+        let manifest = parse_package_manifest(
+            "[package]\nname = \"tool\"\nversion = \"0.1.0\"\n\
+             [dependencies]\nshared.workspace = true\n\
+             local = { path = \"../local\" }\n\
+             [build-dependencies]\nbuilder = \"4\"\n\
+             [target.'cfg(unix)'.dependencies]\nrenamed.workspace = true\n\
+             [target.'cfg(windows)'.build-dependencies]\nwindows-builder = \"5\"\n\
+             [dev-dependencies]\nshared = \"9\"\n\
+             [target.'cfg(unix)'.dev-dependencies]\ndevelopment.workspace = true\n",
+            "Cargo.toml",
+            &WorkspaceInherit::from_root(&root),
+        )
+        .unwrap()
+        .unwrap();
+        let InstallationDependencies::Parsed(declarations) = manifest.installation_dependencies
+        else {
+            panic!("valid fixture declarations must parse");
+        };
+        let dependencies: Vec<_> = declarations
+            .iter()
+            .map(|dependency| {
+                (
+                    dependency.name.as_str(),
+                    dependency.requirement.as_ref().map(ToString::to_string),
+                )
+            })
+            .collect();
+        assert_eq!(
+            dependencies,
+            [
+                ("shared", Some("^1".to_owned())),
+                ("local", None),
+                ("builder", Some("^4".to_owned())),
+                ("actual", Some("^2".to_owned())),
+                ("windows-builder", Some("^5".to_owned())),
+            ]
+        );
+    }
+
+    #[test]
+    fn legacy_dependency_tables_use_canonical_precedence_and_raw_locations() {
+        let document = root_doc(
+            "[package]\nname = \"tool\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\
+             [build_dependencies]\nignored = \"1\"\n\
+             [build-dependencies]\n\
+             [dev_dependencies]\nignored-dev = \"1\"\n\
+             [dev-dependencies]\nselected-dev = \"1\"\n\
+             [target.'cfg(unix)'.build_dependencies]\nbuilder = \"1\"\n\
+             [target.'cfg(unix)'.dev_dependencies]\ndevelopment = \"1\"\n",
+        );
+        let mut visited = Vec::new();
+        for_each_dependency_table_with_context(
+            document.as_table(),
+            &mut |location, kind, table| {
+                visited.push((location.to_owned(), kind.to_owned(), table.len()));
+            },
+        );
+        assert_eq!(
+            visited,
+            [
+                (
+                    "dev-dependencies".to_owned(),
+                    "dev-dependencies".to_owned(),
+                    1
+                ),
+                (
+                    "build-dependencies".to_owned(),
+                    "build-dependencies".to_owned(),
+                    0
+                ),
+                (
+                    "target.cfg(unix).dev_dependencies".to_owned(),
+                    "dev-dependencies".to_owned(),
+                    1
+                ),
+                (
+                    "target.cfg(unix).build_dependencies".to_owned(),
+                    "build-dependencies".to_owned(),
+                    1
+                ),
+            ],
+        );
+        let declarations = installation_dependencies(
+            &document,
+            &WorkspaceInherit::default(),
+            Path::new("Cargo.toml"),
+        )
+        .unwrap();
+        assert_eq!(declarations.len(), 1);
+        assert_eq!(declarations.first().unwrap().name, "builder");
+    }
+
+    #[test]
+    fn git_source_identity_preserves_references_but_not_resolved_commits() {
+        let source = DependencySource::Git {
+            repository: "https://example.invalid/foo".to_owned(),
+            reference: GitReference::Branch("release/next".to_owned()),
+        };
+        let registries = BTreeMap::new();
+        assert_eq!(
+            source.matches_locked(
+                Some("git+https://example.invalid/foo.git?branch=release%2Fnext#aaaa"),
+                &registries,
+            ),
+            Some(true),
+        );
+        assert_eq!(
+            source.matches_locked(
+                Some("git+https://example.invalid/foo?branch=development#aaaa"),
+                &registries,
+            ),
+            Some(false),
+        );
+        assert_eq!(
+            source.matches_locked(Some("git+https://example.invalid/other#aaaa"), &registries),
+            Some(false),
+        );
+        for (query, reference) in [
+            ("tag=v1%2Bnext", GitReference::Tag("v1+next".to_owned())),
+            ("rev=abc", GitReference::Rev("abc".to_owned())),
+        ] {
+            assert_eq!(
+                parse_locked_git_source(&format!("https://example.invalid/foo?{query}#123")),
+                Some(("https://example.invalid/foo", reference)),
+            );
+        }
+        assert_eq!(
+            decode_git_reference("release+next"),
+            Some("release next".to_owned())
+        );
+        for invalid in ["%", "%xy", "%ff"] {
+            assert!(decode_git_reference(invalid).is_none());
+        }
+    }
+
+    #[test]
+    fn patches_only_apply_to_the_declared_origin() {
+        let source = DependencySource::Registry(CRATES_IO_INDEX.to_owned());
+        let registries = BTreeMap::from([(
+            "private".to_owned(),
+            "https://example.invalid/index".to_owned(),
+        )]);
+        assert_eq!(source.accepts_patch("crates-io", &registries), Some(true));
+        assert_eq!(
+            source.accepts_patch("https://example.invalid/foo", &registries),
+            Some(false)
+        );
+        assert_eq!(
+            DependencySource::Path(PackageIdentity {
+                name: "foo".to_owned(),
+                version: Version::new(1, 0, 0),
+            })
+            .accepts_patch("crates-io", &registries),
+            Some(false)
+        );
+        let private = DependencySource::NamedRegistry("private".to_owned());
+        assert_eq!(
+            private.accepts_patch("https://example.invalid/index", &registries),
+            Some(true)
+        );
+        assert_eq!(private.matches_locked(None, &BTreeMap::new()), None);
+    }
+
+    #[test]
+    fn cargo_source_url_rules_do_not_guess_unsupported_normalization() {
+        assert_eq!(
+            same_source_url(
+                "http://github.com/Owner/Repo.GIT/",
+                "https://github.com/owner/repo"
+            ),
+            Some(true),
+        );
+        assert_eq!(
+            same_source_url(
+                "https://example.invalid/Foo.git",
+                "https://example.invalid/foo"
+            ),
+            Some(false),
+        );
+        assert_eq!(
+            same_source_url(
+                "https://example.invalid/foo//",
+                "https://example.invalid/foo/"
+            ),
+            Some(false),
+        );
+        for unsupported in [
+            "https://EXAMPLE.invalid/foo",
+            "https://example.invalid:443/foo",
+            "https://example.invalid/a/../foo",
+            "https://example.invalid/f%6fo",
+            "https://[::1]/foo",
+            "https://0x7f.0.0.1/foo",
+            "https://@example.invalid/foo",
+            "https://example.invalid/foo\0",
+        ] {
+            assert_eq!(
+                same_source_url(unsupported, "https://example.invalid/foo"),
+                None
+            );
+            assert_eq!(same_source_url(unsupported, unsupported), Some(true));
+        }
+    }
+
+    #[test]
+    fn sparse_registry_sources_keep_their_protocol_identity() {
+        let index = "sparse+https://example.invalid/index/";
+        let registry = DependencySource::NamedRegistry("private".to_owned());
+        let registries = BTreeMap::from([("private".to_owned(), index.to_owned())]);
+        assert_eq!(
+            registry.matches_locked(Some(index), &registries),
+            Some(true)
+        );
+        assert_eq!(
+            registry.matches_locked(Some("registry+https://example.invalid/index/"), &registries),
+            Some(false),
+        );
+        assert_eq!(
+            registry.matches_locked(
+                Some("registry+sparse+https://example.invalid/index/"),
+                &registries
+            ),
+            None,
+        );
+        assert_eq!(
+            registry.matches_locked(Some("unknown+https://example.invalid/index/"), &registries),
+            None
+        );
+    }
+
+    #[test]
+    fn path_patches_retain_their_workspace_relative_declaration() {
+        let root =
+            root_doc("[patch.crates-io]\nalias = { package = \"foo\", path = \"patches/foo\" }\n");
+        let patches = installation_patches(&root);
+        assert_eq!(patches.len(), 1);
+        let patch = patches.first().unwrap();
+        assert_eq!(patch.origin, "crates-io");
+        assert_eq!(patch.name, "foo");
+        let replacement = patch.replacement.as_ref().unwrap();
+        assert_eq!(replacement.name, "foo");
+        assert_eq!(
+            replacement.source,
+            DependencySource::UnresolvedPath(DependencyPath {
+                path: "patches/foo".to_owned(),
+                package_directory: None,
+            })
+        );
+    }
+
+    #[test]
+    fn local_and_inherited_paths_keep_their_declaration_bases() {
+        let root = root_doc("[workspace.dependencies]\nshared = { path = \"shared/foo\" }\n");
+        let content = "[package]\nname = \"tool\"\nversion = \"0.1.0\"\n\
+            [dependencies]\nlocal = { path = \"../foo\" }\nshared.workspace = true\n";
+        for (manifest, prefix) in [
+            ("packages/tool/Cargo.toml", "root"),
+            ("root/packages/tool/Cargo.toml", ""),
+        ] {
+            let package =
+                parse_package_manifest(content, manifest, &WorkspaceInherit::from_root(&root))
+                    .unwrap()
+                    .unwrap();
+            let InstallationDependencies::Parsed(declarations) = package.installation_dependencies
+            else {
+                panic!("valid fixture declarations must parse");
+            };
+            let paths: Vec<_> = declarations
+                .iter()
+                .map(|dependency| {
+                    let DependencySource::UnresolvedPath(path) = &dependency.source else {
+                        panic!("a declared path must retain its reference");
+                    };
+                    path.directory(Path::new("repo"), "root", prefix).unwrap()
+                })
+                .collect();
+            assert_eq!(paths, ["root/packages/foo", "root/shared/foo"]);
+        }
+    }
+
+    #[test]
+    fn excluded_path_identity_uses_its_own_workspace_version() {
+        let documents = BTreeMap::from([
+            (
+                "foreign/foo/Cargo.toml",
+                root_doc("[package]\nname = \"foo\"\nversion.workspace = true\n"),
+            ),
+            (
+                "foreign/Cargo.toml",
+                root_doc(
+                    "[workspace]\nmembers = [\"foo\"]\n[workspace.package]\nversion = \"1.2.0\"\n",
+                ),
+            ),
+            (
+                "Cargo.toml",
+                root_doc(
+                    "[workspace]\nexclude = [\"foreign\"]\n[workspace.package]\nversion = \"9.0.0\"\n",
+                ),
+            ),
+        ]);
+        let identity =
+            path_package_identity("foreign/foo/Cargo.toml", PathCase::Sensitive, |path| {
+                Ok(documents.get(path).cloned())
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            identity,
+            PackageIdentity {
+                name: "foo".to_owned(),
+                version: Version::new(1, 2, 0)
+            }
+        );
+    }
+
+    #[test]
+    fn package_identity_survives_unusable_installation_declarations() {
+        let package = parse_package_manifest(
+            "[package]\nname = \"library\"\nversion = \"0.1.0\"\n\
+             [dependencies]\nfoo = \"not a requirement\"\n",
+            "packages/library/Cargo.toml",
+            &WorkspaceInherit::default(),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            package.identity(),
+            PackageIdentity {
+                name: "library".to_owned(),
+                version: Version::new(0, 1, 0),
+            }
+        );
+        assert!(matches!(
+            package.installation_dependencies,
+            InstallationDependencies::Invalid(_)
+        ));
+    }
+
+    #[test]
+    fn invalid_patch_declarations_retain_their_target_without_failing_discovery() {
+        let root = root_doc(
+            "[patch.crates-io]\nalias = { package = \"foo\", version = \"not a requirement\" }\n",
+        );
+        let patches = installation_patches(&root);
+        let patch = patches.first().unwrap();
+        assert_eq!(patch.name, "foo");
+        _ = patch.replacement.as_ref().unwrap_err();
     }
 
     fn root_doc(content: &str) -> DocumentMut {

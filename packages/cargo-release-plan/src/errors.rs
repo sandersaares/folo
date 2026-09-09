@@ -162,7 +162,10 @@ impl RefUnwindSafe for ParsePlanError {}
 
 /// The plan uses a schema version this tool does not implement.
 #[ohno::error]
-#[display("Unsupported plan schema_version {version}")]
+#[display(
+    "Unsupported plan schema_version {version}; regenerate evidence with \
+     `cargo release-plan prepare` and the reviewed plan with `cargo release-plan preview`"
+)]
 pub(crate) struct UnsupportedPlanSchemaError {
     version: u32,
 }
@@ -534,10 +537,10 @@ impl RefUnwindSafe for MalformedLockfileError {}
 /// A package's published dependency closure cannot be reconstructed.
 ///
 /// Classification requires a workspace lockfile at every comparison endpoint
-/// where the package has a binary or example target.
+/// where the package has an installable binary target.
 #[ohno::error]
 #[display(
-    "Cannot assess locked dependencies for package '{}' with a binary or example target: {reason}",
+    "Cannot assess locked dependencies for package '{}' with an installable binary target: {reason}",
     package.quoted()
 )]
 pub(crate) struct LockfileClosureUnavailableError {

@@ -4,12 +4,56 @@
 // Cargo library, so this is the only subprocess boundary.
 
 use std::ffi::OsStr;
+use std::io::Write;
 use std::path::Path;
-use std::process::{Command, ExitStatus, Output};
+use std::process::{Command, ExitStatus, Output, Stdio};
 
 use ohno::AppError;
 
 use crate::{CommandFailedError, CommandSpawnError};
+
+/// Hashes captured input bytes without writing an object into the repository.
+pub(crate) fn hash_bytes(bytes: &[u8], cwd: &Path) -> Result<String, AppError> {
+    run_capture_input("git", &["hash-object", "--stdin"], bytes, cwd)
+        .map(|output| output.trim().to_owned())
+}
+
+/// Sends captured bytes to a subprocess without involving a shell or staging file.
+pub(crate) fn run_capture_input(
+    program: &str,
+    args: &[&str],
+    bytes: &[u8],
+    cwd: &Path,
+) -> Result<String, AppError> {
+    let mut child = Command::new(program)
+        .args(args)
+        .current_dir(subprocess_cwd(cwd))
+        .env("CARGO_TERM_COLOR", "never")
+        .env("LC_ALL", "C")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| CommandSpawnError::caused_by(program, error))?;
+    child
+        .stdin
+        .take()
+        .expect("the child was started with a piped standard input")
+        .write_all(bytes)
+        .map_err(|error| CommandSpawnError::caused_by(program, error))?;
+    let output = child
+        .wait_with_output()
+        .map_err(|error| CommandSpawnError::caused_by(program, error))?;
+    if !output.status.success() {
+        return Err(CommandFailedError::new(
+            program,
+            failure_status(output.status),
+            String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        )
+        .into());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
 
 /// Runs `program` with `args` in `cwd` and returns UTF-8 stdout on success.
 ///

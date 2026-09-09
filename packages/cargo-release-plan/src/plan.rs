@@ -9,9 +9,10 @@ use std::str::FromStr;
 
 use ohno::AppError;
 use semver::Version;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::groups::Groups;
+use crate::resolved::ResolvedState;
 use crate::verbose::Verbose;
 use crate::{
     ConflictingPlanIncrementKindError, ConflictingPlanVersionError, ExpandedPlanDriftError,
@@ -26,17 +27,17 @@ use crate::{
 /// path-layout changes increment this constant. Contract: package README
 /// "Plan and report schema".
 ///
-/// Revision 3 separates publishable release assessments from non-publishable
-/// version targets. Older readers would omit alignment-only targets, so both
-/// producers compare this revision for equality and fail loudly on a mismatch.
-pub(crate) const SCHEMA_VERSION: u32 = 3;
+/// The resolved-state revision distinguishes read-only group expansion from
+/// captured previews; only a captured preview is an applicable expanded plan.
+/// Command and JSON incompatibilities require breaking release grading even
+/// when comparison of the public Rust API finds no incompatible signatures.
+pub(crate) const SCHEMA_VERSION: u32 = 4;
 
 /// On-disk plan file.
 ///
-/// This is the wire shape both `expand` and `apply` read. It is deliberately one
-/// shape for both planning stages, so an expansion can be applied directly, and
-/// [`PlanFile::stage`] recovers which stage a given document belongs to.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+/// Expansion and preview share explicit package/version decisions. Preview also
+/// attaches the captured state required to apply those decisions.
+#[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
 pub(crate) struct PlanFile {
     pub(crate) schema_version: u32,
     /// Set by `expand`, absent in a hand-written plan.
@@ -46,9 +47,19 @@ pub(crate) struct PlanFile {
     #[serde(default)]
     expanded: bool,
     pub(crate) increments: Vec<PlanIncrement>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) resolved: Option<ResolvedState>,
 }
 
 impl PlanFile {
+    /// Rejects an unsupported protocol before workspace discovery or mutation.
+    pub(crate) fn validate_schema(&self) -> Result<(), AppError> {
+        if self.schema_version != SCHEMA_VERSION {
+            return Err(UnsupportedPlanSchemaError::new(self.schema_version).into());
+        }
+        Ok(())
+    }
+
     pub(crate) fn stage(&self) -> PlanStage {
         if self.expanded {
             PlanStage::Expanded
@@ -57,12 +68,12 @@ impl PlanFile {
         }
     }
 
-    #[cfg(test)]
     pub(crate) fn new(stage: PlanStage, increments: Vec<PlanIncrement>) -> Self {
         Self {
             schema_version: SCHEMA_VERSION,
             expanded: matches!(stage, PlanStage::Expanded),
             increments,
+            resolved: None,
         }
     }
 
@@ -72,6 +83,7 @@ impl PlanFile {
             schema_version,
             expanded: false,
             increments: Vec::new(),
+            resolved: None,
         }
     }
 }
@@ -80,8 +92,8 @@ impl PlanFile {
 ///
 /// The two stages carry different guarantees about the packages a document
 /// names, so resolving one is not the same operation as resolving the other.
-/// Approval is not a third stage: the expansion a caller approves is applied
-/// byte for byte, so the reviewed document and the applied document are one.
+/// The additional captured state distinguishes a fully resolved preview from
+/// read-only group expansion without introducing an implicit resolver operation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum PlanStage {
     /// A planner's input, which may name a version group or a single member of
@@ -91,16 +103,13 @@ pub(crate) enum PlanStage {
     Proposed,
     /// The document `expand` writes, which names every package whose version
     /// the plan sets and records the version each will carry. Both halves
-    /// matter: the first makes the reviewed set complete with respect to the
+    /// matter: the first makes the captured set complete with respect to the
     /// release decision, and the second makes it stable, since a
     /// level would be re-resolved against whatever the manifests say when the
     /// document is applied. Resolving one must therefore reproduce it exactly.
     ///
-    /// Applying it also rewrites requirements inside the dependents of the
-    /// packages it moves. Those take no version from the plan, so they are not
-    /// named here; a dependent that would keep an already-published version
-    /// while its manifest changes needs a decision of its own, which `check`
-    /// demands.
+    /// Preview adds the captured manifest and lockfile effects needed for application.
+    /// Group expansion alone is not sufficient evidence for applying this stage.
     Expanded,
 }
 
@@ -128,9 +137,7 @@ pub(crate) fn resolve_plan(
     target_versions: &BTreeMap<String, Version>,
     verbose: Verbose,
 ) -> Result<ResolvedVersions, AppError> {
-    if plan.schema_version != SCHEMA_VERSION {
-        return Err(UnsupportedPlanSchemaError::new(plan.schema_version).into());
-    }
+    plan.validate_schema()?;
 
     // An expanded plan claims two things: that it records the version each package takes, and
     // that it names every package the plan reaches. The first is a property of the document
@@ -235,10 +242,10 @@ pub(crate) fn resolve_plan(
         // resolution find the rest is how such a plan is written.
         PlanStage::Proposed => {}
         // An expansion names every package it reaches, and that set is what a
-        // caller reviewed and what the publication check ran over. Resolution
+        // plan records and what the publication check ran over. Resolution
         // reads the derived group as it stands now, so a member newly connected
         // after the document was written would otherwise be picked up
-        // here, widening the reviewed set without anyone seeing it.
+        // here, widening the recorded set without a new complete plan.
         PlanStage::Expanded => {
             let named: BTreeSet<&str> = plan
                 .increments
@@ -260,12 +267,12 @@ pub(crate) fn resolve_plan(
 }
 
 /// One increment entry as stored in plan JSON.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
 pub(crate) struct PlanIncrement {
     pub(crate) name: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) level: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) version: Option<String>,
 }
 
@@ -480,9 +487,9 @@ mod tests {
 
     /// An expanded plan is rejected once its group gained a member.
     ///
-    /// The expanded document is the approved set, so reaching a package it does
+    /// The expanded document records the complete set, so reaching a package it does
     /// not name means the derived group moved underneath it. Applying it
-    /// would edit a package nobody reviewed and that the publication check never
+    /// would edit a package the plan did not record and that the publication check never
     /// saw.
     #[test]
     fn an_expanded_plan_rejects_a_member_added_after_it_was_written() {
@@ -551,8 +558,8 @@ mod tests {
     /// An expanded plan carrying a level is rejected.
     ///
     /// A level is resolved against the manifests as they stand when it is
-    /// applied, so an expanded plan carrying one would let the same approved
-    /// document apply a version other than the reviewed one.
+    /// applied, so an expanded plan carrying one would let the same captured
+    /// document apply a version other than the recorded one.
     #[test]
     fn an_expanded_plan_rejects_an_unresolved_increment_level() {
         let plan = PlanFile::new(
@@ -616,7 +623,7 @@ mod tests {
 
     #[test]
     fn rejects_older_and_future_schemas() {
-        for schema_version in [2, 4] {
+        for schema_version in [3, 5] {
             let plan = PlanFile::with_schema_version(schema_version);
             let error =
                 resolve_plan(&plan, &nm_groups(), &current(), Verbose::new(false)).unwrap_err();

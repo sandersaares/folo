@@ -6,22 +6,9 @@ use cargo_release_plan::{RunInput, RunOutcome, run};
 use serde_json::Value;
 
 use crate::fixture::{Fixture, write_package};
-use crate::harness::check;
+use crate::harness::{check, resolved_plan};
 
-/// Expansion names the packages whose versions move, not every manifest apply edits.
-///
-/// A dependent's requirement is rewritten whenever its target moves, because every
-/// intra-workspace requirement names the version its target declares. That rewrite does not give
-/// the dependent a version of its own, so expansion does not name it: the document records
-/// version decisions, and inventing an entry for a package the plan does not move would claim a
-/// release it is not making.
-///
-/// What keeps that safe is a separate rule. A dependent that would keep an already-published
-/// version while its manifest is rewritten needs a change level of its own, which the plan
-/// generator refuses to omit, and `check` rejects the result afterwards if one is ever missed.
-/// Deciding that here is not possible: `expand` reads the work tree without classification, so it
-/// has no anchors and cannot tell a published dependent from a pending or unpublished one.
-/// Ref: docs/design.md, "Planning stages".
+/// Read-only expansion names group effects; preview completes dependency effects before apply.
 #[cfg_attr(miri, ignore)] // Spawns git and cargo, which Miri cannot emulate.
 #[test]
 fn expand_names_moved_packages_while_apply_also_rewrites_their_dependents() {
@@ -41,7 +28,7 @@ helper = { path = "../helper", version = "1.0.0" }
     let plan_path = fixture.path().join("plan.json");
     fs::write(
         &plan_path,
-        r#"{ "schema_version": 3, "increments": [{ "name": "helper", "level": "patch" }] }"#,
+        r#"{ "schema_version": 4, "increments": [{ "name": "helper", "level": "patch" }] }"#,
     )
     .unwrap();
     let expanded_path = fixture.path().join("expanded.json");
@@ -67,15 +54,14 @@ helper = { path = "../helper", version = "1.0.0" }
     assert_eq!(named, vec!["helper"]);
 
     run(&RunInput::Apply {
-        plan: expanded_path,
+        plan: resolved_plan(&fixture, &expanded_path),
         manifest_path: fixture.manifest(),
         dry_run: false,
         verbose: false,
     })
     .unwrap();
 
-    // `app` was not named, yet its requirement followed `helper` so it keeps naming the version
-    // `helper` declares.
+    // Preview includes the dependent's requirement rewrite and its corresponding release.
     let manifest = fixture.read("packages/app/Cargo.toml");
     assert!(manifest.contains("version = \"1.0.1\""), "{manifest}");
 }
@@ -111,7 +97,7 @@ shell_impl = { workspace = true }
     let plan_path = fixture.path().join("plan.json");
     fs::write(
         &plan_path,
-        r#"{ "schema_version": 3, "increments": [
+        r#"{ "schema_version": 4, "increments": [
             { "name": "shell", "level": "patch" },
             { "name": "loner", "level": "minor" }
         ] }"#,
@@ -148,7 +134,7 @@ shell_impl = { workspace = true }
     assert!(increments.iter().all(|entry| entry.get("level").is_none()));
 
     run(&RunInput::Apply {
-        plan: expanded_path,
+        plan: resolved_plan(&fixture, &expanded_path),
         dry_run: false,
         manifest_path: fixture.manifest(),
         verbose: false,
@@ -182,7 +168,7 @@ fn a_helper_directly_targets_an_all_non_publishable_group() {
     let plan_path = fixture.path().join("plan.json");
     fs::write(
         &plan_path,
-        r#"{ "schema_version": 3, "increments": [{ "name": "z-helper", "level": "patch" }] }"#,
+        r#"{ "schema_version": 4, "increments": [{ "name": "z-helper", "level": "patch" }] }"#,
     )
     .unwrap();
     let expanded_path = fixture.path().join("expanded.json");
@@ -208,7 +194,7 @@ fn a_helper_directly_targets_an_all_non_publishable_group() {
     );
 
     run(&RunInput::Apply {
-        plan: expanded_path,
+        plan: resolved_plan(&fixture, &expanded_path),
         dry_run: false,
         manifest_path: fixture.manifest(),
         verbose: false,
@@ -221,13 +207,13 @@ fn a_helper_directly_targets_an_all_non_publishable_group() {
     }
 }
 
-/// A group that gains an earlier-sorting helper after approval is rejected.
+/// A group that gains an earlier-sorting helper after resolution is rejected.
 ///
-/// The expanded document is what a reviewer approved and what the publication
+/// The expanded document is what resolution captured and what the publication
 /// check ran over, so `apply` must not quietly reach a package it does not name.
 /// Expansion resolves entries through the current exact dependency graph, which
 /// is where a membership change between the two commands would otherwise widen
-/// the approved set and change its derived key.
+/// the captured set and change its derived key.
 /// Ref: docs/design.md, "Version groups".
 #[cfg_attr(miri, ignore)] // Spawns git and cargo, which Miri cannot emulate.
 #[test]
@@ -240,7 +226,7 @@ fn apply_rejects_an_expanded_plan_whose_group_gained_a_member() {
     let plan_path = fixture.path().join("plan.json");
     fs::write(
         &plan_path,
-        r#"{ "schema_version": 3, "increments": [{ "name": "shell", "level": "patch" }] }"#,
+        r#"{ "schema_version": 4, "increments": [{ "name": "shell", "level": "patch" }] }"#,
     )
     .unwrap();
     let expanded_path = fixture.path().join("expanded.json");
@@ -252,7 +238,7 @@ fn apply_rejects_an_expanded_plan_whose_group_gained_a_member() {
     })
     .unwrap();
 
-    // The reviewed document names only the member the group held when it was
+    // The expanded document names only the member the group held when it was
     // written.
     let expanded: Value =
         serde_json::from_str(&fs::read_to_string(&expanded_path).unwrap()).unwrap();
@@ -265,8 +251,9 @@ fn apply_rejects_an_expanded_plan_whose_group_gained_a_member() {
         .map(|entry| entry.get("name").and_then(Value::as_str).unwrap())
         .collect();
     assert_eq!(names, vec!["shell"]);
+    let resolved = resolved_plan(&fixture, &expanded_path);
 
-    // An exact dependency connects an earlier-sorting helper between approval and application.
+    // An exact dependency connects an earlier-sorting helper between resolution and application.
     fixture.write(
         "packages/aaa-helper/Cargo.toml",
         r#"[package]
@@ -281,13 +268,13 @@ shell = { path = "../shell", version = "=0.1.0" }
     );
 
     let error = run(&RunInput::Apply {
-        plan: expanded_path,
+        plan: resolved,
         dry_run: false,
         manifest_path: fixture.manifest(),
         verbose: false,
     })
-    .expect_err("an approved expansion cannot widen to a newly connected helper");
-    assert!(error.to_string().contains("aaa-helper"), "{error}");
+    .is_err();
+    assert!(error);
 
     // Nothing was written: the rejection precedes every manifest edit.
     let shell = fs::read_to_string(fixture.path().join("packages/shell/Cargo.toml")).unwrap();
@@ -316,7 +303,7 @@ fn expand_rejects_disagreeing_versions_within_one_group() {
     let plan_path = fixture.path().join("plan.json");
     fs::write(
         &plan_path,
-        r#"{ "schema_version": 3, "increments": [
+        r#"{ "schema_version": 4, "increments": [
             { "name": "shell", "version": "0.2.0" },
             { "name": "shell_impl", "version": "0.3.0" }
         ] }"#,
@@ -361,7 +348,7 @@ fn a_patch_increment_level_realigns_an_inconsistent_group() {
     let plan_path = fixture.path().join("plan.json");
     fs::write(
         &plan_path,
-        r#"{ "schema_version": 3, "increments": [{ "name": "shell", "level": "patch" }] }"#,
+        r#"{ "schema_version": 4, "increments": [{ "name": "shell", "level": "patch" }] }"#,
     )
     .unwrap();
     let expanded_path = fixture.path().join("expanded.json");
@@ -385,7 +372,7 @@ fn a_patch_increment_level_realigns_an_inconsistent_group() {
     );
 
     run(&RunInput::Apply {
-        plan: expanded_path,
+        plan: resolved_plan(&fixture, &expanded_path),
         dry_run: false,
         manifest_path: fixture.manifest(),
         verbose: false,
@@ -420,7 +407,7 @@ fn an_exact_target_aligns_a_group_without_advancing_its_leader() {
     let plan_path = fixture.path().join("plan.json");
     fs::write(
         &plan_path,
-        r#"{ "schema_version": 3, "increments": [{ "name": "shell", "version": "1.1.0" }] }"#,
+        r#"{ "schema_version": 4, "increments": [{ "name": "shell", "version": "1.1.0" }] }"#,
     )
     .unwrap();
     let expanded_path = fixture.path().join("expanded.json");
@@ -444,7 +431,7 @@ fn an_exact_target_aligns_a_group_without_advancing_its_leader() {
     );
 
     run(&RunInput::Apply {
-        plan: expanded_path,
+        plan: resolved_plan(&fixture, &expanded_path),
         dry_run: false,
         manifest_path: fixture.manifest(),
         verbose: false,

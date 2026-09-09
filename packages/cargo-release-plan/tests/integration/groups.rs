@@ -274,7 +274,7 @@ fn malformed_exact_requirements_fail_all_commands_before_writes() {
     let plan = fixture.path().join("plan.json");
     fs::write(
         &plan,
-        r#"{ "schema_version": 3, "increments": [{ "name": "library", "level": "patch" }] }"#,
+        r#"{ "schema_version": 4, "increments": [{ "name": "library", "level": "patch" }] }"#,
     )
     .unwrap();
 

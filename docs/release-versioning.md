@@ -55,11 +55,26 @@ The invariant has these consequences:
 
 The author finishes the change, then runs the `increment-versions` skill — or the
 `validate-versions` check fails and names that skill, which is enough to continue without
-having read this chapter. The skill proposes one increment *level* per version group and per
-ungrouped publishable package that needs a release, plus any mechanical version alignment.
-The author may raise a level above the `cargo-semver-checks` floor; they may not lower one.
-Group expansion, `=`-pin rewrites, alignment-only targets, and the lockfile are applied without
-a second question. Merge publishes only publishable packages.
+having read this chapter. The skill decides change levels from the evidence, then computes and
+applies the complete resolved plan without a separate human approval gate. This applies to every
+change level. The author may raise a level above the `cargo-semver-checks` floor; they may not
+lower one. Group expansion, requirement rewrites, alignment-only targets, and binary lockfile
+effects are resolved before application, which installs the captured state without another
+dependency refresh. Human review of the complete PR is the approval step. Merge publishes only
+publishable packages.
+
+Every PR description carries a current **Version/release plan** section covering every package
+and group the plan reaches, including retained pending increments and necessary dependent/group
+movements. It states previous and proposed versions, substantive change levels, and reasons, or
+explicitly states that there are no released-content or version changes. Non-publishable targets
+are identified as version alignment only, not published. First-publication packages have a
+separate maintainer handoff rather than an increment. The presentation contract is in
+[`git-workflow.md`](git-workflow.md#versionrelease-plan-section).
+
+Source, release-baseline, group-membership, or decision changes require fresh assessment and an
+updated plan and PR section. Human review concerns the final current release, not an earlier plan.
+Automatic application preserves SemVer floors, canonical expansion, publication checks, and
+the prohibition on publishing from the skill.
 
 ## The anchor and the rule
 
@@ -149,13 +164,17 @@ Diffing against the work tree rather than a commit means uncommitted edits are v
 the state the skill actually runs in. Untracked files are reported as an advisory and never
 counted as changes, since Cargo would not package them either.
 
-`Cargo.lock` is not released content, even though every published crate carries one — pure
-libraries included. What ships is not the workspace lockfile but a per-package lockfile that Cargo
-derives when it builds the archive, narrowed to that package's own dependency closure. It is
-therefore not a function of the package's source: it moves whenever anything in that closure is
-updated, and the workspace lockfile it derives from is shared by every member, so counting it
-would mark the whole workspace unreleased on any dependency update. Consumers ignore a
-dependency's lockfile in any case.
+`Cargo.lock` is not compared as a released file. Library consumers resolve dependencies in
+their own graph, so library-only packages have no lockfile-based release changes regardless of
+whether Cargo includes a lockfile in their archive. Examples, benchmarks, tests, and build scripts
+do not make a library an installable binary package.
+
+A package with an actual installable binary target, including a mixed library/binary package,
+does release its install-time locked dependency closure. The tool compares that closure rather
+than the workspace lockfile's bytes, so unrelated dependency movement does not affect the
+binary. Normal and build dependencies participate across target platforms; development-only
+workspace dependency edges do not. Target discovery and the required lockfile are assessed
+independently at the anchor and in the work tree.
 
 A package's `Cargo.toml` is compared as a file, so a comment-only or formatting-only edit to it
 counts as a released-content change and forces a publish. This keeps the rule uniform — one
@@ -251,7 +270,7 @@ without publishing anything.
 
 **The version base is the highest declared version of every member.** This includes
 non-publishable and base-absent members, so alignment never lowers a version. A release increment
-raises that base by the highest approved level required by a publishable member. When simple
+raises that base by the highest assessed level required by a publishable member. When simple
 alignment would rewrite released content under an already-published version, the group advances
 instead; that safety test applies only to publishable members.
 
@@ -261,8 +280,9 @@ a higher plain version; an explicit non-plain group target is rejected before an
 
 A proposed plan may name any tracked member and expands to the full component. The expanded plan
 names every version target whose declared version resolution sets, including unchanged leaders
-and non-publishable members. It is an approval boundary against newly introduced unnamed targets,
-not a complete fingerprint of the dependency graph.
+and non-publishable members. The complete artifact also captures resolved files and the original
+inputs, so applying it cannot silently widen the release set or introduce uncaptured lockfile
+effects.
 
 Publication remains a subset of version planning. A new publishable member needs the manual
 first-publication handoff described under [Package status](#package-status). A non-publishable
@@ -311,7 +331,7 @@ are documented by the package itself, in its
 [implementation guide](../packages/cargo-release-plan/docs/implementation.md). This chapter
 covers only what the release process depends on.
 
-The process depends on the tool being **offline and deterministic**. It uses only `git` and
+The process depends on classification being **offline and deterministic**. It uses only `git` and
 `cargo metadata --no-deps` — it never contacts crates.io, resolves a dependency graph or runs a
 compiler. That is what lets the check run unconditionally on every pull request in seconds
 without flaking on network conditions. Expensive and networked analysis — `cargo-semver-checks` —
@@ -321,9 +341,12 @@ A non-gating `--verify-packaging` mode cross-checks the tool's relevance rules a
 `cargo package --list` on a clean tree, so a divergence between the tool's rules and Cargo's real
 behaviour is caught by CI rather than by a missed release.
 
-It offers four commands to the process.
+Resolution is separate from classification. Explicit preparation performs the workflow's
+intended `cargo update --offline --workspace` refresh before semantic grading. Prospective
+preview resolves proposed version and requirement edits under the same policy. Neither is a
+blanket third-party update, and neither is hidden in `report` or `check`.
 
-**`report`** writes a revision-3 `report.json` plus a unified diff per publishable package with
+**`report`** writes a revision-4 `report.json` plus a unified diff per publishable package with
 unreleased changes — literally "everything in this package that is not yet released". Its
 `packages` array contains publishable release assessments, while the required
 `non_publishable_packages` array contains only each non-publishable target's name, declared
@@ -346,21 +369,23 @@ printing one actionable line per offence: what changed, what the anchor was, whi
 are dragged along, and how to run the skill. `--format github` adds workflow annotations. This is
 what `validate-versions` runs.
 
-**`expand`** resolves a revision-3 proposed plan into the explicit version-target/version set it
-reaches. The skill presents that expanded document for approval so group members, including
-non-publishable helpers, cannot appear only when the plan is applied. Application rejects a newly
-reached unnamed target, but the expanded stamp does not claim to fingerprint every graph edge.
+**`expand`** resolves proposed version choices structurally without running Cargo resolution.
+The guided workflow instead uses **`preview`** to complete that expansion against the prepared
+inputs, resolve a disposable prospective workspace, and classify the result against the pinned
+release baseline. It continues internally until the plan covers its own version, requirement,
+group, and binary lockfile consequences. Existing sufficient increments remain sufficient;
+iterations do not accumulate another increment for the same change.
 
-**`apply`** takes an approved plan, sets each package's version, rewrites every intra-workspace
-requirement that must follow — in particular the `=` pins — and expands group members. Manifests
-are edited structurally with `toml_edit`, preserving comments and layout. The whole edit set is
-computed and validated before anything is written, so a rejected plan or a failed rewrite changes
-nothing on disk; the writes themselves are then sequential, so an I/O failure part-way through can
-leave some manifests updated and others not. Recovery is to restore the work tree and re-apply,
-which is safe because the plan is a reproducible artifact. The workspace lockfile is refreshed
-afterwards, because `--locked` builds and the `check-frozen` job would otherwise fail on stale
-path-dependency versions. The lockfile is not released content, so refreshing it cannot re-trigger
-the check.
+**`apply`** takes a resolved plan, sets each package's version, rewrites every intra-workspace
+requirement that must follow, and installs the captured lockfile. Manifest edits preserve comments
+and layout. The captured files and original input snapshot are validated before writes; apply
+does not resolve dependencies or add targets. The fully applied state is accepted idempotently,
+but stale or partly modified inputs require inspection and fresh preparation rather than an
+unplanned refresh.
+
+Lockfile maintenance applies even in an all-library workspace: version rewrites still need a
+consistent lockfile for `--locked` commands. Relevance is a different question, and those lockfile
+changes never create library-only release reasons.
 
 The `increment-versions` skill invokes this through `just apply-release-plan`.
 
@@ -382,19 +407,20 @@ merge, or when the `validate-versions` check fails. The check's failure annotati
 skill and the recipe, so a failed job is a sufficient prompt.
 
 Mechanics live in `just` recipes, per the repository rule that logic worth testing must not live
-in prose; the skill file carries the judgement. The only judgement it asks for is the increment
-*level*. Everything that follows from a chosen level — group expansion, `=`-pin rewrites, the
-lockfile refresh, `just verify-lockfile` — is applied without a second question: skipping a
-group member diverges the group, skipping a pin leaves a stale `=` requirement, and skipping
-the lockfile fails `--locked` builds.
+in prose; the skill carries the judgement. It decides the change level from the evidence without
+asking for separate approval. Everything following from that level is included in the complete
+resolved plan before application: group expansion, requirement rewrites, and lockfile resolution
+effects. Verification checks the captured state rather than routinely discovering another
+release set.
 
 1. **Preflight.** Run the `cargo-semver-checks` canary and the workspace-wide,
    best-effort `just check-never-published` advisory. When cargo-semver-checks fails to *run* —
    classically an installed copy too old for the toolchain's rustdoc JSON format — the result must
    never be read as "no breaking changes". `verify-semver-checks` is the canary for the skill and
-   for the CI `semver-checks` job. After approval, `check-increment-published` performs the exact
+   for the CI `semver-checks` job. Before application, `check-increment-published` performs the exact
    fail-closed publication check over the expanded plan before anything is applied.
-2. **Collect.** `just release-report <dir>` runs `cargo release-plan report` and then
+2. **Prepare and collect.** `just release-prepare <dir>` prepares offline dependency resolution,
+   records its inputs, writes the release report, and then runs
    `cargo semver-checks --all-features` for affected publishable packages that declare a
    consumer contract, capturing both.
 
@@ -407,8 +433,12 @@ the lockfile fails `--locked` builds.
    dependencies, including packages whose own files did not initially change.
 3. **Propose.** Walk the publishable release-assessment graph in topological order and, per
    package: take the `cargo-semver-checks` floor, read the package's diff, and decide a level.
-   Expand derived version groups across all version targets, propagate `=` pins, and re-check
-   that the expansion did not create new work. Non-publishable source changes receive no level;
+   Expand derived version groups across all version targets and propagate requirements. Preview
+   the prospective resolution to a fixed point, then inspect its additional binary dependency
+   evidence. Raise semantic levels and preview again if the resolved changes require it, before
+   applying the plan. The final compatibility build uses the prospective workspace's source,
+   manifest versions, lockfile, and Cargo configuration; a read-only comparison rejects mutations
+   to those captured inputs before application. Non-publishable source changes receive no level;
    their version movement is mechanical alignment. Levels follow Cargo's compatibility rule
    rather than plain semantic versioning: the leftmost non-zero component acts as the major
    component, so a breaking change to a `0.x` package is a *minor* increment, a breaking change
@@ -421,23 +451,24 @@ the lockfile fails `--locked` builds.
    comparison still contain it, and even when the new feature is on by default; so is removing a
    feature or the API it gated. Review the diff of `[features]` tables and of `cfg(feature = ...)`
    attributes directly and raise the level accordingly.
-4. **Present.** One table for the human, **one row per version group and per ungrouped
-   package** — not one row per crate. A version group is one decision, regardless of how many
-   members it has. Each row shows current version, proposed version, level, the floor
-   `cargo-semver-checks` reported, the members the level will apply to, and a one-line
-   justification citing the actual change. Every expanded target is visible; non-publishable
-   members are labelled as version alignment only, not published.
-   Where the proposal exceeds the floor, the reason is stated explicitly — that is the entire
-   point of the exercise. Diffs stay on disk and are cited by path rather than pasted, since one
-   package's unreleased changes can run to thousands of lines.
-5. **Apply, on approval.** `just check-increment-published <expanded>`, then
+4. **Present.** Prepare the PR's **Version/release plan** section, one row per version group
+   and per ungrouped package, naming every member. Show previous versions at release anchors,
+   proposed versions, substantive levels, and reasons, including prospective resolution,
+   dependent, and group movements. Retained pending increments remain visible. Explain levels
+   above the SemVer floor. Supporting local artifact citations stay in working evidence rather
+   than the PR. State explicitly when there are no release or version changes, and identify
+   first-publication handoffs separately. Non-publishable helpers are alignment-only, with
+   current declared versions as their alignment starting points. No approval pause follows.
+5. **Apply and verify.** Confirm the evidence and release baseline are current, then
+   `just check-increment-published <expanded>`, then
    `just apply-release-plan <expanded>`, then `just verify-lockfile`, then re-run `check` and the
    scoped `cargo semver-checks` to confirm the result, and write the summary into the pull request
-   description. The publication gate checks only publishable expanded targets. Manifest edits
-   that affect group membership require fresh evidence, proposal, and approval before applying.
+   description. The publication gate checks only publishable expanded targets. Changed preparation
+   inputs require fresh evidence and a regenerated plan before applying.
    Further changes may follow the increment without invalidating it. The plan is not committed:
    the check verifies manifest state, not intent, so a plan file in the repository would be inert
-   churn.
+   churn. Reconcile the PR section with final evidence; human review and merge approve the
+   complete PR.
 
 ## The GitHub check
 
@@ -548,15 +579,16 @@ job as well.
 
 ```mermaid
 flowchart TD
-    A["Author finishes changes"] --> B["increment-versions: report + semver-checks"]
-    B --> C["Proposed plan with per-group justification"]
-    C --> D{"Human approves?"}
-    D -- adjust --> C
-    D -- yes --> E["apply: versions, pins, groups, lockfile"]
-    E --> F["validate-versions + scoped semver-checks"]
-    F --> G["required-checks fan-in"]
-    G --> H["Merge queue rebases onto main"]
-    H --> I["release.yml publishes every unpublished version"]
+    A["Author finishes changes"] --> B["Prepare resolution + report + semver-checks"]
+    B --> C["Preview resolved plan to fixed point + justify levels"]
+    C --> D["Publication gate + apply captured files"]
+    D --> E["validate-versions + scoped semver-checks"]
+    E --> F["Current PR version/release-plan section"]
+    F --> G{"Human reviews complete PR"}
+    G -- revise --> B
+    G -- approve --> H["required-checks + merge queue"]
+    H -- stale plan --> B
+    H -- merge --> I["release.yml publishes every unpublished version"]
 ```
 
 ## Relationship to release-plz

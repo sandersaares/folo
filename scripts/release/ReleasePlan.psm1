@@ -11,7 +11,7 @@ $ErrorActionPreference = "Stop"
 $PSNativeCommandUseErrorActionPreference = $true
 
 # Must match packages/cargo-release-plan/src/plan.rs. An incompatible report must fail closed.
-$script:ReleasePlanSchemaVersion = [long] 3
+$script:ReleasePlanSchemaVersion = [long] 4
 
 # Local working-file format used by the increment-versions skill. Advance it for incompatible
 # working-file shape changes, coordinated with the skill that reads and writes the same contract.
@@ -33,16 +33,18 @@ $script:PublishStatusRetryDelaySeconds = 1
 Import-Module (Join-Path $PSScriptRoot '..' 'utility' 'Retry.psm1') -Force
 
 function Get-ReleasePlanCargoArgument {
-    # Argument vector for `cargo run -p cargo-release-plan --locked -- ...`. Forwards
-    # `$Base` as `--base` when set; otherwise the tool chooses the release baseline.
+    # The preparation launcher may repair an inconsistent lockfile while building the tool.
+    # Other entry points stay locked; resolution belongs only to explicit preparation.
     [CmdletBinding()]
     [OutputType([string[]])]
     param(
         [Parameter(Mandatory)][string[]] $Command,
-        [string] $Base = $env:RELEASE_PLAN_BASE
+        [string] $Base = $env:RELEASE_PLAN_BASE,
+        [switch] $OfflineResolution
     )
 
-    $argument = @('run', '-p', 'cargo-release-plan', '--locked', '--') + $Command
+    $lockArgument = if ($OfflineResolution) { '--offline' } else { '--locked' }
+    $argument = @('run', '-p', 'cargo-release-plan', $lockArgument, '--') + $Command
     if (-not [string]::IsNullOrWhiteSpace($Base)) {
         $argument += @('--base', $Base)
     }
@@ -84,7 +86,7 @@ function Read-ReleasePlanReport {
     }
     if (($report.schema_version -isnot [long] -and $report.schema_version -isnot [int]) -or
         [long] $report.schema_version -ne $script:ReleasePlanSchemaVersion) {
-        throw "release-plan report at '$ReportPath' uses unsupported schema_version '$($report.schema_version)'; expected $script:ReleasePlanSchemaVersion."
+        throw "release-plan report at '$ReportPath' uses unsupported schema_version '$($report.schema_version)'; expected $script:ReleasePlanSchemaVersion. Regenerate planning evidence with 'just release-prepare' or read-only evidence with 'just release-report'."
     }
     if ($field -notcontains 'packages' -or $report.packages -isnot [System.Array]) {
         throw "release-plan report at '$ReportPath' packages must be an array."
@@ -392,10 +394,14 @@ function Get-AffectedSemverCheckTarget {
 
 function Get-SemverCheckCargoArgument {
     param(
-        [Parameter(Mandatory)][string[]] $Package
+        [Parameter(Mandatory)][string[]] $Package,
+        [string] $ManifestPath
     )
 
     $argument = @('semver-checks', '--all-features')
+    if (-not [string]::IsNullOrWhiteSpace($ManifestPath)) {
+        $argument += @('--manifest-path', $ManifestPath)
+    }
     foreach ($name in $Package) {
         $argument += @('-p', $name)
     }
@@ -466,11 +472,9 @@ function Invoke-WithSemverCheckTargetDirectory {
         )
         & $Action
     } finally {
-        [Environment]::SetEnvironmentVariable(
-            'CARGO_TARGET_DIR',
-            $previousTargetDirectory,
-            'Process'
-        )
+        # The environment provider removes a null value. Binding null to the .NET string
+        # overload can instead leave an empty variable, which Cargo rejects.
+        $env:CARGO_TARGET_DIR = $previousTargetDirectory
     }
 }
 
@@ -559,9 +563,54 @@ function Assert-SemverCheckExitCode {
     )
 }
 
+function Invoke-PrepareReleasePlan {
+    # Resolves the intended offline workspace refresh before the report or semantic evidence
+    # is used for a decision. Prospective version rewrites are resolved separately by preview.
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string] $OutDir,
+        [string] $Base = $env:RELEASE_PLAN_BASE,
+        [scriptblock] $Cargo = { param([string[]] $Argument) & cargo @Argument }
+    )
+
+    if ([string]::IsNullOrWhiteSpace($OutDir)) {
+        throw 'release-prepare requires an output directory.'
+    }
+    New-Item -ItemType Directory -Path $OutDir -Force | Out-Null
+    $preparedPath = Join-Path $OutDir 'prepared.json'
+    if (Test-Path -LiteralPath $preparedPath) {
+        Remove-Item -LiteralPath $preparedPath -Force
+    }
+
+    Write-ReleasePlanBaseVerbose -Base $Base
+    Write-Verbose (
+        'Preparing dependency resolution before grading changes; cargo-release-plan prepare ' +
+        'uses the offline workspace update policy, not a blanket third-party upgrade.'
+    ) -Verbose
+    $argument =
+        Get-ReleasePlanCargoArgument -Command @('prepare', '--output', $OutDir) `
+            -Base $Base -OfflineResolution
+    $completed = $false
+    try {
+        & $Cargo $argument
+        if ($LASTEXITCODE -ne 0) {
+            throw "cargo-release-plan prepare failed with exit code $LASTEXITCODE."
+        }
+        if (-not (Test-Path -LiteralPath $preparedPath -PathType Leaf)) {
+            throw "cargo-release-plan prepare did not produce the input snapshot at '$preparedPath'."
+        }
+        Write-ReleaseSemverEvidence -OutDir $OutDir -Cargo $Cargo
+        $completed = $true
+    } finally {
+        if (-not $completed -and (Test-Path -LiteralPath $preparedPath)) {
+            Remove-Item -LiteralPath $preparedPath -Force
+        }
+    }
+}
+
 function Invoke-ReleaseReport {
-    # Collects the release-plan report and cargo-semver-checks evidence for the same explicit
-    # consumer-contract target policy used by CI.
+    # Collects a read-only release assessment plus the same semantic evidence as preparation.
+    # Verification and CI must not acquire a hidden dependency refresh through this entry point.
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string] $OutDir,
@@ -579,6 +628,23 @@ function Invoke-ReleaseReport {
         Get-ReleasePlanCargoArgument -Command @('report', '--out-dir', $OutDir) -Base $Base
     & $Cargo $reportArgument
 
+    Write-ReleaseSemverEvidence -OutDir $OutDir -Cargo $Cargo
+}
+
+function Write-ReleaseSemverEvidence {
+    # Both preparation and verification use CI's consumer-contract target policy. Keeping
+    # evidence collection shared prevents the decision and verification stages from diverging.
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string] $OutDir,
+        [Parameter(Mandatory)][scriptblock] $Cargo,
+        [string] $ManifestPath
+    )
+
+    $OutDir = [IO.Path]::GetFullPath($OutDir)
+    if (-not [string]::IsNullOrWhiteSpace($ManifestPath)) {
+        $ManifestPath = [IO.Path]::GetFullPath($ManifestPath)
+    }
     $reportPath = Join-Path $OutDir 'report.json'
     $targets = @(Get-AffectedSemverCheckTarget -ReportPath $reportPath)
     $logPath = Join-Path $OutDir 'semver-checks.log'
@@ -589,18 +655,28 @@ function Invoke-ReleaseReport {
         return
     }
 
-    $argument = Get-SemverCheckCargoArgument -Package $targets
+    $argument = Get-SemverCheckCargoArgument -Package $targets -ManifestPath $ManifestPath
     Write-Verbose "Running cargo $($argument -join ' '); output captured at '$logPath'." -Verbose
     $previousPreference = $PSNativeCommandUseErrorActionPreference
     # cargo-semver-checks reports detected SemVer findings with a nonzero exit, so this
     # invocation must capture output and classify $LASTEXITCODE manually. The finally block
     # restores the caller's native-command error behavior.
     $PSNativeCommandUseErrorActionPreference = $false
+    $locationChanged = $false
     try {
+        if (-not [string]::IsNullOrWhiteSpace($ManifestPath)) {
+            # Cargo discovers configuration from its working directory even when a different
+            # manifest is explicit. Both must point at the same prospective workspace.
+            Push-Location (Split-Path -Parent $ManifestPath)
+            $locationChanged = $true
+        }
         Invoke-SemverCheckCargo -Argument $argument -Cargo $Cargo 2>&1 |
             Tee-Object -FilePath $logPath
         $exitCode = $LASTEXITCODE
     } finally {
+        if ($locationChanged) {
+            Pop-Location
+        }
         $PSNativeCommandUseErrorActionPreference = $previousPreference
     }
     Assert-SemverCheckExitCode -ExitCode $exitCode -LogPath $logPath
@@ -626,9 +702,8 @@ function Invoke-SemverCheck {
 }
 
 function Invoke-ExpandReleasePlan {
-    # Expands a proposed plan into an expanded plan, naming every package it reaches at the
-    # version each will carry. Resolution belongs to cargo-release-plan, so the skill presents
-    # the tool's own answer rather than a second implementation of the same rules.
+    # Structural version-group expansion, without dependency resolution. The guided workflow
+    # uses Invoke-PreviewReleasePlan instead so its complete artifact includes resolved effects.
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string] $PlanPath,
@@ -676,13 +751,87 @@ function Invoke-ExpandReleasePlan {
     }
 }
 
+function Invoke-PreviewReleasePlan {
+    # Rust owns the disposable prospective workspace and the fixed point over the plan's own
+    # resolution effects. Only its completed artifact is eligible for presentation and apply.
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string] $PreparedPath,
+        [Parameter(Mandatory)][string] $PlanPath,
+        [Parameter(Mandatory)][string] $OutDir,
+        [scriptblock] $Cargo = { param([string[]] $Argument) & cargo @Argument }
+    )
+
+    foreach ($inputPath in @($PreparedPath, $PlanPath)) {
+        if ([string]::IsNullOrWhiteSpace($inputPath) -or
+            -not (Test-Path -LiteralPath $inputPath -PathType Leaf)) {
+            throw "preview-release-plan input file not found: '$inputPath'."
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($OutDir)) {
+        throw 'preview-release-plan requires an output directory.'
+    }
+    New-Item -ItemType Directory -Path $OutDir -Force | Out-Null
+    $expandedPath = Join-Path $OutDir 'plan.json'
+    foreach ($inputPath in @($PreparedPath, $PlanPath)) {
+        if ([IO.Path]::GetFullPath($inputPath) -eq [IO.Path]::GetFullPath($expandedPath)) {
+            throw 'preview-release-plan output must not overwrite an input artifact.'
+        }
+    }
+    if (Test-Path -LiteralPath $expandedPath) {
+        Remove-Item -LiteralPath $expandedPath -Force
+    }
+
+    Write-Verbose (
+        "Previewing '$PlanPath' against prepared inputs '$PreparedPath'; resolving prospective " +
+        "versions and requirements before writing the complete proposal to '$OutDir'."
+    ) -Verbose
+    $completed = $false
+    try {
+        & $Cargo @(
+            'run', '-p', 'cargo-release-plan', '--locked', '--',
+            'preview', '--prepared', $PreparedPath, '--plan', $PlanPath, '--output', $OutDir
+        )
+        if ($LASTEXITCODE -ne 0) {
+            throw "cargo-release-plan preview failed with exit code $LASTEXITCODE."
+        }
+        $expanded = Read-ExpandedPlan -ExpandedPath $expandedPath -RequireResolved
+        if ($expanded.resolved.PSObject.Properties.Name -notcontains 'evidence_manifest_path' -or
+            [string]::IsNullOrWhiteSpace([string] $expanded.resolved.evidence_manifest_path)) {
+            throw 'cargo-release-plan preview did not record its prospective evidence manifest.'
+        }
+        $manifestPath = [string] $expanded.resolved.evidence_manifest_path
+        if (-not [IO.Path]::IsPathFullyQualified($manifestPath) -or
+            -not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+            throw "Prospective evidence manifest is unavailable: '$manifestPath'."
+        }
+        $capturedPlan = [IO.File]::ReadAllText([IO.Path]::GetFullPath($expandedPath))
+        Write-ReleaseSemverEvidence -OutDir $OutDir -ManifestPath $manifestPath -Cargo $Cargo
+        if ([IO.File]::ReadAllText([IO.Path]::GetFullPath($expandedPath)) -cne $capturedPlan) {
+            throw 'Compatibility evidence collection changed the captured release plan.'
+        }
+        & $Cargo @(
+            'run', '-p', 'cargo-release-plan', '--locked', '--',
+            'verify-preview', '--plan', $expandedPath, '--manifest-path', $manifestPath
+        )
+        if ($LASTEXITCODE -ne 0) {
+            throw "Prospective evidence changed during compatibility assessment (exit code $LASTEXITCODE)."
+        }
+        $completed = $true
+    } finally {
+        if (-not $completed -and (Test-Path -LiteralPath $expandedPath)) {
+            Remove-Item -LiteralPath $expandedPath -Force
+        }
+    }
+}
+
 function Invoke-ApplyReleasePlan {
-    # Applies an expanded plan, which is the document the caller reviewed.
+    # Applies the complete expanded plan produced by prospective resolution.
     #
     # A proposed plan is rejected here rather than passed through: the publication gate that runs
     # immediately before this reads the expanded plan's package set, so applying a proposed plan
-    # would edit packages that gate never saw. `cargo-release-plan apply` itself accepts either
-    # stage; this is the skill's stricter path, not the tool's rule.
+    # would edit packages that gate never saw. Rust additionally validates the captured resolved
+    # files and original input snapshot, and never performs late dependency resolution.
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string] $ExpandedPath,
@@ -692,7 +841,7 @@ function Invoke-ApplyReleasePlan {
     if ([string]::IsNullOrWhiteSpace($ExpandedPath)) {
         throw 'apply-release-plan requires an expanded plan JSON path.'
     }
-    [void] (Read-ExpandedPlan -ExpandedPath $ExpandedPath)
+    [void] (Read-ExpandedPlan -ExpandedPath $ExpandedPath -RequireResolved)
 
     Write-Verbose "Applying expanded plan from $ExpandedPath via cargo-release-plan apply" -Verbose
     & $Cargo @('run', '-p', 'cargo-release-plan', '--locked', '--', 'apply', '--plan', $ExpandedPath)
@@ -948,10 +1097,11 @@ function Read-ExpandedPlan {
     # The stage matters to every caller here: only an expanded plan names every package apply
     # will edit, because resolution reaches the version-group members a proposed plan leaves
     # unnamed. Accepting a proposed plan would let the publication gate clear a narrower set than
-    # the one that gets written, and would apply a set nobody reviewed.
+    # the one that gets written, and would apply an unlisted set.
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)][string] $ExpandedPath
+        [Parameter(Mandatory)][string] $ExpandedPath,
+        [switch] $RequireResolved
     )
 
     if (-not (Test-Path -LiteralPath $ExpandedPath)) {
@@ -965,13 +1115,17 @@ function Read-ExpandedPlan {
     if ($field -notcontains 'schema_version' -or
         ($plan.schema_version -isnot [long] -and $plan.schema_version -isnot [int]) -or
         [long] $plan.schema_version -ne $script:ReleasePlanSchemaVersion) {
-        throw "expanded plan at '$ExpandedPath' must use schema_version $script:ReleasePlanSchemaVersion."
+        throw "expanded plan at '$ExpandedPath' must use schema_version $script:ReleasePlanSchemaVersion. Regenerate the prepared evidence and run 'just preview-release-plan' before applying it."
     }
     if ($field -notcontains 'expanded' -or $plan.expanded -isnot [bool] -or -not $plan.expanded) {
-        throw "plan at '$ExpandedPath' is a proposed plan, not an expanded one; run 'just expand-release-plan' and review the result first."
+        throw "plan at '$ExpandedPath' is a proposed plan, not an expanded one; run 'just preview-release-plan' to resolve its complete effects first."
     }
     if ($field -notcontains 'increments' -or $plan.increments -isnot [System.Array]) {
         throw "expanded plan at '$ExpandedPath' increments must be an array."
+    }
+    if ($RequireResolved -and
+        ($field -notcontains 'resolved' -or $plan.resolved -isnot [pscustomobject])) {
+        throw "expanded plan at '$ExpandedPath' has no captured resolved state; run 'just preview-release-plan' to produce its complete result first."
     }
     return $plan
 }
@@ -1918,7 +2072,7 @@ function Assert-PlanMovesEveryPackageNeedingIncrement {
     # still declaring the version it declares today.
     #
     # `check` fails for exactly those packages, so a plan that does not move one cannot clear the
-    # version check and the run would present an approval artifact that is already known not to
+    # version check and the run would present a plan artifact that is already known not to
     # work. This asks whether the plan moves the package rather than whether a decision named it,
     # because a grouped package is moved by any decision naming one of its members and recording
     # no decision of its own is correct for it.
@@ -1996,7 +2150,7 @@ function Assert-PlanMovesEveryRewrittenPublishedPackage {
 }
 
 function New-ReleasePlanFile {
-    # Writes the proposed plan: the approved change levels mapped to cargo-release-plan's
+    # Writes the proposed plan: the decided change levels mapped to cargo-release-plan's
     # mechanical increment levels, plus whatever it takes to align every group whose declared
     # versions differ. Existing pending-release increments are retained and raised only when
     # insufficient. Expanding this proposal is a separate step, because only an expanded plan
@@ -2081,10 +2235,12 @@ Export-ModuleMember -Function `
     Invoke-ValidateVersions, `
     Invoke-VerifySemverCheck, `
     Invoke-ReleaseReport, `
+    Invoke-PrepareReleasePlan, `
     Invoke-SemverCheck, `
     Get-ReleasePlanPackageAnchor, `
     Get-ReleasePlanAnalysisBatchJson, `
     Assert-IncrementPackagePublished, `
     New-ReleasePlanFile, `
     Invoke-ExpandReleasePlan, `
+    Invoke-PreviewReleasePlan, `
     Invoke-ApplyReleasePlan

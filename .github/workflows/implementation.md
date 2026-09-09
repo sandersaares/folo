@@ -27,7 +27,7 @@ for publishable release assessments and all tracked version targets. The report'
 array supplies released-content evidence and consumer-contract selection for publishable members;
 `non_publishable_packages` supplies only names, declared versions, and derived group membership.
 SemVer analysis and change-level decisions use the former, while grouping and alignment use their
-union. The pre-apply publication gate resolves every approved target against current workspace
+union. The pre-apply publication gate resolves every planned target against current workspace
 metadata and queries crates.io only for targets Cargo says are publishable. Package-name patterns
 do not determine whether a crate has a consumer contract or is publishable.
 
@@ -35,6 +35,20 @@ The module also owns the skill's deterministic mechanics: dependency-order prese
 publication eligibility, change-level validation, version-group realignment, and
 conversion to `cargo-release-plan apply` input. The just recipes remain thin command-line entry
 points. Pester tests in `scripts/release/ReleasePlan.Tests.ps1` lock these boundaries.
+
+The guided release workflow collects its decision evidence after explicit offline preparation.
+It then sends semantic choices to Rust's prospective resolution preview, which completes the
+version-target set and captures the resolved files before application. The PowerShell boundary does
+not duplicate Cargo resolution or infer binary closure membership. Compatibility evidence is
+built with the prospective manifest path and working directory, so Cargo reads its captured
+configuration and resolution rather than the live tree's. A read-only comparison rejects any
+input mutation by that build. The module presents the stable
+expanded artifact and applies it unchanged; the Rust boundary rejects stale original inputs
+and installs only the captured state. CI's report/check path and post-apply reporting remain
+read-only, with no hidden preparation or dependency refresh.
+
+There is no separate version-approval prompt. The complete pull request and its
+Version/release plan section carry the human review of release impact.
 
 Plan generation is verified by asserting properties of the generated plan over a matrix of report
 states, not only by testing individual guards. The properties are that every entry is well formed

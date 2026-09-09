@@ -5,7 +5,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Path, PathBuf, absolute};
 
 use ohno::AppError;
 use semver::{Op, Version, VersionReq};
@@ -18,12 +18,14 @@ use crate::git::{GitRepo, join_git_rel};
 use crate::groups::Groups;
 #[cfg(test)]
 use crate::inherited::InheritedKeys;
+use crate::lockfile::InstallationGraph;
 #[cfg(test)]
 use crate::manifest::TargetDiscovery;
 use crate::manifest::{
-    PackageManifest, PathCase, WorkspaceInherit, for_each_dependency_table,
-    for_each_dependency_table_with_context, package_manifest_from_document, parse_document,
-    workspace_relative_path,
+    PackageIdentity, PackageManifest, PathCase, WorkspaceInherit, cargo_config_paths,
+    collect_registry_indices, for_each_dependency_table, for_each_dependency_table_with_context,
+    installation_patches, locked_registry_index, package_manifest_from_document, parse_document,
+    path_package_identity, workspace_relative_path,
 };
 #[cfg(test)]
 use crate::packaging::PackagingRules;
@@ -54,6 +56,8 @@ pub(crate) struct WorkTree {
     /// living outside the workspace is left alone.
     pub(crate) members_by_dir: BTreeMap<PathBuf, String>,
     pub(crate) groups: Groups,
+    /// Normal and build declarations, including non-publishable tracked members.
+    pub(crate) installation: InstallationGraph,
 }
 
 impl WorkTree {
@@ -104,7 +108,7 @@ pub(crate) struct WorkPackage {
     /// decision.
     /// Ref: docs/design.md, "Consumer contracts".
     pub(crate) consumer_contract: bool,
-    /// Whether the package builds a target that makes its locked closure relevant.
+    /// Whether an installable binary makes the package's locked closure relevant.
     ///
     /// Ref: docs/design.md, "Relevant lockfile closures".
     pub(crate) has_lockfile_target: bool,
@@ -212,6 +216,8 @@ struct MetadataDep {
     path: Option<String>,
     #[serde(default)]
     kind: Option<String>,
+    #[serde(default)]
+    source: Option<String>,
 }
 
 /// Parsed current manifests shared by every work-tree projection.
@@ -341,7 +347,7 @@ impl TrackedMetadata<'_> {
             .any(|path| self.case.same_path(path, &manifest_path))
     }
 
-    /// Whether tracked, present package inputs define a lockfile-bearing target.
+    /// Whether tracked, present package inputs define an installable binary.
     fn has_lockfile_target(&self, manifest: &PackageManifest) -> Result<bool, AppError> {
         let package_dir = join_git_rel(self.git.prefix(), &manifest.directory);
         let mut present = Vec::new();
@@ -350,7 +356,8 @@ impl TrackedMetadata<'_> {
                 continue;
             };
             match fs::symlink_metadata(self.git.root().join(path)) {
-                Ok(_) => present.push(relative),
+                Ok(metadata) if metadata.is_file() => present.push(relative),
+                Ok(_) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                 Err(error) => {
                     return Err(ReadFileError::caused_by(self.git.root().join(path), error).into());
@@ -379,11 +386,14 @@ pub(crate) fn load_tracked_work_tree(
 }
 
 fn query_metadata(manifest_path: &Path) -> Result<MetadataJson, AppError> {
-    // Cargo resolves a relative `--manifest-path` against the child's working
-    // directory, so the child inherits this process's directory and the path is
-    // passed through unchanged. Deriving the directory from the path instead
-    // would resolve any leading directory component twice.
-    let cwd = Path::new(".");
+    // Named registries come from the selected workspace's Cargo configuration,
+    // not an unrelated directory from which this tool happens to be invoked.
+    // Make the argument absolute before changing Cargo's working directory.
+    let manifest_path =
+        absolute(manifest_path).map_err(|error| ReadFileError::caused_by(manifest_path, error))?;
+    let cwd = manifest_path
+        .parent()
+        .expect("an absolute manifest filename has a parent directory");
     // `--no-deps` is the classification Cargo invocation: no graph resolve and
     // no crates.io. `--offline` is omitted so a workspace without a lockfile
     // can still be classified; no registry packages are consulted.
@@ -460,6 +470,7 @@ fn work_tree_from_metadata(
     let manifests = ManifestSnapshot::load(metadata, &selected_member_ids, &workspace_root)?;
     let root_manifest = manifests.root(&workspace_root);
     let mut version_targets = Vec::new();
+    let mut installation = InstallationGraph::default();
     for package in &metadata.packages {
         if !selected_member_ids.contains(package.id.as_str()) {
             continue;
@@ -473,6 +484,11 @@ fn work_tree_from_metadata(
         })?;
         let publishable = !matches!(&package.publish, Some(registries) if registries.is_empty())
             && manifest.publish;
+        installation.insert(
+            manifest.name.clone(),
+            version.clone(),
+            manifest.installation_dependencies.clone(),
+        );
         version_targets.push(VersionTarget {
             name: package.name.clone(),
             version,
@@ -571,6 +587,19 @@ fn work_tree_from_metadata(
 
     packages.sort_by(|a, b| a.manifest.name.cmp(&b.manifest.name));
 
+    installation.registries = work_tree_registry_indices(tracked)?;
+    installation.registries.extend(registry_indices(
+        metadata,
+        &selected_member_ids,
+        &manifests,
+        root_manifest,
+        &workspace_root,
+    ));
+    if packages.iter().any(|package| package.has_lockfile_target) {
+        installation.patches = installation_patches(root_manifest);
+        resolve_installation_paths(&mut installation, &manifests, tracked);
+    }
+
     let mut member_manifests: Vec<PathBuf> = members_by_dir
         .keys()
         .map(|dir| dir.join("Cargo.toml"))
@@ -591,7 +620,138 @@ fn work_tree_from_metadata(
         member_manifests,
         members_by_dir,
         groups,
+        installation,
     })
+}
+
+fn resolve_installation_paths(
+    installation: &mut InstallationGraph,
+    manifests: &ManifestSnapshot,
+    tracked: &TrackedMetadata<'_>,
+) {
+    let mut identities: BTreeMap<String, Option<PackageIdentity>> = manifests
+        .packages
+        .values()
+        .flatten()
+        .map(|package| {
+            (
+                join_git_rel(
+                    tracked.git.prefix(),
+                    &join_git_rel(&package.directory, "Cargo.toml"),
+                ),
+                Some(package.identity()),
+            )
+        })
+        .collect();
+    let mut documents = BTreeMap::<String, Option<DocumentMut>>::new();
+    installation.resolve_paths(|reference| {
+        let Some(directory) = reference.directory(
+            tracked.git.root(),
+            tracked.git.prefix(),
+            tracked.git.prefix(),
+        ) else {
+            return Ok(None);
+        };
+        let path = join_git_rel(&directory, "Cargo.toml");
+        if let Some((_, identity)) = identities
+            .iter()
+            .find(|(candidate, _)| tracked.case.same_path(candidate, &path))
+        {
+            return Ok(identity.clone());
+        }
+        let identity = path_package_identity(&path, tracked.case, |path| {
+            let Some(path) = tracked
+                .paths
+                .iter()
+                .find(|candidate| tracked.case.same_path(candidate, path))
+            else {
+                return Ok(None);
+            };
+            if let Some(document) = documents.get(path) {
+                return Ok(document.clone());
+            }
+            let absolute = tracked.git.root().join(path);
+            let document = match fs::read_to_string(&absolute) {
+                Ok(content) => Some(parse_document(&absolute, &content)?),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) => return Err(ReadFileError::caused_by(&absolute, error).into()),
+            };
+            documents.insert(path.clone(), document.clone());
+            Ok(document)
+        })?;
+        identities.insert(path, identity.clone());
+        Ok(identity)
+    });
+}
+
+/// Records Cargo's no-resolution normalization of configured registry names.
+fn registry_indices(
+    metadata: &MetadataJson,
+    selected_member_ids: &HashSet<&str>,
+    manifests: &ManifestSnapshot,
+    root: &DocumentMut,
+    workspace_root: &Path,
+) -> BTreeMap<String, String> {
+    let mut registries = BTreeMap::new();
+    for package in &metadata.packages {
+        if !selected_member_ids.contains(package.id.as_str()) {
+            continue;
+        }
+        let path = Path::new(&package.manifest_path);
+        let directory = path
+            .parent()
+            .expect("Cargo member manifests have a parent directory");
+        for_each_dependency_table_with_context(
+            manifests.document(path).as_table(),
+            &mut |location, _, dependencies| {
+                for (alias, item) in dependencies.iter() {
+                    let effective = effective_dependency(
+                        item,
+                        alias,
+                        location,
+                        directory,
+                        root,
+                        workspace_root,
+                    );
+                    let Some(registry) = dependency_field(effective.item, "registry") else {
+                        continue;
+                    };
+                    if let Some(index) = package
+                        .dependencies
+                        .iter()
+                        .find(|dependency| {
+                            dependency.rename.as_deref().unwrap_or(&dependency.name) == alias
+                        })
+                        .and_then(|dependency| dependency.source.as_deref())
+                        .and_then(locked_registry_index)
+                    {
+                        registries.insert(registry.to_owned(), index.to_owned());
+                    }
+                }
+            },
+        );
+    }
+    registries
+}
+
+fn work_tree_registry_indices(
+    tracked: &TrackedMetadata<'_>,
+) -> Result<BTreeMap<String, String>, AppError> {
+    let mut registries = BTreeMap::new();
+    for candidates in cargo_config_paths(tracked.git.prefix()) {
+        for relative in candidates {
+            let path = tracked.git.root().join(relative);
+            match fs::read_to_string(&path) {
+                Ok(content) => {
+                    collect_registry_indices(&parse_document(&path, &content)?, &mut registries);
+                    break;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(ReadFileError::caused_by(&path, error).into()),
+            }
+        }
+    }
+    Ok(registries)
 }
 
 fn reject_legacy_groups(metadata: &Value) -> Result<(), AppError> {
@@ -1156,6 +1316,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+    use crate::manifest::InstallationDependencies;
 
     fn doc(text: &str) -> DocumentMut {
         parse_document(Path::new("Cargo.toml"), text).unwrap()
@@ -1325,6 +1486,7 @@ mod tests {
     fn released_intra_workspace_deps_require_a_member_directory() {
         let dirs = BTreeMap::from([(PathBuf::from("/ws/packages/bar"), "bar".to_string())]);
         let path_dep = MetadataDep {
+            source: None,
             name: "bar".to_string(),
             req: "0.1.0".to_string(),
             rename: None,
@@ -1338,6 +1500,7 @@ mod tests {
             &doc("")
         ));
         let named = MetadataDep {
+            source: None,
             name: "bar".to_string(),
             req: "0.1.0".to_string(),
             rename: None,
@@ -1351,6 +1514,7 @@ mod tests {
             &doc("")
         ));
         let colliding = MetadataDep {
+            source: None,
             name: "bar".to_string(),
             req: "0.1.0".to_string(),
             rename: None,
@@ -1364,6 +1528,7 @@ mod tests {
             &doc("")
         ));
         let build = MetadataDep {
+            source: None,
             name: "bar".to_string(),
             req: "0.1.0".to_string(),
             rename: None,
@@ -1377,6 +1542,7 @@ mod tests {
             &doc("")
         ));
         let dev = MetadataDep {
+            source: None,
             name: "bar".to_string(),
             req: "0.1.0".to_string(),
             rename: None,
@@ -1390,6 +1556,7 @@ mod tests {
             &doc("")
         ));
         let path_only_dev = MetadataDep {
+            source: None,
             name: "bar".to_string(),
             req: "*".to_string(),
             rename: None,
@@ -1403,6 +1570,7 @@ mod tests {
             &doc("")
         ));
         let wildcard_dev = MetadataDep {
+            source: None,
             name: "bar".to_string(),
             req: "*".to_string(),
             rename: None,
@@ -1418,6 +1586,7 @@ mod tests {
         // A normal dependency without a version requirement still survives
         // packaging, because Cargo strips only path-only dev dependencies.
         let path_only_normal = MetadataDep {
+            source: None,
             name: "bar".to_string(),
             req: "*".to_string(),
             rename: None,
@@ -1431,6 +1600,7 @@ mod tests {
             &doc("")
         ));
         let foreign = MetadataDep {
+            source: None,
             name: "serde".to_string(),
             req: "1.0.0".to_string(),
             rename: None,
@@ -1449,6 +1619,7 @@ mod tests {
     fn inherited_wildcard_dev_dependency_is_released() {
         let dirs = BTreeMap::from([(PathBuf::from("/ws/packages/bar"), "bar".to_string())]);
         let dep = MetadataDep {
+            source: None,
             name: "bar".to_string(),
             req: "*".to_string(),
             rename: Some("bar_alias".to_string()),
@@ -1531,6 +1702,7 @@ mod tests {
                     publish: true,
                     path_dependencies: Vec::new(),
                     inherited_path_dependencies: Vec::new(),
+                    installation_dependencies: InstallationDependencies::default(),
                     resource_paths: Vec::new(),
                     inherited_resource_paths: Vec::new(),
                     auto_readme: false,
@@ -1776,6 +1948,7 @@ mod tests {
                     publish: true,
                     path_dependencies: Vec::new(),
                     inherited_path_dependencies: Vec::new(),
+                    installation_dependencies: InstallationDependencies::default(),
                     resource_paths: Vec::new(),
                     inherited_resource_paths: Vec::new(),
                     auto_readme: false,

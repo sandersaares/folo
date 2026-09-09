@@ -120,9 +120,24 @@ semver-checks:
     Invoke-SemverCheck -Package "{{ package }}"
 
 # The recipes below are the guided increment workflow, in the order the increment-versions skill
-# runs them: collect evidence, determine analysis order, create the plan, expand it, confirm the
-# publishable expanded targets are published, and apply. Each is a thin entry point; the decisions
+# runs them: prepare resolution and evidence, determine analysis order, create the plan, preview
+# its resolved effects, confirm the publishable targets are published, and apply the captured
+# state. Each is a thin entry point; the decisions
 # live in `scripts/release/ReleasePlan.psm1` and in `cargo-release-plan`.
+
+# Resolves the intended offline workspace lockfile refresh before collecting evidence. This is
+# explicit preparation, not part of read-only release-report or validate-versions.
+#
+# Prepares the release report and semantic evidence under DIR.
+[group('release')]
+[script]
+release-prepare DIR:
+    Set-StrictMode -Version Latest
+    $ErrorActionPreference = "Stop"
+    $PSNativeCommandUseErrorActionPreference = $true
+
+    Import-Module "{{ justfile_directory() }}/scripts/release/ReleasePlan.psm1" -Force
+    Invoke-PrepareReleasePlan -OutDir "{{ DIR }}"
 
 # Target selection matches the CI SemVer job exactly, so local evidence and hosted validation
 # cannot disagree about which packages have a supported consumer contract. The module owns
@@ -158,7 +173,7 @@ release-analysis-order REPORT:
 # including alignment-only helpers and groups covered by a consistency exemption. Expansion is
 # plan-driven, so a drifted group that no entry reaches would otherwise stay drifted.
 #
-# Converts the approved change levels in DECISIONS into the proposed plan PLAN, using report REPORT.
+# Converts the decided change levels in DECISIONS into the proposed plan PLAN, using report REPORT.
 [group('release')]
 [script]
 create-release-plan REPORT DECISIONS PLAN:
@@ -169,9 +184,8 @@ create-release-plan REPORT DECISIONS PLAN:
     Import-Module "{{ justfile_directory() }}/scripts/release/ReleasePlan.psm1" -Force
     New-ReleasePlanFile -ReportPath "{{ REPORT }}" -DecisionPath "{{ DECISIONS }}" -PlanPath "{{ PLAN }}"
 
-# The expanded document is what gets presented for approval and what gets applied, so the
-# approved set cannot widen during apply. Group expansion stays in cargo-release-plan rather than
-# being reimplemented here.
+# Structural expansion is available for inspecting version groups. It does not resolve
+# dependencies; use preview-release-plan to create the complete resolved artifact.
 #
 # Expands the proposed plan PLAN into EXPANDED, naming every publishable or alignment-only version
 # target it reaches.
@@ -184,6 +198,18 @@ expand-release-plan PLAN EXPANDED:
 
     Import-Module "{{ justfile_directory() }}/scripts/release/ReleasePlan.psm1" -Force
     Invoke-ExpandReleasePlan -PlanPath "{{ PLAN }}" -ExpandedPath "{{ EXPANDED }}"
+
+# Resolves prospective version and requirement edits against PREPARED until the release set
+# settles. DIR receives the complete resolved plan.json and its prospective report and diffs.
+[group('release')]
+[script]
+preview-release-plan PREPARED PLAN DIR:
+    Set-StrictMode -Version Latest
+    $ErrorActionPreference = "Stop"
+    $PSNativeCommandUseErrorActionPreference = $true
+
+    Import-Module "{{ justfile_directory() }}/scripts/release/ReleasePlan.psm1" -Force
+    Invoke-PreviewReleasePlan -PreparedPath "{{ PREPARED }}" -PlanPath "{{ PLAN }}" -OutDir "{{ DIR }}"
 
 # Reads the expanded plan and resolves every target against current Git-tracked workspace
 # membership. Applying cannot create a crate on crates.io, so a never-published publishable
@@ -201,12 +227,12 @@ check-increment-published EXPANDED:
     Import-Module "{{ justfile_directory() }}/scripts/release/ReleasePlan.psm1" -Force
     Assert-IncrementPackagePublished -ExpandedPath "{{ EXPANDED }}"
 
-# Takes the expanded plan rather than the proposed one, because it is the approved complete set of
+# Takes the expanded plan rather than the proposed one, because it is the complete resolved set of
 # version targets and the publication gate above validates its publishable subset. The file is an
 # uncommitted working-tree artifact; the version check verifies manifest state, not intent. A
 # failure part way through leaves the work tree partly edited.
 #
-# Applies the expanded plan EXPANDED: package versions, `=`-pin rewrites, and a lockfile refresh.
+# Applies the resolved plan EXPANDED: captured versions, requirement rewrites, and resolved lockfile.
 [group('release')]
 [script]
 apply-release-plan EXPANDED:

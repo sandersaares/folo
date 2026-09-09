@@ -239,7 +239,7 @@ fn report_records_group_verdicts() {
     let report = report_json(&fixture, &base);
 
     let report: Value = serde_json::from_str(&report).unwrap();
-    assert_eq!(report.get("schema_version"), Some(&json!(3)));
+    assert_eq!(report.get("schema_version"), Some(&json!(4)));
     assert_eq!(
         report.pointer("/groups/alpha"),
         Some(&json!({

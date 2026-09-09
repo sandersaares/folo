@@ -338,7 +338,7 @@ fn render_diagnostics(
 /// Cargo treats the leftmost non-zero component as the major component, so this
 /// is the comparison that decides whether a consumer of the last release
 /// resolves the next one.
-fn releases_breaking_change(package: &PackageClass) -> bool {
+pub(crate) fn releases_breaking_change(package: &PackageClass) -> bool {
     let Some(anchor) = package.anchor() else {
         // Never released, so there is no consumer contract to break.
         return false;
@@ -387,9 +387,12 @@ fn escape_property(value: &str) -> String {
 /// shell quoting.
 fn remedy(base: &str) -> String {
     format!(
-        "Run `cargo release-plan report --out-dir <dir> --base <base>` to inspect the changes, then \
-         `cargo release-plan apply --plan <plan.json>` with an increment plan, or run the \
-         {INCREMENT_VERSIONS_SKILL} skill to do both. Set `<base>` to the base reported here: {}.",
+        "Run `cargo release-plan prepare --output <dir> --base <base>` to prepare offline \
+         resolution and inspect the changes. Write a proposed plan, then run \
+         `cargo release-plan preview --prepared <prepared.json> --plan <proposed.json> \
+         --output <preview-dir>` to resolve its complete effects before running \
+         `cargo release-plan apply --plan <resolved-plan.json>`, or run the \
+         {INCREMENT_VERSIONS_SKILL} skill. Set `<base>` to the base reported here: {}.",
         quote_path(base)
     )
 }
@@ -556,16 +559,23 @@ mod tests {
         let base = "release; echo injected";
 
         let text = remedy(base);
-        let report_command = text
-            .split('`')
-            .nth(1)
-            .expect("the remedy contains a report command");
+        let prepare_command = text.split('`').nth(1).unwrap();
 
         assert_eq!(
-            report_command,
-            "cargo release-plan report --out-dir <dir> --base <base>"
+            prepare_command,
+            "cargo release-plan prepare --output <dir> --base <base>"
         );
-        assert!(!report_command.contains(base));
+        assert!(!prepare_command.contains(base));
+    }
+
+    #[test]
+    fn remedy_previews_resolution_before_applying_the_resolved_plan() {
+        let text = remedy(BASE);
+        let preview = text.find("cargo release-plan preview").unwrap();
+        let apply = text
+            .find("cargo release-plan apply --plan <resolved-plan.json>")
+            .unwrap();
+        assert!(preview < apply);
     }
 
     #[test]
