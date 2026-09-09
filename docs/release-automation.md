@@ -395,7 +395,9 @@ release-plz invocation.)
   binstall URLs depend on, so a future release-plz default change cannot silently
   break installs.
 * `changelog_update = false`, `publish_timeout = "45m"`, and `allow_dirty = true`.
-  Version groups live in `[workspace.metadata.release-plan]`, not here.
+  Version groups are derived from exact intra-workspace requirements and are not
+  release-plz configuration. Group alignment can include `publish = false`
+  packages; release-plz still considers only publishable members.
 
 **Per-binary-crate git releases, injected dynamically.** Rather than committing
 `git_release_enable = true` into each binary crate's `[[package]]` entry (which

@@ -33,9 +33,14 @@ This chapter uses a small set of terms exactly:
   [Released content](#released-content) below.
 * **Anchor** — the commit a package's released content is compared against, defined under
   [The anchor and the rule](#the-anchor-and-the-rule).
-* **Version increment** — raising a package's declared version. This is the release action;
-  there is no separate "bump".
-* **Version group** — packages that must always declare the same version.
+* **Version increment** — raising a publishable package's declared version in response to
+  released work. This is the release action; there is no separate "bump".
+* **Version alignment** — mechanically setting every target in a group to its resolved version;
+  this can move non-publishable members without releasing them.
+* **Version target** — a tracked workspace member whose declared version the plan may set,
+  whether or not Cargo permits publishing it.
+* **Version group** — a connected component of version targets linked by exact dependency
+  requirements and required to declare the same version.
 
 The invariant has these consequences:
 
@@ -53,13 +58,15 @@ The author finishes the change, then runs the `increment-versions` skill — or 
 having read this chapter. The skill decides change levels from the evidence, then computes and
 applies the expanded plan without a separate human approval gate. This applies to every change
 level, not only patch increments. The author may raise a level above the `cargo-semver-checks`
-floor; they may not lower one. Group membership, dependency requirements, and the lockfile follow
-mechanically. Human review of the complete pull request is the approval step. Merge publishes.
+floor; they may not lower one. Derived group expansion, dependency requirements, alignment-only
+targets, and the lockfile follow mechanically. Human review of the complete pull request is the
+approval step. Merge publishes only publishable packages.
 
 Every PR description carries a current **Version/release plan** section covering every package
 and group the expanded plan reaches, including retained pending increments and necessary
 dependent/group movements. It states previous and proposed versions, substantive change levels,
 and reasons, or explicitly states that there are no released-content or version changes.
+Non-publishable targets are identified as version alignment only, not published.
 First-publication packages have a separate maintainer handoff rather than an increment.
 The presentation contract is in
 [`git-workflow.md`](git-workflow.md#versionrelease-plan-section).
@@ -220,49 +227,62 @@ trade worth making.
 ## Version groups
 
 Some packages are one logical unit split across crates for cargo-technical reasons (see
-[`impl-crate-split.md`](impl-crate-split.md)) and must always carry the same version: the
-`linked*` family, `many_cpus`/`many_cpus_impl`, `nm`/`nm_impl`, `nm_otel`/`nm_otel_impl`, and the
-`cargo-bench-history` family with its `cbh_*` crates and faker.
+[`impl-crate-split.md`](impl-crate-split.md)) and must always carry the same version.
+Dependency declarations are the source of that relationship.
 
-Version groups follow these rules.
+`cargo-release-plan` builds an undirected graph over all tracked workspace members, including
+members whose effective Cargo setting disables publication. A member is tracked when Git tracks
+its manifest. Untracked and ignored members do not become version targets, although `apply` may
+still rewrite their dependency requirements so they do not retain stale references. A valid
+exact requirement between two tracked members contributes an edge; each connected component with
+multiple members is a version group. Normal, build, and development declarations participate,
+including optional dependencies and target-specific tables that are inactive on the current
+host. Aliases, local paths, and inherited workspace dependencies resolve to the actual target
+package. A same-named registry dependency or path outside the workspace does not join. An unused
+workspace dependency or a versionless path dependency creates no edge.
 
-**Every member declares the same version, checked on the versions declared in the manifests.**
-This is a statement about the work tree only. It deliberately says nothing about what has been
-published: `release-plz release` publishes one crate at a time, so a sixteen-member group is
-routinely part-published for minutes while a run works through it or waits out a rate limit. A
-rule that also demanded matching publish state would turn an ordinary throttled release into a
-repository-wide failing check until it finished.
+The accepted exact form is a single `=major.minor.patch` comparator, allowing insignificant
+whitespace. Partial, prerelease, build, and compound exact requirements between workspace
+members are manifest errors. External requirements are unaffected. A compatible dependency
+inside a component is valid: every pair of members need not exact-pin each other when another
+exact path already connects them.
 
-**If any member needs an increment, all members increment**, including members with no changes of
-their own. Otherwise the group's versions diverge the first time only part of it changes.
-If `nm_impl` has unreleased changes and `nm` does not, incrementing `nm_impl` obliges `nm`.
-The set of packages the check requires an increment for is therefore the changed set closed under
-grouping.
+The legacy `[workspace.metadata.release-plan.groups]` key is rejected, even when empty. Historical
+snapshots may still contain it because baseline release evidence must remain readable.
 
-**The new version is the highest version declared by any member, raised by the highest level any
-member requires.** Members are consistent by the first rule, so this is normally unambiguous;
-taking the maximum is what recovers the group if a member ever lags.
+Group members are unique and sorted. The group key is the lexicographically smallest member,
+including when that member is non-publishable. It identifies the component rather than naming a
+configured relationship, and can change when an earlier-sorting member joins.
 
-Members **absent from the base revision** are exempt from the consistency rule. A package being
-added by this pull request has no version to agree with yet, so requiring it to already match
-would make adding a member unresolvable. The exemption governs consistency only: the group
-version is still the highest any present member declares, including an exempt one, so an
-increment never moves a member backwards.
+**Every member declares the same version.** Consistency is checked against work-tree manifests,
+not registry publication state. Members absent from the base revision are exempt from a failing
+consistency verdict, but the exemption does not exempt them from alignment.
 
-That exemption is about the base revision, not about crates.io. Whether a package has ever been
-published is a separate question with its own preflight, described under
-[Package status](#package-status).
+**Resolution sets every member to the group's resolved version.** This applies whether a
+publishable member needs an increment or the group only needs alignment. A non-publishable
+member's source changes do not create release work, but its declared version participates in
+grouping and alignment. Groups containing only non-publishable members can therefore be aligned
+without publishing anything.
 
-Adding a package to a group therefore has an order. The new member declares the group's current
-version, which keeps it consistent the moment it stops being exempt. It is published by hand
-once, because Trusted Publishing cannot perform a first publish, and the skill's exact pre-apply
-gate stops on a never-published package for exactly that reason. Only then can a later pull
-request increment the group as a whole. Adding a member and incrementing the group in one pull
-request would need that manual first publish to happen in between, so those are separate pull
-requests.
+**The version base is the highest declared version of every member.** This includes
+non-publishable and base-absent members, so alignment never lowers a version. A release increment
+raises that base by the highest approved level required by a publishable member. When simple
+alignment would rewrite released content under an already-published version, the group advances
+instead; that safety test applies only to publishable members.
 
-Group membership lives in `[workspace.metadata.release-plan]` in the root `Cargo.toml`.
-`release-plz.toml` does not declare version groups.
+Resolved group versions are plain `major.minor.patch` triplets so exact requirements remain valid.
+If the highest declared version has a prerelease or build suffix, generated alignment advances to
+a higher plain version; an explicit non-plain group target is rejected before any manifest write.
+
+A proposed plan may name any tracked member and expands to the full component. The expanded plan
+names every version target whose declared version resolution sets, including unchanged leaders
+and non-publishable members. It is an approval boundary against newly introduced unnamed targets,
+not a complete fingerprint of the dependency graph.
+
+Publication remains a subset of version planning. A new publishable member needs the manual
+first-publication handoff described under [Package status](#package-status). A non-publishable
+helper never does. `release-plz.toml` does not declare groups or make alignment-only targets
+publishable.
 
 ## Package status
 
@@ -275,19 +295,22 @@ Group membership lives in `[workspace.metadata.release-plan]` in the root `Cargo
 `pending-release` is the state of a package the pull request is publishing. It stays passing
 however much the branch changes afterwards, because all of it ships under the new version.
 
-Group consistency is a separate, group-level verdict rather than a package status: a package can
-have unreleased changes *and* belong to an inconsistent group, and both are reported.
+Group consistency is a separate, group-level verdict rather than a package status: a publishable
+package can have unreleased changes *and* belong to an inconsistent group, and both are reported.
 
-Packages with `publish = false` are excluded entirely.
+Packages with publication disabled receive no status, anchor, released-content diff, dependency
+change level, or SemVer assessment. They still appear as version targets and participate in group
+membership, consistency, version bases, expansion, and alignment.
 
 Whether a crate has ever reached crates.io is a different question, answered by the existing
 `check-never-published` recipe. crates.io Trusted Publishing cannot perform a crate's first
 publish, so a new crate needs one manual `cargo publish` as documented in
 [`RELEASING.md`](../RELEASING.md). The skill's preflight runs that recipe as a best-effort,
 workspace-wide advisory. After the plan is expanded, `check-increment-published` fails closed
-unless every package the plan reaches is already published; first-publish is not folded into
-`apply`, because the OIDC publisher cannot perform it. The version check itself does not change:
-a never-published crate with a version increment is `pending-release`.
+unless every publishable package the plan reaches is already published; non-publishable targets
+are skipped. First-publish is not folded into `apply`, because the OIDC publisher cannot perform
+it. The version check itself does not change: a never-published crate with a version increment is
+`pending-release`.
 
 The check fails closed on a shallow or truncated history: if the anchor walk reaches the end of
 available history without finding a version change, that is an error, not a pass. Otherwise a
@@ -315,26 +338,35 @@ behaviour is caught by CI rather than by a missed release.
 
 It offers four commands to the process.
 
-**`report`** writes `report.json` plus a unified diff per package with unreleased changes —
-literally "everything in this package that is not yet released". The skill reads it to propose
-levels, and `validate-versions` reads it to select SemVer targets. Alongside each package's status
-it carries `dependencies` and `dependents`, because version decisions **cascade**. A package's own
-diff identifies only the roots; the increment set grows from there. `many_cpus` pins
-`many_cpus_impl` exactly, so incrementing the impl package forces a manifest edit in the shell
-package, which is itself a released-content change requiring its own increment. Beyond that
-mechanical propagation, an exposed dependency's breaking change is usually a breaking change in
-its dependent too, unless analysis shows the broken API is not re-exposed. Deciding each package
-independently in one pass is wrong; the graph makes the required ordering explicit.
+**`report`** writes a revision-3 `report.json` plus a unified diff per publishable package with
+unreleased changes — literally "everything in this package that is not yet released". Its
+`packages` array contains publishable release assessments, while the required
+`non_publishable_packages` array contains only each non-publishable target's name, declared
+version, and optional group. The `groups` object covers the union and records complete sorted
+membership, consistency, and the highest declared member version. The skill reads the report to
+propose release levels and alignment; `validate-versions` selects SemVer targets only from
+publishable assessments.
+
+Alongside each publishable package's status the report carries `dependencies` and `dependents`,
+because version decisions **cascade**. A package's own diff identifies only the roots; the
+increment set grows from there. `many_cpus` pins `many_cpus_impl` exactly, so incrementing the
+impl package forces a manifest edit in the shell package, which is itself a released-content
+change requiring its own increment. Beyond that mechanical propagation, an exposed dependency's
+breaking change is usually a breaking change in its dependent too, unless analysis shows the
+broken API is not re-exposed. Deciding each package independently in one pass is wrong; the graph
+makes the required ordering explicit.
 
 **`check`** exits non-zero on any package with unreleased changes or any inconsistent group,
 printing one actionable line per offence: what changed, what the anchor was, which group members
 are dragged along, and how to run the skill. `--format github` adds workflow annotations. This is
 what `validate-versions` runs.
 
-**`expand`** resolves a proposed plan into the explicit package/version set it reaches. The skill
-uses that expanded document for application and PR presentation so version-group members cannot
-appear only when the plan is applied. Changed evidence or group membership requires a fresh
-report, decisions, and canonical plan expansion, not a silently broadened plan.
+**`expand`** resolves a revision-3 proposed plan into the explicit version-target/version set it
+reaches. The skill uses that document for application and PR presentation so group members, including
+non-publishable helpers, cannot appear only when the plan is applied. Application rejects a newly
+reached unnamed target, but the expanded stamp does not claim to fingerprint every graph edge.
+Changed evidence or group membership requires a fresh report, decisions, and canonical plan
+expansion, not a silently broadened plan.
 
 **`apply`** takes a plan, sets each package's version, rewrites every intra-workspace
 requirement that must follow — in particular the `=` pins — and expands group members. Manifests
@@ -348,6 +380,9 @@ path-dependency versions. The lockfile is not released content, so refreshing it
 the check.
 
 The `increment-versions` skill invokes this through `just apply-release-plan`.
+
+The separate change-level decisions document remains at schema revision 1. Non-publishable
+version targets never receive change-level decisions.
 
 Owning this step rather than delegating to `cargo set-version` or `release-plz set-version` is
 deliberate: the `=`-pin and version-group rules are workspace-specific, and the plan file is a
@@ -377,8 +412,8 @@ skipping the lockfile fails `--locked` builds.
    for the CI `semver-checks` job. Before application, `check-increment-published` performs the exact
    fail-closed publication check over the expanded plan before anything is applied.
 2. **Collect.** `just release-report <dir>` runs `cargo release-plan report` and then
-   `cargo semver-checks --all-features` for the affected packages that declare a consumer
-   contract, capturing both.
+   `cargo semver-checks --all-features` for affected publishable packages that declare a
+   consumer contract, capturing both.
 
    `--all-features` is used because gated API is still public API, and a breaking change behind a
    feature flag is invisible to a default-feature run.
@@ -387,13 +422,15 @@ skipping the lockfile fails `--locked` builds.
    consumer-contract member of its version group, while packages with no consumer contract are
    omitted. The plan separately propagates a breaking change through public workspace
    dependencies, including packages whose own files did not initially change.
-3. **Propose.** Walk the workspace dependency graph in topological order and, per package: take
-   the `cargo-semver-checks` floor, read the package's diff, and decide a level. Expand version
-   groups, propagate `=` pins, and re-check that the expansion did not create new work. Levels
-   follow Cargo's compatibility rule rather than plain semantic versioning: the leftmost non-zero
-   component acts as the major component, so a breaking change to a `0.x` package is a *minor*
-   increment, a breaking change to a `1.x` or later package is a *major* one, and a `0.0.z`
-   package has no compatible increment at all.
+3. **Propose.** Walk the publishable release-assessment graph in topological order and, per
+   package: take the `cargo-semver-checks` floor, read the package's diff, and decide a level.
+   Expand derived version groups across all version targets, propagate `=` pins, and re-check
+   that the expansion did not create new work. Non-publishable source changes receive no level;
+   their version movement is mechanical alignment. Levels follow Cargo's compatibility rule
+   rather than plain semantic versioning: the leftmost non-zero component acts as the major
+   component, so a breaking change to a `0.x` package is a *minor* increment, a breaking change
+   to a `1.x` or later package is a *major* one, and a `0.0.z` package has no compatible
+   increment at all.
 
    Cargo features need a manual pass, because `--all-features` compares only the maximal API
    surfaces and cannot speak for consumers that enable a subset. Putting an existing public item
@@ -410,6 +447,8 @@ skipping the lockfile fails `--locked` builds.
    a release explanation, not a local artifact inventory or a validation log.
    State explicitly when there are no released-content or version changes, and identify
    first-publication handoffs separately. No approval pause follows presentation.
+   Every expanded target is visible; non-publishable members are labelled as version alignment
+   only, not published, with their current declared version as the alignment starting point.
 5. **Apply and verify.** Confirm the evidence and release baseline are still current, then
    `just check-increment-published <expanded>`, then
    `just apply-release-plan <expanded>`, then `just verify-lockfile`, then re-run `check` and the
@@ -419,6 +458,7 @@ skipping the lockfile fails `--locked` builds.
    increments are retained rather than raised again merely because the skill reruns.
    The plan is not committed: the check verifies manifest state, not intent, so a plan file in
    the repository would be inert churn. Human review and merge approve the complete PR.
+   The publication gate checks only publishable expanded targets.
 
 ## The GitHub check
 
@@ -555,10 +595,11 @@ the `cargo binstall` asset URLs derive from it, but tags carry no meaning for ve
 ## Publish volume and rate limits
 
 Every merge that touches a published package publishes it, and group closure multiplies that:
-a one-line change in any `cbh_*` crate publishes every member of the `cargo-bench-history`
-group. A change to an inherited workspace value publishes every inheriting package. Long
-publish runs — including a full-workspace republish — are therefore expected by design, not
-an anomaly to be engineered away.
+a one-line change in any publishable `cbh_*` crate aligns the full
+`cargo-bench-history` group and publishes its publishable members. A change to an inherited
+workspace value publishes every publishable package that inherits it. Long publish runs —
+including a full-workspace republish — are therefore expected by design, not an anomaly to be
+engineered away.
 
 crates.io throttles publishing with a per-user token bucket, and the applicable limit is the one
 for **new versions of existing crates**: a burst of 30 with one token refilled per minute. (The
@@ -588,9 +629,9 @@ never fails the check while a run is working through it.
 ## Reuse outside this repository
 
 The tool is an ordinary published Cargo subcommand — binstall metadata, trusted publisher, no
-folo-specific behaviour compiled in. Group definitions come from configuration and packaging
-from each crate's `include`, so another workspace adopts it by writing
-`[workspace.metadata.release-plan]` and pointing a check at `cargo release-plan check`.
+folo-specific behaviour compiled in. Group membership comes from exact dependency declarations
+and packaging from each crate's `include`, so another workspace adopts it by declaring the
+intended exact relationships and pointing a check at `cargo release-plan check`.
 
 The skill and the `just` recipes stay local. The skill is the part most entangled with local
 conventions.

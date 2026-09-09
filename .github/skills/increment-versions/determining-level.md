@@ -104,14 +104,17 @@ Choose no increment only when the complete evidence set supports it: every entry
 fields, the locked dependency changes, and the decisions recorded for its dependencies. Signal
 this by omitting the package from `decisions.json`.
 
-Membership of a group the report marks `"consistent": false` does not change this. A group whose
-members disagree on a version is realigned mechanically when the plan is generated, normally onto
-the highest version any member already declares, and by a patch increment of the whole group when
-that alignment would rewrite a dependency inside a member that otherwise kept a published
-version. Either way the realignment is chosen for you. Judge each member on its own released
-changes and choose no increment when it has none.
+Membership of a version group does not change this. A group whose members declare different
+versions is realigned mechanically when the plan is generated, even when `consistent` is true
+because a member absent from the release baseline is exempt from the consistency verdict.
+Alignment normally uses the highest version any publishable or non-publishable member declares.
+The group is patch-incremented when exact alignment would rewrite a dependency inside a
+publishable member that otherwise kept a published version, or when the highest version is not a
+plain SemVer triplet. The tooling chooses the realignment. Judge each publishable member on its
+own released changes and choose no increment when it has none. Do not assess source changes in
+`non_publishable_packages` or assign those alignment-only helpers a semantic change level.
 
-A package that the report gives no anchor has never been released, so it has no version to
-increment. It follows the first-publication path in
+A publishable package in `report.json.packages` that has no anchor has never been released, so it
+has no version to increment. It follows the first-publication path in
 [`RELEASING.md`](../../../RELEASING.md#first-publish-of-a-new-crate) instead of taking a change
 level.

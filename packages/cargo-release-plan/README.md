@@ -50,9 +50,9 @@ needs an increment.
 
 Exits non-zero when any publishable package needs an increment, any version
 group declares inconsistent versions, any intra-workspace requirement does not
-name the version its target declares, any version-group member does not pin its
-siblings with an exact `=` requirement, or any package that exposes a public
-dependency stays compatible while that dependency releases a breaking change.
+name the version its target declares, an in-workspace exact requirement is
+malformed, or any package that exposes a public dependency stays compatible
+while that dependency releases a breaking change.
 Failure text describes the
 self-contained recovery workflow: run `report`, prepare a plan, and run `apply`.
 It additionally reserves the `increment-versions` agent-skill name for the
@@ -75,11 +75,11 @@ Resolves a plan's version groups and increment levels into one explicit entry
 per package, written to `--out`.
 
 An input plan may omit version-group members that `apply` will update. `expand`
-writes the explicit package/version set for review, naming every package whose
-version the plan sets, including group members the input plan did not mention,
-at the version each will carry. Applying it also rewrites requirements inside
-those packages' dependents, which take no version from the plan and so are not
-named.
+writes the explicit package/version set for review, naming every tracked member
+whose version the plan sets, including non-publishable helpers and group members
+the input plan did not mention, at the version each will carry. Applying it also
+rewrites requirements inside those packages' dependents, which take no version
+from the plan and so are not named.
 
 The output is itself a plan, so the expanded document can be passed unchanged to
 `apply`. Every entry carries an explicit `version`. Review and approval policy
@@ -117,7 +117,7 @@ The plan schema is:
 
 ```json
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "increments": [
     { "name": "nm", "level": "patch" },
     { "name": "events", "version": "0.7.14" }
@@ -125,9 +125,11 @@ The plan schema is:
 }
 ```
 
-`name` is a package name or a version-group name. `level` is `major`, `minor`,
-or `patch`. An explicit `version` is used as-is for that target (and its group),
+`name` is the name of any Git-tracked workspace member. If it belongs to a
+version group, the entry reaches the complete group. `level` is `major`, `minor`,
+or `patch`. An explicit `version` is used as-is for that target and its group,
 and is rejected when it is lower than a version the target already declares.
+An explicit group version must be a plain `major.minor.patch` triplet.
 Each increment must supply exactly one of `level` or `version`. Entries that
 expand to the same target must use the same choice: levels combine by taking the
 highest, while explicit versions must match.
@@ -141,14 +143,15 @@ Both are
 required of it: an entry left at a level would be resolved against the manifests as they stand
 when it is applied, so the same document could apply a version other than the recorded one.
 Resolving an expanded plan must reproduce exactly the set it names; reaching any other package
-means the workspace's version groups changed after the document was written, and is rejected
+means the workspace's derived version groups changed after the document was written, and is rejected
 rather than applied. Requirement rewrites inside those packages' dependents are not part of that
 set, because the plan gives a dependent no version of its own.
 
 ### Plan and report schema
 
 `report.json` uses the same schema revision. Top-level fields are
-`schema_version`, `head`, `packages`, and `groups`. Each package object includes
+`schema_version`, `head`, `packages`, `non_publishable_packages`, and `groups`.
+`packages` contains release assessments for publishable members. Each package object includes
 `name`, `declared_version`, `status` (`pending-release` / `needs-increment` /
 `unchanged`), `changed`, `stat`, `dependencies`, `dependents`, and
 `consumer_contract`, plus omitted
@@ -167,6 +170,13 @@ package states that its library serves another package rather than consumers.
 advance this revision together: an incompatible field, enum, or path-layout
 change increments it.
 
+`non_publishable_packages` contains every remaining tracked version target.
+Each entry has `name`, `declared_version`, and an optional `group`; it has no
+release status, anchor, changes, or consumer contract. A group's sorted
+`members` refer to the union of both package arrays, `version` is the highest
+declared member version, and the group key is its lexicographically smallest
+member.
+
 ## Classification
 
 | Status            | Condition                                                |
@@ -175,9 +185,10 @@ change increments it.
 | `needs-increment` | version unchanged, released content changed since anchor |
 | `unchanged`       | version unchanged, released content unchanged            |
 
-`check` fails on `needs-increment` alone. A `pending-release` package still holds
+`check` fails on `needs-increment` alone as a release status. A `pending-release` package still holds
 unreleased changes; merging is what releases them. Packages with
-`publish = false` are ignored. Untracked files are advisory only. Versions only move forwards: a
+`publish = false` are excluded from release assessment but remain version
+targets. Untracked files are advisory only. Versions only move forwards: a
 declared version below the anchor's version is an error rather than a status.
 
 Cargo includes a generated lockfile in every package archive, but a
@@ -194,10 +205,26 @@ therefore a change even when its bytes are untouched. The mode is read from the
 index, so a checkout on a platform without executable permissions classifies the
 same way.
 
-Version groups are declared in the workspace root as
-`[workspace.metadata.release-plan.groups]`. Members share a declared version; if
-any member needs an increment, all members increment. Members the baseline does
-not carry are exempt from the consistency rule.
+An exact local dependency requirement forms an undirected edge between two
+Git-tracked workspace members. Connected components containing more than one
+member are version groups. All dependency kinds, optional declarations,
+workspace inheritance, and target-specific tables participate. Aliases follow
+their declared package identity; registry dependencies, outside-workspace paths,
+versionless paths, and unused workspace dependency entries do not participate.
+
+The accepted exact syntax is one `=major.minor.patch` comparator, allowing
+insignificant whitespace. Partial versions, prerelease or build suffixes, and
+compound requirements containing an exact comparator are rejected for
+in-workspace edges. A valid but stale exact pin still forms its group and is
+reported by `check` until `apply` repairs it.
+
+Every group member shares a declared version; if any publishable member needs an
+increment, all members receive the resulting version. A plan may also target a
+non-publishable member or an entirely non-publishable group for alignment.
+Members absent from the baseline are exempt from consistency but remain in
+alignment and the highest-version base. The obsolete
+`[workspace.metadata.release-plan.groups]` key is rejected in the current
+workspace.
 
 ## Offline operation
 

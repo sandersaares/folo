@@ -374,15 +374,16 @@ pub(crate) fn classify(
 
     let commits = git.first_parent_manifest_commits(&base_sha)?;
     let mut classes = Vec::new();
-    let mut exempt = HashSet::new();
-    let mut versions = BTreeMap::new();
+    let versions = work_tree.target_versions();
+    let exempt: HashSet<String> = work_tree
+        .version_targets
+        .iter()
+        .filter(|target| is_new_on_base(&base_snapshot, &target.name))
+        .map(|target| target.name.clone())
+        .collect();
     let mut lockfiles = LockfileCache::default();
 
     for package in &work_tree.packages {
-        versions.insert(
-            package.manifest.name.clone(),
-            package.manifest.version.clone(),
-        );
         let class = classify_one(
             package,
             &work_tree,
@@ -395,9 +396,6 @@ pub(crate) fn classify(
             &mut lockfiles,
             verbose,
         )?;
-        if is_new_on_base(&base_snapshot, &package.manifest.name) {
-            exempt.insert(package.manifest.name.clone());
-        }
         classes.push(class);
     }
 
@@ -411,8 +409,9 @@ pub(crate) fn classify(
             .collect();
         verbose.note(|| {
             format!(
-                "version group {}: members [{}]; consistent={} (members the baseline does not \
-             carry are exempt from matching declared versions)",
+                "version group {} is derived from exact workspace dependencies: members [{}]; \
+                 consistent={} (members absent from the baseline are exempt from matching \
+                 declared versions but remain version targets)",
                 quote_path(name),
                 members.join(", "),
                 verdict.is_consistent()

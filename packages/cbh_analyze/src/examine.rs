@@ -850,7 +850,18 @@ mod tests {
 
     /// Drives `examine_with` and unwraps the rendered text message.
     fn examine(storage: &MemoryStorage, git: &FakeGitHistory, options: &ExamineOptions) -> String {
-        let rendered = block_on(examine_with(
+        examine_reports(storage, git, options)
+            .text
+            .expect("examine renders the text report by default")
+    }
+
+    /// Drives the query once for every requested presentation of the same pivot.
+    fn examine_reports(
+        storage: &MemoryStorage,
+        git: &FakeGitHistory,
+        options: &ExamineOptions,
+    ) -> RenderedReports {
+        block_on(examine_with(
             git,
             storage,
             "folo",
@@ -861,10 +872,7 @@ mod tests {
             &RecordingReporter::new(),
             &spawner(),
         ))
-        .unwrap();
-        rendered
-            .text
-            .expect("examine renders the text report by default")
+        .unwrap()
     }
 
     /// Drives `examine_with` requesting the JSON report and returns the JSON text
@@ -1057,7 +1065,13 @@ mod tests {
         let mut git = linear_git();
         git.mark_dirty();
 
-        let report = examine_json(&storage, &git, &options());
+        let options = ExamineOptions {
+            json: Some(PathBuf::from("report.json")),
+            markdown: Some(PathBuf::from("report.md")),
+            ..options()
+        };
+        let rendered = examine_reports(&storage, &git, &options);
+        let report = rendered.json.unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&report).unwrap();
         let points = parsed["sets"][0]["points"].as_array().unwrap();
         assert_eq!(points.len(), 2, "clean and dirty both shown: {report}");
@@ -1071,7 +1085,7 @@ mod tests {
             "ephemeral-data warning present: {report}"
         );
 
-        let text = examine(&storage, &git, &options());
+        let text = rendered.text.unwrap();
         assert!(text.contains("(dirty)"), "the dirty row is flagged: {text}");
         assert_eq!(
             text.matches("(dirty)").count(),
@@ -1079,7 +1093,7 @@ mod tests {
             "only the dirty row is flagged, not the clean one: {text}"
         );
 
-        let markdown = examine_markdown(&storage, &git, &options());
+        let markdown = rendered.markdown.unwrap();
         assert!(
             markdown.contains("| c3 | 100 | clean |"),
             "the clean run's kind: {markdown}"
@@ -1095,8 +1109,8 @@ mod tests {
         let storage = MemoryStorage::new();
         store(
             &storage,
-            &clean_key("c0"),
-            &two_metric_run(0, "c0", 100.0, 250.0),
+            &clean_key("c3"),
+            &two_metric_run(3, "c3", 100.0, 250.0),
         );
         let git = linear_git();
 
@@ -1105,8 +1119,8 @@ mod tests {
         let points = parsed["sets"][0]["points"].as_array().unwrap();
         assert_eq!(
             points.len(),
-            4,
-            "c0's observation plus the three data-less commits after it: {report}"
+            1,
+            "only the measured tip is needed to compare metric selection: {report}"
         );
         // The instruction-count value, not the conditional-branches one.
         assert_eq!(points[0]["value"], 100.0);
@@ -1372,15 +1386,10 @@ mod tests {
 
     #[test]
     fn lists_a_data_less_interior_commit_as_n_a() {
-        // Store c0, c1, c3 — skipping the interior c2 — on the linear history whose
+        // Store c1 and c3 — skipping the interior c2 — on the linear history whose
         // tip is c3. The chart materializes c2 as a gap, and so does the listing: c2
         // gets a row of its own, without a value but still naming its commit.
         let storage = MemoryStorage::new();
-        store(
-            &storage,
-            &clean_key("c0"),
-            &single_metric_run(0, "c0", 100.0),
-        );
         store(
             &storage,
             &clean_key("c1"),
@@ -1393,32 +1402,37 @@ mod tests {
         );
         let git = linear_git();
 
-        let report = examine_json(&storage, &git, &options());
+        let options = ExamineOptions {
+            json: Some(PathBuf::from("report.json")),
+            ..options()
+        };
+        let rendered = examine_reports(&storage, &git, &options);
+        let report = rendered.json.unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&report).unwrap();
         let points = parsed["sets"][0]["points"].as_array().unwrap();
-        assert_eq!(points.len(), 4, "every commit c0..=c3 is listed: {report}");
+        assert_eq!(points.len(), 3, "every commit c1..=c3 is listed: {report}");
         let commits: Vec<&str> = points
             .iter()
             .map(|point| point["commit"].as_str().unwrap())
             .collect();
-        assert_eq!(commits, ["c0", "c1", "c2", "c3"], "{report}");
+        assert_eq!(commits, ["c1", "c2", "c3"], "{report}");
         // The gap entry carries no value and no cleanliness flag...
-        assert!(points[2]["value"].is_null(), "{report}");
-        assert!(points[2].get("dirty").is_none(), "{report}");
+        assert!(points[1]["value"].is_null(), "{report}");
+        assert!(points[1].get("dirty").is_none(), "{report}");
         // ...but still names what its commit changed.
         assert_eq!(
-            points[2]["title"], "Refactor the observer to shave allocations off the record path",
+            points[1]["title"], "Refactor the observer to shave allocations off the record path",
             "{report}"
         );
         // An observation entry carries both, and neither shape leaks the topology.
-        assert_eq!(points[0]["value"], 100.0, "{report}");
+        assert_eq!(points[0]["value"], 130.0, "{report}");
         assert_eq!(points[0]["dirty"], false, "{report}");
         assert!(
             points[0].get("topo_index").is_none(),
             "the JSON point carries no topology index: {report}"
         );
 
-        let text = examine(&storage, &git, &options());
+        let text = rendered.text.unwrap();
         assert!(
             text.contains('┤') || text.contains('┼'),
             "the chart is drawn across the gap: {text}"
@@ -1512,14 +1526,14 @@ mod tests {
 
     #[test]
     fn no_dirty_leaves_the_commit_as_an_n_a_row() {
-        // c0 has a clean run and the tip c3 only a dirty snapshot, admitted by the
+        // c2 has a clean run and the tip c3 only a dirty snapshot, admitted by the
         // base-tip dirty exception. `--no-dirty` drops that snapshot, and the tip
         // becomes an `n/a` row rather than vanishing from the listing.
         let storage = MemoryStorage::new();
         store(
             &storage,
-            &clean_key("c0"),
-            &single_metric_run(0, "c0", 100.0),
+            &clean_key("c2"),
+            &single_metric_run(2, "c2", 100.0),
         );
         store(
             &storage,
@@ -1533,10 +1547,10 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&admitted).unwrap();
         let points = parsed["sets"][0]["points"].as_array().unwrap();
         assert_eq!(
-            points[3]["value"], 118.0,
+            points[1]["value"], 118.0,
             "the snapshot is listed: {admitted}"
         );
-        assert_eq!(points[3]["dirty"], true, "{admitted}");
+        assert_eq!(points[1]["dirty"], true, "{admitted}");
 
         let opts = ExamineOptions {
             no_dirty: true,
@@ -1545,10 +1559,10 @@ mod tests {
         let report = examine_json(&storage, &git, &opts);
         let parsed: serde_json::Value = serde_json::from_str(&report).unwrap();
         let points = parsed["sets"][0]["points"].as_array().unwrap();
-        assert_eq!(points.len(), 4, "the tip is still listed: {report}");
-        assert_eq!(points[3]["commit"], "c3", "{report}");
+        assert_eq!(points.len(), 2, "the tip is still listed: {report}");
+        assert_eq!(points[1]["commit"], "c3", "{report}");
         assert!(
-            points[3]["value"].is_null(),
+            points[1]["value"].is_null(),
             "its only run was excluded: {report}"
         );
     }
@@ -1796,19 +1810,9 @@ mod tests {
 
     #[test]
     fn a_contiguous_history_charts_without_a_gap() {
-        // Every commit c0..=c3 has data and c3 is the tip, so the densified chart
+        // Every commit c2..=c3 has data and c3 is the tip, so the densified chart
         // holds one finite column per commit with no `NaN`.
         let storage = MemoryStorage::new();
-        store(
-            &storage,
-            &clean_key("c0"),
-            &single_metric_run(0, "c0", 100.0),
-        );
-        store(
-            &storage,
-            &clean_key("c1"),
-            &single_metric_run(1, "c1", 130.0),
-        );
         store(
             &storage,
             &clean_key("c2"),
@@ -1826,14 +1830,14 @@ mod tests {
         let points = parsed["sets"][0]["points"].as_array().unwrap();
         assert_eq!(
             points.len(),
-            4,
+            2,
             "every commit is a real observation: {report}"
         );
 
         // The densified columns the chart draws hold no gap.
-        let pairs = [(0_usize, 100.0), (1, 130.0), (2, 128.0), (3, 126.0)];
+        let pairs = [(2_usize, 128.0), (3, 126.0)];
         let columns = cbh_render::topology_columns(&pairs, Some(3), 48);
-        assert_eq!(columns.len(), 4);
+        assert_eq!(columns.len(), 2);
         assert!(
             columns.iter().all(|value| value.is_finite()),
             "a contiguous history has no gap columns"

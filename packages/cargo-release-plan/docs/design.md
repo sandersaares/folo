@@ -107,12 +107,8 @@ Two consequences follow, and the tool enforces both:
 
 * An intra-workspace requirement names the exact version its target declares.
   A requirement that merely admits the target's version lets a consumer resolve
-  a combination the workspace never built. Between members of one version group
-  the requirement is additionally an exact `=` pin, because those members are
-  one package split for Cargo's sake and a compatible requirement would let a
-  consumer resolve two of them at versions never released together. This covers
-  every edge that survives packaging, development edges included; a path-only
-  dependency escapes packaging and is not assessed at all.
+  a combination the workspace never built. A path-only development dependency
+  escapes packaging and is not assessed by this release rule.
 * A package whose public dependency releases a semver-incompatible version
   must release one as well. Such a release changes the identity of the exposed
   types, so a consumer holding the older dependency can no longer hand its
@@ -154,8 +150,8 @@ it does not propagate a release decision.
 
 `check` is intended for a merge gate. It fails while any package needs an
 increment, a version group disagrees with itself, an intra-workspace
-requirement does not name the version its target declares, a version-group
-member does not pin its siblings exactly, or a package that exposes a public
+requirement does not name the version its target declares, an exact
+intra-workspace requirement is malformed, or a package that exposes a public
 dependency stays compatible while that dependency releases a breaking change.
 It points the maintainer to the `increment-versions` skill that prepares a plan.
 
@@ -412,11 +408,33 @@ requirement and public-dependency rules fail it independently of status.
 
 ## Version groups
 
-Members of a version group share a declared version. If one member needs an
-increment, the plan expands to every member. The target starts from the highest
-declared member version and applies the highest chosen increment level. Entries
-that expand to the same group must all use increment levels or all use one
-matching exact version.
+Every Git-tracked Cargo workspace member is a **version target**, including a
+member that cannot be published. An exact dependency declaration between two
+version targets states that their versions move together. Version groups are
+the connected components formed by those declarations, in either dependency
+direction, and contain at least two members. A group's key is its
+lexicographically smallest member.
+
+All normal, build, and development declarations participate, including optional
+and target-specific declarations. An inherited declaration uses the effective
+workspace dependency. A dependency alias follows the package identity it names,
+and a local path must resolve to that workspace member. Registry dependencies,
+outside or excluded paths, versionless paths, and unused workspace dependency
+entries do not form groups.
+
+The accepted exact form is one `=major.minor.patch` comparator, with
+insignificant whitespace allowed. A partial exact version, a prerelease or build
+suffix, or a compound requirement containing an exact comparator is a manifest
+error. A well-formed exact requirement whose version is stale still forms its
+group: `check` reports the stale requirement and `apply` can repair it.
+
+If one publishable member needs an increment, the plan expands to every version
+target in its group. A plan may also target a non-publishable member directly,
+and helper-only groups can be aligned without publishing anything. The target
+starts from the highest declared member version, including non-publishable and
+new members, and applies the highest chosen increment level. Entries that expand
+to the same group must all use increment levels or all use one matching exact
+version.
 
 `expand` exposes that resolution as a document so a caller can present and apply
 the complete package/version set rather than leave group members implicit.
@@ -429,18 +447,21 @@ carries that highest version as an exact target instead moves lagging members up
 to it and leaves the leading member unchanged. The lagging members then become
 pending release because their declared versions advanced.
 
-Members not yet published by the baseline are exempt from the consistency check,
-which lets a new package join a group before its first release. Group
-configuration may contain only publishable workspace packages and cannot use a
-package's name for a group that excludes that package.
+Members absent from the baseline are exempt from the consistency check, which
+lets a new package join a group before its first release. This exemption does
+not remove the member from alignment or from the version base. A member that
+exists on the baseline with publication disabled is not absent.
 
-Groups are declared under `[workspace.metadata.release-plan.groups]`.
+The obsolete `[workspace.metadata.release-plan.groups]` key is rejected. Group
+membership is declared only by exact workspace dependency requirements.
 
 ## Report artifacts
 
-`report.json` is the complete machine-readable assessment. It records every
-publishable package, its status and anchor, the reasons it changed, its
-dependencies and dependents, and group consistency.
+`report.json` is the complete machine-readable assessment. Its `packages` array
+records every publishable package, its status and anchor, the reasons it changed,
+and its dependencies and dependents. Its `non_publishable_packages` array
+records each remaining version target's name, declared version, and group.
+Group records cover the union of both arrays and report complete consistency.
 
 Per-package patch files are a readable supplement for file changes. They cover
 every package whose released files differ from its anchor, including one whose

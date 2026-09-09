@@ -34,10 +34,11 @@ so a brand-new crate's first version must be published manually:
 
 The `increment-versions` skill runs `just check-never-published` as an early,
 workspace-wide advisory. Before applying an expanded plan,
-`just check-increment-published` fails unless every package the plan reaches has
-already reached crates.io. That gate cannot verify Trusted Publisher
-configuration or the release-workflow follow-up, so complete those remaining
-steps explicitly before retrying the increment.
+`just check-increment-published` fails unless every **publishable** package the
+plan reaches has already reached crates.io. Version-alignment targets with
+publication disabled do not require a first-publication handoff. The gate cannot
+verify Trusted Publisher configuration or the release-workflow follow-up, so
+complete those remaining steps explicitly before retrying the increment.
 The skill only reports this maintainer handoff; it does not perform a manual
 first publication or an emergency publish.
 

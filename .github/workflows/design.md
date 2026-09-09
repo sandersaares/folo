@@ -254,11 +254,11 @@ A change level rests on released evidence rather than on the version a manifest 
 A package's own released-content diff, the workspace values it inherits, the locked dependencies
 an executable releases, and the decisions taken for its dependencies all participate, and any
 package-metadata change establishes at least `patch`. A version group whose members disagree is
-realigned mechanically and needs no change level of its own: normally onto the highest version its
-members declare, so nothing is published for a change it did not make, but by a patch increment of
-the whole group where that alignment would rewrite a requirement inside a member that otherwise
-kept an already-published version. A package the release baseline has never published takes the
-first-publication path rather than an increment. The [`increment-versions`
+realigned mechanically and needs no change level of its own. Every tracked member contributes to
+the highest version and receives the resolved version, including members with publication
+disabled. Released-content protection applies only to publishable members: alignment advances
+the whole group when retaining an already-published version would rewrite one of those members.
+Only publishable packages can take the first-publication path. The [`increment-versions`
 skill](../skills/increment-versions/SKILL.md) carries out this policy and owns the procedure,
 and [`docs/release-versioning.md`](../../docs/release-versioning.md) is the chapter that
 governs it.
@@ -266,11 +266,12 @@ governs it.
 Two consequences of a package's manifest are checked directly rather than left to that review.
 Every requirement on another workspace package names the exact version its target declares, so a
 released manifest describes the combination the workspace built rather than a range it never
-resolved; between members of one version group the requirement is an exact `=` pin, because those
-members are one package split for Cargo's sake and must never be resolved at differing versions.
-Incrementing a package therefore also increments its in-workspace dependents, whose manifests the
-rewrite changes. And a package whose public API exposes another workspace package must release a
-breaking change whenever that package does, because an incompatible release changes the identity
+resolved. Exact `=major.minor.patch` requirements between workspace members declare version-group
+edges. Their undirected connected components determine the groups, so not every dependency within
+a group must be exact. Incrementing a package therefore also increments its in-workspace
+dependents whose manifests the rewrite changes. And a package whose public API exposes another
+workspace package must release a breaking change whenever that package does, because an
+incompatible release changes the identity
 of the exposed types for consumers. Which dependencies are public is read from the
 `allowed_external_types` allow-list that the external-types check already verifies, so this rests
 on a declaration the repository maintains rather than on a second inference of the public API.

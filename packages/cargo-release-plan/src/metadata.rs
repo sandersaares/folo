@@ -8,7 +8,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use ohno::AppError;
-use semver::Version;
+use semver::{Op, Version, VersionReq};
 use serde::Deserialize;
 use serde_json::Value;
 use toml_edit::{DocumentMut, Item};
@@ -21,16 +21,16 @@ use crate::inherited::InheritedKeys;
 #[cfg(test)]
 use crate::manifest::TargetDiscovery;
 use crate::manifest::{
-    PackageManifest, PathCase, WorkspaceInherit, for_each_dependency_table, parse_document,
-    parse_package_manifest, workspace_relative_path,
+    PackageManifest, PathCase, WorkspaceInherit, for_each_dependency_table,
+    for_each_dependency_table_with_context, parse_document, parse_package_manifest,
+    workspace_relative_path,
 };
 #[cfg(test)]
 use crate::packaging::PackagingRules;
 use crate::packaging::relativize;
 use crate::{
-    GroupNameCollisionError, InvalidVersionError, MalformedPrivateApiError,
-    MalformedVersionGroupError, MalformedVersionGroupsError, NonPublishableGroupMemberError,
-    ParseMetadataError, ReadFileError, UnknownGroupMemberError,
+    InvalidVersionError, LegacyVersionGroupsError, MalformedPrivateApiError, ParseMetadataError,
+    ReadFileError, UnsupportedExactRequirementError,
 };
 
 /// Work-tree snapshot from `cargo metadata --no-deps`.
@@ -38,6 +38,10 @@ use crate::{
 pub(crate) struct WorkTree {
     pub(crate) workspace_root: PathBuf,
     pub(crate) packages: Vec<WorkPackage>,
+    /// Every Git-tracked member whose declared version a plan may set.
+    pub(crate) version_targets: Vec<VersionTarget>,
+    /// Valid exact declarations used to derive groups and diagnose stale pins.
+    pub(crate) exact_dependencies: Vec<ExactDependency>,
     /// Manifest paths of every member, publishable or not.
     ///
     /// `apply` rewrites dependency requirements in all of them, because a
@@ -53,18 +57,32 @@ pub(crate) struct WorkTree {
 }
 
 impl WorkTree {
-    /// Returns declared versions for Git-tracked publishable packages.
-    pub(crate) fn publishable_versions(&self) -> BTreeMap<String, Version> {
-        self.packages
+    /// Returns declared versions for every Git-tracked version target.
+    pub(crate) fn target_versions(&self) -> BTreeMap<String, Version> {
+        self.version_targets
             .iter()
-            .map(|package| {
-                (
-                    package.manifest.name.clone(),
-                    package.manifest.version.clone(),
-                )
-            })
+            .map(|target| (target.name.clone(), target.version.clone()))
             .collect()
     }
+}
+
+/// A Git-tracked workspace member whose declared version plans may set.
+#[derive(Clone, Debug)]
+pub(crate) struct VersionTarget {
+    pub(crate) name: String,
+    pub(crate) version: Version,
+    pub(crate) manifest_path: PathBuf,
+    pub(crate) publishable: bool,
+}
+
+/// One validated exact dependency between tracked workspace members.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ExactDependency {
+    pub(crate) source: String,
+    pub(crate) target: String,
+    pub(crate) requirement: String,
+    pub(crate) manifest_path: PathBuf,
+    pub(crate) location: String,
 }
 
 /// One publishable workspace member in the work tree.
@@ -308,13 +326,8 @@ fn work_tree_from_metadata(
         .map(|package| package.id.as_str())
         .collect();
 
-    let workspace_names: HashSet<String> = metadata
-        .packages
-        .iter()
-        .filter(|package| selected_member_ids.contains(package.id.as_str()))
-        .map(|package| package.name.clone())
-        .collect();
-    let release_members_by_dir: BTreeMap<PathBuf, String> = metadata
+    reject_legacy_groups(&metadata.metadata)?;
+    let tracked_members_by_dir: BTreeMap<PathBuf, String> = metadata
         .packages
         .iter()
         .filter(|package| selected_member_ids.contains(package.id.as_str()))
@@ -324,6 +337,7 @@ fn work_tree_from_metadata(
                 .map(|dir| (dir.to_path_buf(), package.name.clone()))
         })
         .collect();
+    let canonical_tracked_members_by_dir = canonical_members_by_dir(&tracked_members_by_dir);
     // Apply visits every member Cargo can see so an untracked or ignored
     // dependent cannot retain a stale exact pin. This set is deliberately wider
     // than the tracked package set accepted as plan targets.
@@ -352,6 +366,65 @@ fn work_tree_from_metadata(
         .map_err(|error| ReadFileError::caused_by(&root_manifest_path, error))?;
     let root_manifest = parse_document(&root_manifest_path, &root_manifest)?;
     let workspace = WorkspaceInherit::from_root(&root_manifest);
+    let mut version_targets = Vec::new();
+    for package in &metadata.packages {
+        if !selected_member_ids.contains(package.id.as_str()) {
+            continue;
+        }
+        let path = PathBuf::from(&package.manifest_path);
+        let manifest_text =
+            fs::read_to_string(&path).map_err(|error| ReadFileError::caused_by(&path, error))?;
+        let git_manifest_path = workspace_relative_path(&workspace_root, &path).expect(
+            "a selected manifest already matched a tracked path after this same conversion",
+        );
+        let Some(manifest) =
+            parse_package_manifest(&manifest_text, &git_manifest_path, &workspace)?
+        else {
+            continue;
+        };
+        let version = package.version.parse::<Version>().map_err(|error| {
+            InvalidVersionError::caused_by(&package.name, &package.version, error)
+        })?;
+        let publishable = !matches!(&package.publish, Some(registries) if registries.is_empty())
+            && manifest.publish;
+        version_targets.push(VersionTarget {
+            name: package.name.clone(),
+            version,
+            manifest_path: path,
+            publishable,
+        });
+    }
+    version_targets.sort_by(|left, right| left.name.cmp(&right.name));
+
+    let mut exact_dependencies = discover_exact_dependencies(
+        metadata,
+        &selected_member_ids,
+        &tracked_members_by_dir,
+        &canonical_tracked_members_by_dir,
+        &root_manifest,
+        &workspace_root,
+    )?;
+    exact_dependencies.sort_by(|left, right| {
+        (
+            &left.source,
+            &left.location,
+            &left.target,
+            &left.requirement,
+        )
+            .cmp(&(
+                &right.source,
+                &right.location,
+                &right.target,
+                &right.requirement,
+            ))
+    });
+    let groups = Groups::from_edges(
+        version_targets.iter().map(|target| target.name.clone()),
+        exact_dependencies
+            .iter()
+            .map(|dependency| (dependency.source.clone(), dependency.target.clone())),
+    );
+
     let mut packages = Vec::new();
     let mut exposed_crates_by_package: BTreeMap<String, Vec<String>> = BTreeMap::new();
 
@@ -389,7 +462,7 @@ fn work_tree_from_metadata(
             .filter(|dep| {
                 is_intra_workspace_released(
                     dep,
-                    &release_members_by_dir,
+                    &tracked_members_by_dir,
                     &manifest_doc,
                     &root_manifest,
                 )
@@ -424,14 +497,6 @@ fn work_tree_from_metadata(
         .collect();
     member_manifests.sort();
 
-    // Group configuration is validated once the publishable set is known,
-    // because a group may only name packages that are actually released.
-    let publishable_names: HashSet<&str> = packages
-        .iter()
-        .map(|package| package.manifest.name.as_str())
-        .collect();
-    let groups = groups_from_metadata(&metadata.metadata, &workspace_names, &publishable_names)?;
-
     mark_public_dependencies(
         &mut packages,
         &exposed_crates_by_package,
@@ -441,57 +506,240 @@ fn work_tree_from_metadata(
     Ok(WorkTree {
         workspace_root,
         packages,
+        version_targets,
+        exact_dependencies,
         member_manifests,
         members_by_dir,
         groups,
     })
 }
 
-fn groups_from_metadata(
-    metadata: &Value,
-    workspace_names: &HashSet<String>,
-    publishable_names: &HashSet<&str>,
-) -> Result<Groups, AppError> {
-    let Some(groups) = metadata
+fn reject_legacy_groups(metadata: &Value) -> Result<(), AppError> {
+    if metadata
         .get("release-plan")
         .and_then(|plan| plan.get("groups"))
-    else {
-        return Ok(Groups::default());
-    };
-    // Declaring no groups and declaring them wrongly must not look the same: a
-    // silently ignored table would disable every consistency check and let
-    // lockstep packages drift apart with nothing reported.
-    let Some(groups) = groups.as_object() else {
-        return Err(MalformedVersionGroupsError::new().into());
-    };
-    let mut map = BTreeMap::new();
-    for (name, members) in groups {
-        let Some(array) = members.as_array() else {
-            return Err(MalformedVersionGroupError::new(name).into());
-        };
-        let mut parsed = Vec::new();
-        for item in array {
-            let Some(package) = item.as_str() else {
-                return Err(MalformedVersionGroupError::new(name).into());
-            };
-            if !workspace_names.contains(package) {
-                return Err(UnknownGroupMemberError::new(name, package).into());
-            }
-            if !publishable_names.contains(package) {
-                return Err(NonPublishableGroupMemberError::new(name, package).into());
-            }
-            parsed.push(package.to_owned());
-        }
-        // A plan entry names either a package or a group, and a group wins the
-        // lookup. Naming a group after a package it does not contain would
-        // therefore make an entry increment a different set of packages than
-        // the one its author named, silently.
-        if workspace_names.contains(name) && !parsed.iter().any(|member| member == name) {
-            return Err(GroupNameCollisionError::new(name).into());
-        }
-        map.insert(name.clone(), parsed);
+        .is_some()
+    {
+        return Err(LegacyVersionGroupsError::new().into());
     }
-    Groups::from_members(map)
+    Ok(())
+}
+
+/// Effective facts needed to identify and validate one dependency declaration.
+struct EffectiveDependency<'a> {
+    item: &'a Item,
+    path_base: &'a Path,
+    location: String,
+}
+
+fn discover_exact_dependencies(
+    metadata: &MetadataJson,
+    selected_member_ids: &HashSet<&str>,
+    tracked_members_by_dir: &BTreeMap<PathBuf, String>,
+    canonical_tracked_members_by_dir: &BTreeMap<PathBuf, String>,
+    workspace_manifest: &DocumentMut,
+    workspace_root: &Path,
+) -> Result<Vec<ExactDependency>, AppError> {
+    let mut found = Vec::new();
+    for package in &metadata.packages {
+        if !selected_member_ids.contains(package.id.as_str()) {
+            continue;
+        }
+        let manifest_path = PathBuf::from(&package.manifest_path);
+        let text = fs::read_to_string(&manifest_path)
+            .map_err(|error| ReadFileError::caused_by(&manifest_path, error))?;
+        let manifest = parse_document(&manifest_path, &text)?;
+        let manifest_dir = manifest_path
+            .parent()
+            .expect("Cargo reports a manifest path with a parent directory");
+        let mut error = None;
+        for_each_dependency_table_with_context(
+            manifest.as_table(),
+            &mut |location, _, dependencies| {
+                if error.is_some() {
+                    return;
+                }
+                for (alias, item) in dependencies.iter() {
+                    let effective = effective_dependency(
+                        item,
+                        alias,
+                        location,
+                        manifest_dir,
+                        workspace_manifest,
+                        workspace_root,
+                    );
+                    let Some(path) = dependency_field(effective.item, "path") else {
+                        continue;
+                    };
+                    let Some(target) = resolved_member(
+                        effective.path_base,
+                        path,
+                        tracked_members_by_dir,
+                        canonical_tracked_members_by_dir,
+                    ) else {
+                        continue;
+                    };
+                    let package_name = dependency_field(effective.item, "package").unwrap_or(alias);
+                    if package_name != target {
+                        continue;
+                    }
+                    let Some(requirement) = dependency_requirement(effective.item) else {
+                        continue;
+                    };
+                    match validated_exact_requirement(requirement) {
+                        Ok(None) => {}
+                        Ok(Some(_)) => found.push(ExactDependency {
+                            source: package.name.clone(),
+                            target: target.to_string(),
+                            requirement: requirement.to_string(),
+                            manifest_path: manifest_path.clone(),
+                            location: effective.location,
+                        }),
+                        Err(()) => {
+                            error = Some(
+                                UnsupportedExactRequirementError::new(
+                                    manifest_path.to_string_lossy(),
+                                    alias,
+                                    &effective.location,
+                                    requirement,
+                                )
+                                .into(),
+                            );
+                            break;
+                        }
+                    }
+                }
+            },
+        );
+        if let Some(error) = error {
+            return Err(error);
+        }
+    }
+    Ok(found)
+}
+
+fn effective_dependency<'a>(
+    item: &'a Item,
+    alias: &str,
+    location: &str,
+    manifest_dir: &'a Path,
+    workspace_manifest: &'a DocumentMut,
+    workspace_root: &'a Path,
+) -> EffectiveDependency<'a> {
+    let inherited = item
+        .as_table_like()
+        .and_then(|table| table.get("workspace"))
+        .and_then(Item::as_bool)
+        == Some(true);
+    if inherited
+        && let Some(item) = workspace_manifest
+            .get("workspace")
+            .and_then(Item::as_table_like)
+            .and_then(|workspace| workspace.get("dependencies"))
+            .and_then(Item::as_table_like)
+            .and_then(|dependencies| dependencies.get(alias))
+    {
+        return EffectiveDependency {
+            item,
+            path_base: workspace_root,
+            location: format!("{location}.{alias} -> workspace.dependencies.{alias}"),
+        };
+    }
+    EffectiveDependency {
+        item,
+        path_base: manifest_dir,
+        location: format!("{location}.{alias}"),
+    }
+}
+
+fn dependency_field<'a>(item: &'a Item, field: &str) -> Option<&'a str> {
+    item.as_table_like()
+        .and_then(|table| table.get(field))
+        .and_then(Item::as_str)
+}
+
+fn dependency_requirement(item: &Item) -> Option<&str> {
+    item.as_str().or_else(|| dependency_field(item, "version"))
+}
+
+fn resolved_member<'a>(
+    base: &Path,
+    dependency_path: &str,
+    members_by_dir: &'a BTreeMap<PathBuf, String>,
+    canonical_members_by_dir: &'a BTreeMap<PathBuf, String>,
+) -> Option<&'a str> {
+    let joined = normalize_path(&base.join(dependency_path));
+    if let Some(name) = members_by_dir.get(&joined) {
+        return Some(name);
+    }
+    let resolved = fs::canonicalize(&joined).ok()?;
+    canonical_members_by_dir.get(&resolved).map(String::as_str)
+}
+
+/// Indexes workspace members by their filesystem-resolved directories.
+///
+/// Building the fallback index once per metadata snapshot keeps alias resolution
+/// to one filesystem query per dependency edge rather than one per candidate member.
+fn canonical_members_by_dir(
+    members_by_dir: &BTreeMap<PathBuf, String>,
+) -> BTreeMap<PathBuf, String> {
+    members_by_dir
+        .iter()
+        .filter_map(|(dir, name)| fs::canonicalize(dir).ok().map(|dir| (dir, name.clone())))
+        .collect()
+}
+
+fn normalize_path(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                normalized.pop();
+            }
+            other => normalized.push(other),
+        }
+    }
+    normalized
+}
+
+fn validated_exact_requirement(requirement: &str) -> Result<Option<Version>, ()> {
+    let parsed = match VersionReq::parse(requirement) {
+        Ok(parsed) => parsed,
+        Err(_) if contains_exact_comparator(requirement) => return Err(()),
+        Err(_) => return Ok(None),
+    };
+    if !parsed
+        .comparators
+        .iter()
+        .any(|comparator| comparator.op == Op::Exact)
+    {
+        return Ok(None);
+    }
+
+    let Some(version) = requirement.trim().strip_prefix('=') else {
+        return Err(());
+    };
+    let version = version.trim();
+    if parsed.comparators.len() != 1 || version.split('.').count() != 3 {
+        return Err(());
+    }
+    let version = Version::parse(version).map_err(|_error| ())?;
+    if !version.pre.is_empty() || !version.build.is_empty() {
+        return Err(());
+    }
+    Ok(Some(version))
+}
+
+fn contains_exact_comparator(requirement: &str) -> bool {
+    let bytes = requirement.as_bytes();
+    bytes.iter().enumerate().any(|(index, byte)| {
+        *byte == b'='
+            && index
+                .checked_sub(1)
+                .and_then(|previous| bytes.get(previous))
+                .is_none_or(|previous| !matches!(previous, b'>' | b'<' | b'!'))
+    })
 }
 
 /// Reports whether a dependency edge is published and points at a workspace member.
@@ -828,121 +1076,76 @@ mod tests {
 
     use super::*;
 
-    /// The publishable set these cases check against.
-    ///
-    /// Group configuration is checked against the publishable set, which for
-    /// most cases is simply every workspace member.
-    fn all_publishable(names: &HashSet<String>) -> HashSet<&str> {
-        names.iter().map(String::as_str).collect()
-    }
-
     fn doc(text: &str) -> DocumentMut {
         parse_document(Path::new("Cargo.toml"), text).unwrap()
     }
 
     #[test]
-    fn groups_from_metadata_reads_release_plan_table() {
-        let json = json!({
-            "release-plan": {
-                "groups": {
-                    "nm": ["nm", "nm_impl"]
-                }
-            }
-        });
-        let names = HashSet::from(["nm".to_string(), "nm_impl".to_string()]);
-        let groups = groups_from_metadata(&json, &names, &all_publishable(&names)).unwrap();
-        assert_eq!(groups.group_of("nm_impl"), Some("nm"));
-    }
-
-    /// Groups from metadata rejects a non publishable member.
-    ///
-    /// A version group keeps released versions in lockstep, so a member that is never published has
-    /// no version to keep in step and would otherwise be dropped from every decision without a
-    /// word.
-    #[test]
-    fn groups_from_metadata_rejects_a_non_publishable_member() {
-        let json = json!({
-            "release-plan": { "groups": { "nm": ["nm", "nm_impl"] } }
-        });
-        let names = HashSet::from(["nm".to_string(), "nm_impl".to_string()]);
-        let publishable = HashSet::from(["nm"]);
-
-        let error = groups_from_metadata(&json, &names, &publishable).unwrap_err();
-
-        let reported = error
-            .find_source::<NonPublishableGroupMemberError>()
-            .expect("a non-publishable member is refused")
-            .to_string();
-        assert!(reported.contains("nm_impl"), "{reported}");
+    fn the_legacy_group_key_is_rejected_in_every_shape() {
+        for groups in [json!({}), json!([]), json!(null)] {
+            let metadata = json!({ "release-plan": { "groups": groups } });
+            let error = reject_legacy_groups(&metadata).unwrap_err();
+            assert!(error.find_source::<LegacyVersionGroupsError>().is_some());
+        }
+        reject_legacy_groups(&json!({ "release-plan": { "private-api": true } })).unwrap();
     }
 
     #[test]
-    fn groups_from_metadata_rejects_a_groups_key_that_is_not_a_table() {
-        // Silently ignoring it would read as "no groups configured", which
-        // disables every consistency check the groups exist to enforce.
-        let names = HashSet::from(["nm".to_string()]);
-        let json = json!({
-            "release-plan": { "groups": ["nm"] }
-        });
-
-        let error = groups_from_metadata(&json, &names, &all_publishable(&names)).unwrap_err();
-
-        assert!(error.find_source::<MalformedVersionGroupsError>().is_some());
+    fn exact_requirement_validation_accepts_only_a_plain_triplet() {
+        for requirement in ["=1.2.3", "= 1.2.3", " =1.2.3 "] {
+            assert_eq!(
+                validated_exact_requirement(requirement),
+                Ok(Some("1.2.3".parse().unwrap()))
+            );
+        }
+        for requirement in [
+            "=1",
+            "=1.2",
+            "=1.2.3-alpha",
+            "=1.2.3+build",
+            "=1.2.3, <2.0.0",
+            "^1.0.0, =1.2.3",
+            "=not-a-version",
+        ] {
+            assert_eq!(validated_exact_requirement(requirement), Err(()));
+        }
+        for requirement in [
+            "1.2.3",
+            "^1.2.3",
+            ">=1.2.3",
+            "<=2.0.0",
+            "not-a-version",
+            ">=not-a-version",
+        ] {
+            assert_eq!(validated_exact_requirement(requirement), Ok(None));
+        }
     }
 
     #[test]
-    fn groups_from_metadata_rejects_malformed_and_unknown_members() {
-        let names = HashSet::from(["nm".to_string()]);
-        let malformed = json!({
-            "release-plan": { "groups": { "nm": "nm" } }
-        });
-        let error = groups_from_metadata(&malformed, &names, &all_publishable(&names)).unwrap_err();
-        let source = error
-            .find_source::<MalformedVersionGroupError>()
-            .expect("malformed group");
-        assert_eq!(source.group(), "nm");
-        let non_string = json!({
-            "release-plan": { "groups": { "nm": [1] } }
-        });
-        let error =
-            groups_from_metadata(&non_string, &names, &all_publishable(&names)).unwrap_err();
-        let source = error
-            .find_source::<MalformedVersionGroupError>()
-            .expect("malformed group member");
-        assert_eq!(source.group(), "nm");
-        let unknown = json!({
-            "release-plan": { "groups": { "nm": ["ghost"] } }
-        });
-        let error = groups_from_metadata(&unknown, &names, &all_publishable(&names)).unwrap_err();
-        let source = error
-            .find_source::<UnknownGroupMemberError>()
-            .expect("unknown member");
-        assert_eq!(source.group(), "nm");
-        assert_eq!(source.package(), "ghost");
+    fn path_normalization_removes_current_and_parent_components() {
+        assert_eq!(
+            normalize_path(Path::new("./packages/../packages/demo")),
+            PathBuf::from("packages/demo")
+        );
     }
 
+    #[cfg(unix)]
+    #[cfg_attr(miri, ignore)] // Creates a filesystem symbolic link, which Miri cannot emulate.
     #[test]
-    fn a_group_named_after_a_package_must_contain_that_package() {
-        let names = HashSet::from(["nm".to_string(), "nm_impl".to_string()]);
-        let collision = json!({
-            "release-plan": { "groups": { "nm": ["nm_impl"] } }
-        });
-        let error = groups_from_metadata(&collision, &names, &all_publishable(&names)).unwrap_err();
-        let source = error
-            .find_source::<GroupNameCollisionError>()
-            .expect("group name collision");
-        assert_eq!(source.group(), "nm");
+    fn member_resolution_follows_filesystem_aliases() {
+        use std::os::unix::fs::symlink;
 
-        // A group name that is not a package name is unambiguous, and so is one
-        // that names a package it does contain.
-        let free_name = json!({
-            "release-plan": { "groups": { "nm-family": ["nm_impl"] } }
-        });
-        groups_from_metadata(&free_name, &names, &all_publishable(&names)).unwrap();
-        let contains_itself = json!({
-            "release-plan": { "groups": { "nm": ["nm", "nm_impl"] } }
-        });
-        groups_from_metadata(&contains_itself, &names, &all_publishable(&names)).unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let member = root.path().join("member");
+        fs::create_dir_all(&member).unwrap();
+        symlink(&member, root.path().join("alias")).unwrap();
+        let members = BTreeMap::from([(member, "member".to_string())]);
+        let canonical_members = canonical_members_by_dir(&members);
+
+        assert_eq!(
+            resolved_member(root.path(), "alias", &members, &canonical_members),
+            Some("member")
+        );
     }
 
     #[test]

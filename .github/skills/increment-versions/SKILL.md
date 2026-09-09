@@ -9,10 +9,15 @@ An **increment** raises a package's version in `Cargo.toml` so unreleased change
 pending release. Publishing is a separate process described in
 [`RELEASING.md`](../../../RELEASING.md).
 
+A **version alignment** mechanically changes a package's declared version so every member of a
+derived version group agrees. Non-publishable workspace helpers participate in alignment but do
+not receive release assessments, semantic change levels, or publication checks.
+
 A **change level** describes the substance of a package's released changes:
 `breaking`, `nonbreaking`, or `patch`. This skill decides change levels; it does not choose
 version numbers, and it does not decide which packages a level reaches. The tooling maps the
-decided levels to version numbers, keeps every
+decided levels to version numbers, derives group membership from valid exact intra-workspace
+dependency requirements, keeps every
 [version group](../../../packages/cargo-release-plan/README.md#plan-and-report-schema) on a
 single version, rewrites dependency requirements, and refreshes `Cargo.lock`.
 
@@ -77,7 +82,7 @@ publishable crates that still need their one-time manual first publication:
 Stop and report if either command exits non-zero. A checker that cannot execute must not be
 interpreted as an absence of a required increment. `check-never-published` is an advisory scan of
 the whole workspace: report its warnings, then continue. Stage 6 performs the exact fail-closed
-check over the packages the expanded plan will edit.
+check over the publishable targets in the expanded plan.
 
 # Stage 2: Collect evidence
 
@@ -108,7 +113,7 @@ compares against a different revision. An environment variable does not outlive 
 set it, so set it in the same invocation as the command that reads it.
 
 [`report.json`](../../../packages/cargo-release-plan/README.md#plan-and-report-schema) lists
-every publishable package with its `status`, `anchor`, `changed` array, `dependencies`,
+every publishable package in `packages`, with its `status`, `anchor`, `changed` array, `dependencies`,
 `untracked` paths, and `diff_path`. A package has a `diff_path` when its released files differ
 from its anchor. One whose `changed` entries are all `inherited` or `lockfile` has none, because
 neither is a file difference.
@@ -119,10 +124,16 @@ request intends to publish contributes no evidence until it is tracked. Track su
 repeat this stage. Account for every remaining path as deliberately unreleased, so it is not
 mistaken for assessed content, and carry those paths into the Stage 5 explanation.
 
-Its `groups` object names each version group's `members` and whether they currently declare one
-version, in `consistent`. `just validate-versions` fails on an inconsistent group as well as on
-a package needing an increment. Stage 5 resolves both, and a plan row lists a group's
-members.
+The required `non_publishable_packages` array lists alignment-only targets with their names,
+declared versions, and optional group references. These entries intentionally have no release
+status, anchor, changed files, dependencies, or change level.
+
+The `groups` object names each derived version group's sorted `members`, its highest declared
+`version`, and whether the base-absence-aware consistency check passes. Members cover both
+package arrays. A group key is its ordinally smallest member, even when that member is
+non-publishable. `consistent: true` can reflect an exemption for a member absent from the base;
+Stage 5 still aligns unequal declared versions. `just validate-versions` fails on a
+non-exempt inconsistency as well as on a publishable package needing an increment.
 
 The files describe the current work-tree content against the recorded release baseline. If the
 source, manifests, group membership, or release baseline changes before application, repeat this
@@ -137,8 +148,8 @@ Write the dependency-first analysis batches:
 
 Stop and report if the command exits non-zero.
 
-`analysis-order.json` is a JSON array. Every package in `report.json` appears in exactly one
-batch:
+`analysis-order.json` is a JSON array. Every release-assessment entry in
+`report.json.packages` appears in exactly one batch; `non_publishable_packages` never appear:
 
 ```json
 [
@@ -173,9 +184,11 @@ Decide each package from these inputs:
 * the entries already recorded in `decisions.json` for the packages it depends on; and
 * the package's floor in `semver-checks.log`.
 
-A group that `report.json` marks `"consistent": false` needs no decision of its own. Deciding
-change levels is this skill's only judgement, and Stage 5 realigns every group the decisions
-leave disagreeing. Judge each member on its own released changes.
+A group whose members declare different versions needs no decision of its own, regardless of its
+`consistent` verdict. Deciding change levels is this skill's only judgement, and Stage 5
+realigns every group the decisions leave disagreeing. Judge only the publishable members on their
+own released changes. Do not assign a semantic level to a non-publishable helper's source changes
+or to group membership itself.
 
 `semver-checks.log` closes each checked package's block with one `Summary` line. The package is
 the one named in the `Checking` line that opens the block. The table lists line prefixes: a
@@ -220,8 +233,9 @@ revision used below and does not move with it:
 A plan exists in two stages, and only the second is safe to present. A **proposed plan** records
 one entry per decision, so a decision about a grouped package names that package or its group and
 leaves the rest of the group implied. An **expanded plan** names every package whose version the
-plan sets, at the version each will carry. Document the expanded plan, so the caller and PR
-reviewer see the whole set of releases rather than one that widens during apply.
+plan sets, including non-publishable alignment-only helpers, at the version each will carry.
+Document the expanded plan, so the caller and PR reviewer see the complete version-target set
+rather than one that widens during apply.
 
 Applying the plan also rewrites requirements inside the dependents of the packages it moves. Those
 dependents take no version from the plan, so they are not named here; Stage 4 gives each of them a
@@ -236,32 +250,35 @@ Write the proposed plan, then expand it:
 
 Stop and report if either command exits non-zero. `create-release-plan` retains sufficient
 existing pending-release increments, raises insufficient ones, raises any package whose public
-API exposes a dependency that releases a breaking change, and realigns any inconsistent
-group the decisions leave unnamed. Realignment usually targets the highest version the group's
-members already declare, so no member is published for a change it did not make. It instead
-patch-increments the whole group when a member that would keep its version pins one that
-alignment moves, because applying the plan rewrites that requirement and would otherwise change
-released content under a version already published. `expand-release-plan` names every member of a
-group the plan reaches, at the single version that group resolves to.
+API exposes a dependency that releases a breaking change, and realigns any group with unequal
+declared versions that the decisions leave unnamed. Realignment usually targets the highest
+version any publishable or non-publishable member declares. It instead patch-increments the whole
+group when exact alignment would rewrite released content under an unchanged published version,
+or when the highest version has a prerelease or build suffix and therefore cannot be used in a
+valid exact group requirement. `expand-release-plan` names every member of a group the plan
+reaches, at the single version that group resolves to.
 
 `expanded.json` carries an explicit `version` on every entry, and an `expanded` stamp recording
 which stage it is:
 
 ```json
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "expanded": true,
   "increments": [
     { "name": "nm", "version": "2.0.0" },
-    { "name": "nm_impl", "version": "2.0.0" }
+    { "name": "nm_impl", "version": "2.0.0" },
+    { "name": "nm_test_helper", "version": "2.0.0" }
   ]
 }
 ```
 
-That stamp binds the document to the packages it names. Applying it after a version group gained
-a member fails rather than editing an unlisted package. A group membership or other work-tree
-change sends the run back to Stage 2 for fresh evidence and decisions, then back through
-`create-release-plan` and `expand-release-plan`. Never silently broaden the expanded plan.
+That stamp prevents application from adding an unnamed target. It is not a fingerprint of the
+dependency graph: a split can preserve the same targets, and a merge of already named groups can
+also preserve them. After any dependency requirement or group-membership edit, repeat Stage 2
+and regenerate the decisions and proposal before presenting or applying another plan. Never
+widen an exact requirement merely to remove unexpected membership; that changes declared
+grouping intent and requires the caller's direction.
 
 There is no approval document or pause: Stage 6 applies this expanded plan unchanged.
 
@@ -274,9 +291,9 @@ from `expanded.json` where present, otherwise from the report's `declared_versio
 version is the anchor's version, not a version already incremented on this branch. Every other
 analyzed package belongs in the no-increment summary below rather than in this table.
 
-| Packages / group members | Previous version(s) | Proposed version | Change level | Reason |
-|--------------------------|---------------------|------------------|--------------|--------|
-| `{{PACKAGE}}` | `{{PREVIOUS_VERSION}}` | `{{NEW_VERSION}}` | `{{CHANGE_LEVEL}}` | Substantive consumer-facing or released-content reason. |
+| Packages / group members | Previous version(s) | Proposed version | Change level | Publication | Reason |
+|--------------------------|---------------------|------------------|--------------|-------------|--------|
+| `{{PACKAGE}}` | `{{PREVIOUS_VERSION}}` | `{{NEW_VERSION}}` | `{{CHANGE_LEVEL}}` | Publishable or version alignment only, not published. | Substantive released-content or alignment reason. |
 
 A group's row lists every member and the level that governs the group, which is the highest level
 required by its members, including public-dependency propagation. If members have different
@@ -286,10 +303,14 @@ and give the reason in the row's explanation. Likewise, distinguish a retained v
 increment from a substantive released-content change rather than inventing a change level. Read the
 versions from `expanded.json` rather than assuming which form realignment took: a group usually
 moves onto the highest version one of its members already declared, in which case name the
-members that move, because each receives a new version and becomes pending release while the
-member already there keeps the version it has. A group whose members all move to a version none
-of them declared was patch-incremented instead, because a member that would have kept its version
-pins one the alignment moves; say so, since every member is then published.
+members that move, because each receives a new version while the member already there keeps the
+version it has. Mark every non-publishable member as **version alignment only, not published**.
+A grouped row must also show each member's current declared version when they differ, rather than
+showing only the group's common target. Non-publishable helpers have no release anchor; show their
+current declared version as the alignment starting point, not as a previous release.
+A group whose members all move to a version none of them declared was patch-incremented instead,
+because exact alignment would rewrite released content under an unchanged published version;
+describe which publishable members become pending releases and which helpers only align.
 
 Keep supporting evidence with the working explanation, citing the `report.json` entry, diff path,
 or `semver-checks.log` summary it rests on. In the PR section, explain the substantive reasons,
@@ -302,9 +323,9 @@ If the final evidence shows no released-content or version changes, say so expli
 section instead of omitting it. An empty plan alone is not sufficient evidence for that statement:
 account for existing pending increments and first-publication packages as well.
 
-Report separately, and outside that table, every `report.json` entry that has no `anchor`. Such a
-package has never been released, so it has no version to increment. Hand it off for a first
-publication as described in
+Report separately, and outside that table, every entry in `report.json.packages` that has no
+`anchor`. Such a publishable package has never been released, so it has no version to increment.
+Hand it off for a first publication as described in
 [`RELEASING.md`](../../../RELEASING.md#first-publish-of-a-new-crate) rather than publishing it
 from this run: bootstrap publication happens from a clean `main` checkout after these changes
 merge, in dependency order, and configures Trusted Publishing. Name every such package in the
@@ -334,8 +355,10 @@ stale release baseline. For changed source or group membership, also return to S
 changed decisions alone, repeat Stages 4 and 5. Regenerate the plan and its PR section before
 continuing.
 
-`cargo-release-plan apply` raises an existing version and cannot create a crate on crates.io, so
-confirm that every package the expanded plan names is already published:
+`cargo-release-plan apply` raises existing versions and cannot create a crate on crates.io, so
+confirm that every publishable target in the expanded plan is already published.
+Alignment-only helpers are validated as current Git-tracked workspace members but cause no
+registry query:
 
 > just check-increment-published "{{WORK_DIR}}/expanded.json"
 
@@ -379,10 +402,11 @@ output that it rejected a package or a version group rather than failing to run,
 command exits non-zero either way. Report an execution failure instead of revisiting the
 decisions, which cannot repair it.
 
-Two of its verdicts are not decisions to revisit either. A requirement that does not name the
-version its target declares, and a version-group member that does not pin its siblings with an
-exact `=` requirement, are manifest defects: no change level repairs them, so returning to Stage 4
-would loop. Make the edit the message names, then repeat this stage.
+Manifest defects are not decisions to revisit. A requirement that does not name the version its
+target declares, an in-scope exact requirement that is not a plain `=major.minor.patch`, or legacy
+`workspace.metadata.release-plan.groups` configuration cannot be repaired by a change level.
+Make the edit the message names, then repeat Stage 2 so dependency-derived membership and all
+evidence are regenerated before another proposal.
 
 `just release-report` exits zero on a SemVer finding, so read `{{VERIFY_DIR}}/semver-checks.log`
 as well. Return to Stage 4 the same way if any package's `Summary` line now demands a level

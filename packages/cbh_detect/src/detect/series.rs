@@ -1500,6 +1500,10 @@ mod tests {
 
     #[test]
     fn push_and_merge_grow_the_id_table_across_resizes() {
+        // Miri only needs the initial small-table resizes, which are asserted below;
+        // native runs additionally exercise larger tables.
+        const IDS_PER_BUILDER: u32 = if cfg!(miri) { 8 } else { 64 };
+
         // Folding many distinct benchmark ids into one discriminant set forces the
         // per-set id table to grow and rehash its existing entries; merging a second
         // builder full of further distinct ids grows it again. A wrong hash in either
@@ -1510,7 +1514,8 @@ mod tests {
             .unwrap();
 
         let mut first = SeriesBuilder::with_prefixes(Arc::clone(&prefixes));
-        for index in 0_u32..64 {
+        let mut initial_capacity = 0;
+        for index in 0..IDS_PER_BUILDER {
             let package = format!("pkg{index:03}");
             let run = run_for_package(ts(1), "c0", f64::from(index), Some(&package));
             first.push(
@@ -1521,10 +1526,15 @@ mod tests {
                 &key.commit,
                 &RunPoints::from(&run),
             );
+            if index == 0 {
+                initial_capacity = first.groups.get(&key.set).unwrap().capacity();
+            }
         }
+        let capacity_before_merge = first.groups.get(&key.set).unwrap().capacity();
+        assert!(capacity_before_merge > initial_capacity);
 
         let mut second = SeriesBuilder::with_prefixes(prefixes);
-        for index in 64_u32..128 {
+        for index in IDS_PER_BUILDER..(IDS_PER_BUILDER * 2) {
             let package = format!("pkg{index:03}");
             let run = run_for_package(ts(1), "c0", f64::from(index), Some(&package));
             second.push(
@@ -1538,11 +1548,12 @@ mod tests {
         }
 
         first.merge(second);
+        assert!(first.groups.get(&key.set).unwrap().capacity() > capacity_before_merge);
         let series = first.finish();
 
         assert_eq!(
             series.len(),
-            128,
+            usize::try_from(IDS_PER_BUILDER * 2).unwrap(),
             "every distinct id is its own series, none lost to a botched rehash"
         );
     }

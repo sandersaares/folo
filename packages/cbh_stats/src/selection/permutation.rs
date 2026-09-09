@@ -582,9 +582,10 @@ mod tests {
 
     #[test]
     fn complete_tied_orbit_is_used_when_it_fits_the_budget() {
-        let sorted = [vec![1; 5], vec![2; 5]].concat();
-        let mut orbit = PermutationOrbit::new(sorted.clone(), sorted.len(), 600);
-        assert_eq!(orbit.order(), 252);
+        // A small tied multiset covers uniqueness and completion without storing a large orbit.
+        let sorted = vec![1, 1, 1, 2, 2, 2];
+        let mut orbit = PermutationOrbit::new(sorted.clone(), sorted.len(), 20);
+        assert_eq!(orbit.order(), 20);
 
         let mut ordering = sorted.clone();
         let mut seen = HashSet::new();
@@ -595,7 +596,7 @@ mod tests {
                 assert!(orbit.advance());
             }
         }
-        assert_eq!(seen.len(), 252);
+        assert_eq!(seen.len(), 20);
         assert!(!orbit.advance());
     }
 

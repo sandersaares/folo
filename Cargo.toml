@@ -28,21 +28,21 @@ azure_identity = { version = "1.0.0", default-features = false }
 azure_storage_blob = { version = "1.0.0", default-features = false }
 base64 = { version = "0.23.1", default-features = false, features = ["std"] }
 cargo-freeze-deps = { version = "0.1.11", path = "packages/cargo-freeze-deps", default-features = false }
-cargo-release-plan = { version = "0.1.6", path = "packages/cargo-release-plan", default-features = false }
-cbh_analyze = { version = "=0.2.8", path = "packages/cbh_analyze", default-features = false }
-cbh_cli = { version = "=0.2.8", path = "packages/cbh_cli", default-features = false }
-cbh_codec = { version = "=0.2.8", path = "packages/cbh_codec", default-features = false }
-cbh_command = { version = "=0.2.8", path = "packages/cbh_command", default-features = false }
-cbh_config = { version = "=0.2.8", path = "packages/cbh_config", default-features = false }
-cbh_detect = { version = "=0.2.8", path = "packages/cbh_detect", default-features = false }
-cbh_diag = { version = "=0.2.8", path = "packages/cbh_diag", default-features = false }
-cbh_engines = { version = "=0.2.8", path = "packages/cbh_engines", default-features = false }
-cbh_git = { version = "=0.2.8", path = "packages/cbh_git", default-features = false }
-cbh_model = { version = "=0.2.8", path = "packages/cbh_model", default-features = false }
-cbh_probe = { version = "=0.2.8", path = "packages/cbh_probe", default-features = false }
-cbh_render = { version = "=0.2.8", path = "packages/cbh_render", default-features = false }
-cbh_stats = { version = "=0.2.8", path = "packages/cbh_stats", default-features = false }
-cbh_storage = { version = "=0.2.8", path = "packages/cbh_storage", default-features = false }
+cargo-release-plan = { version = "0.2.1", path = "packages/cargo-release-plan", default-features = false }
+cbh_analyze = { version = "=0.2.9", path = "packages/cbh_analyze", default-features = false }
+cbh_cli = { version = "=0.2.9", path = "packages/cbh_cli", default-features = false }
+cbh_codec = { version = "=0.2.9", path = "packages/cbh_codec", default-features = false }
+cbh_command = { version = "=0.2.9", path = "packages/cbh_command", default-features = false }
+cbh_config = { version = "=0.2.9", path = "packages/cbh_config", default-features = false }
+cbh_detect = { version = "=0.2.9", path = "packages/cbh_detect", default-features = false }
+cbh_diag = { version = "=0.2.9", path = "packages/cbh_diag", default-features = false }
+cbh_engines = { version = "=0.2.9", path = "packages/cbh_engines", default-features = false }
+cbh_git = { version = "=0.2.9", path = "packages/cbh_git", default-features = false }
+cbh_model = { version = "=0.2.9", path = "packages/cbh_model", default-features = false }
+cbh_probe = { version = "=0.2.9", path = "packages/cbh_probe", default-features = false }
+cbh_render = { version = "=0.2.9", path = "packages/cbh_render", default-features = false }
+cbh_stats = { version = "=0.2.9", path = "packages/cbh_stats", default-features = false }
+cbh_storage = { version = "=0.2.9", path = "packages/cbh_storage", default-features = false }
 clap = { version = "4.6.1", default-features = false, features = ["default"] }
 colored = { version = "3.1.1", default-features = false }
 cpu-time = { version = "1.0.0", default-features = false }
@@ -147,36 +147,6 @@ tracing = { version = "0.1.44", default-features = false, features = ["std"] }
 trybuild = { version = "1.0.0", default-features = false }
 vicinal = { version = "0.1.40", path = "packages/vicinal", default-features = false }
 windows = { version = "0.62.0", default-features = false, features = ["std"] }
-
-# Cargo packages that form one logical unit belong to one version group, and the
-# members of a version group must share a version. cargo-release-plan expands an
-# increment across every member of a version group and rewrites intra-workspace
-# `=` pins together. Ref: docs/release-versioning.md; docs/impl-crate-split.md.
-[workspace.metadata.release-plan.groups]
-cargo-bench-history = [
-    "cargo-bench-history",
-    # Test-support package that is not an implementation dependency of the CLI.
-    # It belongs to this group so a faker-only change may increment the whole family.
-    "cargo-bench-history-faker",
-    "cbh_analyze",
-    "cbh_cli",
-    "cbh_codec",
-    "cbh_command",
-    "cbh_config",
-    "cbh_detect",
-    "cbh_diag",
-    "cbh_engines",
-    "cbh_git",
-    "cbh_model",
-    "cbh_probe",
-    "cbh_render",
-    "cbh_stats",
-    "cbh_storage",
-]
-linked = ["linked", "linked_macros", "linked_macros_impl"]
-many_cpus = ["many_cpus", "many_cpus_impl"]
-nm = ["nm", "nm_impl"]
-nm_otel = ["nm_otel", "nm_otel_impl"]
 
 [workspace.metadata.cargo-udeps.ignore]
 development = ["mutants", "static_assertions"]

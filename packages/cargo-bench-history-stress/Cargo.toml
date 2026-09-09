@@ -3,7 +3,7 @@
 name = "cargo-bench-history-stress"
 description = "On-demand stress harness that seeds a giant synthetic benchmark history into a cargo-bench-history storage backend and times each analysis mode over it"
 publish = false
-version = "0.0.0"
+version = "0.2.9"
 
 authors.workspace = true
 edition.workspace = true

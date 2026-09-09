@@ -19,6 +19,11 @@ commands. Some relevant ones are:
 
 The `package` argument must be the first argument to any `just` command, if used.
 
+`just package=foo miri` uses nextest's automatically selected `default-miri`
+profile, which reports slow tests and fails tests that exceed the per-test
+deadline. See [Miri workload guidance](testing.md#keep-miri-workloads-small) for
+the runtime budget and how to reduce or exclude unsuitable workloads.
+
 Avoid running `just bench` (wall-clock Criterion benchmarks) without explicit
 confirmation: they take a lot of time, and the numbers are also noisy and
 machine-dependent - running them on a shared machine produces results that should

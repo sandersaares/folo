@@ -121,14 +121,53 @@ and prioritise it independently.
 Tests that talk to the real operating system generally fail to execute under Miri.
 This is fine and expected. However, a Miri test run must still succeed with a
 clean result! If there are tests that cannot be executed under Miri, they should
-be excluded via `#[cfg_attr(miri, ignore))]` (plus a comment justifying why it is
-correct to exclude them).
+be excluded via `#[cfg_attr(miri, ignore = "specific reason")]`.
 
 Naturally, if it is possible to redesign a test so it does not rely on the
 operating system, that is even better. However, this is not always possible.
 
-Miri is too slow when running tests with large data sets (anything with 100s or
-1000s of items). Exclude such tests from running under Miri.
+### Keep Miri workloads small
+
+A test that is fast natively can still monopolize an interpreter for minutes.
+Design tests around the smallest fixture and fewest iterations that establish
+the property, not production-scale sample sizes. Consider total work: exhaustive
+permutations, nested searches, repeated compression, and repeatedly constructing
+an end-to-end fixture can be expensive even when each input is small.
+
+Run changed tests with `just package=<name> miri` and inspect their durations.
+If a test takes more than 10 seconds under Miri, reduce its workload. Prefer
+smaller fixtures for every runner when they preserve the same assertions.
+Otherwise, select smaller test-only parameters with `cfg!(miri)` while keeping
+the native coverage.
+
+Production constants that only tune performance, such as cache capacities or
+inline-storage sizes, may use smaller values under `cfg(miri)` when exposing them
+as test parameters is impractical. Document why the smaller value preserves
+correctness and retain representative coverage of the affected implementation
+paths. Do not change correctness-relevant parameters or production semantics
+under `cfg(miri)` or `cfg(test)` to make tests cheaper.
+
+When the property genuinely requires exhaustive enumeration, statistical
+calibration, or a large data set, keep that test native-only with
+`#[cfg_attr(miri, ignore = "specific reason")]`. Explain which workload makes
+interpretation inappropriate, and retain small representative Miri tests of the
+underlying operations. Do not ignore an entire crate merely because some of its
+tests are expensive. Inspect related tests and shared fixtures when fixing a slow
+test so the same workload is not repeated elsewhere.
+
+The `default-miri` profile in `.config/nextest.toml`, automatically selected by
+`cargo miri nextest run` and `just miri`, reports a test as slow after 10 seconds
+and terminates it as a failure after 60 seconds. The termination limit is a
+last-chance runner safeguard, not a target runtime or an assertion in test code.
+Fix slow workloads rather than increasing the limit, adding retries, or marking
+timeouts as successes. Native and mutation-test profiles do not inherit this
+Miri-only deadline.
+
+`just miri-harder` runs whole library test suites across many seeds using
+`cargo miri test`, not nextest, so the per-test deadline does not apply to that
+batched run. Keep each test's single-seed workload small before running it across
+many seeds; CI runs this additional coverage only after the bounded base Miri
+pass succeeds.
 
 Doctests are not executed under Miri. There is no need to make doctests
 Miri-compatible.

@@ -41,7 +41,7 @@ helper = { path = "../helper", version = "1.0.0" }
     let plan_path = fixture.path().join("plan.json");
     fs::write(
         &plan_path,
-        r#"{ "schema_version": 2, "increments": [{ "name": "helper", "level": "patch" }] }"#,
+        r#"{ "schema_version": 3, "increments": [{ "name": "helper", "level": "patch" }] }"#,
     )
     .unwrap();
     let expanded_path = fixture.path().join("expanded.json");
@@ -90,9 +90,6 @@ helper = { path = "../helper", version = "1.0.0" }
 fn expand_names_every_group_member_and_the_result_applies() {
     let fixture = Fixture::new(
         r#"
-[workspace.metadata.release-plan.groups]
-g = ["shell", "shell_impl"]
-
 [workspace.dependencies]
 shell_impl = { version = "=0.1.0", path = "packages/shell_impl" }
 "#,
@@ -114,7 +111,7 @@ shell_impl = { workspace = true }
     let plan_path = fixture.path().join("plan.json");
     fs::write(
         &plan_path,
-        r#"{ "schema_version": 2, "increments": [
+        r#"{ "schema_version": 3, "increments": [
             { "name": "shell", "level": "patch" },
             { "name": "loner", "level": "minor" }
         ] }"#,
@@ -169,31 +166,81 @@ shell_impl = { workspace = true }
     assert!(passed, "{message}");
 }
 
-/// A group that gained a member after expansion is rejected at apply time.
+/// A helper can directly target and align a group that publishes no package.
+#[cfg_attr(miri, ignore)] // Spawns git and cargo, which Miri cannot emulate.
+#[test]
+fn a_helper_directly_targets_an_all_non_publishable_group() {
+    let fixture = Fixture::new("");
+    write_package(&fixture, "z-helper", "0.1.0", "\npublish = false\n");
+    write_package(
+        &fixture,
+        "a-helper",
+        "0.1.0",
+        "\npublish = false\n\n[dependencies]\nz-helper = { path = \"../z-helper\", version = \"=0.1.0\" }\n",
+    );
+    fixture.commit("helper group");
+    let plan_path = fixture.path().join("plan.json");
+    fs::write(
+        &plan_path,
+        r#"{ "schema_version": 3, "increments": [{ "name": "z-helper", "level": "patch" }] }"#,
+    )
+    .unwrap();
+    let expanded_path = fixture.path().join("expanded.json");
+
+    run(&RunInput::Expand {
+        plan: plan_path,
+        out: expanded_path.clone(),
+        manifest_path: fixture.manifest(),
+        verbose: false,
+    })
+    .unwrap();
+
+    let expanded: Value =
+        serde_json::from_str(&fs::read_to_string(&expanded_path).unwrap()).unwrap();
+    assert_eq!(
+        expanded_versions(
+            expanded
+                .get("increments")
+                .and_then(Value::as_array)
+                .unwrap()
+        ),
+        vec![("a-helper", "0.1.1"), ("z-helper", "0.1.1")]
+    );
+
+    run(&RunInput::Apply {
+        plan: expanded_path,
+        dry_run: false,
+        manifest_path: fixture.manifest(),
+        verbose: false,
+    })
+    .unwrap();
+
+    for helper in ["a-helper", "z-helper"] {
+        let manifest = fixture.read(&format!("packages/{helper}/Cargo.toml"));
+        assert!(manifest.contains("version = \"0.1.1\""), "{manifest}");
+    }
+}
+
+/// A group that gains an earlier-sorting helper after expansion is rejected.
 ///
 /// The expanded document is what gets presented and what the publication check
 /// ran over, so `apply` must not quietly reach a package it does not name.
-/// Expansion resolves entries through the group configuration as it stands at
-/// apply time, which is where a membership change between the two commands would
-/// otherwise widen the recorded set.
+/// Expansion resolves entries through the current exact dependency graph, which
+/// is where a membership change between the two commands would otherwise widen
+/// the recorded set and change its derived key.
 /// Ref: docs/design.md, "Version groups".
 #[cfg_attr(miri, ignore)] // Spawns git and cargo, which Miri cannot emulate.
 #[test]
 fn apply_rejects_an_expanded_plan_whose_group_gained_a_member() {
-    let fixture = Fixture::new(
-        r#"
-[workspace.metadata.release-plan.groups]
-release-family = ["shell"]
-"#,
-    );
+    let fixture = Fixture::new("");
     write_package(&fixture, "shell", "0.1.0", "");
-    write_package(&fixture, "shell_impl", "0.1.0", "");
+    write_package(&fixture, "aaa-helper", "0.1.0", "\npublish = false\n");
     fixture.commit("grouped packages");
 
     let plan_path = fixture.path().join("plan.json");
     fs::write(
         &plan_path,
-        r#"{ "schema_version": 2, "increments": [{ "name": "shell", "level": "patch" }] }"#,
+        r#"{ "schema_version": 3, "increments": [{ "name": "shell", "level": "patch" }] }"#,
     )
     .unwrap();
     let expanded_path = fixture.path().join("expanded.json");
@@ -219,16 +266,19 @@ release-family = ["shell"]
         .collect();
     assert_eq!(names, vec!["shell"]);
 
-    // The group gains a member between expansion and application.
-    let manifest = fs::read_to_string(fixture.manifest()).unwrap();
-    fs::write(
-        fixture.manifest(),
-        manifest.replace(
-            r#"release-family = ["shell"]"#,
-            r#"release-family = ["shell", "shell_impl"]"#,
-        ),
-    )
-    .unwrap();
+    // An exact dependency connects an earlier-sorting helper between expansion and application.
+    fixture.write(
+        "packages/aaa-helper/Cargo.toml",
+        r#"[package]
+name = "aaa-helper"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+shell = { path = "../shell", version = "=0.1.0" }
+"#,
+    );
 
     let error = run(&RunInput::Apply {
         plan: expanded_path,
@@ -236,12 +286,14 @@ release-family = ["shell"]
         manifest_path: fixture.manifest(),
         verbose: false,
     })
-    .expect_err("an expanded plan cannot widen to a newly added group member");
-    assert!(error.to_string().contains("shell_impl"), "{error}");
+    .expect_err("an expanded plan cannot widen to a newly connected helper");
+    assert!(error.to_string().contains("aaa-helper"), "{error}");
 
     // Nothing was written: the rejection precedes every manifest edit.
     let shell = fs::read_to_string(fixture.path().join("packages/shell/Cargo.toml")).unwrap();
     assert!(shell.contains("version = \"0.1.0\""), "{shell}");
+    let helper = fs::read_to_string(fixture.path().join("packages/aaa-helper/Cargo.toml")).unwrap();
+    assert!(helper.contains("version = \"0.1.0\""), "{helper}");
 }
 
 /// A group whose members disagree on an explicit version is rejected.
@@ -251,20 +303,20 @@ release-family = ["shell"]
 #[cfg_attr(miri, ignore)] // Spawns git and cargo, which Miri cannot emulate.
 #[test]
 fn expand_rejects_disagreeing_versions_within_one_group() {
-    let fixture = Fixture::new(
-        r#"
-[workspace.metadata.release-plan.groups]
-release-family = ["shell", "shell_impl"]
-"#,
+    let fixture = Fixture::new("");
+    write_package(
+        &fixture,
+        "shell",
+        "0.1.0",
+        "\n[dependencies]\nshell_impl = { path = \"../shell_impl\", version = \"=0.1.0\" }\n",
     );
-    write_package(&fixture, "shell", "0.1.0", "");
     write_package(&fixture, "shell_impl", "0.1.0", "");
     fixture.commit("grouped packages");
 
     let plan_path = fixture.path().join("plan.json");
     fs::write(
         &plan_path,
-        r#"{ "schema_version": 2, "increments": [
+        r#"{ "schema_version": 3, "increments": [
             { "name": "shell", "version": "0.2.0" },
             { "name": "shell_impl", "version": "0.3.0" }
         ] }"#,
@@ -278,7 +330,7 @@ release-family = ["shell", "shell_impl"]
         verbose: false,
     })
     .expect_err("members of one group cannot take different versions");
-    assert!(error.to_string().contains("release-family"), "{error}");
+    assert!(error.to_string().contains("shell"), "{error}");
 }
 
 /// A patch increment level restores a version group whose members drifted apart.
@@ -292,13 +344,13 @@ release-family = ["shell", "shell_impl"]
 #[cfg_attr(miri, ignore)] // Spawns git and cargo, which Miri cannot emulate.
 #[test]
 fn a_patch_increment_level_realigns_an_inconsistent_group() {
-    let fixture = Fixture::new(
-        r#"
-[workspace.metadata.release-plan.groups]
-g = ["shell", "shell_impl"]
-"#,
+    let fixture = Fixture::new("");
+    write_package(
+        &fixture,
+        "shell",
+        "0.1.0",
+        "\n[dependencies]\nshell_impl = { path = \"../shell_impl\", version = \"=0.2.0\" }\n",
     );
-    write_package(&fixture, "shell", "0.1.0", "");
     write_package(&fixture, "shell_impl", "0.2.0", "");
     fixture.commit("drifted group");
     let base = fixture.sha("HEAD");
@@ -309,7 +361,7 @@ g = ["shell", "shell_impl"]
     let plan_path = fixture.path().join("plan.json");
     fs::write(
         &plan_path,
-        r#"{ "schema_version": 2, "increments": [{ "name": "shell", "level": "patch" }] }"#,
+        r#"{ "schema_version": 3, "increments": [{ "name": "shell", "level": "patch" }] }"#,
     )
     .unwrap();
     let expanded_path = fixture.path().join("expanded.json");
@@ -354,13 +406,13 @@ g = ["shell", "shell_impl"]
 #[cfg_attr(miri, ignore)] // Spawns git and cargo, which Miri cannot emulate.
 #[test]
 fn an_exact_target_aligns_a_group_without_advancing_its_leader() {
-    let fixture = Fixture::new(
-        r#"
-[workspace.metadata.release-plan.groups]
-g = ["shell", "shell_impl"]
-"#,
+    let fixture = Fixture::new("");
+    write_package(
+        &fixture,
+        "shell",
+        "1.0.0",
+        "\n[dependencies]\nshell_impl = { path = \"../shell_impl\", version = \"=1.1.0\" }\n",
     );
-    write_package(&fixture, "shell", "1.0.0", "");
     write_package(&fixture, "shell_impl", "1.1.0", "");
     fixture.commit("drifted group");
     let base = fixture.sha("HEAD");
@@ -368,7 +420,7 @@ g = ["shell", "shell_impl"]
     let plan_path = fixture.path().join("plan.json");
     fs::write(
         &plan_path,
-        r#"{ "schema_version": 2, "increments": [{ "name": "g", "version": "1.1.0" }] }"#,
+        r#"{ "schema_version": 3, "increments": [{ "name": "shell", "version": "1.1.0" }] }"#,
     )
     .unwrap();
     let expanded_path = fixture.path().join("expanded.json");
