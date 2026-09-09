@@ -87,3 +87,44 @@ pub const ALL_THE_TIME_READ_CELL: &str =
 /// Representative `all_the_time` multi-span operation output.
 pub const ALL_THE_TIME_READ_CELL_DISPERSION: &str =
     include_str!("../tests/fixtures/all_the_time/read_cell_dispersion.json");
+
+#[cfg(test)]
+mod tests {
+    use cbh_model::MetricKind;
+
+    use super::*;
+    use crate::{parse_callgrind_summary, parse_criterion_case};
+
+    #[test]
+    fn minimal_callgrind_fixture_preserves_identity_and_tracked_metrics() {
+        let record = parse_callgrind_summary(CALLGRIND_MINIMAL).unwrap();
+        assert!(
+            record
+                .id
+                .segments
+                .iter()
+                .map(String::as_str)
+                .eq(["pkg", "m", "f"])
+        );
+        assert_eq!(record.metrics.len(), 3);
+        for kind in [
+            MetricKind::InstructionCount,
+            MetricKind::ConditionalBranches,
+            MetricKind::IndirectBranches,
+        ] {
+            assert!(record.metrics.iter().any(|metric| metric.kind == kind));
+        }
+    }
+
+    #[test]
+    fn minimal_criterion_fixture_preserves_identity_and_interval() {
+        let record =
+            parse_criterion_case(CRITERION_MINIMAL_BENCHMARK, CRITERION_MINIMAL_ESTIMATES).unwrap();
+        assert!(record.id.segments.iter().map(String::as_str).eq(["g", "f"]));
+        assert_eq!(record.metrics.len(), 1);
+        let metric = record.metrics.first().unwrap();
+        assert_eq!(metric.kind, MetricKind::WallTime);
+        assert!(metric.interval_low.unwrap() < metric.value);
+        assert!(metric.value < metric.interval_high.unwrap());
+    }
+}

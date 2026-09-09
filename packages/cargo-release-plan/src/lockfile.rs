@@ -677,7 +677,16 @@ source = \"registry+a\"
         let before = lockfile.closure("tool", "0.1.0").unwrap();
         // Only the dependency source changes; reusing the parsed graph isolates identity
         // comparison from repeated TOML parsing.
-        lockfile.entries.last_mut().unwrap().source = Some("registry+b".to_owned());
+        let dependency = lockfile
+            .entries
+            .iter_mut()
+            .find(|entry| {
+                entry.name == "dep"
+                    && entry.version == "1.0.0"
+                    && entry.source.as_deref() == Some("registry+a")
+            })
+            .unwrap();
+        dependency.source = Some("registry+b".to_owned());
         let after = lockfile.closure("tool", "0.1.0").unwrap();
         let changes = closure_changes(&before, &after);
         assert_eq!(changes, vec![("dep".to_owned(), ClosureChange::Modified)]);

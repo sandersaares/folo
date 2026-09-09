@@ -235,9 +235,9 @@ mod tests {
             let capacity_for_one = WAKER_META_POOL.with(Pool::capacity);
             release_ref(first);
 
-            // One allocation beyond the initial capacity proves that released slots are reused:
-            // retaining every slot would force growth. Asserting on capacity rather than slot
-            // addresses keeps this independent of which free slot the pool hands back.
+            // Together with the first allocation above, this loop makes more allocations than
+            // the initial capacity can hold without reuse. Retaining every slot would force
+            // growth. Checking capacity avoids depending on which free slot the pool hands back.
             for _ in 0..capacity_for_one {
                 let meta = create_waker_meta(&shared_parent);
                 release_ref(meta);

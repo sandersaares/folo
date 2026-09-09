@@ -1033,9 +1033,29 @@ fn resolve_packages(workspace: bool, package: Vec<String>) -> Vec<String> {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     #[cfg(miri)]
-    use clap::{Command as ClapCommand, FromArgMatches};
+    use clap::FromArgMatches;
+    use clap::{Command as ClapCommand, CommandFactory};
 
     use super::*;
+
+    /// Builds one real argument schema without registering unrelated commands.
+    fn command_schema(name: &str) -> Option<ClapCommand> {
+        let command = match name {
+            "analyze" => AnalyzeCommand::augment_args(ClapCommand::new("analyze")),
+            "backfill" => BackfillCommand::augment_args(ClapCommand::new("backfill")),
+            "bless" => BlessCommand::augment_args(ClapCommand::new("bless")),
+            "collect" => CollectCommand::augment_args(ClapCommand::new("collect")),
+            "examine" => ExamineCommand::augment_args(ClapCommand::new("examine")),
+            "import" => ImportCommand::augment_args(ClapCommand::new("import")),
+            "install" => InstallCommand::augment_args(ClapCommand::new("install")),
+            "list" => ListCommand::augment_args(ClapCommand::new("list")),
+            "machine-key" => MachineKeyCommand::augment_args(ClapCommand::new("machine-key")),
+            "prune" => PruneCommand::augment_args(ClapCommand::new("prune")),
+            "unbless" => UnblessCommand::augment_args(ClapCommand::new("unbless")),
+            _ => return None,
+        };
+        Some(command)
+    }
 
     fn from_args(command_name: &[&str], args: &[&str]) -> Result<Cli, EarlyExit> {
         #[cfg(not(miri))]
@@ -1047,21 +1067,9 @@ mod tests {
             // Each option test needs only its selected subcommand. Use its real Args schema and
             // the real Cli conversion, avoiding construction of every unrelated schema in Miri.
             // Native runs retain the full root parser, including subcommand registration.
-            let command = match args.first().copied() {
-                Some("analyze") => AnalyzeCommand::augment_args(ClapCommand::new("analyze")),
-                Some("backfill") => BackfillCommand::augment_args(ClapCommand::new("backfill")),
-                Some("bless") => BlessCommand::augment_args(ClapCommand::new("bless")),
-                Some("collect") => CollectCommand::augment_args(ClapCommand::new("collect")),
-                Some("examine") => ExamineCommand::augment_args(ClapCommand::new("examine")),
-                Some("import") => ImportCommand::augment_args(ClapCommand::new("import")),
-                Some("list") => ListCommand::augment_args(ClapCommand::new("list")),
-                Some("machine-key") => {
-                    MachineKeyCommand::augment_args(ClapCommand::new("machine-key"))
-                }
-                Some("prune") => PruneCommand::augment_args(ClapCommand::new("prune")),
-                Some("unbless") => UnblessCommand::augment_args(ClapCommand::new("unbless")),
-                // A small registered command also lets root-level error/help tests run.
-                _ => InstallCommand::augment_args(ClapCommand::new("install")),
+            let Some(command) = args.first().copied().and_then(command_schema) else {
+                // Root-level and unknown-command cases retain the production parser's behavior.
+                return Cli::from_args(command_name, args);
             };
             ClapCommand::new("cargo-bench-history")
                 .disable_help_subcommand(true)
@@ -1079,6 +1087,26 @@ mod tests {
         from_args(&["cargo-bench-history"], args)
             .unwrap()
             .into_command()
+    }
+
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "compares the full command catalog; individual schemas run under Miri"
+    )]
+    fn isolated_schemas_cover_registered_commands() {
+        let root = Cli::command();
+        for registered in root.get_subcommands() {
+            let name = registered.get_name();
+            let schema = command_schema(name)
+                .unwrap_or_else(|| panic!("missing isolated argument schema for {name}"));
+            assert_eq!(schema.get_name(), name);
+        }
+    }
+
+    #[test]
+    fn isolated_schema_rejects_unknown_commands() {
+        assert!(command_schema("frobnicate").is_none());
     }
 
     #[test]
@@ -2251,7 +2279,8 @@ mod tests {
 
     #[test]
     fn unknown_subcommand_is_rejected() {
-        from_args(&["cargo-bench-history"], &["frobnicate"]).unwrap_err();
+        let error = from_args(&["cargo-bench-history"], &["frobnicate"]).unwrap_err();
+        assert!(error.status.is_err());
     }
 
     #[test]
