@@ -4,6 +4,56 @@ This guide maps the workflow design to the repository tools that implement it. U
 CI behavior and design tenets are in [design.md](design.md); command flags and step details stay
 with the commands and workflow jobs.
 
+## Workflow events and orchestration
+
+Workflow events create runs; reviewed policy and planning determine whether those
+runs execute checks or write issues. A disabled execution switch does not remove a
+GitHub timer, and an intentional no-work plan is not new coverage. GitHub cron times
+below are UTC. Local App timers are separate and use their verified installation timezones.
+
+| Workflow | What starts it | Responsibility and downstream calls |
+|---|---|---|
+| `scheduled-validation.yml` / **Scheduled validation** | Daily `schedule` at 02:41 (`41 2 * * *`), or authorized `workflow_dispatch` on `main`. | Plans immutable full-main scope and checks reusable coverage. Calls `deep-checks.yml` only when execution is authorized and needed. `force` bypasses coverage reuse, not execution authorization; `canary` permits an explicit read-only execution check. |
+| `deep-checks.yml` / **Deep checks** | **Only `workflow_call`**, from `scheduled-validation.yml`, `scheduled-verify.yml`, or `validation.yml`. No timer, push trigger or manual entry point. | Reusable matrix execution of the caller's declared scope. Its jobs and artifacts belong to the calling run; it does not file issues or start a separate reporting chain. |
+| `scheduled-report.yml` / **Scheduled reporting** | `workflow_run: completed` for **Scheduled validation** and **Scheduled verification** on `main`, regardless of conclusion. No timer or `workflow_dispatch`. | Validates the originating attempt, collects evidence and files/updates run-level failure intake; also maintains coverage and applicable authoritative confirmation. Does not perform AI triage or directly create diagnosed problem issues. Uses trusted default-branch code; writes require reporting authorization. Recover by rerunning the existing reporter run, not by rerunning deep checks. |
+| `scheduled-verify.yml` / **Scheduled verification** | Each `push` to `main`, or authorized `workflow_dispatch` with an explicit immutable source and scope. | The cheap planner selects pending registered merged repairs, or explicit diagnostics. Calls `deep-checks.yml` only for selected authorized work; no pending repair is a normal no-work outcome. Completion triggers `scheduled-report.yml`. |
+| `scheduled-health.yml` / **Scheduled health** | `schedule` at minute 11 every third hour (`11 */3 * * *`), or `workflow_dispatch` on `main`. | Read-only observation of scheduler, reporter, coverage and separate Local triage/repair health. Writes a summary/artifact and signals failure; does not call deep checks, file a finding for every red run, or trigger the reporter. |
+| `validation.yml` / **Validation** | `push` to `main`; PRs targeting `main` on `opened`, `synchronize`, `reopened`, `edited`, or `ready_for_review`; merge-queue `merge_group` events for `main`. | Ordinary merge validation and the managed-repair gate. Calls `deep-checks.yml` for relevant registered repair scope, not the entire scheduled suite. Results feed `required-checks`; this workflow does not trigger scheduled issue reporting. |
+| `pr-bench-history.yml` / **PR Benchmark history** | PRs targeting `main` on `opened`, `synchronize`, or `reopened`. | Independent advisory benchmark workflow; excludes managed repairs from production-backed collection. It neither calls deep checks nor triggers scheduled issue reporting. |
+
+```text
+GitHub daily timer / manual dispatch
+  -> Scheduled validation -> plan -> Deep checks (workflow_call, if needed)
+           |
+           +-- completion, any conclusion --> Scheduled reporting
+                                                 |
+                                                 +-> run-level failure intake
+                                                 +-> coverage / applicable confirmation
+
+main push / manual diagnostic dispatch
+  -> Scheduled verification -> plan -> Deep checks (workflow_call, if selected)
+           |
+           +-- completion, any conclusion --> Scheduled reporting
+
+main push / PR event / merge-queue event
+  -> Validation -> ordinary checks + managed repair scope -> required-checks
+                                     |
+                                     +-> Deep checks (workflow_call, if selected)
+
+GitHub three-hour timer / manual dispatch -> Scheduled health (observation only)
+Local App triage timer -> AI run analysis -> deduplicated actionable problem issues
+Local App repair timer -> problem intake -> owned repair session -> PR
+```
+
+The Local triage automation polls unprocessed run-level intake. The independent repair
+automation polls completed actionable problem records and registered PRs. An issue write
+does not directly dispatch either agent. Both have reviewed three-hour schedules; repair
+retains cron `17 */3 * * *`. Their verified App timezone is independent of GitHub's UTC
+health timer. No timer offset is a completion guarantee or synchronization mechanism.
+A worker's PR activity triggers normal PR workflows. A human merge
+produces the `main` push that starts targeted confirmation. Reporter completions,
+health runs and reusable child jobs do not recursively trigger scheduled reporting.
+
 ## Validation structure
 
 `validation.yml` assigns each independently useful check to a separate job so GitHub reports the
@@ -67,11 +117,17 @@ trusts pull-request and `main` subjects, not merge-group subjects.
 
 ## Scheduled controller ownership
 
-`scripts/scheduled/ScheduledContracts.psm1` owns canonical fingerprints and separate reporter,
-worker, PR, coverage and health records. Each record is a versioned JSON HTML comment; replacing
-one record preserves surrounding human prose and other owners' records. Intake joins the
-reporter-authored issue with its actual originating run and repository identity. Worker claims
-belong to the enrolled personal account, never to the hosted reporter.
+`scripts/scheduled/ScheduledContracts.psm1` owns versioned record validation and stable
+identities, not AI root-cause decisions. Hosted records describe run evidence, coverage
+and authoritative confirmation. Local triage records describe problem identity, causal
+grouping, actionable scope and links to source observations. Worker and PR records
+describe repair ownership. Replacing one record preserves surrounding prose and other
+owners' records.
+
+Repair intake validates both the personal triager's problem record and its linked
+hosted source evidence. A problem issue need not have the hosted reporter as its author;
+the enrolled triage role creates it. A matching label or personal login alone cannot
+authorize a repair. Workers cannot self-authorize by editing their own triage scope.
 
 ### Immutable execution
 
@@ -144,18 +200,74 @@ execution scope.
 ### Serialized reporting
 
 `ScheduledReport.psm1` and `ScheduledGitHub.psm1` separate deterministic state transitions from
-GitHub persistence. Reporting serializes all originating workflows into one issue-writing job;
+GitHub persistence. Hosted reporting serializes originating workflows into one issue-writing job;
 candidate execution has no writer authority. The reporter checks out default-branch controller
 code, validates downloaded artifacts as data and preserves durable minimal reproduction data
-after the larger artifacts expire.
+after the larger artifacts expire. It creates run-level intake, not diagnosed problem issues.
+
+#### Run-level failure intake
+
+Inventory actual Actions jobs and steps as well as the declared manifest: failed checkout,
+tool setup, planning or artifact upload may produce no checker result. Persist references to
+all unsuccessful jobs, their failed steps and available diagnostics. Collection or parsing
+failures are explicit evidence gaps in the intake, not an empty successful result.
+Retain valid structured observations even when another leg cannot be decoded.
+
+The run issue key is repository/workflow/run identity. Run attempts and their evidence
+revisions are distinct inputs within that issue. A repeated completion notification must
+not duplicate intake; a new attempt must not inherit a prior attempt's triaged checkpoint.
+An unsuccessful or unexpectedly incomplete execution requires intake. A legitimate disabled
+or reusable-coverage skip does not. The reporter may supply parsed observations, but it does
+not decide how many real problems exist or whether different symptoms share a cause.
+
+Coverage and registered repair confirmation remain deterministic hosted responsibilities.
+An AI triage-complete record cannot mint a success receipt or declare a repair verified.
+Conversely, a green rerun cannot acknowledge analysis of earlier failure evidence.
+
+#### Local AI triage and problem publication
+
+The separately scheduled triage automation follows the
+[problem-level incident contract](../../docs/scheduled-validation.md#problems-incidents-and-triage).
+It claims an unprocessed run/attempt revision, uses a capable personally funded AI model to
+analyze every unsuccessful job, and compares all extracted problems with the complete
+existing problem index. Programmatic helpers validate records and normalize/search evidence;
+they cannot replace semantic diagnosis and causal deduplication.
+
+Problem identity is independent of run/job identity, replay scope and coverage verdict.
+The triager distinguishes unrelated diagnostics within a shared target and can group
+different tests or shards when evidence establishes a common cause. It records that
+reasoning, all contributing evidence and any uncertainty. Failed prerequisites produce
+execution problems with blocked downstream scope, not fictitious per-package code defects.
+
+One active triage session per repository serializes matching and publication. Durable
+run claims, issue-write intents and per-attempt checkpoints make retries recoverable.
+Before creating a problem issue, check existing identities and aliases, including resolved
+records. Reconcile a lost response before retrying. Only after the issue mutations and
+every failed-job disposition are recorded can the intake become triaged. Further evidence
+or ambiguous publication remains pending rather than starting competing analysis.
+Incomplete job analysis also keeps the revision pending. A fully analyzed problem
+awaiting operator action can be linked with a hold without blocking intake completion.
+
+The repair automation consumes only validated actionable problem records. A consolidation
+or materially changed diagnosis must reconcile existing worker/PR ownership before
+changing repair scope. Infrastructure problems default to bounded retry/operator recovery;
+triage completeness does not make every problem eligible for a source patch. Triage and
+repair have separate capacity, budgets, pause controls and health checkpoints.
+
+The problem record binds a versioned set of required check/package/platform/replay
+scopes to its diagnosis and hosted observations. Admission and managed verification
+consume that full set, not a single representative symptom. A materially changed
+scope invalidates stale readiness evidence and requires reconciliation with the
+retained worker. Problem closure requires applicable confirmation for the complete
+registered resolution criteria; one green constituent result cannot erase the rest.
 
 Evidence ordering uses the originating attempt's API start time, with creation time and run ID
 breaking ties. An older run can have a genuinely newer rerun; neither its original run number nor
 its completion/report delivery time establishes that attempt's order. Source ancestry and incident
 generation remain separate applicability checks.
-Valid defect observations survive incomplete legs and failed workflows. Complete evidence that
-accounts for workflow failure through findings is a successful reporting operation, not a reporting
-outage. Unexplained workflow failure cannot certify passing evidence or close an incident.
+Valid defect observations survive incomplete legs and failed workflows. Successfully publishing
+failure intake is a successful reporting operation, not a reporting outage. Unexplained
+workflow failure cannot certify passing evidence or close a problem incident.
 No-work verification retains the unselected catalog without inventing a global package selection.
 Invalid confirmation metadata is isolated to its incident and cannot discard unrelated findings.
 
@@ -210,15 +322,20 @@ The serialized names are compatibility details. Their mapping to operating behav
 | `rollout.prerequisites.execution_canary`, `reporting_canary`, `native_app_canary` | Recorded operator verification of execution, reporting and actual native App capabilities. |
 | `rollout.prerequisites.benchmark_exclusion`, `azure_policy` | Recorded authorization and installation of managed-publication credential safeguards. |
 | `rollout.phase` | Descriptive compatibility metadata, not authorization to execute, report or admit work. |
-| `local.mode` | Local admission selection: `observe` and `paused` do not dispatch repairs; `repair` also requires matching persisted executor mode, enrollment, approved scope, profile and budgets. |
+| `local.mode` | Repair admission selection: `observe` and `paused` do not dispatch repairs; `repair` also requires matching persisted executor mode, enrollment, approved scope, profile and budgets. It does not authorize triage. |
 | Planning reason or health status `staged` | Deliberately disabled hosted operation, not proof of coverage. |
 
-Safe installation defaults disable hosted execution/reporting, leave Local enrollment and repair
-allowlists unconfigured, and retain ordinary-validation fallback. Setup preserves those settings.
+Triage has a separately reviewed authorization, installed profile and budget; the repair
+mode cannot implicitly enable it. Both roles require matching persisted enrollment and
+profile, and distinguish disabled/observe/paused behavior from active admission.
+
+Safe installation defaults disable hosted execution/reporting and both Local roles,
+leave repair allowlists unconfigured, and retain ordinary-validation fallback.
+Setup preserves those settings.
 Manual read-only execution uses the existing `canary` dispatch input to exercise hosted execution
 without changing recurring authorization; explicit verification similarly validates approved
 diagnostic scope, not incident closure by itself. Neither action is part of merely installing the
-Local automation.
+Local automations.
 
 The default-branch controller, workflows, policy and their helpers form one installed contract.
 When neither policy nor controller is installed there, Validation retains ordinary deep gates
@@ -233,15 +350,17 @@ never leave both enforcement paths disabled.
 
 ## Independent health
 
-The hosted health workflow and personal intake independently observe scheduler, reporting,
-coverage and local scan availability. They distinguish fresh evidence, reused coverage, a failed
-scan, deliberately disabled/paused operation and unavailable systems. Neither process claims to
+The hosted health workflow and personal automations independently observe scheduler, reporting,
+coverage and separate triage/repair availability. They distinguish fresh evidence, reused coverage, a failed
+scan, deliberately disabled/paused operation and unavailable systems. No component claims to
 monitor its own total outage; the operator runbook is in the
 [scheduled validation chapter](../../docs/scheduled-validation.md#health-recovery-and-rollback).
 The reporter retains the actual validated planning timestamp rather than substituting run
 completion time. Hosted health uses read-only permissions and persists its component report as
 an artifact and step summary before signaling failure. The shared coverage/health issue contains
-separate hosted coverage and personal executor health records.
+separate hosted coverage and role-specific personal executor health records. Triage health
+tracks unprocessed run evidence and completed analysis; repair health tracks actionable
+problems and existing PRs. Progress in one does not renew the other's heartbeat.
 Health inventories unsuccessful reporting runs through the Actions API even after newer reports
 succeed. Queue overflow, cancellation and reporting failure require rerunning the existing reporter,
 not repeating expensive source checks; the operator recovery procedure is in the runbook.

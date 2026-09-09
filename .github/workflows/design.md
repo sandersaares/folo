@@ -8,10 +8,40 @@ Ownership of the release-validation pipeline is in [implementation.md](implement
 ## Scheduled correctness and personal remediation
 
 The [scheduled validation contract](../../docs/scheduled-validation.md) separates deterministic
-hosted checks from personally authorized Local Copilot App repairs. Hosted detection and reporting
-do not depend on the App being available. Local automation progresses existing repairs through
-check failures, moved `main`, version readiness and review feedback to human acceptance; only a
-human approves and merges.
+hosted evidence collection from personally authorized Local Copilot App AI. Hosted reporting
+files run-level **Scheduled validation failed** intake issues without depending on App availability.
+A triage automation analyzes each failed run and produces deduplicated problem issues.
+A separate repair automation progresses those problems through check failures, moved `main`,
+version readiness and review feedback to human acceptance; only a human approves and merges.
+
+### Problem-level incidents
+
+An incident is one unresolved occurrence of a distinct problem, not a failing workflow,
+job, package or period of red validation. Repeated observations of the same problem
+update its existing issue; unrelated problems in the same run have separate lifecycles.
+A confirmed recurrence reuses the issue with a new generation. The one-repair/one-PR
+ownership rule applies to that incident, independently of repository-wide worker limits.
+
+The Local AI triage automation analyzes every unsuccessful job and relevant failed step
+before reconciling problem issues. It extracts all supported problems, groups established
+duplicates across jobs and runs, and creates a problem issue only for an unmatched problem. This includes
+infrastructure failures and failed prerequisites, not just test defects. A package
+blocked by a dependency-download failure is affected scope, not another defect.
+
+Problem identity preserves distinguishing failure reasons; a shared Miri target or
+package does not establish a shared cause. Unknown causes remain explicit and receive
+further diagnosis rather than being lost or placed in a universal red-workflow bucket.
+Compatible problem-specific evidence governs resolution, not aggregate workflow color.
+The [incident and triage contract](../../docs/scheduled-validation.md#problems-incidents-and-triage)
+defines terminology, grouping, recurrence, ownership and examples.
+
+Run-level intake issues and problem issues are separate queues. Several failing runs
+can describe the same problem, and one run can describe several unrelated problems.
+Closing a run issue as triaged only acknowledges complete analysis and issue linkage;
+it does not claim that its problems are resolved. Repair admission requires a completed,
+actionable triage result and never consumes an unexamined workflow-failure issue.
+The automations have independent schedules, claims, budgets and health signals.
+Neither a timer offset nor success in one queue establishes progress in the other.
 
 ### Deep-validation operating modes
 
@@ -22,16 +52,16 @@ Ordinary-validation fallback retains those jobs with their event and platform sc
 selection controls routine local Miri and mutation calls; explicit local deep validation remains
 available in either mode.
 
-Hosted execution, issue reporting and Local App repair admission have independent authorization.
-Hosted checks and reporting can operate without local repair admission and without removing deep
+Hosted execution, run reporting, Local AI triage and repair admission have independent authorization.
+Hosted checks and reporting can operate without Local automation and without removing deep
 checks from ordinary validation. Scheduled enforcement requires proven execution, reporting, native
 App and credential safeguards. Restoring ordinary-validation fallback keeps enforcement available
 when scheduled detection or reporting is unreliable.
 
 Installation is not authorization to run or publish. Safe defaults leave hosted execution and
-reporting disabled, local repair admission unconfigured and ordinary-validation fallback selected.
-The operator approves enrollment, scope and operating settings; installing or reconciling the
-automation does not activate them.
+reporting disabled, Local triage and repair admission unconfigured and ordinary-validation fallback selected.
+The operator approves enrollment, scope and operating settings; installing or reconciling
+either automation does not activate them.
 
 ### Scheduled evidence
 
