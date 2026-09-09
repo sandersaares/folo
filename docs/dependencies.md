@@ -27,17 +27,19 @@ rather than reverting to a narrower set of changes.
 
 ## Intra-workspace requirements name the declared version
 
-Every dependency on another package in this workspace names the version that
-package currently declares — `version = "1.2.3"` when it is at `1.2.3`, not
-`version = "1.0.0"` merely because that requirement would still admit `1.2.3`.
+Every versioned dependency in a publishable package on another workspace package
+names the version that package currently declares — `version = "1.2.3"` when it
+is at `1.2.3`, not `version = "1.0.0"` merely because that requirement would
+still admit `1.2.3`. Exact requirements that declare a version group follow the
+same numerical rule even when the declaring package is not publishable.
 
 This constrains the version *number*, not the kind of requirement. Both kinds
 appear, and which one to use is decided by the next chapter:
 
 | Reference | Requirement | Admits |
 | --------- | ----------- | ------ |
-| Between members of one version group | `version = "=1.2.3"` | that version only |
-| Everything else | `version = "1.2.3"` | `1.2.3` and later compatible releases |
+| Declares a shared version group | `version = "=1.2.3"` | that version only |
+| Does not declare shared versioning | `version = "1.2.3"` | `1.2.3` and later compatible releases |
 
 So the rule here is that the number is always the current one; the `=` is a
 separate decision about whether later compatible releases may be resolved.
@@ -64,36 +66,34 @@ cargotechnical reasons (see [impl-crate-split.md](impl-crate-split.md)). Example
 `nm` + `nm_impl`, `nm_otel` + `nm_otel_impl`, and `cargo-bench-history` +
 its `cbh_*` implementation crates.
 
-Such crates must always be released at the same version. Enforce this in two
-places, and keep both in sync:
+An exact requirement between workspace members declares that they share a version.
+`cargo-release-plan` treats the exact-reference graph as undirected and derives a
+version group from each connected component with multiple members. A chain of exact
+references is sufficient: not every dependency between packages in the resulting
+group must be exact. A compatible requirement may therefore connect packages that
+also belong to one group through another path.
 
-* **`[workspace.metadata.release-plan.groups]`** in the root `Cargo.toml` — give
-  every crate in the set the same group so `cargo-release-plan` expands an
-  increment across all of them.
-* **The workspace `Cargo.toml`** — every reference *between* members of the set
-  is an **exact `=` pin** (`version = "=1.2.3"`). Members are one package as far
-  as consumers are concerned, so an exact pin is what stops a consumer resolving
-  two members at versions that were never released together.
+Group discovery covers tracked workspace members whether or not they are
+publishable. It considers normal, build, and development dependencies, including
+optional and inactive target-specific declarations. Aliases and inherited workspace
+dependencies resolve to the actual member package. An unused
+`[workspace.dependencies]` entry and a versionless path dependency create no edge.
 
-Development dependencies between members are not exempt. Only a path-only
-dependency escapes packaging, and the repository already requires intra-workspace
-dev-dependencies to be path-only (see above), so any that carries a version is
-published and must pin exactly like any other edge.
+The accepted exact form is a single `=major.minor.patch` comparator, with insignificant
+surrounding and operator whitespace permitted. Partial, prerelease, build, and compound
+exact requirements between workspace members are manifest errors. A valid exact pin
+must name its target's current declared version; `cargo release-plan check` diagnoses a
+stale pin and `apply` rewrites it.
 
-References *into* a group from outside it, and between separate groups, are
-ordinary compatible requirements. Only the split-package relationship needs the
-pin.
+Use exact requirements only for dependencies that are intended to declare shared
+versioning. References into a group from an unrelated package ordinarily remain
+compatible. Widening an exact pin changes grouping intent and must not be used merely
+to make an unexpected group disappear.
 
-For example, `many_cpus_impl` is referenced as `version = "=2.4.9"` because
-`many_cpus` shares its group, while `many_cpus` itself is referenced as
-`version = "2.4.9"` by the unrelated crates that depend on it. Each `cbh_*`
-implementation crate is likewise exact-pinned within the `cargo-bench-history`
-group.
-
-`cargo release-plan check` rejects a compatible requirement between group
-members, so this is enforced rather than remembered. It is a manifest edit
-rather than a version decision: change the requirement, do not increment
-anything to satisfy it.
+For example, `many_cpus` exact-pins `many_cpus_impl`, so they form one group. The
+unrelated crates that depend on `many_cpus` use compatible requirements. The
+`cargo-bench-history` implementation packages form a larger connected component
+through their exact dependency references.
 
 ## Public dependencies
 
@@ -122,4 +122,3 @@ allow-list frequently names a crate it has no edge to. It also makes the
 propagation self-consistent — because each crate in the chain must list
 `baz::Something` to pass the external-types check, a breaking release of `baz`
 reaches every one of them rather than stopping at the first.
-

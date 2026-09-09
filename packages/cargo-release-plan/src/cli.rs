@@ -136,9 +136,9 @@ enum Command {
     ///
     /// Fails when a publishable package has unreleased changes without a version increment, when
     /// a version group disagrees with itself, when a requirement on another workspace package
-    /// does not name the version that package declares or does not pin a group sibling exactly,
-    /// or when a package whose public API exposes a workspace dependency stays compatible while
-    /// that dependency releases a breaking change.
+    /// does not name the version that package declares, when an exact workspace requirement is
+    /// malformed, or when a package whose public API exposes a workspace dependency stays
+    /// compatible while that dependency releases a breaking change.
     Check(CheckArgs),
     /// Produce the explicit plan reviewed and then passed to apply.
     Expand(ExpandArgs),

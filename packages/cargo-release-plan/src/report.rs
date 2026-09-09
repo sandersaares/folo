@@ -22,6 +22,7 @@ struct ReportFile {
     schema_version: u32,
     head: String,
     packages: Vec<ReportPackage>,
+    non_publishable_packages: Vec<ReportVersionTarget>,
     groups: BTreeMap<String, ReportGroup>,
 }
 
@@ -50,13 +51,21 @@ struct ReportPackage {
     untracked: Vec<String>,
 }
 
+/// One non-publishable version target in `report.json`.
+#[derive(Serialize)]
+struct ReportVersionTarget {
+    name: String,
+    declared_version: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    group: Option<String>,
+}
+
 /// Version-group consistency as recorded in `report.json`.
 #[derive(Serialize)]
 struct ReportGroup {
     members: Vec<String>,
     consistent: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    version: Option<String>,
+    version: String,
 }
 
 pub(crate) fn run_report(
@@ -94,16 +103,32 @@ pub(crate) fn write_report(
             ReportGroup {
                 members: verdict.members().to_vec(),
                 consistent: verdict.is_consistent(),
-                version: verdict.version().map(ToString::to_string),
+                version: verdict.version().to_string(),
             },
         );
     }
+    let non_publishable_packages = classification
+        .work_tree
+        .version_targets
+        .iter()
+        .filter(|target| !target.publishable)
+        .map(|target| ReportVersionTarget {
+            name: target.name.clone(),
+            declared_version: target.version.to_string(),
+            group: classification
+                .work_tree
+                .groups
+                .group_of(&target.name)
+                .map(ToOwned::to_owned),
+        })
+        .collect();
     // The emitted field names are part of the consumer-facing layout documented
     // in the README, so they are compatibility-sensitive rather than incidental.
     let report = ReportFile {
         schema_version: SCHEMA_VERSION,
         head: classification.head.clone(),
         packages,
+        non_publishable_packages,
         groups,
     };
     let report = serde_json::to_string_pretty(&report)

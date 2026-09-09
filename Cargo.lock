@@ -495,7 +495,7 @@ dependencies = [
 
 [[package]]
 name = "cargo-bench-history-figures"
-version = "0.0.0"
+version = "0.2.8"
 dependencies = [
  "cbh_analyze",
  "cbh_detect",
@@ -510,7 +510,7 @@ dependencies = [
 
 [[package]]
 name = "cargo-bench-history-stress"
-version = "0.0.0"
+version = "0.2.8"
 dependencies = [
  "all_the_time",
  "cargo-bench-history",
@@ -562,7 +562,7 @@ dependencies = [
 
 [[package]]
 name = "cargo-release-plan"
-version = "0.1.5"
+version = "0.2.0"
 dependencies = [
  "clap",
  "criterion",

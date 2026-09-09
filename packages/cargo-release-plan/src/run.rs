@@ -32,9 +32,9 @@ pub enum RunInput {
     /// `check` — fail on a release the workspace's manifests cannot support.
     ///
     /// Covers a package needing an increment, a version group disagreeing with
-    /// itself, a requirement not naming the version its target declares or not
-    /// pinning a group sibling exactly, and a package that exposes a public
-    /// dependency releasing a breaking change without one of its own.
+    /// itself, a requirement not naming the version its target declares, malformed
+    /// exact workspace requirements, and a package that exposes a public dependency
+    /// releasing a breaking change without one of its own.
     Check {
         /// Release baseline whose first-parent line supplies anchors.
         ///
@@ -55,7 +55,7 @@ pub enum RunInput {
         plan: PathBuf,
         /// Path that receives the expanded plan JSON.
         out: PathBuf,
-        /// Workspace manifest supplying groups and declared versions. Used verbatim.
+        /// Workspace manifest supplying members and dependency-derived groups. Used verbatim.
         manifest_path: PathBuf,
         /// When set, print explanatory decision notes to stderr.
         verbose: bool,
@@ -88,7 +88,7 @@ pub enum RunOutcome {
     },
     /// `check` finished. `passed` is the process-level verdict.
     Check {
-        /// Whether every publishable package and version group passed.
+        /// Whether every release and workspace-version check passed.
         passed: bool,
         /// Rendered gating diagnostics or a success summary.
         message: String,

@@ -197,12 +197,9 @@ impl PlanIncrementSpecError {
     }
 }
 
-/// A plan names a package or group that is not in the workspace.
+/// A plan names a package that is not a tracked workspace version target.
 #[ohno::error]
-#[display(
-    "Plan increment '{}' is not a publishable package or version group",
-    name.quoted()
-)]
+#[display("Plan increment '{}' is not a tracked workspace member", name.quoted())]
 pub(crate) struct UnknownPlanTargetError {
     name: String,
 }
@@ -222,7 +219,7 @@ impl UnknownPlanTargetError {
 /// An expanded plan is an approval artifact: it lists every package the decision
 /// moves, so a reviewer can see the whole set before it is applied. Expanding it
 /// again must therefore reproduce exactly that set. Reaching a package it does
-/// not name means the workspace's group configuration changed after the
+/// not name means the workspace's derived group changed after the
 /// document was produced, so applying it would edit a package nobody approved.
 #[ohno::error]
 #[display(
@@ -356,37 +353,49 @@ pub(crate) struct ConflictingPlanIncrementKindError {
 impl UnwindSafe for ConflictingPlanIncrementKindError {}
 impl RefUnwindSafe for ConflictingPlanIncrementKindError {}
 
-/// A package is listed in more than one version group, or twice in one group.
+/// The current workspace still declares the obsolete manual group key.
 #[ohno::error]
 #[display(
-    "Package '{}' is listed in version groups '{}' and '{}'",
-    package.quoted(),
-    first_group.quoted(),
-    second_group.quoted()
+    "Workspace metadata key 'release-plan.groups' is obsolete; declare version-group membership with exact '=major.minor.patch' workspace dependencies"
 )]
-pub(crate) struct DuplicateGroupMemberError {
-    package: String,
-    first_group: String,
-    second_group: String,
+pub(crate) struct LegacyVersionGroupsError {}
+
+impl UnwindSafe for LegacyVersionGroupsError {}
+impl RefUnwindSafe for LegacyVersionGroupsError {}
+
+/// An in-workspace exact dependency does not use the supported plain triplet.
+#[ohno::error]
+#[display(
+    "Dependency '{}' in {} of '{}' uses unsupported exact requirement '{}'; use one '=major.minor.patch' comparator",
+    dependency.quoted(),
+    location.quoted(),
+    manifest.quoted(),
+    requirement.quoted()
+)]
+pub(crate) struct UnsupportedExactRequirementError {
+    manifest: String,
+    dependency: String,
+    location: String,
+    requirement: String,
 }
 
-impl UnwindSafe for DuplicateGroupMemberError {}
-impl RefUnwindSafe for DuplicateGroupMemberError {}
+impl UnwindSafe for UnsupportedExactRequirementError {}
+impl RefUnwindSafe for UnsupportedExactRequirementError {}
 
-#[cfg(test)]
-impl DuplicateGroupMemberError {
-    pub(crate) fn package(&self) -> &str {
-        &self.package
-    }
-
-    pub(crate) fn first_group(&self) -> &str {
-        &self.first_group
-    }
-
-    pub(crate) fn second_group(&self) -> &str {
-        &self.second_group
-    }
+/// A group is assigned an explicit version that exact pins cannot represent.
+#[ohno::error]
+#[display(
+    "Version group '{}' cannot use non-plain target version '{}'; use a major.minor.patch version",
+    group.quoted(),
+    version
+)]
+pub(crate) struct NonPlainGroupVersionError {
+    group: String,
+    version: Version,
 }
+
+impl UnwindSafe for NonPlainGroupVersionError {}
+impl RefUnwindSafe for NonPlainGroupVersionError {}
 
 /// Incrementing a semantic-version component overflows `u64`.
 #[ohno::error]
@@ -539,27 +548,6 @@ pub(crate) struct LockfileClosureUnavailableError {
 impl UnwindSafe for LockfileClosureUnavailableError {}
 impl RefUnwindSafe for LockfileClosureUnavailableError {}
 
-/// The workspace declares `release-plan.groups` as something other than a table.
-#[ohno::error]
-#[display("Workspace metadata key 'release-plan.groups' must be a table of version groups")]
-pub(crate) struct MalformedVersionGroupsError {}
-
-impl UnwindSafe for MalformedVersionGroupsError {}
-impl RefUnwindSafe for MalformedVersionGroupsError {}
-
-/// A version-group entry is present but is not an array of package names.
-#[ohno::error]
-#[display(
-    "Version group '{}' must be an array of package names",
-    group.quoted()
-)]
-pub(crate) struct MalformedVersionGroupError {
-    group: String,
-}
-
-impl UnwindSafe for MalformedVersionGroupError {}
-impl RefUnwindSafe for MalformedVersionGroupError {}
-
 /// A package's private-API declaration is present but is not a boolean.
 ///
 /// Fails closed rather than defaulting: a typo here would otherwise silently
@@ -582,79 +570,6 @@ impl RefUnwindSafe for MalformedPrivateApiError {}
 impl MalformedPrivateApiError {
     pub(crate) fn package(&self) -> &str {
         &self.package
-    }
-}
-
-#[cfg(test)]
-impl MalformedVersionGroupError {
-    pub(crate) fn group(&self) -> &str {
-        &self.group
-    }
-}
-
-/// A version group lists a name that is not a workspace package.
-#[ohno::error]
-#[display(
-    "Version group '{}' lists unknown workspace package '{}'",
-    group.quoted(),
-    package.quoted()
-)]
-pub(crate) struct UnknownGroupMemberError {
-    group: String,
-    package: String,
-}
-
-impl UnwindSafe for UnknownGroupMemberError {}
-impl RefUnwindSafe for UnknownGroupMemberError {}
-
-#[cfg(test)]
-impl UnknownGroupMemberError {
-    pub(crate) fn group(&self) -> &str {
-        &self.group
-    }
-
-    pub(crate) fn package(&self) -> &str {
-        &self.package
-    }
-}
-
-/// A version group lists a workspace package that is never published.
-///
-/// A version group keeps the versions its members are released under in lockstep, so
-/// a package that is never released has no such version to keep in step. Naming
-/// one is a configuration mistake rather than a member the tool can quietly
-/// leave behind.
-#[ohno::error]
-#[display(
-    "Version group '{}' lists '{}', which is not a publishable package",
-    group.quoted(),
-    package.quoted()
-)]
-pub(crate) struct NonPublishableGroupMemberError {
-    group: String,
-    package: String,
-}
-
-impl UnwindSafe for NonPublishableGroupMemberError {}
-impl RefUnwindSafe for NonPublishableGroupMemberError {}
-
-/// A version group is named after a package outside it.
-#[ohno::error]
-#[display(
-    "Version group '{}' shares its name with a workspace package that is not one of its members",
-    group.quoted()
-)]
-pub(crate) struct GroupNameCollisionError {
-    group: String,
-}
-
-impl UnwindSafe for GroupNameCollisionError {}
-impl RefUnwindSafe for GroupNameCollisionError {}
-
-#[cfg(test)]
-impl GroupNameCollisionError {
-    pub(crate) fn group(&self) -> &str {
-        &self.group
     }
 }
 
@@ -808,7 +723,23 @@ mod tests {
         RefUnwindSafe
     );
     assert_impl_all!(
-        DuplicateGroupMemberError: Send,
+        LegacyVersionGroupsError: Send,
+        Sync,
+        Debug,
+        error::Error,
+        UnwindSafe,
+        RefUnwindSafe
+    );
+    assert_impl_all!(
+        UnsupportedExactRequirementError: Send,
+        Sync,
+        Debug,
+        error::Error,
+        UnwindSafe,
+        RefUnwindSafe
+    );
+    assert_impl_all!(
+        NonPlainGroupVersionError: Send,
         Sync,
         Debug,
         error::Error,
@@ -920,47 +851,6 @@ mod tests {
         UnwindSafe,
         RefUnwindSafe
     );
-    assert_impl_all!(
-        MalformedVersionGroupsError: Send,
-        Sync,
-        Debug,
-        error::Error,
-        UnwindSafe,
-        RefUnwindSafe
-    );
-    assert_impl_all!(
-        MalformedVersionGroupError: Send,
-        Sync,
-        Debug,
-        error::Error,
-        UnwindSafe,
-        RefUnwindSafe
-    );
-    assert_impl_all!(
-        UnknownGroupMemberError: Send,
-        Sync,
-        Debug,
-        error::Error,
-        UnwindSafe,
-        RefUnwindSafe
-    );
-    assert_impl_all!(
-        NonPublishableGroupMemberError: Send,
-        Sync,
-        Debug,
-        error::Error,
-        UnwindSafe,
-        RefUnwindSafe
-    );
-    assert_impl_all!(
-        GroupNameCollisionError: Send,
-        Sync,
-        Debug,
-        error::Error,
-        UnwindSafe,
-        RefUnwindSafe
-    );
-
     #[test]
     fn command_spawn_error_retains_source() {
         let error =
@@ -992,14 +882,6 @@ mod tests {
     fn unknown_plan_target_error_names_target() {
         let error = UnknownPlanTargetError::new("ghost");
         assert_eq!(error.name(), "ghost");
-    }
-
-    #[test]
-    fn duplicate_group_member_error_names_package_and_groups() {
-        let error = DuplicateGroupMemberError::new("nm", "a", "b");
-        assert_eq!(error.package(), "nm");
-        assert_eq!(error.first_group(), "a");
-        assert_eq!(error.second_group(), "b");
     }
 
     #[test]
