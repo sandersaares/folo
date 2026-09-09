@@ -15,8 +15,8 @@ copy. Review local prerequisite instructions; do not execute heavyweight setup o
 install missing tools without operator approval.
 
 Use the [operating policy](../workflows/implementation.md#operating-policy) to distinguish
-hosted execution/reporting authorization, ordinary-validation fallback and Local
-admission. Reconciliation does not select an enforcement mode or authorize repairs.
+hosted execution/reporting authorization and Local admission. Reconciliation
+does not change the shallow/deep recipe split or authorize repairs.
 New installations are disabled and unconfigured by default; preserve existing
 operator-approved settings rather than treating setup as activation.
 
@@ -43,8 +43,8 @@ These commands have no placeholders. Compare their output with policy and stop o
 identity mismatch or nonzero exit. Never print tokens/environment credentials or
 use PATs. Have the operator verify personal Copilot entitlement and billing
 selection in the App; CLI login alone does not establish inference billing.
-The approved selected `sandersaares` entitlement is personally funded; preserve that
-decision while still proving actual pilot usage attribution and permissions.
+Preserve the operator-selected account and enrollment while proving actual pilot
+usage attribution and the permissions required by the authentication chapter.
 Record remaining quota/consent/sandbox/publication prerequisites without changing
 account settings. No same-repository installation-test PR before Azure/benchmark safeguards.
 
@@ -56,8 +56,9 @@ connect/select the intended project through supported App UI; do not clone into 
 guessed directory or invent a project identifier.
 
 Discover the real Local environment through native metadata or the App environment
-picker. The approved executor is the operator's current Windows profile; do not
-provision a dedicated profile or choose another machine without a new decision.
+picker. Preserve the enrolled executor's machine/profile; a new installation
+requires an explicit operator choice. Do not provision a dedicated profile or
+choose another machine without that decision.
 `host_id` is required for direct native automation creation; never supply
 the project ID, machine name or the word `local` as a guessed host ID. If host
 discovery is unavailable, use the native creation confirmation dialog only after

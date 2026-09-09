@@ -194,6 +194,7 @@ Describe 'Controller-owned mutation configuration decoder' {
             $build.command.arguments | Should -Not -Contain '--workspace'
             $build.command.environment.RUSTUP_AUTO_INSTALL | Should -Be '0'
             $build.command.environment.CARGO_BUILD_TARGET | Should -BeNullOrEmpty
+            $build.command.environment.CARGO_TARGET_DIR | Should -BeExactly $build.target
             $platform = & (Get-Module ScheduledExecution) { Get-ScheduledHostPlatform }
             $build.target | Should -Be (Join-Path $script:root `
                 "target\scheduled-mutation-config\$($platform.os)-$($platform.architecture)")
@@ -202,10 +203,22 @@ Describe 'Controller-owned mutation configuration decoder' {
         }
     }
 
-    It 'invokes the native decoder with the actual controller configuration' {
-        $configuration = & (Get-Module ScheduledExecution) {
-            $text = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\..\.cargo\mutants.toml') -Raw
-            Get-ScheduledMutationConfig -Text $text
+    It 'invokes the native decoder despite an inherited <TargetKind> target directory' -TestCases @(
+        @{ TargetKind = 'empty'; TargetDirectory = '' }
+        @{ TargetKind = 'unrelated'; TargetDirectory = 'unrelated-candidate-target' }
+    ) {
+        param($TargetDirectory)
+        $previous = [Environment]::GetEnvironmentVariable('CARGO_TARGET_DIR')
+        try {
+            $env:CARGO_TARGET_DIR = $TargetDirectory
+            $configuration = & (Get-Module ScheduledExecution) {
+                $script:mutationDecoderExecutable = $null
+                $text = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\..\.cargo\mutants.toml') -Raw
+                Get-ScheduledMutationConfig -Text $text
+            }
+            $env:CARGO_TARGET_DIR | Should -BeExactly $TargetDirectory
+        } finally {
+            $env:CARGO_TARGET_DIR = $previous
         }
         $configuration.all_features | Should -BeTrue
         $configuration.profile | Should -Be 'mutants'

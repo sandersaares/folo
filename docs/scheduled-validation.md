@@ -12,8 +12,9 @@ personal Copilot entitlement. The **triage automation** analyzes failed runs wit
 AI and creates or updates deduplicated problem issues. It does not change source or
 create repair PRs. The **repair automation** scans those triaged problems and
 continues registered repair PRs toward readiness. Its fresh coordinator never edits
-source; an owned native issue session performs the repair and remains the execution
-context for CI, base, version-plan and review work. Final approval and merge remain
+source. It creates or resumes a **repair session**: a visible Local App session
+linked to the problem issue, with its own worktree, branch and AI agent. That same
+session handles code changes, CI, base, version-plan and review work. Final approval and merge remain
 human actions.
 
 ```text
@@ -31,7 +32,7 @@ Local App repair: poll -> fenced claim -> native issue/PR session
 ```
 
 This is repository-level orchestration, not a per-PR timer, cloud coding agent,
-hidden worker process or organization-billed inference workflow. A paused session
+hidden process or organization-billed inference workflow. A paused session
 keeps its ownership. Idle status or elapsed time never establishes that its work is
 safe to replace.
 
@@ -42,32 +43,31 @@ for mutation quality and reviewed skip criteria. The shared versioned contracts 
 reviewed defaults live under `scripts/scheduled/`; policy is not inferred from App UI
 state.
 
-## Problems, incidents and triage
+## Problems and triage
 
-An **observation** is evidence of a failure from a particular run, job or step.
-A **problem** is a distinct actionable failure supported by observations: for
-example, a Miri defect, a missed mutation, or a dependency-download failure.
-A **finding** is the normalized report of such a problem. The **finding issue**
-is its canonical tracking item, not a ticket for the workflow run.
+A **problem** is a failure that can be diagnosed and addressed independently:
+for example, a Miri defect, a missed mutation, or a dependency-download failure.
+Triage tracks each problem in a GitHub issue labelled `scheduled-finding`.
+The run-level issue labelled `scheduled-run-failure` instead requests analysis of
+a failed workflow; it can link to several problem issues.
 
-An **incident** is one unresolved occurrence of a problem. Its identity combines
-the stable problem identity with a **generation** that changes only when the
-problem recurs after confirmed resolution. Repeated observations across runs
-update the same incident and issue. A recurrence reuses the issue with a new
-generation; delayed evidence from an older occurrence does not reopen it.
+Repeated evidence of the same unresolved problem updates its existing issue.
+Unrelated failures in the same run remain separate. A confirmed recurrence reopens
+the problem issue; delayed evidence from before resolution does not. Records carry
+an occurrence number (`generation`) so confirmation for an earlier repair cannot
+resolve a later recurrence.
 
-Each incident has at most one active local repair and one open repair PR.
-Duplicate observations or aliases of the same problem cannot acquire separate
-workers. A new generation cannot bypass retained ownership from an older attempt.
-Distinct incidents have independent lifecycles, subject to repository-wide
-admission limits; a one-worker limit does not combine their issues.
+Each active problem has at most one repair session and one open repair PR.
+Duplicates cannot acquire competing sessions, and reopening an issue does not
+bypass retained ownership of earlier work. Capacity limits may delay independent
+problems, but do not combine their issues.
 
 ### Run-level intake and AI triage
 
 The hosted completion reporter publishes the run's identity, attempts, source,
 manifest, job/step inventory, structured results and diagnostic references. Its
 run-level issue is deduplicated by repository, workflow and run identity. Repeated
-reporting of an attempt is a no-op; a rerun appends attempt evidence and makes any
+reporting of identical attempt evidence is a no-op; a rerun appends evidence and makes any
 new unprocessed failure eligible for triage. Consecutive failing runs can have
 separate intake issues without creating duplicate problem issues.
 
@@ -75,8 +75,8 @@ The triage automation scans all unprocessed run/attempt evidence, not just newly
 created issues. AI analysis accounts for every unsuccessful job and relevant failed
 step, including planning, environment setup, downloads, checker execution and
 artifact handling. It reads the evidence and relevant source as needed to identify
-causes and compare them with existing issues. Failed jobs are evidence containers,
-not incident boundaries. Programmatic parsers supply observations and candidate
+causes and compare them with existing issues. A job boundary does not define a
+problem. Programmatic parsers supply evidence and candidate
 matches; they do not replace this semantic analysis.
 
 Triage extracts every independently supported problem rather than selecting the
@@ -88,14 +88,6 @@ produces an explicit triage-required or evidence-collection problem; it is not a
 empty successful result. Intentional skips and cancellation causes are accounted
 for without inventing defects in unexecuted code.
 
-For each extracted problem, compare its evidence, diagnosis and established aliases
-against the triage-owned problem index, including resolved issues. Update a matching
-incident, reopen a confirmed recurrence with a new generation, or create an issue
-only when no existing problem matches. Serialize this reconciliation so duplicate
-triage retries and concurrent runs cannot create duplicate issues. Preserve
-the contributing observations and their run/job/step references on the canonical
-record even when they are grouped.
-
 All semantic triage uses personally funded Local App AI, never hosted inference.
 If analysis cannot establish a cause or a safe match, retain the narrowest supported
 symptom and expose the uncertainty. Incomplete analysis is not repair-ready.
@@ -103,84 +95,124 @@ Further diagnosis can refine the classification or establish a shared cause; it
 must preserve issue history and reconcile existing repair ownership before
 consolidating issues.
 
-The triager records a disposition for every failed job: linked problem issues,
-an explained duplicate or blocked/cancelled consequence, or an explicit unresolved
-analysis requirement. Mark the run-level issue **triaged** only when all such
-analysis is complete and issue writes are reconciled. An unfinished job analysis
-keeps the evidence revision pending; a fully analyzed problem can instead be linked
-with an explicit operator hold. This may create no new
-problem issues when everything is already reported. Closing a triaged intake
-issue means analysis is complete, not that its linked problems are fixed. A new
-unprocessed attempt makes that run eligible again without erasing prior analysis.
-
 Only problems marked actionable by completed triage are eligible for repair.
 Infrastructure recovery, permission decisions and unresolved classification have
 their own dispositions; they are not permission to fabricate a code patch.
-New observations appended during a repair do not create another worker. A changed
-diagnosis that invalidates the repair scope blocks or informs the existing worker
+New evidence appended during a repair does not create another session. A changed
+diagnosis that invalidates the repair scope blocks or informs the existing repair session
 instead of silently replacing its task.
 
 A grouped problem retains the affected packages, checks, platforms and replay
 conditions as a set. Repair admission validates the entire required scope against
-policy, not just a representative observation. The repair gate and resolution
+policy, not just a representative failure. The repair gate and resolution
 criteria cover that set. A passing replay of one symptom cannot resolve other
 linked failures without evidence that the confirmation covers their shared cause.
 
-### Problem identity and grouping
+### Marking a run triaged
 
-A stable fingerprint identifies a supported failure, not the fact that a workflow,
-check family, package or Cargo target is failing. Identity includes the failure
-category and affected operation/entity, with distinguishing diagnostics and
-reproduction conditions where those are material. Run IDs, timestamps, source
-SHAs, incidental log paths and shifting line numbers are observation metadata.
-Normalize known volatile details without discarding distinctions between problems.
+The triager writes a completion record for the exact run ID, attempt number and
+evidence digest it analyzed. The record links every failed job to problem issues
+or explains why it is only a blocked/cancelled consequence. It is complete only
+after the linked issue writes succeed. Unfinished analysis stays pending; a fully
+analyzed problem with an operator hold can be linked without holding up the run.
+Creating no new issues is valid when all problems are already reported.
 
-Equal normalized symptoms supply candidate matches. The AI triager evaluates
-whether the evidence describes the same problem. Different symptoms belong
-to one problem only when evidence establishes a shared cause; record that relation
-as an alias rather than assuming that every failure in a package is related.
-Keep uncertain matches separate and linked for diagnosis. Root-cause discovery is
-not a prerequisite for reporting a failure, and a fingerprint is not proof of a
-common root cause.
+The run issue receives the `scheduled-triaged` label and is closed when every
+failed attempt/evidence revision in its hosted record has a matching completion
+record. This is a visible summary, not the authority for queue selection: every
+poll compares the hosted evidence with the triage records, including closed issues.
+Closing run intake does not resolve the linked problems.
+
+| Incoming evidence | Run issue and triage result |
+|---|---|
+| Reporter retries the same attempt with identical evidence. | Preserve the completion record, label and closed state. |
+| A rerun of the same run fails with a new attempt number. | Reopen the same run issue and remove `scheduled-triaged`. Analyze the new attempt, retaining earlier completion records. |
+| More evidence changes an already reported failed attempt's digest. | Reopen and remove the label; the previous completion does not cover the changed evidence. |
+| A rerun passes. | Record the pass without erasing unprocessed failure evidence or claiming that earlier failures were triaged. |
+
+The reporter clears stale presentation when it appends unprocessed failure
+evidence. The triager rereads the hosted record before marking completion and
+reconciles the label/state with that record. If evidence arrives concurrently,
+the next poll still detects the unmatched revision even if a label update races.
+An old analysis can never acknowledge the new attempt merely by closing the issue.
+
+### Finding existing problems
+
+Problem identity is the GitHub repository's numeric ID plus the canonical problem
+issue number. It is assigned by issue creation and does not change when diagnosis
+or wording improves. A log fingerprint does not assign semantic identity.
+
+At each triage scan, the helper paginates GitHub's repository issues API with
+`state=all` and `labels=scheduled-finding`. It validates the owned problem records
+and builds a local index containing issue number, title, open/resolved state,
+failure category, affected packages/checks, diagnostic summary, suspected or
+established cause, prior alternative symptoms and evidence links. It also refreshes
+registered issue IDs so removing a label cannot silently forget owned work.
+Incomplete pagination, inaccessible records or malformed ownership blocks new
+problem publication rather than treating the index as empty.
+
+The AI receives compact summaries of that complete index, in bounded batches when
+necessary. It reads the full records, discussion and diagnostic evidence for
+plausible matches. Text/scope lookup can prioritize candidates, but exact digest,
+package or check matches are not mandatory filters: a shared cause can affect
+different tests, packages or check families.
+
+For each problem in the failed run, the AI records either a match to an existing
+issue with its reasoning, or a proposed new issue with the closest candidates and
+why they differ. Only evidence of a common cause justifies combining different
+symptoms. A definite repeat updates the active issue; a confirmed post-resolution
+recurrence reopens it. Uncertain matches remain linked for further diagnosis and
+are not admitted as competing repairs. Immediately before creating an issue, the
+triager refreshes the index and reconciles its persisted publication intent so a
+retried API call cannot create a duplicate.
+
+Deterministic SHA-256 digests identify exact evidence revisions, not problems.
+The helper hashes a versioned canonical JSON record of the run/attempt, immutable
+source/check identity, job/step results, diagnostic-content digests and explicit
+evidence gaps. Object keys are sorted and job/step collections use their stable
+IDs; raw logs remain available for interpretation. Triage annotations, issue
+state, fetch timestamps and human discussion do not enter that digest. AI
+deduplication can match different digests, while a changed evidence digest always
+requires its own completed analysis.
 
 For Miri, replay scope and problem identity are different concepts. Several
 unrelated failures can require the same target-level replay. A target, shard or
 seed range alone must not collapse distinguishable failures, and interleaved output
 must not be used to invent test/seed attribution.
 
-| Observations | Incident treatment |
+| Evidence | Treatment |
 |---|---|
-| The same normalized Miri defect fails in consecutive runs. | Append evidence to the existing incident, even while its repair is active. |
-| Several tests in `foo` fail from an established shared Miri defect. | Track one problem with all affected tests and observations; keep unrelated defects separate. |
+| The same Miri defect fails in consecutive runs. | Append evidence to the existing problem issue, even while its repair is active. |
+| Several tests in `foo` fail from an established shared Miri defect. | Track one problem with all affected tests and evidence; keep unrelated defects separate. |
 | Different Miri diagnostics occur in the same Cargo target. | Track distinct problems unless a shared cause is established. |
 | Mutation shard 3 cannot download dependency `bar`. | Track an execution problem identifying the download operation and failure reason; mark mutation coverage blocked, not caught or missed. |
-| Other shards fail from that same download problem. | Add their observations to the same issue; shard numbers are evidence, not independent problems. |
+| Other shards fail from that same download problem. | Add their evidence to the same issue; shard numbers are evidence, not independent problems. |
 | One run reports A and B; the next reports B and C. | Update B and report C if unmatched. A remains governed by its own resolution evidence, not the workflow's red/green state. |
 
-An unrelated later green job, an absent observation or the appearance of a
-different problem does not resolve an incident. Resolution requires applicable
-evidence for that problem and generation. Infrastructure recovery or an explained
+An unrelated later green job, an absent symptom or the appearance of a
+different problem does not establish resolution. Resolution requires applicable
+evidence for the current occurrence of that problem. Infrastructure recovery or an explained
 no-change disposition need not manufacture a source patch, but must satisfy their
 explicit resolution policy. Broad workflow health and complete-coverage status
-remain separate from each incident's lifecycle.
+remain separate from each problem's lifecycle.
 
 ## Validation and release contract
 
 Ordinary tests, compilation, Clippy, docs, feature/dependency, external-type,
 version/SemVer and integration checks remain on the normal validation path.
-**Scheduled enforcement** runs mutation testing, ordinary and many-seed Miri, and
-careful checking through recurring complete manifests. **Ordinary-validation
-fallback** retains the ordinary PR/push deep jobs and routine local Miri/mutation
-calls with their existing scopes. Retained platform coverage is not silently
-reduced. Explicit `just package="foo bar" validate-deep` remains available in either
-mode.
+PR/push validation is shallow. Scheduled workflows own mutation testing, ordinary
+and many-seed Miri, and careful checking through recurring complete manifests.
+Locally, `just validate-local` always runs shallow validation;
+`just package="foo bar" validate-deep-local` always runs deep validation.
+Neither recipe reads scheduling policy or changes meaning with activation.
+Managed repair PRs additionally run the relevant deep checks needed to prove their fix.
 
 Hosted execution, issue reporting, Local triage and repair admission are independently
-authorized. Hosted checks and reporting can run with both Local roles disabled and
-ordinary-validation fallback selected. Safe installation defaults disable hosted
-execution/reporting, leave both Local roles disabled and repair allowlists unconfigured,
-and select ordinary-validation fallback; installation or profile reconciliation
-does not change those settings. The
+authorized. Hosted checks and reporting can run with both Local roles disabled.
+Safe installation defaults disable hosted execution/reporting, leave both Local
+roles disabled and repair allowlists unconfigured. Disabled scheduled execution
+means no automatic recurring deep coverage; it does not move deep checks into PR
+validation. Installation or profile reconciliation does not activate anything. The
 [operating policy](../.github/workflows/implementation.md#operating-policy)
 defines the exact configuration mapping and readiness requirements.
 
@@ -205,8 +237,8 @@ from independently known input scope, preserve the recorded replay for repair
 verification, and do not classify missing test/seed attribution alone as missing
 evidence.
 
-`release.yml` continues publishing on merge. Scheduled enforcement accepts delayed
-detection of potentially already-published defects. Selecting it requires explicit
+`release.yml` continues publishing on merge. Scheduled deep checking accepts delayed
+detection of potentially already-published defects. Operating it requires explicit
 acceptance of this tradeoff and verified detection/reporting capabilities.
 
 The managed repair gate validates the actual published head or combined queue
@@ -231,7 +263,7 @@ identified triage and repair entries. It preserves operator choices and existing
 triage and repair ownership. Triage has its own AI instructions and run queue; the
 [intake skill](../.github/skills/scheduled-intake/SKILL.md) and
 [repair skill](../.github/skills/scheduled-repair/SKILL.md) own repair admission and
-worker continuation, not failed-run triage.
+repair-session continuation, not failed-run triage.
 No repository configuration file is needed merely to install these automations.
 Do not put cron in `.github/github-app.yml`, use `auto_issue_session` as a poller or
 attach heavyweight `session.create` scripts to empty polling sessions.
@@ -256,23 +288,31 @@ reconciliation through supported App controls.
 
 Repair allowlists are empty by default. Enrollment, approved scope, publication
 safeguards, verified native capabilities and explicit mode authorization are required
-before admissions. Policy constrains starts, active workers and continuations.
+before admissions. Policy constrains starts, active repair sessions and continuations.
 Continuations have daily and lifetime-per-attempt limits; consumed reservations
 remain charged even if delivery fails. Triage separately limits analyses and
 continuations so repeated run failures cannot consume an unbounded personal budget.
 These are **admission limits, not hard token or spending caps**. The triage model
 must support substantive log/source analysis. The repair coordinator can use a
-cheaper orchestration model and select a separate worker model. Empty polls in
+cheaper orchestration model and select a separate repair model. Empty polls in
 either automation are not free.
 
 ## Authentication, credentials and availability
 
-Normal OAuth/App authentication authorizes GitHub operations. The expected GitHub
-login does not prove that inference uses a personally funded Copilot entitlement.
-The selected `sandersaares` entitlement is personally funded and the approved Local
-executor is the operator's current Windows profile; setup preserves these choices.
-The operator must verify personal billing selection and actual pilot attribution,
-configure personal usage limits/notifications, and approve native tool consent.
+The operator chooses the account and enrolled machine/profile. No account name,
+numeric user ID or entitlement identifier is part of the design. The selected
+account must meet these requirements:
+
+* Authenticate through supported OAuth/App sign-in and satisfy repository access/SSO requirements.
+* Read Actions jobs, logs and artifacts; read and create/update issues, labels and authorized comments.
+* Push managed branches, create/update PRs, read checks/reviews and request authorized diagnostic workflows, without a protection bypass or merge permission requirement.
+* Have personally funded Copilot access to the selected models and enough allowance for the configured schedules and admitted work.
+* Support the approved unattended native tool operations; unresolved consent prompts block the relevant action.
+
+Enrollment records the actual login and numeric user ID so later calls can detect
+an unintended account change. A matching GitHub login alone does not prove inference
+billing attribution. The operator verifies that attribution in the pilot,
+configures personal limits/notifications and approves tool consent.
 Never use PATs, export credentials to state, switch accounts to escape a quota,
 introduce hosted AI billing permissions or invent unsupported per-run billing caps.
 
@@ -304,6 +344,11 @@ Resolve local state to the absolute path:
 %LOCALAPPDATA%\Folo\ScheduledRemediation\<repository-id>\state.json
 ```
 
+`repository-id` is GitHub's numeric repository ID, the `id` returned by
+`gh api repos/{owner}/{repo} --jq .id`. It is not the repository name, GraphQL
+`node_id`, App project ID or local executor ID. Setup obtains and verifies it for
+the selected repository; the directory name remains stable across repository renames.
+
 The directory is outside worktrees and per-session scratch databases. State stores
 only non-secret execution identity, profiles, triage checkpoints/publication intents,
 repair attempts, dispatch accounting and health. One enrolled machine owns it. Local file locks do not coordinate multiple
@@ -312,9 +357,17 @@ machines; GitHub comments are an audit mirror, not a distributed atomic claim.
 Each transaction briefly opens `transaction.lock` exclusively, validates the
 entire state, and atomically replaces `state.json` after flushing a same-directory
 temporary file. Lock contention is explicit. There is no wait loop or expectation
-that a handle survives a helper process. A persistent coordinator token fences
-multi-call scans. Expiring it allows another coordinator scan, never reclaiming a
-worker. Each dispatch has a separate token checked by the actual native worker.
+that a handle survives a helper process.
+
+The **repair coordinator** is the scheduled repair-automation session that scans
+issues and starts or resumes repair sessions. Its **coordinator token** is an
+opaque random value returned by `acquire-coordinator` and stored with that session's
+identity in local state. Every later coordinator mutation must supply the current
+token. This prevents overlapping polls or an old resumed poll from changing a
+newer poll's reservations after the file lock has been released. It is not a GitHub
+credential. Expiry permits another scan, never takeover of a repair session.
+Each admitted repair turn also receives a dispatch token bound to its actual
+session and attempt; that session accepts it before changing source.
 
 ### Triage ownership and issue publication
 
@@ -337,21 +390,30 @@ Newer evidence cannot be acknowledged by an older analysis checkpoint.
 
 Hosted records own run evidence, coverage and authoritative confirmation. Triage
 records own problem identity, causal grouping and run-to-problem links. Repair
-records own worker/session/PR state. Each writer preserves the others' records.
+records own repair-session/PR state. Each writer preserves the others' records.
 A shared personal account name does not substitute for validated role, record,
 source-run and issue identity.
 
 ### Repair admission
 
+The repair backlog is the complete set of open `scheduled-finding` issues with a
+validated, completed triage record for their current occurrence, an actionable
+source-repair disposition, and links to the hosted evidence and required scope.
+Raw `scheduled-run-failure` issues, incomplete analysis and operator/infrastructure
+recovery dispositions are not repair tasks. Holds, scope limits, budgets and existing
+session/PR ownership are then applied to decide which backlog item may start.
+Registered repairs are reconciled separately even if their issue closes or a label
+is removed; these changes cannot free a still-owned session.
+
 The repair admission protocol is:
 
-1. Reserve a repair coordinator token; scan and validate the complete triaged problem backlog, excluding raw run-intake issues.
+1. Acquire the coordinator token and scan the complete repair backlog defined above.
 2. Reconcile recorded attempts against native sessions and GitHub PRs before selecting new work.
 3. Reserve one attempt and charge its admission under the lock.
 4. Persist `opening-session` before native `open_issue_session` with a model-selected, strictly inert interactive bootstrap.
 5. Verify the returned session's issue/repository and ownership, then register its actual session and generated branch/head before permitting any side effect.
-6. Persist `dispatching`, then enqueue the actual autopilot worker instruction after the bootstrap. The worker accepts its token and records native branch adoption before editing.
-7. Persist publication branch/head identity, mirror the worker record, then create the initial PR with the repair marker already in its body.
+6. Persist `dispatching`, then enqueue the actual autopilot repair instruction after the bootstrap. The repair session accepts its token and records native branch adoption before editing.
+7. Persist publication branch/head identity, mirror the repair-session record, then create the initial PR with the repair marker already in its body.
 8. Register the returned PR number and retain the same native session for every continuation.
 
 Lost responses are reconciled, not blindly retried. `opening-session`, `dispatching`
@@ -427,22 +489,24 @@ The example identities and path are placeholders, not enrollment defaults.
 | `record-pr-disposition` | `coordinator_token`, `attempt_id`, `pr_number`, `head_sha`, `disposition` (`merged`, `closed-unmerged`, `confirmed`), `hosted_confirmation`, `native_idle_verified`; dispatch must already be completed before releasing ownership. |
 | `block` | `coordinator_token`, `attempt_id`, explicit `reason`; keeps the slot. |
 
-Worker identity means `attempt_id`, `session_id`, `dispatch_token`. Assertions such
+The action table's "Worker identity" means the agent in the registered repair
+session, identified by `attempt_id`, `session_id`, `dispatch_token`. The serialized
+`worker` record is that session's ownership record, not another background process. Assertions such
 as `ownership_verified` or `hosted_confirmation` must come from the corresponding
 native/API evidence, never from an agent's claim of success.
 Check allowlists and priority use the triaged problem's evidence-bound check families;
 exact catalog IDs and replay conditions remain intact in evidence, descriptors and
-worker claims, including every required scope in a grouped problem.
+repair claims, including every required scope in a grouped problem.
 
 The version evidence also carries the immutable `pre_version_sha`, canonical
 `decisions`, `expanded_plan` and `expanded_plan_digest` used by
 `ScheduledVersion.psm1` to regenerate the exact expected Cargo edits. Record that
 source checkpoint before applying versions, with every Cargo manifest and lockfile
-byte-identical to the pinned current trusted release baseline. A worker-selected
+byte-identical to the pinned current trusted release baseline. An agent-selected
 checkpoint containing pending increments is not a valid starting point, even if
 the resulting expansion is empty.
 
-For continuation, preserve the source repair and restore only the worker's proven
+For continuation, preserve the source repair and restore only the repair session's proven
 mechanical Cargo edits to the current baseline before recording a new source
 checkpoint and regenerating the full plan. Preserve human-owned, unrelated or
 uncertain Cargo differences and block for reconciliation; do not reset them or
@@ -450,7 +514,7 @@ change checkpoint/baseline selection to evade the requirement. Test-only empty
 expansions still require baseline-identical Cargo inputs.
 
 Persist this evidence after publication
-intent and before the initial worker mirror/PR event; update the description flag
+intent and before the initial ownership mirror/PR event; update the description flag
 only after the complete version section is confirmed in the published body.
 
 `Get-ScheduledWorkerRecord` projects the separate executor-owned issue comment.
@@ -458,7 +522,7 @@ only after the complete version section is confirmed in the published body.
 publication intent is persisted and revalidates the explanation against its explicit
 `Policy` argument. Both include numeric repository identity. Serialize
 through shared `Write-ScheduledRecord`; do not handcraft markers. Every authored
-comment and PR body begins `[Copilot speaking]`. Update the single owned worker
+comment and PR body begins `[Copilot speaking]`. Update the single owned repair-session
 comment instead of appending a new ownership record every time.
 
 The repair marker also carries the persisted `explanation`: the diagnosed failure
@@ -466,11 +530,11 @@ and why the specific change fixes it, grounded in evidence rather than a generic
 success statement. This bounded causal summary is present from the initial PR
 event and is refreshed when the repair changes. Unexplained nondeterminism remains
 blocked/needs-human; a green merged repair without a causal explanation is not
-eligible for automatic incident closure.
+eligible for automatic problem resolution.
 
 The profile's repair model is passed through the supported native `kickoff.model`
 field during the inert bootstrap, not an invented `save_workflow` field. The
-bootstrap performs no commands, file/branch changes or publication. The real worker
+bootstrap performs no commands, file/branch changes or publication. The actual repair
 instruction is enqueued only after durable registration. Prove model selection,
 ordering and lost-response recovery on the installed App; keep an existing owned
 session's configured model.
@@ -492,7 +556,7 @@ input does not start another agent turn. Budgets remain charged across restarts;
 a quota block is not an invitation to increase them.
 
 The existing session receives an ordinary visible/native continuation, never a
-replacement worker or background watcher. Safe merges from `main` are preferred;
+replacement session or background watcher. Safe merges from `main` are preferred;
 no force-push or overwriting human edits. Real design ambiguity, unknown publication
 outcomes, permissions, quota and unexpected head changes are explicit blockers.
 
@@ -522,7 +586,7 @@ Readiness requires current required CI and relevant deep evidence, synchronized
 base where needed, current canonical version plan and description, and handled
 allowed review input. A draft is not the endpoint. Closed-unmerged PRs stop the
 attempt; merged PRs enter `verifying-main` until matching hosted confirmation
-establishes resolution. PR creation or a worker's report never closes the finding.
+establishes resolution. PR creation or the repair agent's report never closes the problem issue.
 
 ## Health, recovery and rollback
 
@@ -551,15 +615,15 @@ establish recent coverage.
 
 | Condition | Recovery |
 |---|---|
-| Missing/corrupt executor state | Stop admissions. Reconstruct complete identity, claims, start/continuation history and checkpoints from known backups, worker records, PRs and native session history. If prior budget consumption cannot be established, remain blocked; do not initialize an empty replacement. |
+| Missing/corrupt executor state | Stop admissions. Reconstruct identity, claims, start/continuation history and checkpoints from backups, repair-session records, PRs and native session history. If prior budget consumption cannot be established, remain blocked; do not initialize an empty replacement. |
 | Unknown create/send/publish result | Reconcile actual native/GitHub association and token before completing the recorded transition. If not provable, preserve the session and ask the operator. |
-| Paused, permission-blocked or idle worker | Keep the slot and worktree. Resolve the specific condition in the same session; no age-based takeover or counter reset. |
+| Paused, permission-blocked or idle repair session | Keep the slot and worktree. Resolve the specific condition in the same session; no age-based takeover or counter reset. |
 | Automation deleted/renamed or project recreated | Reapply setup, matching verified repository/marker identity; create a disabled entry only when absence is established. Preserve claims and ledger. |
 | Machine/account transfer | Pause both original role automations and their sessions, account for unpublished work and issue-write intents, deliberately transfer enrollment, and prove capabilities on the replacement. Never copy credentials or run two executors. |
 | Auth, quota or unsupported native API | Request normal sign-in, personal budget action or supported manual App action; no fallback account, PAT or private-database edits. |
 | Hosted schedule disabled/stale | Report the condition, restore scheduling deliberately and request an authoritative fresh run. Do not generate artificial source commits. |
 | Reporter run failed/cancelled, including reporting queue overflow | Recover the existing `scheduled-report` run as described below; a newer successful report does not account for its missing report. |
-| Detection/reporting unreliable in scheduled enforcement | Select ordinary-validation fallback before disabling hosted enforcement; never leave both enforcement paths disabled. |
+| Scheduled detection/reporting unreliable | Retain the health failure and pause affected repair admissions. Restore scheduled operation deliberately; request explicit deep validation if needed. Do not silently change PR validation or local recipes. |
 
 Use native App controls for session cleanup. Do not delete existing sessions or
 worktrees as automated recovery. To pause, disable admissions for the selected role or its project
@@ -600,7 +664,7 @@ manufacture success or clear the failure because another report is green.
 `just test-scripts` includes deterministic Pester coverage for local state, API
 pagination, intake, PR continuation and setup reconciliation. `just validate-scripts`
 uses the existing analyzer. Tests inject time, contend a short real file lock without
-sleeping, and simulate lost responses instead of hanging a worker.
+sleeping, and simulate lost responses instead of hanging an agent.
 
 Scheduled execution and reporting use the nonpublished `scheduled-mutation-config`
 Rust utility to decode mutation configuration. It supports exact comparison with
@@ -617,7 +681,7 @@ baseline. Empty Local inbox scans do not require this build.
 Before either role's activation, prove personal billing, expected GitHub permissions,
 the actual Local host and both scheduling previews, native issue association/reuse, branch
 naming, unattended consent, crash/restart behavior and publication protections.
-Exercise no-work, old backlog, duplicate/human sessions, one-worker capacity,
+Exercise no-work, old backlog, duplicate/human sessions, single-repair capacity,
 lost-response recovery, unavailable WSL, quota, paused state, an existing PR and
 closed-unmerged disposition. Reapply setup unchanged and after deletion/rename,
 policy refresh, project-ID change and missing metadata. No code test can establish

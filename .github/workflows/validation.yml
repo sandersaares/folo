@@ -39,9 +39,9 @@ permissions:
   contents: read
 
 jobs:
-  # Default-branch policy, not candidate edits, selects scheduled enforcement or fallback.
-  # Unconfigured installations retain ordinary deep gates and cannot authorize managed repairs.
-  # Ref: .github/workflows/implementation.md#operating-policy.
+  # Ordinary validation is shallow; only registered managed repairs need relevant deep scope.
+  # Default-branch policy, not candidate edits, controls managed repair authorization.
+  # Ref: .github/workflows/implementation.md#managed-repair-gate.
   scheduled-context:
     runs-on: ubuntu-latest
     permissions:
@@ -51,7 +51,6 @@ jobs:
       actions: read
     outputs:
       run: ${{ steps.plan.outputs.run || 'false' }}
-      cutover: ${{ steps.plan.outputs.cutover || 'false' }}
       managed: ${{ steps.plan.outputs.managed || 'false' }}
       source_sha: ${{ steps.plan.outputs.source_sha }}
       controller_sha: ${{ steps.plan.outputs.controller_sha }}
@@ -78,7 +77,7 @@ jobs:
           $PSNativeCommandUseErrorActionPreference = $true
           throw 'Managed repairs require the deployed default-branch controller.'
       - name: Reject an incomplete deployed controller
-        # Missing installed code is damage, not authorization to use the unconfigured fallback.
+        # Missing installed code is damage, not authorization to bypass managed repair controls.
         # Ref: .github/workflows/implementation.md#operating-policy.
         if: hashFiles('scripts/scheduled/ScheduledWorkflow.psm1') == '' && hashFiles('scripts/scheduled/policy.json') != ''
         shell: pwsh
@@ -87,7 +86,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $true
           throw 'Deployed scheduled policy has no usable controller.'
-      - name: Compute trusted managed scope and operating mode
+      - name: Compute trusted managed repair scope
         # Join live issue/attempt/head identity. Queue runs validate actual combined-candidate
         # ancestry and membership rather than guessing a PR from its synthetic ref.
         # Ref: .github/workflows/implementation.md#managed-repair-gate.
@@ -566,31 +565,6 @@ jobs:
       - name: Run docs-default-features on ${{ matrix.platform }}
         run: just package="${{ needs.delta.outputs.packages }}" docs-default-features
 
-  # Ubuntu is dropped on PRs: Miri is an architecture-agnostic interpreter, so the Linux run
-  # is a push-to-`main`-only sanity net over the Windows pass. Both platforms run on push.
-  miri-x64:
-    # Ordinary deep jobs retain their platform/event scopes in fallback and skip only under
-    # trusted scheduled enforcement. They remain in required-checks as conditional dependencies.
-    # Ref: .github/workflows/implementation.md#operating-policy.
-    needs: [delta, clippy-dev, test-x64, scheduled-context]
-    if: needs.delta.outputs.skip_all != 'true' && needs.scheduled-context.outputs.cutover != 'true'
-    strategy:
-      fail-fast: false
-      matrix:
-        platform: ${{ fromJSON(github.event_name == 'push' && '["ubuntu-latest", "windows-latest"]' || '["windows-latest"]') }}
-
-    runs-on: ${{ matrix.platform }}
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-
-      - name: Setup environment
-        uses: ./.github/actions/setup-environment
-
-      - name: Run miri on ${{ matrix.platform }}
-        run: just package="${{ needs.delta.outputs.packages }}" miri
-
   # The ARM64 test pass (ubuntu-24.04-arm, windows-11-arm and macos-latest). Exercises
   # ARM-specific code paths (anything gated behind cfg(target_arch = "aarch64") or similar)
   # which x86_64 runners never compile or execute. macOS lives here too because GitHub's
@@ -634,150 +608,6 @@ jobs:
 
       - name: Run benchmark targets on ${{ matrix.platform }}
         run: just package="${{ needs.delta.outputs.packages }}" test-benches
-
-  # ARM64 coverage for Miri. Miri is an interpreter with its own memory model and is
-  # architecture-agnostic for platform-neutral code; we run it on ARM purely to exercise
-  # cfg(target_arch = "aarch64") (and similar) code paths under Miri's UB detection.
-  miri-arm:
-    # The operating mode adds no platform/event exceptions to ordinary-validation fallback.
-    # Ref: .github/workflows/implementation.md#operating-policy.
-    needs: [delta, clippy-dev, test-arm, scheduled-context]
-    # Push-to-`main` only: an architecture-agnostic interpreter re-run on ARM is a sanity net
-    # over cfg-gated paths, not PR-worthy signal.
-    if: github.event_name == 'push' && needs.delta.outputs.skip_all != 'true' && needs.scheduled-context.outputs.cutover != 'true'
-    strategy:
-      fail-fast: false
-      matrix:
-        platform: [ubuntu-24.04-arm, windows-11-arm]
-
-    runs-on: ${{ matrix.platform }}
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-
-      - name: Setup environment
-        uses: ./.github/actions/setup-environment
-
-      - name: Run miri on ${{ matrix.platform }}
-        run: just package="${{ needs.delta.outputs.packages }}" miri
-
-  # Miri with many seeds is very slow, so we only run it for select packages on Linux (these
-  # exercise platform-independent code, so Linux's lower overhead is preferred over Windows).
-  # These jobs only run when their specific package is affected by changes.
-  # Gated behind the base `miri-x64` job so a quick Miri failure short-circuits the much more
-  # expensive many-seeds run.
-  miri-harder-events-once:
-    # Many-seed jobs share the ordinary Miri enforcement mode without reducing declared coverage.
-    # Ref: .github/workflows/implementation.md#operating-policy.
-    needs: [delta, miri-x64, scheduled-context]
-    if: >-
-      needs.delta.outputs.skip_all != 'true'
-      && needs.scheduled-context.outputs.cutover != 'true'
-      && (needs.delta.outputs.packages == '' || contains(fromJson(needs.delta.outputs.packages_json), 'events_once'))
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [1/4, 2/4, 3/4, 4/4]
-    # Many-seeds Miri work budget (~90 min) plus up to 90 min for a cold-cache setup-environment.
-    timeout-minutes: 180
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-
-      - name: Setup environment
-        uses: ./.github/actions/setup-environment
-
-      - name: Run miri-harder for events_once on ubuntu-latest (shard ${{ matrix.shard }})
-        run: just package=events_once miri-harder ${{ matrix.shard }}
-
-  miri-harder-events:
-    # Ref: .github/workflows/implementation.md#operating-policy.
-    needs: [delta, miri-x64, scheduled-context]
-    if: >-
-      needs.delta.outputs.skip_all != 'true'
-      && needs.scheduled-context.outputs.cutover != 'true'
-      && (needs.delta.outputs.packages == '' || contains(fromJson(needs.delta.outputs.packages_json), 'events'))
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [1/2, 2/2]
-    # Many-seeds Miri work budget (~90 min) plus up to 90 min for a cold-cache setup-environment.
-    timeout-minutes: 180
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-
-      - name: Setup environment
-        uses: ./.github/actions/setup-environment
-
-      - name: Run miri-harder for events on ubuntu-latest (shard ${{ matrix.shard }})
-        run: just package=events miri-harder ${{ matrix.shard }}
-
-  miri-harder-awaiter-set:
-    # Ref: .github/workflows/implementation.md#operating-policy.
-    needs: [delta, miri-x64, scheduled-context]
-    if: >-
-      needs.delta.outputs.skip_all != 'true'
-      && needs.scheduled-context.outputs.cutover != 'true'
-      && (needs.delta.outputs.packages == '' || contains(fromJson(needs.delta.outputs.packages_json), 'awaiter_set'))
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [1/2, 2/2]
-    # Many-seeds Miri work budget (~90 min) plus up to 90 min for a cold-cache setup-environment.
-    timeout-minutes: 180
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-
-      - name: Setup environment
-        uses: ./.github/actions/setup-environment
-
-      - name: Run miri-harder for awaiter_set on ubuntu-latest (shard ${{ matrix.shard }})
-        run: just package=awaiter_set miri-harder ${{ matrix.shard }}
-
-  miri-harder-nm-impl:
-    # Ref: .github/workflows/implementation.md#operating-policy.
-    needs: [delta, miri-x64, scheduled-context]
-    if: >-
-      needs.delta.outputs.skip_all != 'true'
-      && needs.scheduled-context.outputs.cutover != 'true'
-      && (
-        needs.delta.outputs.packages == ''
-        || contains(fromJson(needs.delta.outputs.packages_json), 'nm_impl')
-      )
-    strategy:
-      fail-fast: false
-      matrix:
-        # The smallest existing many-seeds matrix shape is sufficient: a half-budget local
-        # Windows run takes only minutes, and Linux has lower interpreter overhead.
-        shard: [1/2, 2/2]
-    # Many-seeds Miri work budget (~90 min) plus up to 90 min for a cold-cache setup-environment.
-    timeout-minutes: 180
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-
-      - name: Setup environment
-        uses: ./.github/actions/setup-environment
-
-      - name: Run miri-harder for nm_impl on ubuntu-latest (shard ${{ matrix.shard }})
-        shell: pwsh
-        run: |
-          Set-StrictMode -Version Latest
-          $ErrorActionPreference = "Stop"
-          $PSNativeCommandUseErrorActionPreference = $true
-
-          just package=nm_impl miri-harder ${{ matrix.shard }}
 
   machete:
     needs: [delta]
@@ -867,31 +697,6 @@ jobs:
       - name: Run check-frozen on ${{ matrix.platform }}
         run: just package="${{ needs.delta.outputs.packages }}" check-frozen
 
-  mutants:
-    # Scheduled enforcement owns recurring mutation coverage; fallback retains the ordinary gate.
-    # Ref: .github/workflows/implementation.md#operating-policy.
-    needs: [delta, test-x64, scheduled-context]
-    if: needs.delta.outputs.skip_all != 'true' && needs.scheduled-context.outputs.cutover != 'true'
-    # Sharded mutation-testing work budget (~180 min) plus up to 90 min for a cold-cache setup-environment.
-    timeout-minutes: 270
-    strategy:
-      fail-fast: false
-      matrix:
-        platform: [ubuntu-latest, windows-latest]
-        shard: [1/8, 2/8, 3/8, 4/8, 5/8, 6/8, 7/8, 8/8]
-
-    runs-on: ${{ matrix.platform }}
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-
-      - name: Setup environment
-        uses: ./.github/actions/setup-environment
-
-      - name: Run mutants on ${{ matrix.platform }} (shard ${{ matrix.shard }})
-        run: just package="${{ needs.delta.outputs.packages }}" mutants ${{ matrix.shard }}
-
   run-examples:
     needs: [delta]
     if: needs.delta.outputs.skip_all != 'true'
@@ -935,29 +740,6 @@ jobs:
 
       - name: Run hack on ${{ matrix.platform }}
         run: just package="${{ needs.delta.outputs.packages }}" hack
-
-  careful:
-    # Fallback keeps this push-only check; scheduled enforcement uses the declared deep manifest.
-    # Ref: .github/workflows/implementation.md#operating-policy.
-    needs: [delta, test-x64, scheduled-context]
-    # Push-to-`main` only: `cargo careful` rarely surfaces PR-specific signal.
-    if: github.event_name == 'push' && needs.delta.outputs.skip_all != 'true' && needs.scheduled-context.outputs.cutover != 'true'
-    strategy:
-      fail-fast: false
-      matrix:
-        platform: [ubuntu-latest, windows-latest]
-
-    runs-on: ${{ matrix.platform }}
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-
-      - name: Setup environment
-        uses: ./.github/actions/setup-environment
-
-      - name: Run careful on ${{ matrix.platform }}
-        run: just package="${{ needs.delta.outputs.packages }}" careful
 
   # Azure Blob storage backend tests against the Azurite emulator.
   #
@@ -1244,7 +1026,7 @@ jobs:
   # and `alert` stay off this list. When adding a merge-blocking job, add it here - never
   # to the GitHub ruleset. Unconditional gates also go on MUST_SUCCEED_JOBS below.
   required-checks:
-    # Context and repair gate must succeed, while policy-scoped deep jobs can legitimately skip.
+    # Context and repair gate must succeed; the gate requires relevant deep evidence for repairs.
     # Matrix names never become independent ruleset targets.
     # Ref: .github/workflows/implementation.md#merge-blocking-result.
     name: required-checks
@@ -1264,21 +1046,13 @@ jobs:
       - test-x64
       - test-docs
       - docs
-      - miri-x64
       - test-arm
-      - miri-arm
-      - miri-harder-events-once
-      - miri-harder-events
-      - miri-harder-awaiter-set
-      - miri-harder-nm-impl
       - machete
       - clippy-release
       - build-release
       - check-frozen
-      - mutants
       - run-examples
       - hack
-      - careful
       - test-azurite
       - test-azure
       - test-azure-gh
@@ -1307,8 +1081,8 @@ jobs:
   # File a GitHub issue whenever any job above fails on a push to `main`, so a push-to-main
   # failure is tracked rather than lost. PR runs surface a failure as the red check and need
   # no issue - and this workflow now leans more heavily on push-to-main as the backstop for
-  # the checks pruned from PR validation (ARM, macOS test/docs, the Linux Miri run,
-  # clippy-release, careful), so a green PR no longer implies those passed.
+  # the shallow checks pruned from PR validation (ARM, macOS test/docs, clippy-release),
+  # so a green PR does not imply those passed.
   #
   # A fresh issue is filed per failing run - no dedup, no auto-close - mirroring the release
   # workflow's per-run alert: each failure is investigated and closed individually, and a
@@ -1337,21 +1111,13 @@ jobs:
       - test-x64
       - test-docs
       - docs
-      - miri-x64
       - test-arm
-      - miri-arm
-      - miri-harder-events-once
-      - miri-harder-events
-      - miri-harder-awaiter-set
-      - miri-harder-nm-impl
       - machete
       - clippy-release
       - build-release
       - check-frozen
-      - mutants
       - run-examples
       - hack
-      - careful
       - test-azurite
       - test-azure
       - test-azure-gh
@@ -1386,8 +1152,8 @@ jobs:
           The Validation workflow failed on a push to ``main``.
 
           Push-to-``main`` validation is the backstop for the checks pruned from PR validation
-          (ARM and macOS test/docs runs, the Linux Miri sanity run, ``clippy-release`` and
-          ``careful``), so this failure may be in a check a PR never ran.
+          (ARM and macOS test/docs runs and ``clippy-release``), so this failure may be
+          in a check a PR never ran.
 
           Failed run: $env:RUN_URL
           "@

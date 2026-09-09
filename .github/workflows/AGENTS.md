@@ -69,10 +69,10 @@ high-level design in `design.md` and per-job mechanics in inline YAML comments.
 - Keep `scheduled-repair-gate` unconditional and in the fan-in's must-succeed list. Read managed
   scope from the trusted default-branch policy and registered issue/attempt/head metadata.
   A personal account's unmarked PR is not a managed repair.
-- Preserve independent hosted execution, reporting and Local admission controls. Changing the
-  enforcement mode requires the reviewed readiness prerequisites; documentation or setup changes
-  must not activate it. Preserve ordinary-validation fallback when scheduled enforcement is
-  disabled or unreliable; see [Operating policy](implementation.md#operating-policy).
+- Preserve independent hosted execution, reporting and Local admission controls; documentation
+  or setup changes must not activate them. Keep shallow/deep local recipes policy-independent.
+  Ordinary PR/push CI stays shallow; managed repairs retain their relevant deep gate.
+  See [Operating policy](implementation.md#operating-policy).
 - Privileged scheduled reporting must check out the default-branch controller, not a triggering
   candidate. Treat downloaded evidence as data and preserve reporter/worker record ownership.
 - Build scheduled evidence utilities only from the trusted controller, never candidate source

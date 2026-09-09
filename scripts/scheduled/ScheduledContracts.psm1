@@ -107,11 +107,10 @@ function Get-ScheduledPolicy {
         $policy.repair.max_explanation_characters -le 0) {
         throw 'Repair explanation bound must be a positive integer.'
     }
-    # These three switches are the compatibility fields consuming modules read to decide
-    # execution/reporting authorization and enforcement mode; this function only proves they
-    # exist with the right type, it does not itself decide authorization. See
+    # Independent switches authorize hosted execution and reporting, not local recipe contents
+    # or ordinary CI depth. Validate their presence and type without granting authorization.
     # ../../.github/workflows/implementation.md#operating-policy.
-    foreach ($switchName in @('hosted_execution_enabled', 'reporting_enabled', 'cutover')) {
+    foreach ($switchName in @('hosted_execution_enabled', 'reporting_enabled')) {
         if ($policy.rollout[$switchName] -isnot [bool]) { throw "Rollout switch must be boolean: $switchName" }
     }
     # Recorded operator verification (the two canaries and native App capability) plus
@@ -122,18 +121,6 @@ function Get-ScheduledPolicy {
         'benchmark_exclusion', 'azure_policy')
     foreach ($name in $prerequisiteNames) {
         if ($policy.rollout.prerequisites[$name] -isnot [bool]) { throw "Missing rollout prerequisite: $name" }
-    }
-    if ($policy.rollout.cutover) {
-        # Fail closed: cutover (scheduled enforcement) is rejected unless both authorization
-        # switches and every recorded prerequisite are true, mirroring the acceptance rule in
-        # #operating-policy rather than letting a stale or partially-rolled-out policy select
-        # enforcement by accident.
-        if (-not $policy.rollout.hosted_execution_enabled -or -not $policy.rollout.reporting_enabled) {
-            throw 'Cutover requires both hosted execution and reporting.'
-        }
-        foreach ($name in $prerequisiteNames) {
-            if (-not $policy.rollout.prerequisites[$name]) { throw "Cutover prerequisite missing: $name" }
-        }
     }
     return $policy
 }

@@ -77,16 +77,17 @@ Validation:
 # Scheduled deep validation and Local App remediation
 
 The [scheduled-validation chapter](docs/scheduled-validation.md) describes deep
-check enforcement and the single personal-account Local App automation that brings
-registered repair PRs to readiness. Setup is reproducible from
+checking and the personal-account Local App automations for AI triage and
+repair PR readiness. Setup is reproducible from
 `.github\prompts\setup-scheduled-remediation.prompt.md`; new entries remain
 disabled/observe-only and setup does not run repairs or change account settings.
 
-`just validate-local` follows the reviewed operating policy: ordinary-validation
-fallback includes routine Miri/mutation calls, while scheduled enforcement delegates
-their recurring coverage to hosted checks. Safe defaults select the fallback.
-`just package="foo bar" validate-deep` explicitly runs the deep checks on the
-current platform in either mode. The ordinary `just test-scripts` and
+`just validate-local` always runs shallow validation.
+`just package="foo bar" validate-deep-local` always runs deep validation on the
+current platform. Neither depends on scheduling policy. PR/push workflows stay
+shallow, while scheduled workflows own recurring deep checks. With scheduled
+execution disabled there is no automatic recurring deep coverage.
+The ordinary `just test-scripts` and
 `just validate-scripts` commands cover the deterministic local helpers; native
 account, host, scheduling, reuse and consent behavior still requires an operator
 pilot. See the chapter for credential safeguards before any real repair PR.

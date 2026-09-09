@@ -507,11 +507,7 @@ Describe 'cargo-semver-checks target directory' {
 
                 $actual | Should -BeExactly ([IO.Path]::GetFullPath($configured))
             } finally {
-                [Environment]::SetEnvironmentVariable(
-                    'CARGO_TARGET_DIR',
-                    $previous,
-                    'Process'
-                )
+                $env:CARGO_TARGET_DIR = $previous
             }
         }
     }
@@ -539,11 +535,7 @@ Describe 'cargo-semver-checks target directory' {
                 $script:observedTarget | Should -BeExactly $target
                 $env:CARGO_TARGET_DIR | Should -BeExactly 'original-target'
             } finally {
-                [Environment]::SetEnvironmentVariable(
-                    'CARGO_TARGET_DIR',
-                    $previous,
-                    'Process'
-                )
+                $env:CARGO_TARGET_DIR = $previous
             }
         }
     }
@@ -555,27 +547,16 @@ Describe 'cargo-semver-checks target directory' {
                 'Process'
             )
             try {
-                [Environment]::SetEnvironmentVariable(
-                    'CARGO_TARGET_DIR',
-                    $null,
-                    'Process'
-                )
+                $env:CARGO_TARGET_DIR = $null
                 {
                     Invoke-WithSemverCheckTargetDirectory `
                         -Action { throw 'expected failure' } `
                         -TargetDirectory (Join-Path $TestDrive 'short-target')
                 } | Should -Throw '*expected failure*'
 
-                [Environment]::GetEnvironmentVariable(
-                    'CARGO_TARGET_DIR',
-                    'Process'
-                ) | Should -BeNullOrEmpty
+                Test-Path -LiteralPath Env:CARGO_TARGET_DIR | Should -BeFalse
             } finally {
-                [Environment]::SetEnvironmentVariable(
-                    'CARGO_TARGET_DIR',
-                    $previous,
-                    'Process'
-                )
+                $env:CARGO_TARGET_DIR = $previous
             }
         }
     }

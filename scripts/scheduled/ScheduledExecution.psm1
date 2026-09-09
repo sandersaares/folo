@@ -315,6 +315,9 @@ function Get-ScheduledMutationDecoderBuild {
             environment = @{
                 RUSTUP_TOOLCHAIN = $toolchain; RUSTUP_AUTO_INSTALL = '0'
                 CARGO_TERM_COLOR = 'never'; NO_COLOR = '1'
+                # Metadata shares the controller build's target root, not an inherited
+                # candidate path or an empty environment value that Cargo rejects.
+                CARGO_TARGET_DIR = $target
                 # Candidate checker settings are not native controller build settings.
                 CARGO_BUILD_TARGET = $null; CARGO_ENCODED_RUSTFLAGS = $null
                 RUSTFLAGS = ''; RUSTDOCFLAGS = ''; MIRIFLAGS = ''; MUTATION_TESTING = $null

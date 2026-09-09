@@ -90,7 +90,7 @@ Describe 'Authoritative GitHub metadata' {
                 Mock Invoke-ScheduledGitHubApi { @{ status = 'diverged' } }
                 { Assert-ScheduledWriteController $policy ('b' * 40) ('a' * 40) } | Should -Throw
             } finally {
-                foreach ($name in $names) { [Environment]::SetEnvironmentVariable($name, $saved[$name]) }
+                foreach ($name in $names) { Set-Item -LiteralPath "Env:$name" -Value $saved[$name] }
             }
         }
         It 'never downloads an old attempt expired oversized or foreign artifact' {
@@ -215,7 +215,7 @@ Describe 'Archive extraction boundaries' {
                     repository = 'folo-rs/folo'; repository_id = 850321188
                     reporter_login = 'github-actions[bot]'; worker_login = 'sandersaares'
                     rollout = @{
-                        phase = 'staged'; hosted_execution_enabled = $false; reporting_enabled = $false; cutover = $false
+                        phase = 'staged'; hosted_execution_enabled = $false; reporting_enabled = $false
                         prerequisites = @{ native_app_canary = $false }
                     }
                     coverage = @{ max_artifact_bytes = 104857600 }

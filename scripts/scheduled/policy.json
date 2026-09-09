@@ -9,7 +9,6 @@
     "phase": "staged",
     "hosted_execution_enabled": false,
     "reporting_enabled": false,
-    "cutover": false,
     "prerequisites": {
       "execution_canary": false,
       "reporting_canary": false,

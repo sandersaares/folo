@@ -50,7 +50,7 @@ automation polls completed actionable problem records and registered PRs. An iss
 does not directly dispatch either agent. Both have reviewed three-hour schedules; repair
 retains cron `17 */3 * * *`. Their verified App timezone is independent of GitHub's UTC
 health timer. No timer offset is a completion guarantee or synchronization mechanism.
-A worker's PR activity triggers normal PR workflows. A human merge
+A repair session's PR activity triggers normal PR workflows. A human merge
 produces the `main` push that starts targeted confirmation. Reporter completions,
 health runs and reusable child jobs do not recursively trigger scheduled reporting.
 
@@ -122,14 +122,14 @@ trusts pull-request and `main` subjects, not merge-group subjects.
 `scripts/scheduled/ScheduledContracts.psm1` owns versioned record validation and stable
 identities, not AI root-cause decisions. Hosted records describe run evidence, coverage
 and authoritative confirmation. Local triage records describe problem identity, causal
-grouping, actionable scope and links to source observations. Worker and PR records
+grouping, actionable scope and links to source evidence. Repair-session and PR records
 describe repair ownership. Replacing one record preserves surrounding prose and other
 owners' records.
 
 Repair intake validates both the personal triager's problem record and its linked
 hosted source evidence. A problem issue need not have the hosted reporter as its author;
 the enrolled triage role creates it. A matching label or personal login alone cannot
-authorize a repair. Workers cannot self-authorize by editing their own triage scope.
+authorize a repair. Repair sessions cannot self-authorize by editing their own triage scope.
 
 ### Immutable execution
 
@@ -218,6 +218,13 @@ Retain valid structured observations even when another leg cannot be decoded.
 The run issue key is repository/workflow/run identity. Run attempts and their evidence
 revisions are distinct inputs within that issue. A repeated completion notification must
 not duplicate intake; a new attempt must not inherit a prior attempt's triaged checkpoint.
+The triage completion record binds run ID, attempt number and evidence digest. The
+`scheduled-triaged` label and closed issue state summarize that every failed revision
+has a matching completion record. A new failed attempt or changed failed-attempt
+evidence reopens the issue and removes the label while preserving prior completions.
+Queue reads compare records across open and closed issues rather than trusting labels.
+See [marking a run triaged](../../docs/scheduled-validation.md#marking-a-run-triaged)
+for idempotency, concurrent evidence and green-rerun behavior.
 An unsuccessful or unexpectedly incomplete execution requires intake. A legitimate disabled
 or reusable-coverage skip does not. The reporter may supply parsed observations, but it does
 not decide how many real problems exist or whether different symptoms share a cause.
@@ -229,11 +236,20 @@ Conversely, a green rerun cannot acknowledge analysis of earlier failure evidenc
 #### Local AI triage and problem publication
 
 The separately scheduled triage automation follows the
-[problem-level incident contract](../../docs/scheduled-validation.md#problems-incidents-and-triage).
+[problem contract](../../docs/scheduled-validation.md#problems-and-triage).
 It claims an unprocessed run/attempt revision, uses a capable personally funded AI model to
 analyze every unsuccessful job, and compares all extracted problems with the complete
 existing problem index. Programmatic helpers validate records and normalize/search evidence;
 they cannot replace semantic diagnosis and causal deduplication.
+
+The canonical identity is numeric repository ID plus problem issue number, not a
+diagnostic hash. The helper paginates all open and closed `scheduled-finding` issues
+and refreshes registered issue IDs. It supplies compact complete-index summaries
+to the AI, which reads plausible candidates' full records and evidence and records
+its match/separation reasoning. Publication rechecks the index and pending write
+intent. SHA-256 hashes bind exact evidence revisions only; different hashes can
+describe one problem. The [discovery contract](../../docs/scheduled-validation.md#finding-existing-problems)
+defines index content, incomplete-read handling and canonical evidence inputs.
 
 Problem identity is independent of run/job identity, replay scope and coverage verdict.
 The triager distinguishes unrelated diagnostics within a shared target and can group
@@ -257,7 +273,7 @@ triage completeness does not make every problem eligible for a source patch. Tri
 repair have separate capacity, budgets, pause controls and health checkpoints.
 
 The problem record binds a versioned set of required check/package/platform/replay
-scopes to its diagnosis and hosted observations. Admission and managed verification
+scopes to its diagnosis and hosted evidence. Admission and managed verification
 consume that full set, not a single representative symptom. A materially changed
 scope invalidates stale readiness evidence and requires reconciliation with the
 retained worker. Problem closure requires applicable confirmation for the complete
@@ -265,13 +281,13 @@ registered resolution criteria; one green constituent result cannot erase the re
 
 Evidence ordering uses the originating attempt's API start time, with creation time and run ID
 breaking ties. An older run can have a genuinely newer rerun; neither its original run number nor
-its completion/report delivery time establishes that attempt's order. Source ancestry and incident
-generation remain separate applicability checks.
-Valid defect observations survive incomplete legs and failed workflows. Successfully publishing
+its completion/report delivery time establishes that attempt's order. Source ancestry and the
+problem's occurrence number remain separate applicability checks.
+Valid failure evidence survives incomplete legs and failed workflows. Successfully publishing
 failure intake is a successful reporting operation, not a reporting outage. Unexplained
-workflow failure cannot certify passing evidence or close a problem incident.
+workflow failure cannot certify passing evidence or resolve a problem.
 No-work verification retains the unselected catalog without inventing a global package selection.
-Invalid confirmation metadata is isolated to its incident and cannot discard unrelated findings.
+Invalid confirmation metadata is isolated to its problem and cannot discard unrelated evidence.
 
 ### Managed repair gate
 
@@ -285,7 +301,7 @@ Metadata-only corrections retrigger through the PR `edited` event or a rerun at 
 The worker and PR records carry the same bounded causal explanation and bind the current enrolled
 executor. Main confirmation uses the merged commit rather than the original pre-squash head.
 Both full-main reporting and dedicated verification can confirm the live merged registration;
-arrival order does not strand an incident in `needs-human`.
+arrival order does not strand a problem in `needs-human`.
 An unexplained pass does not disable the gate for an existing registered repair PR. Local intake
 still refuses fresh admission of that disposition; the current worker can finish its causal repair
 and present it for human acceptance.
@@ -306,13 +322,11 @@ with already-sufficient pending releases from the report so human review sees th
 
 ## Operating policy
 
-`scripts/scheduled/policy.json` is the reviewed source of truth for
-[deep-validation operating modes](design.md#deep-validation-operating-modes).
-Scheduled enforcement is accepted only with hosted execution and reporting enabled and all
-readiness prerequisites recorded. It controls the ordinary deep jobs and routine local deep
-calls together. Those jobs remain in the fan-in as legitimate conditional skips; retained
-validation preserves its event and platform behavior. The ruleset never acquires matrix names
-or a second required integration.
+`scripts/scheduled/policy.json` authorizes hosted execution/reporting and Local
+repair admission. It does not define the contents of `validate-local` or
+`validate-deep-local`, or route ordinary deep jobs into PR/push validation.
+The [shallow/deep split](design.md#shallow-and-deep-validation) is fixed.
+The ruleset never acquires matrix names or a second required integration.
 
 The serialized names are compatibility details. Their mapping to operating behavior is:
 
@@ -320,7 +334,6 @@ The serialized names are compatibility details. Their mapping to operating behav
 |---|---|
 | `rollout.hosted_execution_enabled` | Authorizes recurring full execution and, with native App readiness, automatic merged-repair confirmation. |
 | `rollout.reporting_enabled` | Authorizes the reporter's issue writes independently of execution and local admission. |
-| `rollout.cutover` | Selects scheduled enforcement when true, ordinary-validation fallback when false. Validation exports the same selection as `cutover`. |
 | `rollout.prerequisites.execution_canary`, `reporting_canary`, `native_app_canary` | Recorded operator verification of execution, reporting and actual native App capabilities. |
 | `rollout.prerequisites.benchmark_exclusion`, `azure_policy` | Recorded authorization and installation of managed-publication credential safeguards. |
 | `rollout.phase` | Descriptive compatibility metadata, not authorization to execute, report or admit work. |
@@ -332,23 +345,25 @@ mode cannot implicitly enable it. Both roles require matching persisted enrollme
 profile, and distinguish disabled/observe/paused behavior from active admission.
 
 Safe installation defaults disable hosted execution/reporting and both Local roles,
-leave repair allowlists unconfigured, and retain ordinary-validation fallback.
+and leave repair allowlists unconfigured. Disabled hosted execution means automatic
+recurring deep coverage is off; it is not proof that PR validation covers it.
 Setup preserves those settings.
 Manual read-only execution uses the existing `canary` dispatch input to exercise hosted execution
 without changing recurring authorization; explicit verification similarly validates approved
-diagnostic scope, not incident closure by itself. Neither action is part of merely installing the
+diagnostic scope, not problem resolution by itself. Neither action is part of merely installing the
 Local automations.
 
 The default-branch controller, workflows, policy and their helpers form one installed contract.
-When neither policy nor controller is installed there, Validation retains ordinary deep gates
+When neither policy nor controller is installed there, Validation runs its shallow checks
 and rejects recognizable managed publication. An installed policy without its controller, or an
 installed controller with missing/malformed inputs, fails validation rather than treating damage
 as an unconfigured installation.
 
 Approve package/check scope and publication safeguards before any managed PR, including a test
-PR. Native profile registration is not authorization to publish. When scheduled detection or
-reporting is unreliable, select ordinary-validation fallback before disabling the hosted path;
-never leave both enforcement paths disabled.
+PR. Native profile registration is not authorization to publish. If scheduled detection
+or reporting is unreliable, retain the health failure and pause affected repair admissions.
+The operator can request explicit deep validation while restoring scheduled operation;
+no local recipe or PR workflow silently changes its scope.
 
 ## Independent health
 

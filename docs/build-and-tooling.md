@@ -56,18 +56,18 @@ via `package="foo bar"`. It also smoke-runs the selected packages' Criterion
 targets through `just test-benches-criterion`; see Standard commands for the
 distinction between local and combined CI benchmark smoke passes.
 
-`just validate-local` follows the reviewed deep-validation operating policy.
-In **ordinary-validation fallback**, it includes ordinary Miri and package-scoped
-mutation testing, with mutation testing last so cheaper checks can fail first.
-In **scheduled enforcement**, it omits those deep checks because GitHub scheduled
-validation owns their recurring enforcement. The fallback is the safe default
-when scheduled enforcement is not configured or cannot provide dependable evidence.
-The policy fields and readiness requirements are defined in the workflow
-[operating policy](../.github/workflows/implementation.md#operating-policy).
+`just validate-local` is always shallow validation. Use
+`just package="foo bar" validate-deep-local` to run Miri, mutation testing,
+many-seed Miri and careful checking on the current platform. These recipes are
+independent: neither reads scheduling policy, and deep validation does not
+implicitly rerun the shallow suite.
 
-Use `just package="foo bar" validate-deep` to explicitly run Miri, mutation testing,
-many-seed Miri and careful checking on the current platform. This command remains
-available in either operating mode. To run just mutation testing, use
+PR/push workflows perform shallow validation; scheduled workflows perform deep
+validation. CI composes their constituent commands into separately reported jobs
+and evidence-producing matrix entries rather than running one monolithic local
+recipe. Managed repair PRs also run the particular deep checks needed to verify
+their repair. Scheduling and authorization belong to workflow orchestration, not
+to the definitions of the local recipes. To run just mutation testing, use
 `just package="foo bar" mutants`. Mutation timeouts and missed mutations remain
 anomalies; changing enforcement cadence does not relax test-quality requirements.
 
@@ -110,8 +110,20 @@ Keep the distinction between logic and process orchestration clear. A thin
 PowerShell wrapper can prepare command arguments, invoke a trusted Rust utility and
 propagate its outcome. Parsing and semantic decisions belong in the utility when
 that environment can execute it. Tool identity follows the workflow's authority:
-a privileged reporter uses reviewed controller code, not an executable supplied by
-the candidate it is evaluating.
+a reporter with issue-write permission executes automation code from the reviewed
+default branch, not code supplied by the run it is reporting.
+
+For example, `scheduled-report.yml` checks out the repository's default branch
+into its controller directory and records that checkout's SHA. It imports
+`ScheduledGitHub.psm1` and builds `scheduled-mutation-config` from that checkout,
+using its manifest, lockfile and pinned toolchain. It downloads the triggering
+run's logs/results into a separate evidence directory and passes them to the
+controller as data. It must not check out the triggering run's SHA as its automation
+code, import a script from an artifact, execute an artifact-supplied decoder, or
+let artifact extraction overwrite the controller directory. A repair's edits to
+reporting code therefore cannot grant themselves issue-write authority.
+See [immutable execution](../.github/workflows/implementation.md#immutable-execution)
+for the controller/candidate separation.
 
 ## Scripting
 

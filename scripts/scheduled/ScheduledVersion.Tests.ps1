@@ -118,4 +118,80 @@ Describe 'Independent pre-version checkpoint' {
                 Should -Throw '*trusted release baseline*'
         }
     }
+
+    Describe 'Reference worktree cleanup' {
+        It 'does not remove a reference when worktree creation fails' {
+            InModuleScope ScheduledVersion {
+                Mock Assert-ScheduledVersionReference {}
+                Mock git {
+                    if ($args[2] -eq 'worktree' -and $args[3] -eq 'add') {
+                        throw [InvalidOperationException]::new('Creation canary')
+                    }
+                }
+                {
+                    Assert-ScheduledCanonicalVersion -Root $TestDrive -BaseSha ('a' * 40) -HeadSha ('b' * 40) `
+                        -Evidence @{ base_sha = 'a' * 40; pre_version_sha = 'b' * 40 } `
+                        -ReleasePlanExecutable (Get-Command pwsh).Source `
+                        -TrustedControllerRoot $TestDrive -TemporaryRoot (Join-Path $TestDrive 'scratch')
+                } | Should -Throw '*Creation canary*'
+                Should -Invoke git -Times 0 -Exactly -ParameterFilter {
+                    $args[2] -eq 'worktree' -and $args[3] -eq 'remove'
+                }
+            }
+        }
+
+        It 'preserves verification failure with cleanup failure <CleanupFails>' -TestCases @(
+            @{ CleanupFails = $false }, @{ CleanupFails = $true }
+        ) {
+            param($CleanupFails)
+            InModuleScope ScheduledVersion -Parameters @{ CleanupFails = $CleanupFails } {
+                param($CleanupFails)
+                Mock Assert-ScheduledVersionReference {}
+                Mock git {
+                    if ($args[2] -eq 'worktree' -and $args[3] -eq 'add') {
+                        New-Item -ItemType Directory -Path $args[5] | Out-Null
+                    }
+                    if ($CleanupFails -and $args[2] -eq 'worktree' -and $args[3] -eq 'remove') {
+                        throw [IO.IOException]::new('Cleanup canary')
+                    }
+                }
+                Mock Import-Module { throw [InvalidOperationException]::new('Verification canary') } `
+                    -ParameterFilter { $Name -like '*ReleasePlan.psm1' }
+                $failure = $null
+                try {
+                    Assert-ScheduledCanonicalVersion -Root $TestDrive -BaseSha ('a' * 40) -HeadSha ('b' * 40) `
+                        -Evidence @{ base_sha = 'a' * 40; pre_version_sha = 'b' * 40; decisions = @() } `
+                        -ReleasePlanExecutable (Get-Command pwsh).Source `
+                        -TrustedControllerRoot $TestDrive -TemporaryRoot (Join-Path $TestDrive 'scratch')
+                } catch {
+                    $failure = $_
+                }
+                if ($CleanupFails) {
+                    $failure.Exception | Should -BeOfType ([AggregateException])
+                    $failure.Exception.InnerExceptions.Count | Should -Be 2
+                    $failure.Exception.InnerExceptions[0] | Should -BeOfType ([InvalidOperationException])
+                    $failure.Exception.InnerExceptions[0].Message | Should -Be 'Verification canary'
+                    $failure.Exception.InnerExceptions[1] | Should -BeOfType ([IO.IOException])
+                    $failure.Exception.InnerExceptions[1].Message | Should -Be 'Cleanup canary'
+                } else {
+                    $failure.Exception | Should -BeOfType ([InvalidOperationException])
+                    $failure.Exception.Message | Should -Be 'Verification canary'
+                }
+                Should -Invoke git -Times 1 -Exactly -ParameterFilter {
+                    $args[2] -eq 'worktree' -and $args[3] -eq 'remove'
+                }
+            }
+        }
+
+        It 'surfaces cleanup failure after successful verification' {
+            InModuleScope ScheduledVersion {
+                Mock git { throw [IO.IOException]::new('Cleanup canary') }
+                {
+                    Remove-ScheduledVersionReference -Root $TestDrive -Reference (Join-Path $TestDrive 'reference') `
+                        -VerificationError $null
+                } | Should -Throw '*Cleanup canary*'
+            }
+        }
+
+    }
 }

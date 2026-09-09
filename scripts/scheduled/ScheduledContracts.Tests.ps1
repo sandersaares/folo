@@ -27,15 +27,57 @@ Describe 'Scheduled records' {
         (Get-ScheduledDigest @('a', 'b')) | Should -Not -Be (Get-ScheduledDigest @('b', 'a'))
         (Get-ScheduledDigest 'Path') | Should -Not -Be (Get-ScheduledDigest 'path')
     }
-    It 'keeps existing enforcement enabled in staged policy' {
+    It 'keeps hosted execution reporting and Local admission disabled in staged policy' {
         $policy = Get-ScheduledPolicy
-        $policy.rollout.cutover | Should -BeFalse
+        $policy.rollout.hosted_execution_enabled | Should -BeFalse
+        $policy.rollout.reporting_enabled | Should -BeFalse
         $policy.local.mode | Should -Be observe
+        $policy.local.enrolled_machine_id | Should -BeNullOrEmpty
     }
-    It 'fails closed on cutover without prerequisites' {
+    It 'validates hosted authorization switches independently' -TestCases @(
+        @{ Execution = $false; Reporting = $false }
+        @{ Execution = $true; Reporting = $false }
+        @{ Execution = $false; Reporting = $true }
+        @{ Execution = $true; Reporting = $true }
+    ) {
+        param($Execution, $Reporting)
         $policy = Get-ScheduledPolicy
-        $policy.rollout.cutover = $true
+        $policy.rollout.hosted_execution_enabled = $Execution
+        $policy.rollout.reporting_enabled = $Reporting
         $path = Join-Path $TestDrive 'policy.json'
+        $policy | ConvertTo-Json -Depth 20 | Set-Content $path
+        $actual = Get-ScheduledPolicy -Path $path
+        $actual.rollout.hosted_execution_enabled | Should -Be $Execution
+        $actual.rollout.reporting_enabled | Should -Be $Reporting
+    }
+    It 'rejects a missing or non-boolean <Name> authorization switch' -TestCases @(
+        @{ Name = 'hosted_execution_enabled' }
+        @{ Name = 'reporting_enabled' }
+    ) {
+        param($Name)
+        $policy = Get-ScheduledPolicy
+        $path = Join-Path $TestDrive 'policy.json'
+        $policy.rollout.Remove($Name)
+        $policy | ConvertTo-Json -Depth 20 | Set-Content $path
+        { Get-ScheduledPolicy -Path $path } | Should -Throw
+        $policy.rollout[$Name] = 'true'
+        $policy | ConvertTo-Json -Depth 20 | Set-Content $path
+        { Get-ScheduledPolicy -Path $path } | Should -Throw
+    }
+    It 'still requires typed <Name> operator verification' -TestCases @(
+        @{ Name = 'execution_canary' }
+        @{ Name = 'reporting_canary' }
+        @{ Name = 'native_app_canary' }
+        @{ Name = 'benchmark_exclusion' }
+        @{ Name = 'azure_policy' }
+    ) {
+        param($Name)
+        $policy = Get-ScheduledPolicy
+        $policy.rollout.prerequisites.Remove($Name)
+        $path = Join-Path $TestDrive 'policy.json'
+        $policy | ConvertTo-Json -Depth 20 | Set-Content $path
+        { Get-ScheduledPolicy -Path $path } | Should -Throw
+        $policy.rollout.prerequisites[$Name] = 'true'
         $policy | ConvertTo-Json -Depth 20 | Set-Content $path
         { Get-ScheduledPolicy -Path $path } | Should -Throw
     }

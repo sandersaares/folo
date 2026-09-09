@@ -77,22 +77,6 @@ Describe 'Repair gate orchestration' {
             }
         }
     }
-    It 'retains existing local deep execution until reviewed cutover' {
-        InModuleScope ScheduledWorkflow {
-            Mock just {}
-            Mock Get-ScheduledPolicy { @{ rollout = @{ cutover = $false } } }
-            Invoke-ScheduledLocalDeepCheck -Kind miri -Packages events_once
-            Should -Invoke just -Times 1 -Exactly -ParameterFilter { $args[0] -eq 'package=events_once' -and $args[1] -eq 'miri' }
-        }
-    }
-    It 'does not duplicate local deep execution after cutover' {
-        InModuleScope ScheduledWorkflow {
-            Mock just {}
-            Mock Get-ScheduledPolicy { @{ rollout = @{ cutover = $true } } }
-            Invoke-ScheduledLocalDeepCheck -Kind mutants -Packages cpulist
-            Should -Invoke just -Times 0 -Exactly
-        }
-    }
     It 'keeps content-reader callbacks in their defining module when only the workflow is imported' {
         $root = Join-Path $TestDrive 'callback-workspace'
         New-Item -ItemType Directory -Path (Join-Path $root 'packages/sample') -Force | Out-Null

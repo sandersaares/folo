@@ -14,13 +14,13 @@ A triage automation analyzes each failed run and produces deduplicated problem i
 A separate repair automation progresses those problems through check failures, moved `main`,
 version readiness and review feedback to human acceptance; only a human approves and merges.
 
-### Problem-level incidents
+### Problem tracking
 
-An incident is one unresolved occurrence of a distinct problem, not a failing workflow,
-job, package or period of red validation. Repeated observations of the same problem
+A problem is an independently diagnosable failure, not a workflow,
+job, package or period of red validation. Repeated evidence of the same problem
 update its existing issue; unrelated problems in the same run have separate lifecycles.
-A confirmed recurrence reuses the issue with a new generation. The one-repair/one-PR
-ownership rule applies to that incident, independently of repository-wide worker limits.
+A confirmed recurrence reopens its issue with a new occurrence number. One active
+problem has at most one repair session and one PR, independently of repository capacity.
 
 The Local AI triage automation analyzes every unsuccessful job and relevant failed step
 before reconciling problem issues. It extracts all supported problems, groups established
@@ -32,8 +32,9 @@ Problem identity preserves distinguishing failure reasons; a shared Miri target 
 package does not establish a shared cause. Unknown causes remain explicit and receive
 further diagnosis rather than being lost or placed in a universal red-workflow bucket.
 Compatible problem-specific evidence governs resolution, not aggregate workflow color.
-The [incident and triage contract](../../docs/scheduled-validation.md#problems-incidents-and-triage)
-defines terminology, grouping, recurrence, ownership and examples.
+The [problem and triage contract](../../docs/scheduled-validation.md#problems-and-triage)
+defines grouping, recurrence and ownership. The canonical GitHub issue supplies
+identity; AI compares evidence and causes, not just log fingerprints.
 
 Run-level intake issues and problem issues are separate queues. Several failing runs
 can describe the same problem, and one run can describe several unrelated problems.
@@ -43,23 +44,21 @@ actionable triage result and never consumes an unexamined workflow-failure issue
 The automations have independent schedules, claims, budgets and health signals.
 Neither a timer offset nor success in one queue establishes progress in the other.
 
-### Deep-validation operating modes
+### Shallow and deep validation
 
-The reviewed operating policy supports **scheduled enforcement** and **ordinary-validation
-fallback**. Scheduled enforcement runs ordinary Miri, many-seed Miri, mutation testing and careful
-checks through recurring complete manifests rather than the ordinary PR and push deep jobs.
-Ordinary-validation fallback retains those jobs with their event and platform scopes. The same
-selection controls routine local Miri and mutation calls; explicit local deep validation remains
-available in either mode.
+PR/push workflows run shallow validation; scheduled workflows run ordinary Miri,
+many-seed Miri, mutation testing and careful checks through complete manifests.
+The local entry points have fixed meanings: `validate-local` is shallow and
+`validate-deep-local` is deep. Neither reads operating policy. Managed repair PRs
+add the relevant deep checks as proof of their proposed fix, not the full scheduled suite.
 
 Hosted execution, run reporting, Local AI triage and repair admission have independent authorization.
-Hosted checks and reporting can operate without Local automation and without removing deep
-checks from ordinary validation. Scheduled enforcement requires proven execution, reporting, native
-App and credential safeguards. Restoring ordinary-validation fallback keeps enforcement available
-when scheduled detection or reporting is unreliable.
+Hosted checks and reporting can operate without Local automation. Disabling scheduled
+execution does not alter the local recipes or insert deep checks into ordinary CI;
+it leaves automatic recurring deep coverage disabled.
 
 Installation is not authorization to run or publish. Safe defaults leave hosted execution and
-reporting disabled, Local triage and repair admission unconfigured and ordinary-validation fallback selected.
+reporting disabled and Local triage and repair admission unconfigured.
 The operator approves enrollment, scope and operating settings; installing or reconciling
 either automation does not activate them.
 
@@ -68,7 +67,7 @@ either automation does not activate them.
 Complete coverage is evidence for an immutable source and check contract, not merely a green
 workflow or an empty defect list. Compatible full successes can be reused for unchanged `main`
 within the reviewed maximum age. A skip preserves the age of that success; a newer failed or
-incomplete attempt invalidates it. Setup failures are execution incidents, not a defect in each
+incomplete attempt invalidates it. Setup failures are execution problems, not a defect in each
 package that setup prevented from running.
 An empty mutation shard can establish coverage only through successful exact-scope discovery and
 an unmutated baseline. Missing output and a zero-match requested replay are not empty-shard proof.
@@ -77,7 +76,7 @@ presented as a specific failing test or seed inferred from interleaved output.
 
 ### Managed publication
 
-Managed repair identity joins the finding generation, registered executor/session/attempt, reserved
+Managed repair identity joins the problem issue and occurrence, registered executor/session/attempt, reserved
 branch, PR and exact head. A personal account's ordinary PR remains ordinary. Managed candidates
 receive package-scoped deep checks and an unconditional gate feeding `required-checks`; absent,
 skipped or stale evidence cannot pass. Merge queue scope follows actual synthetic candidate
@@ -94,11 +93,9 @@ credential exclusions. Excluding credentials does not establish that a local wor
 
 Validation runs each `just` command as its own parallel job rather than one combined
 `validate-local` step. Parallelism gives faster feedback and pinpoints failures by check
-name instead of burying them in a monolithic log. Expensive jobs gate behind cheaper
-equivalents so a fast failure short-circuits slow work — for example, fallback Miri and mutation
-testing only start once the dev Clippy pass and the base test pass have already succeeded,
-since there is nothing to interpret or mutate in code that does not compile or whose tests
-already fail. Clippy stands in for a bare `cargo check` here: Clippy compiles the code as a
+name instead of burying them in a monolithic log. The local recipes define which
+commands are shallow or deep, while workflow jobs own platform selection,
+prerequisites and evidence capture. Clippy stands in for a bare `cargo check` here: Clippy compiles the code as a
 prerequisite to linting it, so a standalone `check` job would only re-prove what a green
 Clippy already guarantees.
 
@@ -119,25 +116,19 @@ delta's changed-package set would skip a package that already needed an incremen
 Test passes are organised as an x86_64/ARM64 pair. The x64 pass carries coverage
 instrumentation (which needs a nightly-only toolchain component), while the ARM pass
 doubles as the MSRV pass and exists to exercise architecture-gated code that x86_64 runners
-never compile. macOS is Apple Silicon, so it rides the ARM pass. In ordinary-validation fallback,
-Miri follows the same shape: it is an architecture-agnostic interpreter, so a second ARM run earns
-its keep only by subjecting ARM-gated paths to Miri's UB detection. Platform-agnostic checks
+never compile. macOS is Apple Silicon, so it rides the ARM pass. Scheduled Miri
+coverage includes architecture-gated paths as declared by its manifest. Platform-agnostic checks
 (formatting, workflow validation, script tests) run on a single Linux runner because their result cannot
 vary by platform.
 
-Not every check earns its place on every pull request. Within the selected operating mode, the
-full matrix runs on each push to `main`, but pull-request validation prunes the rarely-informative
+Not every shallow check earns its place on every pull request. The
+full shallow matrix runs on each push to `main`, but pull-request validation prunes the rarely-informative
 legs to cut runner cost, leaning on push-to-`main` as the backstop for what it drops. PRs run the
 test and docs suites only on the x86_64 Windows and Linux runners: the whole ARM pass (which carries the
 MSRV *test* run) and the macOS legs of the test and docs jobs wait for `main`, because
 architecture- and OS-gated behaviour rarely diverges on a PR and re-running the
-platform-independent test and doc suites on macOS almost never is informative. The base Miri
-pass runs on Windows only for a PR — being an architecture-agnostic interpreter, its Linux
-and ARM re-runs are a `main`-only sanity net over cfg-gated paths — and the release-profile
-Clippy pass and the `careful` run are skipped entirely on PRs. The many-seeds Miri passes are
-the exception to that pruning: gated by *package* rather than by event, they run on Linux —
-on a PR as much as on `main` — whenever their specific package is touched, because their
-worth is catching seed-dependent UB in that code, not covering a platform. The
+platform-independent test and doc suites on macOS almost never is informative.
+The release-profile Clippy pass is also main-only. The
 compile-oriented passes (dev Clippy, release build, frozen-minimum check, feature `hack`)
 deliberately keep their macOS leg on PRs, because a cheap macOS cross-compile still catches
 macOS-specific build breaks that the pruned runtime passes would not. MSRV *compilation*
@@ -147,9 +138,9 @@ pass is `main`-only. Because a push to `main` is the first place the pruned chec
 that event — unlike a PR — files a tracking issue (see Failure alerting).
 
 The event split is expressed two ways: a job whose every leg is pruned on a PR (the ARM test
-and Miri passes, `clippy-release`, `careful`) carries a whole-job `github.event_name ==
+pass or `clippy-release`) carries a whole-job `github.event_name ==
 'push'` guard, while a job that keeps some legs on a PR (macOS-dropping test/docs, the
-Ubuntu-dropping `miri-x64`) selects its platform list with a `fromJSON` conditional matrix
+platform-specific compilation jobs) selects its platform list with a `fromJSON` conditional matrix
 keyed on the same event. Both reduce to "the full set on push, the pruned set on a PR".
 A `merge_group` (merge queue) run uses that same pruned set: those guards are false for
 anything that is not `push`. Do not rewrite them as `!= 'pull_request'`, or a queue entry

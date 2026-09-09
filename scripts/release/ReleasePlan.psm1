@@ -466,11 +466,9 @@ function Invoke-WithSemverCheckTargetDirectory {
         )
         & $Action
     } finally {
-        [Environment]::SetEnvironmentVariable(
-            'CARGO_TARGET_DIR',
-            $previousTargetDirectory,
-            'Process'
-        )
+        # The environment provider removes a null value. Binding null to the .NET string
+        # overload can instead leave an empty variable, which Cargo rejects.
+        $env:CARGO_TARGET_DIR = $previousTargetDirectory
     }
 }
 

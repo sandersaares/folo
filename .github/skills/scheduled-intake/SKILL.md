@@ -56,8 +56,8 @@ than inventing request fields.
 # Stage 1: Establish identity and coordinator ownership
 
 Use native project/session tools to establish this is the canonical local project.
-Read existing state and native saved automation metadata. Preserve the selected
-personal `sandersaares` entitlement and current Windows profile. Compare the actual
+Read existing state and native saved automation metadata. Preserve the operator-selected
+personal account and enrolled machine/profile. Compare the actual
 project/host/account/profile, policy digest, cadence and enabled status against the
 registered profile. If native metadata needed for this comparison is unavailable,
 record `unsupported-capability`/`scheduling-drift` and stop admissions; do not scrape
@@ -92,12 +92,12 @@ against the native issue association, session, branch and current activity. Read
 PR/branch records before interpreting unknown publication outcomes. Consult every
 registered PR even when its issue no longer appears in the open queue.
 
-If there are neither actionable incidents nor registered repairs, record successful
+If there are neither actionable problems nor registered repairs, record successful
 scan health and release the coordinator; stop without opening sessions or invoking
 specialists. Observe/paused mode emits proposed actions only. Do not claim or send
 work in those modes.
 
-# Stage 3: Continue owned PRs before admitting another incident
+# Stage 3: Continue owned PRs before admitting another problem
 
 Collect authoritative current review/CI input:
 
@@ -226,7 +226,7 @@ blockers. Read `last_hosted_plan.planned_at` from the validated `scheduled-cover
 record independently of full-success receipt age. A profile update is not a
 scan heartbeat. Release the coordinator token; persistent attempts remain owned.
 
-Summarize the selected decision and reason, backlog/oldest eligible incident,
+Summarize the selected decision and reason, backlog/oldest eligible problem,
 existing session/PR, admitted or deferred work and explicit operator blockers.
 If posting this summary on GitHub, use the communication prefix and put execution
 diagnostics in a collapsible section. Do not enable/run another automation or

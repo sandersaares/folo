@@ -116,6 +116,7 @@ function Assert-ScheduledCanonicalVersion {
     New-Item -ItemType Directory -Path $TemporaryRoot -Force | Out-Null
     $reference = Join-Path ([IO.Path]::GetFullPath($TemporaryRoot)) ([guid]::NewGuid().ToString('N'))
     & git -C $Root worktree add --detach $reference $Evidence.pre_version_sha
+    $verificationError = $null
     try {
         $artifactDirectory = Join-Path $reference '.scheduled-version-evidence'
         New-Item -ItemType Directory -Path $artifactDirectory | Out-Null
@@ -151,8 +152,32 @@ function Assert-ScheduledCanonicalVersion {
         } finally {
             Pop-Location
         }
+    } catch {
+        $verificationError = $_
+        throw
     } finally {
-        & git -C $Root worktree remove --force $reference
+        Remove-ScheduledVersionReference -Root $Root -Reference $reference -VerificationError $verificationError
+    }
+}
+
+function Remove-ScheduledVersionReference {
+    [CmdletBinding()]
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Internal mandatory cleanup after successful worktree creation must not be independently skipped.')]
+    param(
+        [Parameter(Mandatory)][string] $Root,
+        [Parameter(Mandatory)][string] $Reference,
+        [AllowNull()][System.Management.Automation.ErrorRecord] $VerificationError
+    )
+    # A successfully created reference must be removed even after failed verification.
+    # Report both failures if cleanup also fails; neither failure may hide the other.
+    try {
+        & git -C $Root worktree remove --force $Reference
+    } catch {
+        if ($null -eq $VerificationError) { throw }
+        throw [AggregateException]::new(
+            "Canonical version verification and cleanup of '$Reference' both failed.",
+            [Exception[]] @($VerificationError.Exception, $_.Exception))
     }
 }
 

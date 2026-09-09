@@ -253,8 +253,8 @@ actionable evidence; do not schedule one yourself.
 
 An unresolved required human discussion, permission, quota, unknown publication or
 design ambiguity is explicit blocked state. Do not fabricate a patch merely to
-produce a PR. After human merge, hosted exact-scope confirmation decides incident
-closure; closed-unmerged PRs stop this attempt.
+produce a PR. After human merge, hosted exact-scope confirmation decides problem
+resolution; closed-unmerged PRs stop this attempt.
 
 Summarize diagnosis and substantive result, the existing PR/session, remaining
 readiness blockers and decisions. GitHub-posted diagnostics belong in a collapsible

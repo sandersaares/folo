@@ -5,7 +5,7 @@
 # enforces `scheduled-repair-gate` against that plan's evidence (`Invoke-ScheduledGate`). Thin
 # workflow entrypoints use reviewed controller inputs; candidate text is never executable here -
 # coverage/plan history is read as data through the GitHub API, not by running anything from the
-# candidate checkout. See ../../.github/workflows/design.md#deep-validation-operating-modes,
+# candidate checkout. See ../../.github/workflows/design.md#shallow-and-deep-validation,
 # ../../.github/workflows/implementation.md#complete-evidence-and-reuse and #managed-repair-gate,
 # and ../../docs/scheduled-validation.md#validation-and-release-contract.
 Set-StrictMode -Version Latest
@@ -249,7 +249,6 @@ function Invoke-ScheduledPlanning {
         @(
             "run=$($run.ToString().ToLowerInvariant())"
             "managed=$($managed.ToString().ToLowerInvariant())"
-            "cutover=$($policy.rollout.cutover.ToString().ToLowerInvariant())"
             "matrix=$matrix"
             "manifest=$($manifest | ConvertTo-Json -Depth 50 -Compress)"
             "source_sha=$sourceSha"
@@ -285,16 +284,5 @@ function Invoke-ScheduledGate {
     if (-not $verdict.successful) { throw "Managed repair evidence rejected: $($verdict.problems -join '; ')" }
 }
 
-function Invoke-ScheduledLocalDeepCheck {
-    [CmdletBinding()]
-    param([Parameter(Mandatory)][ValidateSet('miri', 'mutants')][string] $Kind, [string] $Packages = '')
-    $policy = Get-ScheduledPolicy
-    if ($policy.rollout.cutover) {
-        Write-Verbose "Routine $Kind execution moved to scheduled validation; use validate-deep explicitly."
-        return
-    }
-    & just "package=$Packages" $Kind
-}
-
 Export-ModuleMember -Function Invoke-ScheduledPlanning, Invoke-ScheduledGate,
-Invoke-ScheduledLocalDeepCheck, Get-ScheduledCoverageIndex, Get-ScheduledConfirmationScope
+Get-ScheduledCoverageIndex, Get-ScheduledConfirmationScope
