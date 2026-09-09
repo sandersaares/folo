@@ -251,9 +251,9 @@ careful FILTER="":
 # Separate file because it is a giant script.
 import 'just_quality_mutants.just'
 
-# Full validation of primary factors, as you would do in a build pipeline before a release.
-# Skips some potentially very lengthy validation, which you can run separately via `validate-extra`.
-# We assume this is executed on Windows, and will also perform the full validation on Linux.
+# Run shallow validation on Windows and Linux, plus release-version readiness.
+# Explicit deep checks use validate-deep-local; optional checks use validate-extra.
+# Ref: .github/workflows/design.md#shallow-and-deep-validation.
 [group('quality')]
 validate: validate-local validate-linux validate-versions
 
@@ -262,10 +262,8 @@ validate: validate-local validate-linux validate-versions
 validate-linux:
     wsl -e bash -l -c "just package='{{ package }}' validate-local"
 
-# Full validation of primary factors, as you would do in a build pipeline before a release.
-# Includes package-scoped mutation testing as its final (and by far slowest) step, since
-# uncaught mutations are a very common cause of CI failures - we catch them before pushing.
-# Performs validation on the current platform, whatever that may be.
+# Run shallow validation on the current platform independently of scheduling authorization.
+# Ref: .github/workflows/design.md#shallow-and-deep-validation.
 [group('quality')]
 validate-local:
     just package="{{ package }}" format-check
@@ -279,16 +277,23 @@ validate-local:
     just package="{{ package }}" test-docs
     just package="{{ package }}" docs
     just package="{{ package }}" docs-default-features
-    just package="{{ package }}" miri
     just package="{{ package }}" machete
     just package="{{ package }}" default-features-check
     just package="{{ package }}" check-external-types
     just package="{{ package }}" check release
     just package="{{ package }}" clippy release
     just package="{{ package }}" build release
-    just package="{{ package }}" mutants
 
-# Validation of extra factors that take potentially too long to run in regular validation.
+# Run explicit deep checks without rerunning shallow checks or reading scheduling policy.
+# Ref: .github/workflows/design.md#shallow-and-deep-validation.
+[group('quality')]
+validate-deep-local:
+    just package="{{ package }}" miri
+    just package="{{ package }}" mutants
+    just package="{{ package }}" miri-harder
+    just package="{{ package }}" careful
+
+# Run optional examples and feature combinations on Windows and Linux.
 [group('quality')]
 validate-extra: validate-extra-local validate-extra-linux
 
@@ -297,11 +302,10 @@ validate-extra: validate-extra-local validate-extra-linux
 validate-extra-linux:
     wsl -e bash -l -c "just package='{{ package }}' validate-extra-local"
 
-# Validation of extra factors that take potentially too long to run in regular validation.
-# Mutation testing is intentionally not here - it runs as part of `validate-local`.
-# Performs validation on the current platform, whatever that may be.
+# Run optional examples and feature combinations on the current platform.
+# Deep checks belong to validate-deep-local.
+# Ref: .github/workflows/design.md#shallow-and-deep-validation.
 [group('quality')]
 validate-extra-local:
     just package="{{ package }}" run-examples
     just package="{{ package }}" hack
-    just package="{{ package }}" careful

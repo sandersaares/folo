@@ -466,11 +466,9 @@ function Invoke-WithSemverCheckTargetDirectory {
         )
         & $Action
     } finally {
-        [Environment]::SetEnvironmentVariable(
-            'CARGO_TARGET_DIR',
-            $previousTargetDirectory,
-            'Process'
-        )
+        # The environment provider removes a null value. Binding null to the .NET string
+        # overload can instead leave an empty variable, which Cargo rejects.
+        $env:CARGO_TARGET_DIR = $previousTargetDirectory
     }
 }
 
@@ -1918,7 +1916,7 @@ function Assert-PlanMovesEveryPackageNeedingIncrement {
     # still declaring the version it declares today.
     #
     # `check` fails for exactly those packages, so a plan that does not move one cannot clear the
-    # version check and the run would present an approval artifact that is already known not to
+    # version check and the run would present a plan artifact that is already known not to
     # work. This asks whether the plan moves the package rather than whether a decision named it,
     # because a grouped package is moved by any decision naming one of its members and recording
     # no decision of its own is correct for it.
@@ -1996,7 +1994,7 @@ function Assert-PlanMovesEveryRewrittenPublishedPackage {
 }
 
 function New-ReleasePlanFile {
-    # Writes the proposed plan: the approved change levels mapped to cargo-release-plan's
+    # Writes the proposed plan: the decided change levels mapped to cargo-release-plan's
     # mechanical increment levels, plus whatever it takes to align every group whose declared
     # versions differ. Existing pending-release increments are retained and raised only when
     # insufficient. Expanding this proposal is a separate step, because only an expanded plan

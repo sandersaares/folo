@@ -1,0 +1,15 @@
+       Fresh unicode-ident v1.0.24
+       Fresh either v1.18.0
+       Fresh new_zealand v1.0.9 (<source-root>\packages\new_zealand)
+       Fresh static_assertions v1.1.0
+       Fresh proc-macro2 v1.0.107
+       Fresh itertools v0.15.0
+       Fresh quote v1.0.47
+       Fresh typeid v1.0.3
+       Fresh syn v3.0.4
+       Fresh ohno_macros_impl v0.5.1
+       Fresh ohno_macros v0.5.0
+       Fresh ohno v0.5.0
+       Fresh cpulist v1.1.9 (<source-root>\packages\cpulist)
+    Finished `mutants` profile [unoptimized] target(s) in 0.19s
+  Executable `<source-root>\target\mutants\deps\cpulist-e9f96faba84d9cb8.exe`

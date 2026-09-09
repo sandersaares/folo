@@ -1,0 +1,27 @@
+[package]
+# Tool-style naming follows the workspace's other nonpublished helper binaries.
+name = "scheduled-mutation-config"
+description = "Decodes controller-owned cargo-mutants baseline configuration for scheduled validation"
+publish = false
+version = "0.0.0"
+
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
+
+[dependencies]
+ohno = { workspace = true, features = ["app-err"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+toml = { workspace = true, features = ["parse", "serde", "std"] }
+
+[dev-dependencies]
+testing = { path = "../testing" }
+
+[lints]
+workspace = true

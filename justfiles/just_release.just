@@ -158,7 +158,7 @@ release-analysis-order REPORT:
 # including alignment-only helpers and groups covered by a consistency exemption. Expansion is
 # plan-driven, so a drifted group that no entry reaches would otherwise stay drifted.
 #
-# Converts the approved change levels in DECISIONS into the proposed plan PLAN, using report REPORT.
+# Converts the decided change levels in DECISIONS into the proposed plan PLAN, using report REPORT.
 [group('release')]
 [script]
 create-release-plan REPORT DECISIONS PLAN:
@@ -169,8 +169,8 @@ create-release-plan REPORT DECISIONS PLAN:
     Import-Module "{{ justfile_directory() }}/scripts/release/ReleasePlan.psm1" -Force
     New-ReleasePlanFile -ReportPath "{{ REPORT }}" -DecisionPath "{{ DECISIONS }}" -PlanPath "{{ PLAN }}"
 
-# The expanded document is what gets presented for approval and what gets applied, so the
-# approved set cannot widen during apply. Group expansion stays in cargo-release-plan rather than
+# The expanded document is what gets presented and applied, so the documented package set
+# cannot widen during apply. Group expansion stays in cargo-release-plan rather than
 # being reimplemented here.
 #
 # Expands the proposed plan PLAN into EXPANDED, naming every publishable or alignment-only version

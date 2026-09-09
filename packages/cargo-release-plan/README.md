@@ -2,7 +2,7 @@
 
 A Cargo subcommand that classifies every publishable workspace package against its
 version **anchor**, reports changes to **released content**, and applies an
-approved increment plan (group expansion, `=`-pin rewrites, lockfile refresh).
+prepared increment plan (group expansion, `=`-pin rewrites, lockfile refresh).
 
 A package has unreleased changes when its released content differs between its
 version anchor and the work tree. Such a package is pending release once its
@@ -81,8 +81,9 @@ the input plan did not mention, at the version each will carry. Applying it also
 rewrites requirements inside those packages' dependents, which take no version
 from the plan and so are not named.
 
-The output is itself a plan, so the expanded document is the one passed to
-`apply` after review. Every entry carries an explicit `version`.
+The output is itself a plan, so the expanded document can be passed unchanged to
+`apply`. Every entry carries an explicit `version`. Review and approval policy
+belong to the caller, not the tool.
 
 Re-expand after changing the input plan. Editing an expanded plan by hand risks
 giving one group's members different versions, which both `expand` and `apply`
@@ -96,7 +97,7 @@ compiles code or compares API surfaces. `report` supplies what that judgement
 needs; a caller records a level per package in a plan; `apply` then owns the
 mechanical part, including deriving the resulting version numbers.
 
-Reads an approved plan and:
+Reads a plan and:
 
 * sets each listed package's `version`
 * expands version groups so every member receives the new version
@@ -140,7 +141,7 @@ a starting point rather than the full set it moves. An **expanded plan**, writte
 sets it, names every package whose version the plan sets, and gives each an explicit `version`.
 Both are
 required of it: an entry left at a level would be resolved against the manifests as they stand
-when it is applied, so the same document could apply a version other than the reviewed one.
+when it is applied, so the same document could apply a version other than the recorded one.
 Resolving an expanded plan must reproduce exactly the set it names; reaching any other package
 means the workspace's derived version groups changed after the document was written, and is rejected
 rather than applied. Requirement rewrites inside those packages' dependents are not part of that

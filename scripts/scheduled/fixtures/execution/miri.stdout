@@ -1,0 +1,18 @@
+
+running 1 test
+test fixture_failure ... FAILED
+
+failures:
+
+---- fixture_failure stdout ----
+
+thread 'fixture_failure' (1) panicked at scripts\scheduled\fixtures\execution\miri_failure.rs:5:5:
+scheduled Miri fixture canary
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+note: in Miri, you may have to set `MIRIFLAGS=-Zmiri-env-forward=RUST_BACKTRACE` for the environment variable to have an effect
+
+
+failures:
+    fixture_failure
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.21s

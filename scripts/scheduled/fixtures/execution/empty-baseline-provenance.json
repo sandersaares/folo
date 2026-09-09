@@ -1,0 +1,30 @@
+{
+  "cargo_mutants_version": "27.1.0",
+  "toolchain": "1.96.1",
+  "platform": "windows-latest",
+  "package": "cpulist",
+  "shard": "256/256",
+  "discovery": "Exact-scope --list --json succeeded with []. Only then was the ordinary mutation command executed; it exited 0 with mutants.json=[] and no outcomes.json.",
+  "baseline": "Real unmutated Cargo Build and Test commands both exited 0, using the controller mutation configuration, offline cached dependencies, and no helper binaries needed by cpulist.",
+  "build_argv": ["+1.96.1", "test", "--no-run", "--profile=mutants", "--verbose", "--package=cpulist", "--all-features", "--locked"],
+  "test_argv": ["+1.96.1", "test", "--profile=mutants", "--verbose", "--package=cpulist", "--all-features", "--locked", "--tests"],
+  "environment": {
+    "RUSTUP_TOOLCHAIN": "1.96.1",
+    "RUSTFLAGS": "--cfg mutants",
+    "CARGO_ENCODED_RUSTFLAGS": null,
+    "MUTATION_TESTING": "1",
+    "RUST_TEST_THREADS": "1",
+    "INSTA_UPDATE": "no",
+    "INSTA_FORCE_PASS": "0",
+    "CARGO_NET_OFFLINE": "true"
+  },
+  "test_timeout_seconds": 60,
+  "nextest": "The baseline command builder also ran Build/Test successfully with test_tool=nextest using installed cargo-nextest 0.9.143 (60fa45f63 2026-08-04); nextest-test.stderr is its actual test output.",
+  "normalization": "Source-root paths and the nextest run ID use placeholders; line endings use repository formatting and trailing blank lines are removed.",
+  "sources": [
+    "https://github.com/sourcefrog/cargo-mutants/blob/v27.1.0/src/cargo.rs",
+    "https://github.com/sourcefrog/cargo-mutants/blob/v27.1.0/src/lab.rs",
+    "https://github.com/sourcefrog/cargo-mutants/blob/v27.1.0/src/options.rs",
+    "https://github.com/sourcefrog/cargo-mutants/blob/v27.1.0/src/timeouts.rs"
+  ]
+}

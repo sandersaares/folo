@@ -1,4 +1,7 @@
 #Requires -Modules @{ ModuleName = 'Pester'; ModuleVersion = '5.0' }
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+$PSNativeCommandUseErrorActionPreference = $true
 
 # Pester suite for Miri.psm1. Get-MiriSeedRange is pure, so the seed arithmetic is checked
 # directly: the unsharded full range, an even split, the remainder-absorbing final shard, and the
@@ -7,6 +10,23 @@
 
 BeforeAll {
     Import-Module (Join-Path $PSScriptRoot 'Miri.psm1') -Force
+}
+
+Describe 'Get-MiriFlag' {
+    It 'preserves a replay seed and all flags instead of replacing them with a shard range' {
+        Get-MiriFlag -Flags @('-Zmiri-seed=19', '-Zmiri-disable-isolation') -Many -Shard '2/4' -SeedRange '16..32' |
+            Should -Be @('-Zmiri-seed=19', '-Zmiri-disable-isolation')
+    }
+
+    It 'adds the declared range without losing other flags' {
+        Get-MiriFlag -Flags @('-Zmiri-strict-provenance') -Many -SeedRange '32..64' |
+            Should -Be @('-Zmiri-strict-provenance', '-Zmiri-many-seeds=32..64')
+    }
+
+    It 'rejects conflicting seed choices' {
+        { Get-MiriFlag -Flags @('-Zmiri-seed=1', '-Zmiri-many-seeds=0..4') -Many } | Should -Throw
+        { Get-MiriFlag -Many -SeedRange '4..4' } | Should -Throw
+    }
 }
 
 Describe 'Get-MiriSeedRange' {
