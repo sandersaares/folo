@@ -91,14 +91,22 @@ fn check_parses_github_format_and_verify_packaging() {
 }
 
 #[test]
-fn expand_requires_both_a_plan_and_an_output_path() {
+fn expand_requires_arguments() {
     assert!(parse(&["expand"]).unwrap_err().status.is_err());
+}
+
+#[test]
+fn expand_requires_an_output_path() {
     assert!(
         parse(&["expand", "--plan", "plan.json"])
             .unwrap_err()
             .status
             .is_err()
     );
+}
+
+#[test]
+fn expand_requires_a_plan() {
     assert!(
         parse(&["expand", "--out", "expanded.json"])
             .unwrap_err()

@@ -1,6 +1,8 @@
 use std::alloc::Layout;
 use std::iter::{self, FusedIterator};
 use std::mem::{MaybeUninit, size_of};
+#[cfg(test)]
+use std::num::NonZero;
 use std::ptr::NonNull;
 
 use crate::opaque::slab::SlabIterator;
@@ -103,6 +105,14 @@ pub struct RawOpaquePool {
 }
 
 impl RawOpaquePool {
+    /// Sets the slab capacity of an empty fixture so boundary tests need few live objects.
+    #[cfg(test)]
+    #[cfg_attr(coverage_nightly, coverage(off))]
+    pub(crate) fn set_slab_capacity(&mut self, capacity: NonZero<usize>) {
+        assert!(self.slabs.is_empty());
+        self.slab_layout = self.slab_layout.with_capacity(capacity);
+    }
+
     /// Starts configuring and creating a new instance of the pool.
     #[cfg_attr(test, mutants::skip)] // Gets mutated to alternate version of itself.
     pub fn builder() -> RawOpaquePoolBuilder {
@@ -674,6 +684,7 @@ mod tests {
     use std::mem::MaybeUninit;
     use std::panic::{RefUnwindSafe, UnwindSafe};
 
+    use new_zealand::nz;
     use static_assertions::{assert_impl_all, assert_not_impl_any};
 
     use super::*;
@@ -737,6 +748,8 @@ mod tests {
     #[test]
     fn capacity_grows_with_slabs() {
         let mut pool = RawOpaquePool::with_layout_of::<u64>();
+        // Keep multiple live slots before crossing the slab boundary.
+        pool.set_slab_capacity(nz!(2));
 
         assert_eq!(pool.capacity(), 0);
 
@@ -754,7 +767,7 @@ mod tests {
         // One more insert should create a new slab
         let _handle = pool.insert(999_u64);
 
-        assert!(pool.capacity() >= initial_capacity * 2);
+        assert!(pool.capacity() >= initial_capacity.checked_mul(2).unwrap());
     }
 
     #[test]

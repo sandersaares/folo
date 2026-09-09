@@ -2089,7 +2089,7 @@ mod tests {
     /// of its default names that the end being examined holds.
     #[test]
     fn a_detected_readme_outranks_the_packaging_rules() {
-        let rules = PackagingRules::new(Some(&["src/**".to_string()]), None).unwrap();
+        let rules = PackagingRules::new(Some(&["/src/".to_string()]), None).unwrap();
         let resources = BTreeMap::new();
         let paths = vec![
             "packages/a/src/lib.rs".to_string(),
@@ -2131,7 +2131,7 @@ mod tests {
     /// the spelling exactly there would report such a package as having released nothing.
     #[test]
     fn a_detected_readme_follows_the_probed_case_rules() {
-        let rules = PackagingRules::new(Some(&["src/**".to_string()]), None).unwrap();
+        let rules = PackagingRules::new(Some(&["/src/".to_string()]), None).unwrap();
         let resources = BTreeMap::new();
         let paths = vec![
             "packages/a/src/lib.rs".to_string(),
@@ -2196,16 +2196,15 @@ mod tests {
         );
     }
 
-    /// A deleted path no longer shapes the released content.
+    /// A deleted default README is no longer detected.
     ///
     /// Git still lists a tracked file the work tree has deleted, but Cargo packages what is on
-    /// disk: a nested manifest that is gone no longer stops packing, and a deleted default README
-    /// is no longer detected.
+    /// disk, so README detection must use the paths that remain present.
     #[test]
-    fn a_deleted_path_no_longer_shapes_the_released_content() {
+    fn a_deleted_readme_is_no_longer_detected() {
         let resources = BTreeMap::new();
         // `include` omits the README, so only detection can bring it in.
-        let rules = PackagingRules::new(Some(&["src/**".to_string()]), None).unwrap();
+        let rules = PackagingRules::new(Some(&["/src/".to_string()]), None).unwrap();
         let side = PackageSide {
             dir: "packages/a",
             rules: &rules,
@@ -2226,7 +2225,12 @@ mod tests {
             !released_from_paths(&tracked, &present, &side).contains_key("README.md"),
             "a README the work tree deleted is not"
         );
+    }
 
+    /// A deleted nested manifest no longer stops packing its directory.
+    #[test]
+    fn a_deleted_nested_manifest_no_longer_limits_released_content() {
+        let resources = BTreeMap::new();
         let rules = PackagingRules::default();
         let side = PackageSide {
             dir: "packages/a",
@@ -2435,31 +2439,30 @@ mod tests {
     fn resolve_members_follows_path_dependencies() {
         let root = Path::new("Cargo.toml");
         let members = parse_workspace_members(
-            "[workspace]\nmembers = [\"packages/a\"]\nexclude = [\"packages/c\"]\n",
+            "[workspace]\nmembers = [\"a\"]\nexclude = [\"c\"]\n",
             root,
             PathCase::Sensitive,
         )
         .unwrap();
-        let mut manifests = FakeManifests::new(&[
-            (
-                "packages/a",
-                "[package]\nname = \"a\"\nversion = \"0.1.0\"\n\n[dependencies]\nb = { path = \"../b\" }\n\n[dev-dependencies]\nc = { path = \"../c\" }\n",
-            ),
-            (
-                "packages/b",
-                "[package]\nname = \"b\"\nversion = \"0.1.0\"\n",
-            ),
-            (
-                "packages/c",
-                "[package]\nname = \"c\"\nversion = \"0.1.0\"\n",
-            ),
-        ]);
+        // Traversal consumes parsed models. Seed the package identities from one small document;
+        // dependency-table parsing and aggregation have their own manifest tests.
+        let mut manifests =
+            FakeManifests::new(&[("a", "[package]\nname = \"a\"\nversion = \"0.1.0\"\n")]);
+        let package = manifests.manifests.get("a").unwrap().clone();
+        for name in ["b", "c"] {
+            let mut package = package.clone();
+            package.name = name.to_string();
+            package.directory = name.to_string();
+            manifests.manifests.insert(name.to_string(), package);
+        }
+        manifests.manifests.get_mut("a").unwrap().path_dependencies =
+            vec!["../b".to_string(), "../c".to_string()];
         let resolved = resolve_members(&mut manifests, &members).unwrap();
         // `b` is reachable only as a path dependency; `c` is excluded even though
         // a member depends on it.
         assert_eq!(
             resolved.into_iter().collect::<Vec<_>>(),
-            vec!["packages/a".to_string(), "packages/b".to_string()]
+            vec!["a".to_string(), "b".to_string()]
         );
     }
 

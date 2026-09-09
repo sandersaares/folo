@@ -157,6 +157,10 @@ the adapter, so producer/consumer drift fails the build automatically. Their fix
 are therefore representative samples of the current schema for the value-asserting unit tests,
 not the drift canary — keep them in sync with the producer's shape, but the round-trip test is
 authoritative.
+Use the minimal synthetic documents exported by `cbh_engines::testing` for orchestration
+scenarios that do not assert producer schema compatibility. Seed existing storage directly
+when a test only needs to exercise a subsequent collection, rather than executing collection
+again as fixture setup.
 
 **Backfill coverage.** Planning/skip/overwrite/error logic is exhaustively covered by
 fake-driven unit tests in `commands/backfill.rs`; keep the real-git integration drives a small

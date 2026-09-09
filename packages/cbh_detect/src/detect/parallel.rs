@@ -91,11 +91,17 @@ mod tests {
         // `len == 0`, and zero workers must yield an empty iterator (not panic on the
         // divide-by-zero).
         assert_eq!(balanced_chunk_sizes(0, 0).count(), 0);
+    }
 
+    #[test]
+    fn balanced_chunk_sizes_cover_the_input_across_partition_shapes() {
         // Across many shapes: exactly `workers` chunks, every chunk non-empty, sizes
         // differ by at most one, and they sum back to `len` (a full, non-overlapping
         // partition).
-        for len in 1..=64_usize {
+        // Small inputs already cover empty remainders, every remainder position and
+        // more workers than items per chunk. Native retains the wider scaling sweep.
+        let max_len = if cfg!(miri) { 8 } else { 64 };
+        for len in 1..=max_len {
             for workers in 1..=len.min(16) {
                 let sizes: Vec<usize> = balanced_chunk_sizes(len, workers).collect();
                 assert_eq!(sizes.len(), workers, "len={len} workers={workers}");

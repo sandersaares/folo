@@ -310,6 +310,7 @@ mod tests {
     use ohno::ErrorExt as _;
 
     use super::*;
+    use crate::testing::run_points_json;
 
     /// The discriminant set for `machine`, sharing every other comparable axis.
     fn set(machine: &str) -> DiscriminantSet {
@@ -449,7 +450,7 @@ mod tests {
             machine,
             commit,
             topo_index,
-            run.to_json().unwrap().as_bytes(),
+            run_points_json(run).as_bytes(),
         )
     }
 
@@ -671,7 +672,7 @@ mod tests {
             &[&lagging],
             siblings,
             3,
-            &RecordingReporter::new(),
+            &RecordingReporter::quiet(),
         ))
         .err()
         .unwrap()

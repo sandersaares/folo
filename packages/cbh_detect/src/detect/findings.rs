@@ -2196,27 +2196,41 @@ mod tests {
     fn change_point_accepts_a_minimal_before_regime() {
         // Pettitt splits at tau=MIN_REGIME, so the before regime holds exactly
         // `min_regime` points: a `<=`/`==` slip on the before-regime bound would
-        // reject the step. One extra after point makes the split lopsided, so only
-        // the before-regime bound is at its limit.
+        // reject the step. One extra after point makes only the before bound minimal.
+        // This targets candidate persistence, not the independent permutation calibration.
         let mut values = vec![100.0; MIN_REGIME];
         values.extend(std::iter::repeat_n(130.0, MIN_REGIME + 1));
-        let finding = only(changes(&[series_of(&values)]));
-        assert_eq!(finding.method, FindingMethod::ChangePoint);
-        assert_eq!(finding.baseline, 100.0);
-        assert_eq!(finding.latest, 130.0);
+        assert_minimal_regime_is_accepted(&values);
     }
 
     #[test]
     fn change_point_accepts_a_minimal_after_regime() {
-        // The mirror image: Pettitt splits at tau=MIN_REGIME+1, so the after regime
+        // The mirror image: Pettitt splits after the longer before regime, so the after regime
         // holds exactly `min_regime` points and a `<=` slip on the after-regime bound
         // would reject the step.
         let mut values = vec![100.0; MIN_REGIME + 1];
         values.extend(std::iter::repeat_n(130.0, MIN_REGIME));
-        let finding = only(changes(&[series_of(&values)]));
+        assert_minimal_regime_is_accepted(&values);
+    }
+
+    fn assert_minimal_regime_is_accepted(values: &[f64]) {
+        let series = series_of(values);
+        let finding = evaluate_change_point(&series, values, &mut GateLog::disabled())
+            .expect("the shorter regime reaches the persistence floor")
+            .finding;
         assert_eq!(finding.method, FindingMethod::ChangePoint);
         assert_eq!(finding.baseline, 100.0);
         assert_eq!(finding.latest, 130.0);
+
+        // These lopsided minimal splits need expensive conditional calibration. Native
+        // retains that end-to-end assertion; Miri checks the persistence boundary here,
+        // with balanced full-detector steps and small kernel orbits covering calibration.
+        if !cfg!(miri) {
+            let finding = only(changes(&[series]));
+            assert_eq!(finding.method, FindingMethod::ChangePoint);
+            assert_eq!(finding.baseline, 100.0);
+            assert_eq!(finding.latest, 130.0);
+        }
     }
 
     #[test]
@@ -2611,6 +2625,16 @@ mod tests {
 
         let findings = changes(&series);
 
+        // Magnitudes increase with each inserted step, so the expected descending
+        // ranking is known without rerunning all of detection as its own oracle.
+        assert_eq!(
+            findings
+                .iter()
+                .map(|finding| finding.id.qualified())
+                .collect::<Vec<_>>(),
+            stepped_ids.iter().rev().cloned().collect::<Vec<_>>()
+        );
+
         // Exactly the stepped series flag, each exactly once.
         let mut flagged: Vec<String> = findings
             .iter()
@@ -2619,14 +2643,6 @@ mod tests {
         flagged.sort();
         stepped_ids.sort();
         assert_eq!(flagged, stepped_ids);
-
-        // The ranking is byte-stable across repeated parallel passes.
-        let ranking = |list: &[Finding]| -> Vec<(String, f64)> {
-            list.iter()
-                .map(|finding| (finding.id.qualified(), finding.relative_delta))
-                .collect()
-        };
-        assert_eq!(ranking(&findings), ranking(&changes(&series)));
     }
 
     #[test]
@@ -2970,19 +2986,25 @@ mod tests {
         assert_eq!(finding.chart_base_ref, Some(20));
     }
 
-    #[test]
-    fn history_does_not_reflag_a_blessed_step() {
+    fn step_before_blessing() -> Series {
         // One extra pre-step point makes this analytically conclusive while retaining
         // a shortest judged post-blessing window. Calibration is not the property here.
         let mut values = vec![100.0; MIN_REGIME + 1];
         values.extend(std::iter::repeat_n(130.0, MIN_SERIES_POINTS));
-        let series = series_of(&values);
-        assert_eq!(only(changes(slice::from_ref(&series))).latest, 130.0);
+        series_of(&values)
+    }
 
+    #[test]
+    fn history_reports_the_step_before_it_is_blessed() {
+        assert_eq!(only(changes(&[step_before_blessing()])).latest, 130.0);
+    }
+
+    #[test]
+    fn history_does_not_reflag_a_blessed_step() {
         // Blessing the post-step level re-baselines the series: the active window
         // begins at the first elevated point, leaving a full-length but flat 130
         // regime to judge, which no longer moves.
-        let mut blessed = series;
+        let mut blessed = step_before_blessing();
         blessed.active_start = MIN_REGIME + 1;
         blessed.blessing = Some(Blessing {
             commit: "abcdef0123456789".to_owned(),
@@ -3525,8 +3547,7 @@ mod tests {
         );
     }
 
-    #[test]
-    fn the_false_discovery_family_is_every_testable_series_not_the_survivors() {
+    fn false_discovery_family(size: usize, companion_points: usize) -> Vec<Series> {
         // The correction divides by the number of hypotheses *tested*, which is the
         // number of testable series — including those that raised nothing. Feeding it
         // only its own survivors would make it a no-op, since every survivor has
@@ -3540,46 +3561,51 @@ mod tests {
         // BH denominator). The permutation component's 90% Bonferroni weight is
         // already reflected in that chance level. Flat companions are judged and
         // do count, while companions one point too short are not judged and do not.
-        const FAMILY_THAT_REPORTS: usize = 6;
-        const FAMILY_THAT_REJECTS: usize = 7;
-
         let stepped = named_series(
             "stepped",
             &[
                 98.0, 100.0, 102.0, 99.0, 101.0, 128.0, 130.0, 132.0, 129.0, 131.0,
             ],
         );
-        let stepped_id =
-            BenchmarkId::new(nonempty!["stepped".to_owned(), "case".to_owned()]).qualified();
-        let flat_companions = |count: usize| {
-            (0..count)
-                .map(|index| named_series(&format!("flat{index}"), &[100.0; MIN_SERIES_POINTS]))
-        };
+        let mut family = vec![stepped];
+        family
+            .extend((1..size).map(|index| {
+                named_series(&format!("flat{index}"), &vec![100.0; companion_points])
+            }));
+        family
+    }
 
-        let mut small_family = vec![stepped.clone()];
-        small_family.extend(flat_companions(FAMILY_THAT_REPORTS - 1));
+    #[test]
+    fn false_discovery_family_reports_below_the_family_boundary() {
+        // This family places the step just below the BH boundary.
+        const FAMILY_THAT_REPORTS: usize = 6;
+        let family = false_discovery_family(FAMILY_THAT_REPORTS, MIN_SERIES_POINTS);
         assert_eq!(
-            only(changes(&small_family)).id.qualified(),
-            stepped_id,
+            only(changes(&family)).id.qualified(),
+            "stepped/case",
             "the candidate clears the threshold this family size sets"
         );
+    }
 
-        let mut large_family = vec![stepped.clone()];
-        large_family.extend(flat_companions(FAMILY_THAT_REJECTS - 1));
+    #[test]
+    fn false_discovery_family_includes_silent_testable_companions() {
+        // One more judged companion moves the step across the BH boundary.
+        const FAMILY_THAT_REJECTS: usize = 7;
+        let family = false_discovery_family(FAMILY_THAT_REJECTS, MIN_SERIES_POINTS);
         assert!(
-            changes(&large_family).is_empty(),
+            changes(&family).is_empty(),
             "one more silent but testable companion tightens the threshold past it"
         );
+    }
 
-        let mut unjudged_batch = vec![stepped];
-        unjudged_batch.extend(
-            (0..FAMILY_THAT_REJECTS - 1).map(|index| {
-                named_series(&format!("short{index}"), &[100.0; MIN_SERIES_POINTS - 1])
-            }),
-        );
+    #[test]
+    fn false_discovery_family_excludes_unjudged_companions() {
+        // This batch would reject if its short companions were incorrectly judged.
+        const FAMILY_THAT_REJECTS: usize = 7;
+        let family = false_discovery_family(FAMILY_THAT_REJECTS, MIN_SERIES_POINTS - 1);
         assert_eq!(
-            only(changes(&unjudged_batch)).id.qualified(),
-            stepped_id,
+            only(changes(&family)).id.qualified(),
+            "stepped/case",
             "companions that were never judged must not enlarge the family"
         );
     }
@@ -3609,38 +3635,22 @@ mod tests {
         history_context(slice::from_ref(series))
     }
 
-    /// One scenario per gate family, each declining for a different reason.
-    fn declined_cases() -> Vec<DeclinedCase> {
-        // Each half is complete, but its minority group cannot itself form a regime.
-        const MINORITY_POINTS: usize = MIN_REGIME.div_euclid(2);
-        const MAJORITY_POINTS: usize = MIN_SERIES_POINTS - MINORITY_POINTS;
-
-        let mut short_after = vec![100.0; MIN_SERIES_POINTS];
-        short_after.extend(std::iter::repeat_n(130.0, MIN_REGIME - 1));
-        let noisy_step = [
-            98.0, 100.0, 102.0, 99.0, 101.0, 128.0, 130.0, 132.0, 129.0, 131.0,
-        ];
-        // Two levels that both recur in each half of the history: the first half sits mostly
-        // on the low level with a few high commits, the second half mostly on the high level
-        // with a few low ones. The majority shifts, yet the overlap keeps the probability
-        // of superiority under the separation gate. Each half is ordered high-then-low
-        // so no trend survives for the drift detector to read.
-        let mut overlapping_regimes: Vec<f64> = Vec::new();
-        overlapping_regimes.extend(std::iter::repeat_n(130.0, MINORITY_POINTS));
-        overlapping_regimes.extend(std::iter::repeat_n(100.0, MAJORITY_POINTS));
-        overlapping_regimes.extend(std::iter::repeat_n(130.0, MAJORITY_POINTS));
-        overlapping_regimes.extend(std::iter::repeat_n(100.0, MINORITY_POINTS));
-
-        vec![
-            DeclinedCase {
+    /// Builds only the gate scenario the test evaluates, not the whole catalogue.
+    fn declined_case(gate: Gate) -> DeclinedCase {
+        match gate {
+            Gate::MinRegime => DeclinedCase {
                 shape: "a step with one point too few after it",
-                series: series_of(&short_after),
+                series: series_of(&{
+                    let mut short_after = vec![100.0; MIN_SERIES_POINTS];
+                    short_after.extend(std::iter::repeat_n(130.0, MIN_REGIME - 1));
+                    short_after
+                }),
                 stage: GateStage::ChangePoint,
                 gate: Gate::MinRegime,
                 // The shorter regime holds `MIN_REGIME - 1` points against the floor.
                 compared: Some((count_to_f64(MIN_REGIME - 1), count_to_f64(MIN_REGIME))),
             },
-            DeclinedCase {
+            Gate::NonZeroDelta => DeclinedCase {
                 shape: "a flat history with one excursion at its midpoint",
                 series: series_of(&{
                     let mut values = [100.0; MIN_SERIES_POINTS];
@@ -3655,7 +3665,7 @@ mod tests {
                 // Both regimes sit at the same level, so the move is exactly nothing.
                 compared: Some((0.0, 0.0)),
             },
-            DeclinedCase {
+            Gate::RelativeFloor => DeclinedCase {
                 shape: "a one percent step",
                 series: series_of(&step_values(100.0, 101.0)),
                 stage: GateStage::ChangePoint,
@@ -3663,7 +3673,7 @@ mod tests {
                 // 1 unit on a baseline of 100 against the 3% relative floor.
                 compared: Some((0.01, PRACTICAL_RELATIVE)),
             },
-            DeclinedCase {
+            Gate::AbsoluteFloor => DeclinedCase {
                 shape: "a four-count step",
                 series: series_of(&step_values(60.0, 64.0)),
                 stage: GateStage::ChangePoint,
@@ -3672,7 +3682,7 @@ mod tests {
                 // move clears the relative floor, so this is the gate that binds.
                 compared: Some((4.0, PRACTICAL_ABSOLUTE_COUNT)),
             },
-            DeclinedCase {
+            Gate::ResidualNoise => DeclinedCase {
                 shape: "a step no larger than its own residual scatter",
                 // Two rank-separated regimes, so the rank test is decisive and the chain
                 // reaches the residual gate. Each regime descends internally, which cancels
@@ -3687,21 +3697,39 @@ mod tests {
                 // the same two-regime model leaves behind.
                 compared: Some((100.0, RESIDUAL_NOISE_MULTIPLE * 50.0)),
             },
-            DeclinedCase {
+            Gate::RegimeSeparation => DeclinedCase {
                 shape: "two levels that both recur in each half of the history",
-                series: series_of(&overlapping_regimes),
+                series: series_of(&{
+                    // Each half is complete, but its minority cannot form a regime.
+                    const MINORITY_POINTS: usize = MIN_REGIME.div_euclid(2);
+                    const MAJORITY_POINTS: usize = MIN_SERIES_POINTS - MINORITY_POINTS;
+
+                    // The majority shifts while overlap limits superiority. Ordering
+                    // each half high-then-low also prevents a surviving drift.
+                    let mut values = Vec::new();
+                    values.extend(std::iter::repeat_n(130.0, MINORITY_POINTS));
+                    values.extend(std::iter::repeat_n(100.0, MAJORITY_POINTS));
+                    values.extend(std::iter::repeat_n(130.0, MAJORITY_POINTS));
+                    values.extend(std::iter::repeat_n(100.0, MINORITY_POINTS));
+                    values
+                }),
                 stage: GateStage::ChangePoint,
                 gate: Gate::RegimeSeparation,
                 compared: None,
             },
-            DeclinedCase {
+            Gate::IntervalDisjoint => DeclinedCase {
                 shape: "a clean step under confidence intervals that overlap",
-                series: wall_series(&noisy_step, 60.0),
+                series: wall_series(
+                    &[
+                        98.0, 100.0, 102.0, 99.0, 101.0, 128.0, 130.0, 132.0, 129.0, 131.0,
+                    ],
+                    60.0,
+                ),
                 stage: GateStage::ChangePoint,
                 gate: Gate::IntervalDisjoint,
                 compared: None,
             },
-            DeclinedCase {
+            Gate::Significance => DeclinedCase {
                 shape: "a flat history, judged as a trend",
                 series: series_of(&[100.0; MIN_SERIES_POINTS]),
                 stage: GateStage::Drift,
@@ -3709,7 +3737,7 @@ mod tests {
                 // No pair of points is ordered, so the rank test reports no trend at all.
                 compared: Some((1.0, MAX_DRIFT_CHANCE_LEVEL)),
             },
-            DeclinedCase {
+            Gate::IntervalNoiseBand => DeclinedCase {
                 shape: "a climb smaller than the measurement noise band",
                 series: wall_series(&ramp(100.0, 4.0, MIN_SERIES_POINTS), 20.0),
                 stage: GateStage::Drift,
@@ -3718,42 +3746,33 @@ mod tests {
                 // twice the 20-unit half-width every point carries.
                 compared: Some((36.0, DRIFT_NOISE_MULTIPLE * 20.0)),
             },
-        ]
-    }
-
-    #[test]
-    fn each_gate_family_declines_the_history_it_exists_for() {
-        // The log's whole purpose is to name the gate that ended an evaluation, so every
-        // gate family needs a history it is the one to decline — and the reason recorded
-        // has to be the reason that actually applied, not merely a plausible one.
-        for case in declined_cases() {
-            let context = observed_context(&case.series);
-            let (finding, log) = evaluate_with_log(&case.series, &context);
-            assert!(
-                finding.is_none(),
-                "{}: expected silence, got {finding:?}",
-                case.shape
-            );
-            assert_eq!(
-                log.declined_by_stage(case.stage),
-                Some(case.gate),
-                "{}: the {} chain declined for the wrong reason",
-                case.shape,
-                case.stage.label()
-            );
+            _ => panic!("the requested gate has no declining scenario"),
         }
     }
 
-    #[test]
-    fn a_declining_gate_records_the_numbers_it_compared() {
+    fn assert_declined_case(gate: Gate) {
+        // The log's whole purpose is to name the gate that ended an evaluation, so every
+        // gate family needs a history it is the one to decline — and the reason recorded
+        // has to be the reason that actually applied, not merely a plausible one.
+        let case = declined_case(gate);
+        let context = observed_context(&case.series);
+        let (finding, log) = evaluate_with_log(&case.series, &context);
+        assert!(
+            finding.is_none(),
+            "{}: expected silence, got {finding:?}",
+            case.shape
+        );
+        assert_eq!(
+            log.declined_by_stage(case.stage),
+            Some(case.gate),
+            "{}: the {} chain declined for the wrong reason",
+            case.shape,
+            case.stage.label()
+        );
+
         // A logged value a reader cannot reproduce from the series is worse than no log
         // at all, so each scenario pins the arithmetic its gate performed.
-        for case in declined_cases() {
-            let Some((value, threshold)) = case.compared else {
-                continue;
-            };
-            let context = observed_context(&case.series);
-            let (_, log) = evaluate_with_log(&case.series, &context);
+        if let Some((value, threshold)) = case.compared {
             let outcome = log
                 .entries()
                 .iter()
@@ -3763,30 +3782,76 @@ mod tests {
             assert_eq!(outcome.value, Some(value), "{}", case.shape);
             assert_eq!(outcome.threshold, Some(threshold), "{}", case.shape);
         }
-    }
-
-    #[test]
-    fn a_chain_ends_at_the_gate_that_declined_it() {
         // Gates short-circuit, so a log is a prefix of the chain rather than a survey of
         // it: everything before the declining gate passed and nothing after it ran. A
         // reader who does not know this would misread a missing gate as a passing one.
-        for case in declined_cases() {
-            let context = observed_context(&case.series);
-            let (_, log) = evaluate_with_log(&case.series, &context);
-            let chain: Vec<&GateOutcome> = log
-                .entries()
-                .iter()
-                .filter(|entry| entry.stage == case.stage)
-                .collect();
-            let (last, earlier) = chain.split_last().unwrap();
-            assert_eq!(last.gate, case.gate, "{}", case.shape);
-            assert!(!last.passed, "{}", case.shape);
-            assert!(
-                earlier.iter().all(|entry| entry.passed),
-                "{}: a gate before the declining one is recorded as failing",
-                case.shape
-            );
-        }
+        let chain: Vec<&GateOutcome> = log
+            .entries()
+            .iter()
+            .filter(|entry| entry.stage == case.stage)
+            .collect();
+        let (last, earlier) = chain.split_last().unwrap();
+        assert_eq!(last.gate, case.gate, "{}", case.shape);
+        assert!(!last.passed, "{}", case.shape);
+        assert!(
+            earlier.iter().all(|entry| entry.passed),
+            "{}: a gate before the declining one is recorded as failing",
+            case.shape
+        );
+
+        // Recording must neither change the verdict nor accumulate entries when disabled.
+        // Reuse this scenario's observed verdict instead of evaluating it again per assertion.
+        let mut disabled = GateLog::disabled();
+        let batch = slice::from_ref(&case.series);
+        let unobserved = detect_range(batch, 0..batch.len(), &context, 1, &mut disabled);
+        assert!(unobserved.is_empty(), "{}", case.shape);
+        assert!(disabled.entries().is_empty(), "{}", case.shape);
+        assert_eq!(disabled.declined_by(), None, "{}", case.shape);
+    }
+
+    #[test]
+    fn declined_minimum_regime_preserves_the_verdict_and_log() {
+        assert_declined_case(Gate::MinRegime);
+    }
+
+    #[test]
+    fn declined_zero_delta_preserves_the_verdict_and_log() {
+        assert_declined_case(Gate::NonZeroDelta);
+    }
+
+    #[test]
+    fn declined_relative_floor_preserves_the_verdict_and_log() {
+        assert_declined_case(Gate::RelativeFloor);
+    }
+
+    #[test]
+    fn declined_absolute_floor_preserves_the_verdict_and_log() {
+        assert_declined_case(Gate::AbsoluteFloor);
+    }
+
+    #[test]
+    fn declined_residual_noise_preserves_the_verdict_and_log() {
+        assert_declined_case(Gate::ResidualNoise);
+    }
+
+    #[test]
+    fn declined_regime_separation_preserves_the_verdict_and_log() {
+        assert_declined_case(Gate::RegimeSeparation);
+    }
+
+    #[test]
+    fn declined_interval_overlap_preserves_the_verdict_and_log() {
+        assert_declined_case(Gate::IntervalDisjoint);
+    }
+
+    #[test]
+    fn declined_drift_significance_preserves_the_verdict_and_log() {
+        assert_declined_case(Gate::Significance);
+    }
+
+    #[test]
+    fn declined_interval_noise_preserves_the_verdict_and_log() {
+        assert_declined_case(Gate::IntervalNoiseBand);
     }
 
     #[test]
@@ -3822,21 +3887,6 @@ mod tests {
         assert!(log.entries().iter().all(|entry| entry.passed));
     }
 
-    #[test]
-    fn a_disabled_log_records_nothing() {
-        // Production runs with recording off, so the disabled log has to stay empty
-        // however much detection is put through it — otherwise every analysis would pay
-        // for an observation facility only tests and figures read.
-        let mut log = GateLog::disabled();
-        for case in declined_cases() {
-            let context = observed_context(&case.series);
-            let batch = slice::from_ref(&case.series);
-            let _ = detect_range(batch, 0..batch.len(), &context, 1, &mut log);
-        }
-        assert!(log.entries().is_empty());
-        assert_eq!(log.declined_by(), None);
-    }
-
     /// The log observes detection without participating in the verdict.
     fn assert_recording_preserves_verdict(shape: &str, series: &Series) {
         let context = observed_context(series);
@@ -3849,25 +3899,6 @@ mod tests {
             format!("{observed:?}"),
             "{shape}"
         );
-    }
-
-    fn assert_recording_preserves_declined_verdicts(stage: GateStage) {
-        for case in declined_cases()
-            .into_iter()
-            .filter(|case| case.stage == stage)
-        {
-            assert_recording_preserves_verdict(case.shape, &case.series);
-        }
-    }
-
-    #[test]
-    fn recording_the_gates_does_not_change_declined_steps() {
-        assert_recording_preserves_declined_verdicts(GateStage::ChangePoint);
-    }
-
-    #[test]
-    fn recording_the_gates_does_not_change_declined_drifts() {
-        assert_recording_preserves_declined_verdicts(GateStage::Drift);
     }
 
     #[test]

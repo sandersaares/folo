@@ -466,12 +466,11 @@ semver = { version = "1.0.0" }
 
     /// Moving a workspace dependency path is not a change.
     ///
-    /// A manifest may omit every table the collector reads, and a table may hold a value where a
-    /// table is expected, without that being an error. Moving a workspace dependency's `path` does
-    /// not alter what an inheriting package publishes, in either declaration form. Ref:
+    /// Moving a workspace dependency's `path` does not alter what an inheriting package publishes.
+    /// Ref:
     /// docs/design.md, "Inherited values".
     #[test]
-    fn moving_a_workspace_dependency_path_is_not_a_change() {
+    fn moving_an_inline_workspace_dependency_path_is_not_a_change() {
         let keys = InheritedKeys {
             package: vec![],
             dependencies: vec!["bar".to_string()],
@@ -483,7 +482,14 @@ semver = { version = "1.0.0" }
         let inline_new =
             doc("[workspace.dependencies]\nbar = { version = \"1.0.0\", path = \"crates/bar\" }\n");
         assert!(inherited_changes(&keys, &inline_old, &inline_new).is_empty());
+    }
 
+    #[test]
+    fn moving_a_table_workspace_dependency_path_is_not_a_change() {
+        let keys = InheritedKeys {
+            dependencies: vec!["bar".to_string()],
+            ..InheritedKeys::default()
+        };
         let table_old =
             doc("[workspace.dependencies.bar]\nversion = \"1.0.0\"\npath = \"packages/bar\"\n");
         let table_new =

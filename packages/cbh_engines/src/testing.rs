@@ -1,4 +1,4 @@
-//! Committed engine-output fixtures for parser tests across crate boundaries.
+//! Engine-output fixtures for parser and orchestration tests.
 //!
 //! This crate owns the parsers, so it also owns the compile-time copy of each
 //! parser fixture. In-crate tests and in-workspace command tests (via the
@@ -9,8 +9,32 @@
 //! canaries — do not hand-edit them to make a test pass; regenerate from a real
 //! run. `alloc_tracker` and `all_the_time` files are representative samples of the
 //! current schema; the round-trip test is the drift canary.
+//! Orchestration tests use the minimal synthetic documents below instead of
+//! repeatedly parsing unrelated producer metadata.
 
 #![cfg_attr(coverage_nightly, coverage(off))]
+
+/// A small synthetic Callgrind result for orchestration tests.
+///
+/// Contains an identity and each tracked metric, without unrelated producer
+/// metadata. Real-output parser tests use the committed fixtures instead.
+pub const CALLGRIND_MINIMAL: &str = concat!(
+    r#"{"version":"6","module_path":"m","function_name":"f","id":null,"package_dir":"/pkg","#,
+    r#""profiles":[{"summaries":{"total":{"summary":{"Callgrind":{"#,
+    r#""Ir":{"metrics":{"Left":{"Int":36}}},"#,
+    r#""Bc":{"metrics":{"Left":{"Int":4}}},"#,
+    r#""Bi":{"metrics":{"Left":{"Int":2}}}"#,
+    r#"}}}}}]}"#,
+);
+
+/// A small synthetic Criterion identity for orchestration tests.
+pub const CRITERION_MINIMAL_BENCHMARK: &str = r#"{"group_id":"g","function_id":"f"}"#;
+
+/// A small synthetic Criterion estimate with an interval for orchestration tests.
+pub const CRITERION_MINIMAL_ESTIMATES: &str = concat!(
+    r#"{"mean":{"point_estimate":2.0,"#,
+    r#""confidence_interval":{"lower_bound":1.0,"upper_bound":3.0}}}"#,
+);
 
 /// Real Gungraun `summary.json` for a single unparametrized benchmark.
 ///

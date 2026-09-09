@@ -457,6 +457,7 @@ impl FusedIterator for OpaquePoolIterator<'_> {}
 mod tests {
     use std::panic::{RefUnwindSafe, UnwindSafe};
 
+    use new_zealand::nz;
     use static_assertions::{assert_impl_all, assert_not_impl_any};
 
     use super::*;
@@ -504,6 +505,8 @@ mod tests {
     #[test]
     fn capacity_grows_when_needed() {
         let pool = OpaquePool::with_layout_of::<u64>();
+        // Keep multiple live slots before crossing the slab boundary.
+        pool.inner.lock().unwrap().set_slab_capacity(nz!(2));
 
         assert_eq!(pool.capacity(), 0);
 
@@ -526,7 +529,7 @@ mod tests {
         // One more insert should expand capacity
         let _handle = pool.insert(999_u64);
 
-        assert!(pool.capacity() >= initial_capacity);
+        assert!(pool.capacity() > initial_capacity);
     }
 
     #[test]

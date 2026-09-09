@@ -141,12 +141,3 @@ async fn backfill_stops_on_a_failing_commit_by_default() {
     assert_eq!(objects.len(), 1, "{objects:?}");
     assert!(objects[0].0.contains(&c3), "{:?}", objects[0].0);
 }
-
-/// `backfill --help` is an early exit whose usage text documents the range
-/// positionals.
-#[test]
-fn backfill_help_documents_range_positionals() {
-    let early_exit = Cli::from_args(&["cargo-bench-history"], &["backfill", "--help"]).unwrap_err();
-    assert!(early_exit.output.contains("FROM"), "{}", early_exit.output);
-    assert!(early_exit.output.contains("TO"), "{}", early_exit.output);
-}

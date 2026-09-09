@@ -18,3 +18,8 @@ trips detect schema drift for the in-workspace `alloc_tracker` and `all_the_time
 Committed Criterion and Callgrind fixtures regression-test their recorded external schemas; those
 fixtures must be regenerated or the schemas otherwise validated when the external producers are
 upgraded.
+
+Orchestration tests share minimal synthetic engine documents through the test-support
+module. These exercise the real adapters without repeatedly processing unrelated producer
+metadata. The committed external-output fixtures and live producer round trips retain
+schema-compatibility coverage at the adapter boundary.

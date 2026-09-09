@@ -362,6 +362,7 @@ mod tests {
     use std::mem::MaybeUninit;
     use std::panic::{RefUnwindSafe, UnwindSafe};
 
+    use new_zealand::nz;
     use static_assertions::{assert_impl_all, assert_not_impl_any};
 
     use super::*;
@@ -407,6 +408,8 @@ mod tests {
     #[test]
     fn capacity_grows_when_needed() {
         let pool = LocalPinnedPool::<u64>::new();
+        // Keep multiple live slots before crossing the slab boundary.
+        pool.inner.borrow_mut().set_slab_capacity(nz!(2));
 
         assert_eq!(pool.capacity(), 0);
 
@@ -429,7 +432,7 @@ mod tests {
         // One more insert should expand capacity
         let _handle = pool.insert(999_u64);
 
-        assert!(pool.capacity() >= initial_capacity);
+        assert!(pool.capacity() > initial_capacity);
     }
 
     #[test]
@@ -781,47 +784,58 @@ mod tests {
 
     #[test]
     fn non_send_types() {
-        // Custom non-Send type with raw pointer
-        struct NonSendType(*const u8);
-        // SAFETY: Only used in single-threaded local test environment, never shared across threads
-        unsafe impl Sync for NonSendType {}
-
-        // LocalPinnedPool should work with non-Send types since it is single-threaded
-        use std::cell::RefCell;
-        use std::rc::Rc;
-
-        // Test with Rc (not Send)
         let rc_pool = LocalPinnedPool::<Rc<String>>::new();
+        // This fixture exercises type support and iteration, not bulk capacity.
+        rc_pool.inner.borrow_mut().set_slab_capacity(nz!(2));
         let rc_handle = rc_pool.insert(Rc::new("Non-Send data".to_string()));
         assert_eq!(rc_pool.len(), 1);
         assert_eq!(&**rc_handle, "Non-Send data");
 
-        // Test with RefCell (not Send)
-        let refcell_pool = LocalPinnedPool::<RefCell<i32>>::new();
-        let refcell_handle = refcell_pool.insert(RefCell::new(42));
-        assert_eq!(refcell_pool.len(), 1);
-        assert_eq!(*refcell_handle.borrow(), 42);
-
-        // Test with custom non-Send type
-        let custom_pool = LocalPinnedPool::<NonSendType>::new();
-        let raw_ptr = 0x1234 as *const u8;
-        let non_send_handle = custom_pool.insert(NonSendType(raw_ptr));
-        assert_eq!(custom_pool.len(), 1);
-        assert_eq!(non_send_handle.0, raw_ptr);
-
-        // Test iteration with non-Send types
         rc_pool.with_iter(|iter| {
             let values: Vec<String> = iter
                 .map(|ptr| {
-                    // SAFETY: Iterator yields valid NonNull<T> pointers for items alive in pool
+                    // SAFETY: rc_handle keeps this initialized value alive throughout iteration;
+                    // this single-threaded test only shares it and never borrows it exclusively.
                     unsafe { ptr.as_ref().as_ref().clone() }
                 })
                 .collect();
             assert_eq!(values, vec!["Non-Send data"]);
         });
+    }
 
-        // Test nested non-Send types
+    #[test]
+    fn non_sync_types() {
+        let refcell_pool = LocalPinnedPool::<RefCell<i32>>::new();
+        // This fixture exercises type support, not bulk capacity.
+        refcell_pool.inner.borrow_mut().set_slab_capacity(nz!(2));
+        let refcell_handle = refcell_pool.insert(RefCell::new(42));
+        assert_eq!(refcell_pool.len(), 1);
+        assert_eq!(*refcell_handle.borrow(), 42);
+    }
+
+    #[test]
+    fn non_send_raw_pointer() {
+        /// A pointer payload verifies that local storage does not require thread mobility.
+        struct NonSendType(*const u8);
+
+        // SAFETY: This fixture only compares pointer values; it never dereferences the pointer.
+        unsafe impl Sync for NonSendType {}
+
+        let custom_pool = LocalPinnedPool::<NonSendType>::new();
+        // This fixture exercises type support, not bulk capacity.
+        custom_pool.inner.borrow_mut().set_slab_capacity(nz!(2));
+        let value = 42;
+        let raw_ptr = &raw const value;
+        let non_send_handle = custom_pool.insert(NonSendType(raw_ptr));
+        assert_eq!(custom_pool.len(), 1);
+        assert_eq!(non_send_handle.0, raw_ptr);
+    }
+
+    #[test]
+    fn nested_non_send_types() {
         let nested_pool = LocalPinnedPool::<Rc<RefCell<Vec<i32>>>>::new();
+        // This fixture exercises type support, not bulk capacity.
+        nested_pool.inner.borrow_mut().set_slab_capacity(nz!(2));
         let nested_handle = nested_pool.insert(Rc::new(RefCell::new(vec![1, 2, 3])));
         assert_eq!(nested_pool.len(), 1);
         assert_eq!(*nested_handle.borrow(), vec![1, 2, 3]);
