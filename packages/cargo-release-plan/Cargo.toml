@@ -3,7 +3,7 @@
 name = "cargo-release-plan"
 description = "A Cargo subcommand that classifies publishable packages against their version anchors and applies increment plans"
 publish = true
-version = "0.2.0"
+version = "0.2.1"
 
 authors.workspace = true
 edition.workspace = true

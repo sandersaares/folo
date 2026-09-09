@@ -218,6 +218,15 @@ pub(crate) fn parse_package_manifest(
 ) -> Result<Option<PackageManifest>, AppError> {
     let path = Path::new(manifest_path);
     let doc = parse_document(path, content)?;
+    package_manifest_from_document(&doc, manifest_path, workspace)
+}
+
+/// Extracts package facts from an already parsed manifest document.
+pub(crate) fn package_manifest_from_document(
+    doc: &DocumentMut,
+    manifest_path: &str,
+    workspace: &WorkspaceInherit<'_>,
+) -> Result<Option<PackageManifest>, AppError> {
     // A manifest without a complete `[package]` identity is not something Cargo
     // would publish: it is either a virtual workspace root or a member whose
     // version is inherited from a root that does not declare one. Both are
@@ -249,16 +258,16 @@ pub(crate) fn parse_package_manifest(
     let directory = directory_of(manifest_path);
     let (resource_paths, inherited_resource_paths, auto_readme) =
         resource_paths(package, workspace);
-    let targets = target_discovery(&doc, package);
+    let targets = target_discovery(doc, package);
     Ok(Some(PackageManifest {
         name: name.to_string(),
         version,
         directory,
         packaging: packaging_from_package(package, workspace)?,
-        inherited: collect_inherited_keys(&doc),
+        inherited: collect_inherited_keys(doc),
         publish: publish_allowed(package, workspace),
-        path_dependencies: path_dependencies(&doc),
-        inherited_path_dependencies: inherited_path_dependencies(&doc, workspace),
+        path_dependencies: path_dependencies(doc),
+        inherited_path_dependencies: inherited_path_dependencies(doc, workspace),
         resource_paths,
         inherited_resource_paths,
         auto_readme,
