@@ -1,0 +1,76 @@
+name: Scheduled reporting
+
+on:
+  workflow_run:
+    workflows: [Scheduled validation, Scheduled verification]
+    branches: [main]
+    types: [completed]
+
+concurrency:
+  # One writer serializes run-attempt evidence publication and coverage across both workflows.
+  # Ref: .github/workflows/implementation.md#serialized-reporting.
+  group: scheduled-reporting
+  cancel-in-progress: false
+  # Preserve pending reports instead of replacing all but the newest pending event.
+  # Bounded-queue overflow remains a health/recovery condition rather than lost work.
+  # Ref: .github/workflows/implementation.md#independent-health.
+  # https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency
+  queue: max
+
+permissions:
+  contents: read
+
+jobs:
+  report:
+    if: github.repository == 'folo-rs/folo'
+    runs-on: ubuntu-latest
+    permissions:
+      # Writer authority is isolated from candidate execution; PR metadata is read-only input.
+      # Ref: .github/workflows/implementation.md#serialized-reporting.
+      contents: read
+      actions: read
+      issues: write
+      pull-requests: read
+    steps:
+      - name: Checkout trusted default-branch reporter, never the triggering candidate
+        # workflow_run evidence may describe another source; only reviewed code handles writes.
+        # Ref: .github/workflows/implementation.md#scheduled-controller-ownership.
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - name: Prepare the trusted reporting utility toolchain
+        # Reporting builds its private Rust decoding and run-record utilities from reviewed code.
+        # Reuse the pinned-toolchain bootstrap, not deep-check setup or candidate build tooling.
+        # Ref: .github/workflows/implementation.md#evidence-decoding.
+        shell: pwsh
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          Import-Module ./scripts/setup/RustToolchain.psm1 -Force
+          Install-RustupToolchain -Channel (Get-PinnedRustChannel) -InstallProfile minimal
+      - name: Reconcile durable evidence under reviewed operating policy
+        # The reporting switch authorizes writes independently of execution and Local admission.
+        # Downloaded replay evidence remains data and cannot select controller code or policy.
+        # Ref: .github/workflows/implementation.md#serialized-reporting.
+        # Ref: .github/workflows/implementation.md#operating-policy.
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          ./scripts/scheduled/Invoke-ScheduledReport.ps1 -Apply
+      - uses: actions/upload-artifact@v6
+        # Preserve hidden diagnostics on parser or persistence failure for reporter recovery.
+        # Ref: .github/workflows/implementation.md#independent-health.
+        if: always()
+        with:
+          name: scheduled-report-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .scheduled-report
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 30

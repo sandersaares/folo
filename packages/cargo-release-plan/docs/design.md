@@ -224,9 +224,9 @@ the plan gives them no version.
 An expanded plan records its stage, which binds it to the package set it names:
 applying it after a version group gained a member fails rather than quietly
 editing an unlisted package. Recovering from that means refreshing the planning
-inputs and expanding the proposal again to document the wider set. A proposed plan keeps the
-opposite behavior, since naming a group and letting resolution reach its members
-is how such a plan is written.
+inputs and expanding the proposal again to document the wider set. A proposed
+plan keeps the opposite behavior, since naming a group and letting resolution
+reach its members is how such a plan is written.
 
 Structural expansion alone is not a complete resolved artifact. A release
 proposal must also account for the actual lockfile effects of those versions.

@@ -1,7 +1,7 @@
 # cargo-release-plan
 
 A Cargo subcommand that classifies every publishable workspace package against its
-version **anchor**, reports changes to **released content**, and prepares an
+version **anchor**, reports changes to **released content**, and prepares a
 complete increment plan with its resolved dependency effects.
 
 A package has unreleased changes when its released content differs between its
@@ -136,7 +136,7 @@ bound to the original post-preparation workspace inputs.
 
 ### `apply`
 
-The tool does not choose increment levels. Deciding whether a change is
+The tool does not infer semantic compatibility. Deciding whether a change is
 breaking, additive, or neither is a semantic judgement, and nothing here
 compiles code or compares API surfaces. Prepared evidence supplies what that
 judgement needs; a caller records a level per package in a plan; prospective

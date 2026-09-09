@@ -1,0 +1,7 @@
+# actionlint 1.7.12 does not recognize GitHub's supported maximum-pending concurrency queue.
+# Only this exact diagnostic is excluded; ScheduledWorkflow.Tests.ps1 asserts the queue contract.
+# https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency
+paths:
+  .github/workflows/scheduled-report.yml:
+    ignore:
+      - '^unexpected key "queue" for "concurrency" section\. expected one of "cancel-in-progress", "group"$'

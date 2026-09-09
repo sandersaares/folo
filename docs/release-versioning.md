@@ -462,13 +462,13 @@ release set.
 5. **Apply and verify.** Confirm the evidence and release baseline are current, then
    `just check-increment-published <expanded>`, then
    `just apply-release-plan <expanded>`, then `just verify-lockfile`, then re-run `check` and the
-   scoped `cargo semver-checks` to confirm the result, and write the summary into the pull request
-   description. The publication gate checks only publishable expanded targets. Changed preparation
-   inputs require fresh evidence and a regenerated plan before applying.
-   Further changes may follow the increment without invalidating it. The plan is not committed:
-   the check verifies manifest state, not intent, so a plan file in the repository would be inert
-   churn. Reconcile the PR section with final evidence; human review and merge approve the
-   complete PR.
+   scoped `cargo semver-checks` to confirm the result, and reconcile the PR section with that
+   final evidence. Further source, baseline, group, or decision changes require reassessment,
+   regeneration of stale plans, and a refreshed section before human review. Sufficient pending
+   increments are retained rather than raised again merely because the skill reruns.
+   The plan is not committed: the check verifies manifest state, not intent, so a plan file in
+   the repository would be inert churn. Human review and merge approve the complete PR.
+   The publication gate checks only publishable expanded targets.
 
 ## The GitHub check
 

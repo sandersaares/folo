@@ -137,7 +137,7 @@ Read each package's `untracked` entries before deciding its level. Untracked pat
 package directory but take no part in the released-content comparison, so a path this pull
 request intends to publish contributes no evidence until it is tracked. Track such a path and
 repeat this stage. Account for every remaining path as deliberately unreleased, so it is not
-mistaken for assessed content, and carry those paths into the Stage 5 proposal.
+mistaken for assessed content, and carry those paths into the Stage 5 explanation.
 
 The required `non_publishable_packages` array lists alignment-only targets with their names,
 declared versions, and optional group references. These entries intentionally have no release
@@ -150,8 +150,10 @@ non-publishable. `consistent: true` can reflect an exemption for a member absent
 Stage 5 still aligns unequal declared versions. `just validate-versions` fails on a
 non-exempt inconsistency as well as on a publishable package needing an increment.
 
-The files describe the prepared work-tree content. Repeat this stage if the inputs change
-before application; do not reuse decisions against stale evidence.
+The files describe the prepared work-tree content against the recorded release baseline. If the
+source, manifests, group membership, or release baseline changes before application, repeat this
+stage and the analysis and planning stages that follow. Do not combine fresh inputs with stale
+decisions or an old expanded plan.
 
 # Stage 3: Determine analysis order
 

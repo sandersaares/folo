@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "workspace_root": "/fixture",
+  "workspace_members": ["path+example", "path+binary-only", "path+test-support"],
+  "packages": [
+    {
+      "id": "path+example",
+      "name": "example",
+      "targets": [
+        {"kind": ["lib"], "crate_types": ["lib"], "name": "example", "src_path": "/fixture/example/src/lib.rs", "edition": "2024", "doc": true, "doctest": true, "test": true},
+        {"kind": ["bin"], "crate_types": ["bin"], "name": "example-cli", "src_path": "/fixture/example/src/main.rs", "edition": "2024", "doc": true, "doctest": false, "test": true},
+        {"kind": ["test"], "crate_types": ["bin"], "name": "round_trip", "src_path": "/fixture/example/tests/round_trip.rs", "edition": "2024", "doc": false, "doctest": false, "test": true, "required-features": ["extra"]},
+        {"kind": ["bin"], "crate_types": ["bin"], "name": "disabled-helper", "src_path": "/fixture/example/src/helper.rs", "edition": "2024", "doc": false, "doctest": false, "test": false},
+        {"kind": ["test"], "crate_types": ["bin"], "name": "disabled-integration", "src_path": "/fixture/example/tests/disabled.rs", "edition": "2024", "doc": false, "doctest": false, "test": false},
+        {"kind": ["example"], "crate_types": ["bin"], "name": "sample", "src_path": "/fixture/example/examples/sample.rs", "edition": "2024", "doc": false, "doctest": false, "test": true},
+        {"kind": ["bench"], "crate_types": ["bin"], "name": "performance", "src_path": "/fixture/example/benches/performance.rs", "edition": "2024", "doc": false, "doctest": false, "test": true}
+      ]
+    },
+    {
+      "id": "path+binary-only",
+      "name": "binary-only",
+      "targets": [
+        {"kind": ["bin"], "crate_types": ["bin"], "name": "binary-only", "src_path": "/fixture/binary-only/src/main.rs", "edition": "2024", "doc": true, "doctest": false, "test": true}
+      ]
+    },
+    {
+      "id": "path+test-support",
+      "name": "test-support",
+      "targets": [
+        {"kind": ["lib"], "crate_types": ["lib"], "name": "test_support", "src_path": "/fixture/test-support/src/lib.rs", "edition": "2024", "doc": false, "doctest": false, "test": false},
+        {"kind": ["bin"], "crate_types": ["bin"], "name": "test-support", "src_path": "/fixture/test-support/src/main.rs", "edition": "2024", "doc": false, "doctest": false, "test": false}
+      ]
+    },
+    {
+      "id": "registry+dependency",
+      "name": "dependency",
+      "targets": [
+        {"kind": ["lib"], "crate_types": ["lib"], "name": "dependency", "src_path": "/registry/dependency/src/lib.rs", "edition": "2024", "doc": true, "doctest": true, "test": true}
+      ]
+    }
+  ]
+}

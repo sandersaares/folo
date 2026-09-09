@@ -1,0 +1,47 @@
+name: Scheduled health
+
+on:
+  schedule:
+    - cron: 11 */3 * * *
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  health:
+    # Observe independently with read-only authority; neither reporting nor Local intake can
+    # establish its own total outage, and disabled operation is distinct from stale evidence.
+    # Ref: .github/workflows/implementation.md#independent-health.
+    if: github.repository == 'folo-rs/folo' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      issues: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Observe scheduler, reporter, coverage and local intake independently
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          ./scripts/scheduled/Invoke-ScheduledHealth.ps1
+      - name: Preserve independent health observation
+        # The health command fails after writing diagnostics; upload its hidden output regardless.
+        # Ref: .github/workflows/implementation.md#independent-health.
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: scheduled-health-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .scheduled-health
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 30

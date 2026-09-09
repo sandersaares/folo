@@ -10,7 +10,7 @@ BeforeAll {
 
 Describe 'Assert-RequiredCheck' {
     It 'does not throw when every job succeeded or skipped where allowed' {
-        $json = '{"delta":{"result":"success"},"careful":{"result":"skipped"}}'
+        $json = '{"delta":{"result":"success"},"test-arm":{"result":"skipped"}}'
         { Assert-RequiredCheck -NeedsJson $json -MustSucceedJob @('delta') } | Should -Not -Throw
     }
 
@@ -82,9 +82,9 @@ Describe 'Get-RequiredCheckFailure' {
 
     It 'reports cancelled and other non-allowed results' {
         InModuleScope RequiredChecks {
-            $json = '{"mutants":{"result":"cancelled"},"hack":{"result":"neutral"}}'
+            $json = '{"test-x64":{"result":"cancelled"},"hack":{"result":"neutral"}}'
             $result = @(Get-RequiredCheckFailure -NeedsJson $json -MustSucceedJob @('delta'))
-            $result | Should -Contain 'mutants=cancelled'
+            $result | Should -Contain 'test-x64=cancelled'
             $result | Should -Contain 'hack=neutral'
         }
     }
