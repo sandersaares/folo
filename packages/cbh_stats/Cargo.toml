@@ -4,7 +4,7 @@
 name = "cbh_stats"
 description = "Implementation crate for cargo-bench-history - do not reference directly"
 publish = true
-version = "0.2.8"
+version = "0.2.9"
 
 authors.workspace = true
 edition.workspace = true
