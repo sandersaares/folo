@@ -51,11 +51,12 @@ into an error.
 ## Workspace snapshots
 
 `cargo metadata --no-deps` supplies candidate current members and normalized
-dependency relationships. Git-tracked manifests constrain that candidate set,
-so an untracked or ignored manifest found through a member glob cannot become a
-package in the release model. Historical workspaces cannot use Cargo without
-checking out each commit, so `SnapshotCache` reconstructs them from tracked
-manifests.
+dependency relationships. Git-tracked manifests constrain that candidate set.
+The current model keeps both every tracked version target and the publishable
+`WorkPackage` projection used for classification. An untracked or ignored
+manifest found through a member glob can become neither a version target nor a
+release assessment. Historical workspaces cannot use Cargo without checking out
+each commit, so `SnapshotCache` reconstructs them from tracked manifests.
 
 The reconstruction starts from the root package and declared member patterns,
 then follows in-workspace path dependencies to a fixed point while honoring
@@ -198,16 +199,23 @@ recomputed from the classification, because every gating rule already appends a
 line. A rule added to the rendering therefore cannot be reported without also
 failing the check, which a second condition kept in step by hand would allow.
 
-Two of those rules are properties of the manifests rather than of the
-released-content comparison. An intra-workspace requirement must name the exact
-version its target declares, which is checked against the normalized requirement
-`cargo metadata` reports, so a bare requirement arrives as a caret one and both
-spellings that name the version are accepted; between version-group members only
-the exact spelling is, for every edge that survives packaging including a
-versioned development one. A package whose public API exposes another
+Some rules are properties of the manifests rather than of the released-content
+comparison. An intra-workspace requirement must name the version its target
+declares, which is checked against the normalized requirement `cargo metadata`
+reports, so a bare requirement arrives as a caret one and both spellings that
+name the version are accepted. A package whose public API exposes another
 package must move incompatibly whenever that package does, compared against each
 package's own anchor so an increment that landed in an earlier pull request
 still counts.
+
+Version-group discovery reads effective declarations from every tracked member
+before the publishable projection is built. It resolves local path identity,
+dependency aliases, workspace inheritance, dependency kind, and target-specific
+tables without a full Cargo resolution. Exact requirements are validated from
+the raw effective TOML because Cargo normalization loses suffix and compound
+syntax. Validated declarations retain their source and target identities for
+stale-version diagnostics. The resulting undirected edges are reduced to
+deterministic connected components independently of release classification.
 
 `apply` preserves each requirement's exact-or-compatible spelling while
 rewriting the version it names, so applying a plan maintains both forms rather
@@ -238,27 +246,28 @@ stale JSON and a partial patch set as one complete assessment.
 ## Plan resolution and application
 
 `plan` owns both planning stages and the resolution shared between them. It first
-resolves package and group entries into one target version per publishable
-package. Levels combine by taking the highest and matching explicit versions
-coalesce. Mixed decision kinds and conflicting explicit versions fail.
+resolves package and group entries into one target version per tracked version
+target. Levels combine by taking the highest and matching explicit versions
+coalesce. Mixed decision kinds, conflicting explicit versions, regressions, and
+non-plain group targets fail before writes.
 
 A plan's stage decides what resolution guarantees. A proposed plan may reach
 packages it does not name, which is how a decision about one group member moves
 the group. An expanded plan must resolve to exactly the set it names and must
 already carry a version for each, because that document is what a caller
-reviewed; reaching another package means the group configuration changed after it
+reviewed; reaching another package means the exact dependency graph changed after it
 was written, and a surviving increment level would be re-resolved against the
 manifests of the day. Both are rejected. The stage is matched on rather than
 tested as a condition, so a new code path has to state which rule it wants.
 
 `expand` and `apply` share that resolution and both read the same Git-tracked
-publishable package set. The resolved versions branch to expanded-plan output for
+version-target set. The resolved versions branch to expanded-plan output for
 `expand`, and to manifest edits, writes, and lockfile processing for `apply`. The
 resolved versions are not themselves the expanded plan: `apply` resolves a
 proposed plan to the same shape without any expanded plan existing.
 
-`apply` accepts plan targets and validates groups against the same Git-tracked
-publishable package set as classification. It parses and rewrites every affected
+`apply` accepts plan targets and validates groups against the Git-tracked
+version-target set. It parses and rewrites every affected
 manifest in memory before writing any of them. All Cargo-visible members remain
 rewrite candidates, including non-publishable, untracked, and ignored members,
 because they may carry exact pins to a package being incremented. A dependency
@@ -272,12 +281,9 @@ requirement is changed only when:
 The last criterion is the same predicate `check` validates the requirement
 convention with, kept in one place so the two cannot drift: `apply` must rewrite
 exactly what `check` would reject, and leave exactly what it would accept.
-Leaving an already-correct requirement byte for byte is what keeps an exact
-group alignment, which resolves the leading member to the version it already
-declares, from editing that member's dependents under an unchanged version. A
-requirement whose form is wrong for its edge, such as a compatible requirement
-between version-group members, is reported rather than rewritten: that is a
-manifest defect rather than a consequence of a version moving.
+Leaving an already-correct requirement byte for byte keeps an alignment, which
+resolves the leading member to the version it already declares, from editing
+that member's dependents under an unchanged version.
 
 Paths are normalized lexically first and canonicalized only for link or
 case-variant spellings, keeping the ordinary path free of filesystem calls.

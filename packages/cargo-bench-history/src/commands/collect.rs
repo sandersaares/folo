@@ -1166,6 +1166,7 @@ mod tests {
     )]
 
     use std::collections::HashMap;
+    use std::future::{Future, ready};
     use std::io;
     use std::num::NonZeroUsize;
     use std::sync::{Arc, Mutex};
@@ -1252,24 +1253,28 @@ mod tests {
     struct FailingStorage;
 
     impl Storage for FailingStorage {
-        async fn put(&self, _key: &str, _bytes: &[u8]) -> Result<(), StorageError> {
-            Err(TestStorageError::new().into())
+        fn put(&self, _key: &str, _bytes: &[u8]) -> impl Future<Output = Result<(), StorageError>> {
+            ready(Err(TestStorageError::new().into()))
         }
 
-        async fn put_overwrite(&self, _key: &str, _bytes: &[u8]) -> Result<(), StorageError> {
-            Err(TestStorageError::new().into())
+        fn put_overwrite(
+            &self,
+            _key: &str,
+            _bytes: &[u8],
+        ) -> impl Future<Output = Result<(), StorageError>> + Send {
+            ready(Err(TestStorageError::new().into()))
         }
 
-        async fn get(&self, _key: &str) -> Result<Vec<u8>, StorageError> {
-            Err(TestStorageError::new().into())
+        fn get(&self, _key: &str) -> impl Future<Output = Result<Vec<u8>, StorageError>> + Send {
+            ready(Err(TestStorageError::new().into()))
         }
 
-        async fn list(&self, _prefix: &str) -> Result<Vec<String>, StorageError> {
-            Ok(Vec::new())
+        fn list(&self, _prefix: &str) -> impl Future<Output = Result<Vec<String>, StorageError>> {
+            ready(Ok(Vec::new()))
         }
 
-        async fn delete(&self, _key: &str) -> Result<(), StorageError> {
-            Err(TestStorageError::new().into())
+        fn delete(&self, _key: &str) -> impl Future<Output = Result<(), StorageError>> {
+            ready(Err(TestStorageError::new().into()))
         }
     }
 
@@ -1509,17 +1514,17 @@ mod tests {
     }
 
     impl BenchRunner for FakeRunner {
-        async fn run_benches(
+        fn run_benches(
             &self,
             argv: &[String],
             env: &[(String, String)],
-        ) -> io::Result<EngineStatus> {
+        ) -> impl Future<Output = io::Result<EngineStatus>> {
             self.calls.lock().unwrap().push(argv.to_vec());
             self.envs.lock().unwrap().push(env.to_vec());
-            if let Some(kind) = self.failure {
-                return Err(io::Error::from(kind));
-            }
-            Ok(self.status)
+            ready(
+                self.failure
+                    .map_or(Ok(self.status), |kind| Err(io::Error::from(kind))),
+            )
         }
     }
 
@@ -1572,22 +1577,22 @@ mod tests {
     }
 
     impl EnvironmentProbe for FakeProbe {
-        async fn git(&self) -> io::Result<GitInfo> {
-            if let Some(kind) = self.git_failure {
-                return Err(io::Error::from(kind));
-            }
-            Ok(self.git.clone())
+        fn git(&self) -> impl Future<Output = io::Result<GitInfo>> {
+            ready(
+                self.git_failure
+                    .map_or_else(|| Ok(self.git.clone()), |kind| Err(io::Error::from(kind))),
+            )
         }
 
-        async fn toolchain(&self) -> io::Result<RustcInfo> {
-            if let Some(kind) = self.toolchain_failure {
-                return Err(io::Error::from(kind));
-            }
-            Ok(self.rustc.clone())
+        fn toolchain(&self) -> impl Future<Output = io::Result<RustcInfo>> {
+            ready(
+                self.toolchain_failure
+                    .map_or_else(|| Ok(self.rustc.clone()), |kind| Err(io::Error::from(kind))),
+            )
         }
 
-        async fn hardware(&self) -> HardwareProfile {
-            self.hardware.clone()
+        fn hardware(&self) -> impl Future<Output = HardwareProfile> {
+            ready(self.hardware.clone())
         }
     }
 
@@ -1729,20 +1734,21 @@ mod tests {
     }
 
     impl BenchOutputSource for FakeOutput {
-        async fn collect(
+        fn collect(
             &self,
             engine: Engine,
             _since: Option<SystemTime>,
             _reporter: &dyn Reporter,
-        ) -> io::Result<Harvest> {
-            if self.failure == Some(engine) {
-                return Err(io::Error::other("injected harvest failure"));
-            }
-            Ok(match engine {
-                Engine::Callgrind => Harvest::Callgrind(self.callgrind.clone()),
-                Engine::Criterion => Harvest::Criterion(self.criterion.clone()),
-                Engine::AllocTracker => Harvest::AllocTracker(self.alloc.clone()),
-                Engine::AllTheTime => Harvest::AllTheTime(self.time.clone()),
+        ) -> impl Future<Output = io::Result<Harvest>> {
+            ready(if self.failure == Some(engine) {
+                Err(io::Error::other("injected harvest failure"))
+            } else {
+                Ok(match engine {
+                    Engine::Callgrind => Harvest::Callgrind(self.callgrind.clone()),
+                    Engine::Criterion => Harvest::Criterion(self.criterion.clone()),
+                    Engine::AllocTracker => Harvest::AllocTracker(self.alloc.clone()),
+                    Engine::AllTheTime => Harvest::AllTheTime(self.time.clone()),
+                })
             })
         }
     }
@@ -3056,18 +3062,18 @@ mod tests {
     }
 
     impl BenchRunner for FailOnNthRunner {
-        async fn run_benches(
+        fn run_benches(
             &self,
             _argv: &[String],
             _env: &[(String, String)],
-        ) -> io::Result<EngineStatus> {
+        ) -> impl Future<Output = io::Result<EngineStatus>> {
             let mut calls = self.calls.lock().unwrap();
             *calls = calls.saturating_add(1);
             let this_call = *calls;
-            Ok(EngineStatus {
+            ready(Ok(EngineStatus {
                 success: this_call != self.fail_on,
                 code: (this_call == self.fail_on).then_some(101),
-            })
+            }))
         }
     }
 

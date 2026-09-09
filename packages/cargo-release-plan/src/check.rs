@@ -15,6 +15,7 @@ use crate::command::run_capture;
 use crate::git::os_path;
 use crate::groups::GroupVerdict;
 use crate::manifest::requirement_names_version;
+use crate::metadata::{ExactDependency, VersionTarget};
 use crate::verbose::Verbose;
 use crate::{quote_path, short_commit};
 
@@ -49,11 +50,13 @@ pub(crate) fn run_check(
     // Every gating defect appends at least one diagnostic line, so the verdict is read back from
     // the rendered diagnostics. Recomputing it from the classification instead would let a rule
     // added to the rendering below be reported without ever failing the check.
-    let mut message = render_diagnostics(
+    let mut message = render_workspace_diagnostics(
         &classification.packages,
         &classification.groups,
         &classification.base,
         format,
+        &classification.work_tree.version_targets,
+        &classification.work_tree.exact_dependencies,
     );
 
     let warnings = if verify_packaging {
@@ -73,7 +76,7 @@ pub(crate) fn run_check(
 
 fn default_success_message(passed: bool, message: &str) -> Option<&'static str> {
     if passed && message.is_empty() {
-        Some("Every publishable package is unchanged or pending release.")
+        Some("Every release and workspace-version check passed.")
     } else {
         None
     }
@@ -85,15 +88,17 @@ fn default_success_message(passed: bool, message: &str) -> Option<&'static str> 
 /// [`Classification`] because the rendering depends on nothing else, and the
 /// remainder carries the Git repository and work tree that a caller would
 /// otherwise have to build.
-fn render_diagnostics(
+fn render_workspace_diagnostics(
     packages: &[PackageClass],
     groups: &BTreeMap<String, GroupVerdict>,
     base: &str,
     format: CheckFormat,
+    version_targets: &[VersionTarget],
+    exact_dependencies: &[ExactDependency],
 ) -> String {
-    let declared: BTreeMap<&str, &Version> = packages
+    let declared: BTreeMap<&str, &Version> = version_targets
         .iter()
-        .map(|package| (package.name.as_str(), &package.declared_version))
+        .map(|target| (target.name.as_str(), &target.version))
         .collect();
     let by_name: BTreeMap<&str, &PackageClass> = packages
         .iter()
@@ -112,7 +117,9 @@ fn render_diagnostics(
             Some(group) => {
                 let members = groups
                     .get(group)
-                    .map_or_else(|| group.clone(), |verdict| verdict.members().join(", "));
+                    .expect("every derived package group has a complete verdict")
+                    .members()
+                    .join(", ");
                 format!(" Group {} also includes {members}.", quote_path(group))
             }
             None => String::new(),
@@ -169,8 +176,15 @@ fn render_diagnostics(
             remedy(base)
         );
         if format == CheckFormat::Github {
+            let file = verdict
+                .members()
+                .first()
+                .and_then(|member| version_targets.iter().find(|target| target.name == *member))
+                .map(|target| os_path(&target.manifest_path))
+                .expect("every derived group member is a version target");
             lines.push(format!(
-                "::error title=inconsistent-group::{}",
+                "::error file={},title=inconsistent-group::{}",
+                escape_property(&file),
                 escape_data(&text)
             ));
         }
@@ -182,45 +196,6 @@ fn render_diagnostics(
             let Some(dependency_version) = declared.get(dependency.name.as_str()) else {
                 continue;
             };
-            // Version-group members release as one version, so a member must pin its siblings
-            // exactly: a compatible requirement would let a consumer resolve two members at
-            // versions that were never released together, which is the split the group exists to
-            // hide. Every edge reaching here already survives packaging, development edges
-            // included, so each one can carry that mismatch into a published manifest.
-            // Ref: docs/dependencies.md, "Version groups and exact-pin cross-references".
-            let sibling = package.group.is_some()
-                && package.group
-                    == by_name
-                        .get(dependency.name.as_str())
-                        .and_then(|dep| dep.group.clone());
-            if sibling {
-                if dependency.req == format!("={dependency_version}") {
-                    continue;
-                }
-                let group = package
-                    .group
-                    .as_deref()
-                    .expect("a sibling edge was found only when this package has a group");
-                let text = format!(
-                    "{}: requires {} {}, but they share version group {}, whose members pin each other exactly. Change the requirement to {}. {}",
-                    quote_path(&package.name),
-                    quote_path(&dependency.name),
-                    quote_path(&dependency.req),
-                    quote_path(group),
-                    quote_path(&format!("={dependency_version}")),
-                    remedy(base)
-                );
-                if format == CheckFormat::Github {
-                    let file = os_path(&package.manifest_path);
-                    lines.push(format!(
-                        "::error file={},title=inexact-group-requirement::{}",
-                        escape_property(&file),
-                        escape_data(&text)
-                    ));
-                }
-                lines.push(text);
-                continue;
-            }
             if requirement_names_version(&dependency.req, dependency_version) {
                 continue;
             }
@@ -252,6 +227,40 @@ fn render_diagnostics(
             }
             lines.push(text);
         }
+    }
+
+    for dependency in exact_dependencies {
+        // Publishable sources already carry the same edge in `ReportedDep` and
+        // were checked above. This pass adds declarations from helpers without
+        // emitting the same finding twice.
+        if by_name.contains_key(dependency.source.as_str()) {
+            continue;
+        }
+        let dependency_version = declared
+            .get(dependency.target.as_str())
+            .expect("a validated exact dependency targets a tracked version target");
+        if requirement_names_version(&dependency.requirement, dependency_version) {
+            continue;
+        }
+        let expected = format!("={dependency_version}");
+        let text = format!(
+            "{}: requires {} {} in {}, which does not name the version it declares ({dependency_version}). Change the requirement to {}. {}",
+            quote_path(&dependency.source),
+            quote_path(&dependency.target),
+            quote_path(&dependency.requirement),
+            quote_path(&dependency.location),
+            quote_path(&expected),
+            remedy(base)
+        );
+        if format == CheckFormat::Github {
+            let file = os_path(&dependency.manifest_path);
+            lines.push(format!(
+                "::error file={},title=stale-workspace-requirement::{}",
+                escape_property(&file),
+                escape_data(&text)
+            ));
+        }
+        lines.push(text);
     }
 
     for package in packages {
@@ -303,6 +312,25 @@ fn render_diagnostics(
     }
 
     lines.join("\n")
+}
+
+#[cfg(test)]
+fn render_diagnostics(
+    packages: &[PackageClass],
+    groups: &BTreeMap<String, GroupVerdict>,
+    base: &str,
+    format: CheckFormat,
+) -> String {
+    let version_targets = packages
+        .iter()
+        .map(|package| VersionTarget {
+            name: package.name.clone(),
+            version: package.declared_version.clone(),
+            manifest_path: package.manifest_path.clone(),
+            publishable: true,
+        })
+        .collect::<Vec<_>>();
+    render_workspace_diagnostics(packages, groups, base, format, &version_targets, &[])
 }
 
 /// Whether the package's declared version is a semver-incompatible move from its last release.
@@ -633,13 +661,9 @@ mod tests {
         package
     }
 
-    /// A version-group member must pin its siblings exactly.
-    ///
-    /// The group exists because the members are one package split for Cargo's sake, so a
-    /// compatible requirement would let a consumer resolve two members that were never released
-    /// together.
+    /// A compatible edge is valid between members connected through exact edges elsewhere.
     #[test]
-    fn a_compatible_requirement_between_group_members_is_reported() {
+    fn a_compatible_requirement_between_group_members_is_accepted() {
         let library = grouped("lib_impl", "lib", Version::new(1, 1, 0), vec![]);
         let shell = grouped(
             "lib",
@@ -650,41 +674,7 @@ mod tests {
 
         let text = render_diagnostics(&[shell, library], &BTreeMap::new(), BASE, CheckFormat::Text);
 
-        assert!(text.contains("pin each other exactly"), "{text}");
-        assert!(text.contains("=1.1.0"), "{text}");
-    }
-
-    /// The same edge passes once it is pinned exactly.
-    #[test]
-    fn an_exact_requirement_between_group_members_is_accepted() {
-        let library = grouped("lib_impl", "lib", Version::new(1, 1, 0), vec![]);
-        let shell = grouped(
-            "lib",
-            "lib",
-            Version::new(1, 1, 0),
-            vec![dependency("lib_impl", "=1.1.0", true)],
-        );
-
-        let text = render_diagnostics(&[shell, library], &BTreeMap::new(), BASE, CheckFormat::Text);
-
         assert_eq!(text, "");
-    }
-
-    /// A development dependency between group members is not exempt.
-    ///
-    /// Only a path-only development dependency escapes packaging, and one of those never
-    /// reaches the report at all. A retained development edge is published, so it can carry a
-    /// mismatched group pairing into a consumer's resolution just as a normal edge can.
-    #[test]
-    fn a_development_requirement_between_group_members_is_reported() {
-        let library = grouped("lib_impl", "lib", Version::new(1, 1, 0), vec![]);
-        let mut development = dependency("lib_impl", "^1.1.0", false);
-        development.kind = DepKind::Dev;
-        let shell = grouped("lib", "lib", Version::new(1, 1, 0), vec![development]);
-
-        let text = render_diagnostics(&[shell, library], &BTreeMap::new(), BASE, CheckFormat::Text);
-
-        assert!(text.contains("pin each other exactly"), "{text}");
     }
 
     /// Packages in different groups may reference each other compatibly.
@@ -858,27 +848,6 @@ mod tests {
                 "::error file=packages/app/Cargo.toml,title=stale-workspace-requirement::"
             ),
             "{stale}"
-        );
-
-        // A compatible requirement between two members of one group.
-        let inexact = render_diagnostics(
-            &[
-                grouped(
-                    "lib",
-                    "lib",
-                    Version::new(1, 1, 0),
-                    vec![dependency("lib_impl", "^1.1.0", true)],
-                ),
-                grouped("lib_impl", "lib", Version::new(1, 1, 0), vec![]),
-            ],
-            &BTreeMap::new(),
-            BASE,
-            CheckFormat::Github,
-        );
-        assert!(
-            inexact
-                .contains("::error file=packages/lib/Cargo.toml,title=inexact-group-requirement::"),
-            "{inexact}"
         );
 
         // A public dependency that breaks while its dependent stays compatible.
@@ -1107,20 +1076,6 @@ mod tests {
             text.contains("Group g also includes demo, sibling."),
             "{text}"
         );
-    }
-
-    /// A grouped package without a verdict falls back to the group name.
-    ///
-    /// Group membership is read from the manifest while verdicts are computed only for groups that
-    /// have publishable members, so a package can name a group that has no verdict.
-    #[test]
-    fn a_grouped_package_without_a_verdict_falls_back_to_the_group_name() {
-        let mut package = failing("demo", Vec::new());
-        package.group = Some("g".to_string());
-
-        let text = render_diagnostics(&[package], &BTreeMap::new(), BASE, CheckFormat::Text);
-
-        assert!(text.contains("Group g also includes g."), "{text}");
     }
 
     #[test]

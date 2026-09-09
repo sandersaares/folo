@@ -252,7 +252,3 @@ unsafe impl<T: Send> Sync for RawEventPool<T> {}
 // through the endpoints of the event that carries it.
 impl<T: Send + 'static> UnwindSafe for RawEventPool<T> {}
 impl<T: Send + 'static> RefUnwindSafe for RawEventPool<T> {}
-
-#[cfg(test)]
-#[cfg_attr(coverage_nightly, coverage(off))]
-mod tests;

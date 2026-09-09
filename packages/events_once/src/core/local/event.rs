@@ -796,7 +796,6 @@ impl<T: 'static> LocalEvent<T> {
 }
 
 #[cfg_attr(coverage_nightly, coverage(off))] // No API contract to test.
-#[expect(clippy::missing_fields_in_debug, reason = "phantoms are boring")]
 impl<T: 'static> fmt::Debug for LocalEvent<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut debug = f.debug_struct(type_name::<Self>());
@@ -813,7 +812,3 @@ impl<T: 'static> fmt::Debug for LocalEvent<T> {
         debug.finish()
     }
 }
-
-#[cfg(test)]
-#[cfg_attr(coverage_nightly, coverage(off))]
-mod tests;

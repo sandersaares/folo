@@ -511,21 +511,35 @@ pub(crate) fn for_each_dependency_table(
     manifest: &dyn TableLike,
     visit: &mut dyn FnMut(&str, &dyn TableLike),
 ) {
-    visit_dependency_tables(manifest, visit);
+    for_each_dependency_table_with_context(manifest, &mut |_, kind, dependencies| {
+        visit(kind, dependencies);
+    });
+}
+
+/// Visits every dependency table with its manifest location.
+pub(crate) fn for_each_dependency_table_with_context(
+    manifest: &dyn TableLike,
+    visit: &mut dyn FnMut(&str, &str, &dyn TableLike),
+) {
+    visit_dependency_tables(manifest, "", visit);
     let Some(target) = manifest.get("target").and_then(Item::as_table_like) else {
         return;
     };
-    for (_, spec) in target.iter() {
+    for (target_name, spec) in target.iter() {
         if let Some(spec) = spec.as_table_like() {
-            visit_dependency_tables(spec, visit);
+            visit_dependency_tables(spec, &format!("target.{target_name}."), visit);
         }
     }
 }
 
-fn visit_dependency_tables(table: &dyn TableLike, visit: &mut dyn FnMut(&str, &dyn TableLike)) {
+fn visit_dependency_tables(
+    table: &dyn TableLike,
+    prefix: &str,
+    visit: &mut dyn FnMut(&str, &str, &dyn TableLike),
+) {
     for name in DEPENDENCY_TABLES {
         if let Some(dependencies) = table.get(name).and_then(Item::as_table_like) {
-            visit(name, dependencies);
+            visit(&format!("{prefix}{name}"), name, dependencies);
         }
     }
 }

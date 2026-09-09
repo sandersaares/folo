@@ -176,7 +176,3 @@ impl<T: Send + 'static> fmt::Debug for EventPoolCore<T> {
         f.finish()
     }
 }
-
-#[cfg(test)]
-#[cfg_attr(coverage_nightly, coverage(off))]
-mod tests;

@@ -1,24 +1,8 @@
-//! Selection-adjusted change-point significance.
-//!
-//! A change-point detector searches the whole history and reports the split
-//! that looks strongest. The Mann-Whitney p-value at that chosen split is
-//! therefore tainted by the search: even unchanged histories occasionally have
-//! one unusually convincing split.
-//!
-//! [`selection_adjusted_change_point`] combines a conservative analytic bound over
-//! every eligible split with a complete finite permutation-group orbit of the series'
-//! actual values. Every permuted ordering retains the same values and ties, runs the
-//! same Pettitt first-maximum split selection, applies the same minimum-regime rule,
-//! and scores the accepted split with the same exact-or-normal Mann-Whitney
-//! implementation. Both components therefore account for split selection without
-//! trusting the tainted winning score.
-
-mod permutation;
+//! Change-point selection and significance adjustment.
 
 use std::num::NonZero;
 
-use permutation::{PermutationOrbit, group_order};
-
+use crate::selection::permutation::{PermutationOrbit, group_order};
 use crate::{
     NO_EVIDENCE, exact_mw_feasible, exact_rank_sum_p_values, mann_whitney_tie_term,
     normal_mann_whitney_p, pettitt_rank_location, scaled_average_ranks,

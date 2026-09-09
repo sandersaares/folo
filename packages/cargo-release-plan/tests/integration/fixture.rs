@@ -20,7 +20,7 @@ impl Fixture {
     /// Creates the repository and writes the workspace manifest.
     ///
     /// `extra` is appended to the root manifest, so a caller can add tables such
-    /// as `[workspace.metadata.release-plan.groups]` or `[workspace.package]`.
+    /// as `[workspace.dependencies]` or `[workspace.package]`.
     pub(crate) fn new(extra: &str) -> Self {
         let fixture = Self::empty("Cargo.toml");
         fixture.write_workspace(extra);

@@ -17,7 +17,7 @@ use crate::session_record::{ProcessIdentity, SessionRecord};
 /// What one stored id says about itself.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub(super) enum StoredSession {
+pub(crate) enum StoredSession {
     /// The id is claimed and `owner` is still initializing its session.
     Reserved {
         /// Process that claimed the id.

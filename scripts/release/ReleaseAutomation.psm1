@@ -78,40 +78,287 @@ function Get-BinaryTarget {
     @($Package.targets | Where-Object { $_.kind -contains 'bin' })
 }
 
-function Get-PublishableBinaryCrate {
-    # Derives the crates this workflow releases: publishable to a registry AND owning a `bin`
-    # target. In `cargo metadata` the `publish` field is null (any registry), an empty list
-    # (never publish), or a non-empty registry list, so "publishable" is null-or-non-empty.
-    # Returns {Name, Version, Binary, ReleaseTargets} objects sorted by name, where Binary is the
-    # package's single binary target and ReleaseTargets is its declared release-target restriction
-    # (empty for the usual "all targets" case). A release archive has one binary path, so packages
-    # with several binary targets are rejected rather than silently publishing only one. Runs the
-    # real `cargo metadata` (offline with --no-deps); tests point it at a fixture via -ManifestPath.
+function Test-PathCaseInsensitive {
+    # Cargo opens manifests through the filesystem while Git pathspecs are case-sensitive by
+    # default. Probe the workspace directory instead of inferring its behavior from the operating
+    # system; an inconclusive probe keeps the stricter case-sensitive result.
+    param(
+        [Parameter(Mandatory)][string] $Directory
+    )
+
+    try {
+        $entryName = @(
+            Get-ChildItem -LiteralPath $Directory -Force -ErrorAction Stop |
+                ForEach-Object { $_.Name }
+        )
+    } catch {
+        return $false
+    }
+    $present = [System.Collections.Generic.HashSet[string]]::new(
+        [StringComparer]::Ordinal
+    )
+    foreach ($name in $entryName) {
+        [void] $present.Add($name)
+    }
+    foreach ($name in $entryName) {
+        $flippedBuilder = [Text.StringBuilder]::new($name.Length)
+        foreach ($character in $name.ToCharArray()) {
+            if ([char]::IsUpper($character)) {
+                [void] $flippedBuilder.Append([char]::ToLowerInvariant($character))
+            } elseif ([char]::IsLower($character)) {
+                [void] $flippedBuilder.Append([char]::ToUpperInvariant($character))
+            } else {
+                [void] $flippedBuilder.Append($character)
+            }
+        }
+        $flipped = $flippedBuilder.ToString()
+        if ($flipped -ceq $name -or $present.Contains($flipped)) {
+            continue
+        }
+        return Test-Path -LiteralPath (Join-Path $Directory $flipped)
+    }
+    return $false
+}
+
+function Get-WorkspaceMember {
+    # Returns current Cargo workspace members with publication eligibility and manifest identity.
+    # Tracking is opt-in because the increment publication gate needs it, while ordinary release
+    # discovery retains its Cargo-defined scope and must not gain a Git failure boundary.
     [CmdletBinding()]
     param(
-        [string] $ManifestPath
+        [string] $ManifestPath,
+        [switch] $IncludeTracking
     )
 
     $cargoArgs = @('metadata', '--no-deps', '--format-version', '1')
     if ($ManifestPath) { $cargoArgs += @('--manifest-path', $ManifestPath) }
 
-    $metadata = & cargo @cargoArgs | ConvertFrom-Json
-    $metadata.packages |
-        Where-Object { ($null -eq $_.publish) -or ($_.publish.Count -gt 0) } |
-        Where-Object { $_.targets | Where-Object { $_.kind -contains 'bin' } } |
+    $configuredTargetDirectory =
+        [Environment]::GetEnvironmentVariable('CARGO_TARGET_DIR', 'Process')
+    try {
+        # Cargo rejects an explicitly present empty value. Treat it as the absence it represents
+        # for this subprocess without changing the caller's environment permanently.
+        if ($null -ne $configuredTargetDirectory -and
+            $configuredTargetDirectory.Length -eq 0) {
+            Remove-Item Env:CARGO_TARGET_DIR
+        }
+        $metadata = & cargo @cargoArgs | ConvertFrom-Json
+    } finally {
+        if ($null -ne $configuredTargetDirectory) {
+            [Environment]::SetEnvironmentVariable(
+                'CARGO_TARGET_DIR',
+                $configuredTargetDirectory,
+                'Process'
+            )
+        }
+    }
+    $workspaceMemberId = [System.Collections.Generic.HashSet[string]]::new(
+        [System.StringComparer]::Ordinal
+    )
+    foreach ($id in $metadata.workspace_members) {
+        [void] $workspaceMemberId.Add([string] $id)
+    }
+
+    $workspaceRoot = [IO.Path]::GetFullPath([string] $metadata.workspace_root)
+    $repositoryRoot = $null
+    $workspacePrefix = $null
+    $caseInsensitivePath = $false
+    if ($IncludeTracking) {
+        $previousNativeErrorPreference = $PSNativeCommandUseErrorActionPreference
+        try {
+            $PSNativeCommandUseErrorActionPreference = $false
+            $gitOutput = @(& git -C $workspaceRoot rev-parse --show-toplevel 2>&1)
+            $gitExitCode = $LASTEXITCODE
+        } finally {
+            $PSNativeCommandUseErrorActionPreference = $previousNativeErrorPreference
+        }
+        if ($gitExitCode -ne 0) {
+            $diagnostic = @(
+                $gitOutput | ForEach-Object { $_.ToString() }
+            ) -join [Environment]::NewLine
+            if ([string]::IsNullOrWhiteSpace($diagnostic)) {
+                $diagnostic = '(no diagnostic output)'
+            }
+            throw (
+                "git rev-parse failed while resolving the repository for workspace " +
+                "'$workspaceRoot' with exit code $gitExitCode`: $diagnostic"
+            )
+        }
+        $repositoryRootLine = @(
+            $gitOutput |
+                ForEach-Object { $_.ToString() } |
+                Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+        )
+        if ($repositoryRootLine.Count -ne 1) {
+            throw (
+                "git rev-parse returned an invalid repository root for workspace " +
+                "'$workspaceRoot'."
+            )
+        }
+        $repositoryRoot = [IO.Path]::GetFullPath($repositoryRootLine[0])
+
+        $previousNativeErrorPreference = $PSNativeCommandUseErrorActionPreference
+        try {
+            $PSNativeCommandUseErrorActionPreference = $false
+            $gitOutput = @(& git -C $workspaceRoot rev-parse --show-prefix 2>&1)
+            $gitExitCode = $LASTEXITCODE
+        } finally {
+            $PSNativeCommandUseErrorActionPreference = $previousNativeErrorPreference
+        }
+        if ($gitExitCode -ne 0) {
+            $diagnostic = @(
+                $gitOutput | ForEach-Object { $_.ToString() }
+            ) -join [Environment]::NewLine
+            if ([string]::IsNullOrWhiteSpace($diagnostic)) {
+                $diagnostic = '(no diagnostic output)'
+            }
+            throw (
+                "git rev-parse failed while resolving the workspace prefix for " +
+                "'$workspaceRoot' with exit code $gitExitCode`: $diagnostic"
+            )
+        }
+        $workspacePrefixLine = @(
+            $gitOutput |
+                ForEach-Object { $_.ToString() } |
+                Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+        )
+        if ($workspacePrefixLine.Count -gt 1) {
+            throw (
+                "git rev-parse returned an invalid workspace prefix for " +
+                "'$workspaceRoot'."
+            )
+        }
+        $workspacePrefix = if ($workspacePrefixLine.Count -eq 0) {
+            ''
+        } else {
+            $workspacePrefixLine[0].TrimEnd('/', '\')
+        }
+        $caseInsensitivePath = Test-PathCaseInsensitive -Directory $workspaceRoot
+    }
+
+    foreach ($package in $metadata.packages | Sort-Object -Property name) {
+        if (-not $workspaceMemberId.Contains([string] $package.id)) {
+            continue
+        }
+
+        $packageManifestPath = [IO.Path]::GetFullPath([string] $package.manifest_path)
+        $tracked = $null
+        if ($IncludeTracking) {
+            # Cargo's workspace root and package manifests share Cargo's path spelling. Rebase
+            # their relative relationship through Git's workspace prefix instead of subtracting
+            # Git's independently spelled repository root from a Cargo path. This also retains
+            # leading parent components for supported sibling members.
+            $workspaceRelativeManifestPath =
+                [IO.Path]::GetRelativePath($workspaceRoot, $packageManifestPath)
+            $gitWorkspacePath = [IO.Path]::GetFullPath(
+                [IO.Path]::Combine($repositoryRoot, $workspacePrefix)
+            )
+            $gitManifestPath = [IO.Path]::GetFullPath(
+                [IO.Path]::Combine($gitWorkspacePath, $workspaceRelativeManifestPath)
+            )
+            $relativeManifestPath =
+                [IO.Path]::GetRelativePath($repositoryRoot, $gitManifestPath)
+            $outsideRepository =
+                [IO.Path]::IsPathRooted($relativeManifestPath) -or
+                $relativeManifestPath -eq '..' -or
+                $relativeManifestPath.StartsWith(
+                    "..$([IO.Path]::DirectorySeparatorChar)",
+                    [StringComparison]::Ordinal
+                )
+            if ($outsideRepository) {
+                $tracked = $false
+            } else {
+                # Git pathspecs are relative to -C and accept slash separators on every
+                # supported host. Explicit literal magic prevents manifest directory names from
+                # being interpreted as patterns; `icase` follows a case-insensitive checkout.
+                $gitPath = $relativeManifestPath.Replace('\', '/')
+                $gitPathspec = if ($caseInsensitivePath) {
+                    ":(icase,literal)$gitPath"
+                } else {
+                    ":(literal)$gitPath"
+                }
+                $previousNativeErrorPreference = $PSNativeCommandUseErrorActionPreference
+                try {
+                    $PSNativeCommandUseErrorActionPreference = $false
+                    $gitOutput = @(
+                        & git -C $repositoryRoot ls-files --error-unmatch -- $gitPathspec 2>&1
+                    )
+                    $gitExitCode = $LASTEXITCODE
+                } finally {
+                    $PSNativeCommandUseErrorActionPreference = $previousNativeErrorPreference
+                }
+                switch ($gitExitCode) {
+                    0 { $tracked = $true }
+                    1 { $tracked = $false }
+                    default {
+                        $diagnostic = @(
+                            $gitOutput | ForEach-Object { $_.ToString() }
+                        ) -join [Environment]::NewLine
+                        if ([string]::IsNullOrWhiteSpace($diagnostic)) {
+                            $diagnostic = '(no diagnostic output)'
+                        }
+                        throw (
+                            "git ls-files failed while checking workspace manifest " +
+                            "'$relativeManifestPath' with exit code $gitExitCode`: $diagnostic"
+                        )
+                    }
+                }
+            }
+        }
+
+        [pscustomobject]@{
+            Name         = [string] $package.name
+            Version      = [string] $package.version
+            ManifestPath = $packageManifestPath
+            Publishable  = ($null -eq $package.publish) -or ($package.publish.Count -gt 0)
+            Tracked      = $tracked
+            Package      = $package
+        }
+    }
+}
+
+function Get-TrackedWorkspaceMember {
+    # The current workspace members whose manifests Git tracks. Version-group membership remains
+    # cargo-release-plan's responsibility; this projection only secures the publication gate.
+    [CmdletBinding()]
+    param(
+        [string] $ManifestPath
+    )
+
+    Get-WorkspaceMember -ManifestPath $ManifestPath -IncludeTracking |
+        Where-Object Tracked
+}
+
+function Get-PublishableBinaryCrate {
+    # Derives the crates this workflow releases: Cargo workspace members publishable to a registry
+    # AND owning a `bin` target. In `cargo metadata` the `publish` field is null (any registry), an
+    # empty list (never publish), or a non-empty registry list.
+    # Returns {Name, Version, Binary, ReleaseTargets} objects sorted by name, where Binary is the
+    # package's single binary target and ReleaseTargets is its declared release-target restriction
+    # (empty for the usual "all targets" case). A release archive has one binary path, so packages
+    # with several binary targets are rejected rather than silently publishing only one. Runs real
+    # Cargo metadata; tests point it at a fixture via -ManifestPath.
+    [CmdletBinding()]
+    param(
+        [string] $ManifestPath
+    )
+
+    Get-WorkspaceMember -ManifestPath $ManifestPath |
+        Where-Object Publishable |
+        Where-Object { $_.Package.targets | Where-Object { $_.kind -contains 'bin' } } |
         ForEach-Object {
-            $binaryTargets = @(Get-BinaryTarget -Package $_)
+            $binaryTargets = @(Get-BinaryTarget -Package $_.Package)
             if ($binaryTargets.Count -ne 1) {
                 throw (
-                    "Publishable binary package '$($_.name)' declares $($binaryTargets.Count) " +
+                    "Publishable binary package '$($_.Name)' declares $($binaryTargets.Count) " +
                     'binary targets; release automation requires exactly one.'
                 )
             }
             [pscustomobject]@{
-                Name           = $_.name
-                Version        = $_.version
+                Name           = $_.Name
+                Version        = $_.Version
                 Binary         = [string] $binaryTargets[0].name
-                ReleaseTargets = @(Get-DeclaredReleaseTarget -Package $_)
+                ReleaseTargets = @(Get-DeclaredReleaseTarget -Package $_.Package)
             }
         } |
         Sort-Object -Property Name -Unique
@@ -460,22 +707,18 @@ function Invoke-ReleasePublish {
 }
 
 function Get-PublishableCrate {
-    # Every crate publishable to a registry (unlike Get-PublishableBinaryCrate, not filtered to
-    # binaries), as {Name, Version} objects sorted by name. Used by the never-published preflight,
-    # which must warn about any brand-new crate, library or binary. Runs the real `cargo metadata`
-    # (offline with --no-deps); tests point it at a fixture workspace via -ManifestPath.
+    # Every Cargo workspace crate publishable to a registry (unlike Get-PublishableBinaryCrate,
+    # not filtered to binaries), as {Name, Version} objects sorted by name. Used by the
+    # never-published preflight, which must warn about any brand-new crate, library or binary.
+    # Runs real Cargo metadata; tests point it at a fixture workspace via -ManifestPath.
     [CmdletBinding()]
     param(
         [string] $ManifestPath
     )
 
-    $cargoArgs = @('metadata', '--no-deps', '--format-version', '1')
-    if ($ManifestPath) { $cargoArgs += @('--manifest-path', $ManifestPath) }
-
-    $metadata = & cargo @cargoArgs | ConvertFrom-Json
-    $metadata.packages |
-        Where-Object { ($null -eq $_.publish) -or ($_.publish.Count -gt 0) } |
-        ForEach-Object { [pscustomobject]@{ Name = $_.name; Version = $_.version } } |
+    Get-WorkspaceMember -ManifestPath $ManifestPath |
+        Where-Object Publishable |
+        ForEach-Object { [pscustomobject]@{ Name = $_.Name; Version = $_.Version } } |
         Sort-Object -Property Name -Unique
 }
 
@@ -575,6 +818,7 @@ Export-ModuleMember -Function `
     Get-ReleaseTarget, `
     Get-DeclaredReleaseTarget, `
     Get-BinaryTarget, `
+    Get-TrackedWorkspaceMember, `
     Get-PublishableBinaryCrate, `
     Get-PublishableCrate, `
     Get-CrateIndexPath, `

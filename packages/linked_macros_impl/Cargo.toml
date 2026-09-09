@@ -2,7 +2,7 @@
 name = "linked_macros_impl"
 description = "Internal dependency of the 'linked_macros' package - do not reference directly"
 publish = true
-version = "1.0.22"
+version = "1.0.23"
 
 authors.workspace = true
 edition.workspace = true

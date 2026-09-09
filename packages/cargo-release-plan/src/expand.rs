@@ -26,7 +26,7 @@ use crate::{
 /// version because resolution has already applied the increment to the group's
 /// highest declared member version. The `expanded` stamp records the planning
 /// stage, which is what holds the document to the package set it names instead
-/// of letting the group configuration of the day widen it.
+/// of letting the derived group of the day widen it.
 #[derive(Serialize)]
 struct ExpandedPlanFile {
     schema_version: u32,
@@ -53,11 +53,11 @@ pub(crate) fn run_expand(
         serde_json::from_str(&plan).map_err(|error| ParsePlanError::caused_by(plan_path, error))?;
 
     let (work_tree, _) = load_tracked_work_tree(manifest_path)?;
-    // Only Git-tracked publishable members are valid targets, and a group
-    // increments from the highest version any of its members declares.
+    // Every Git-tracked member is a valid version target, and a group increments
+    // from the highest version any of its members declares.
     // Ref: docs/implementation.md, "Plan resolution and application".
-    let publishable = work_tree.publishable_versions();
-    let resolved = resolve_plan(&plan, &work_tree.groups, &publishable, verbose)?;
+    let target_versions = work_tree.target_versions();
+    let resolved = resolve_plan(&plan, &work_tree.groups, &target_versions, verbose)?;
 
     verbose.note(|| {
         format!(

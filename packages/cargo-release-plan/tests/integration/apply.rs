@@ -16,9 +16,6 @@ use crate::harness::{apply_increment, check, seeded_package};
 fn apply_rewrites_exact_pins_and_expands_groups() {
     let fixture = Fixture::new(
         r#"
-[workspace.metadata.release-plan.groups]
-g = ["shell", "shell_impl"]
-
 [workspace.dependencies]
 shell_impl = { version = "=0.1.0", path = "packages/shell_impl" }
 "#,
@@ -39,7 +36,7 @@ shell_impl = { workspace = true }
     let plan_path = fixture.path().join("plan.json");
     fs::write(
         &plan_path,
-        r#"{ "schema_version": 2, "increments": [{ "name": "shell", "level": "patch" }] }"#,
+        r#"{ "schema_version": 3, "increments": [{ "name": "shell", "level": "patch" }] }"#,
     )
     .unwrap();
 
@@ -93,7 +90,7 @@ edition = "2021"
     let plan_path = fixture.path().join("plan.json");
     fs::write(
         &plan_path,
-        r#"{ "schema_version": 2, "increments": [{ "name": "demo", "level": "patch" }] }"#,
+        r#"{ "schema_version": 3, "increments": [{ "name": "demo", "level": "patch" }] }"#,
     )
     .unwrap();
     run(&RunInput::Apply {
@@ -114,13 +111,15 @@ edition = "2021"
 fn apply_rewrites_pins_declared_by_a_non_publishable_member() {
     let fixture = Fixture::new("");
     write_package(&fixture, "demo", "0.1.0", "");
+    write_package(&fixture, "peer", "0.1.0", "");
     write_package(
         &fixture,
         "tool",
         "0.1.0",
         concat!(
             "publish = false\n\n",
-            "[dependencies]\ndemo = { version = \"=0.1.0\", path = \"../demo\" }\n"
+            "[dependencies]\ndemo = { version = \"=0.1.0\", path = \"../demo\" }\n",
+            "peer = { version = \"=0.1.0\", path = \"../peer\" }\n"
         ),
     );
     fixture.commit("seed");
@@ -128,7 +127,7 @@ fn apply_rewrites_pins_declared_by_a_non_publishable_member() {
     let plan_path = fixture.path().join("plan.json");
     fs::write(
         &plan_path,
-        r#"{ "schema_version": 2, "increments": [{ "name": "demo", "level": "minor" }] }"#,
+        r#"{ "schema_version": 3, "increments": [{ "name": "demo", "level": "minor" }] }"#,
     )
     .unwrap();
 
@@ -140,10 +139,12 @@ fn apply_rewrites_pins_declared_by_a_non_publishable_member() {
     })
     .unwrap();
 
-    // `tool` is never released, but its pin still has to follow demo or the
-    // workspace lockfile can no longer be resolved.
+    // `tool` bridges both publishable targets and receives the same version.
     let tool = fs::read_to_string(fixture.path().join("packages/tool/Cargo.toml")).unwrap();
     assert!(tool.contains("version = \"=0.2.0\""), "{tool}");
+    assert!(tool.contains("version = \"0.2.0\""), "{tool}");
+    let peer = fs::read_to_string(fixture.path().join("packages/peer/Cargo.toml")).unwrap();
+    assert!(peer.contains("version = \"0.2.0\""), "{peer}");
 }
 
 /// An untracked package is not a release-plan target.
@@ -154,7 +155,7 @@ fn apply_rejects_an_untracked_package_as_a_plan_target() {
     write_package(&fixture, "untracked", "0.1.0", "");
     fixture.write(
         "plan.json",
-        r#"{ "schema_version": 2, "increments": [{ "name": "untracked", "level": "patch" }] }"#,
+        r#"{ "schema_version": 3, "increments": [{ "name": "untracked", "level": "patch" }] }"#,
     );
 
     let result = run(&RunInput::Apply {
@@ -166,7 +167,7 @@ fn apply_rejects_an_untracked_package_as_a_plan_target() {
 
     let error = result.expect_err("an untracked package cannot be a plan target");
     assert!(
-        error.to_string().contains("not a publishable package"),
+        error.to_string().contains("not a tracked workspace member"),
         "{error}"
     );
 }
@@ -189,37 +190,39 @@ fn apply_rewrites_a_pin_declared_by_an_untracked_member() {
     assert!(tool.contains("version = \"=0.2.0\""), "{tool}");
 }
 
-/// Version groups cannot use an ignored package as a release member.
+/// An ignored exact-pinning helper cannot bridge tracked version targets.
 #[cfg_attr(miri, ignore)] // Spawns git and cargo, which Miri cannot emulate.
 #[test]
-fn apply_validates_groups_against_tracked_members() {
-    let fixture = Fixture::new(
-        r#"
-[workspace.metadata.release-plan.groups]
-g = ["demo", "ignored"]
-"#,
-    );
+fn an_ignored_helper_does_not_bridge_groups() {
+    let fixture = Fixture::new("");
     write_package(&fixture, "demo", "0.1.0", "");
+    write_package(&fixture, "peer", "0.1.0", "");
     fixture.write(".gitignore", "packages/ignored/\n");
     fixture.commit("seed");
-    write_package(&fixture, "ignored", "0.1.0", "");
+    write_package(
+        &fixture,
+        "ignored",
+        "0.1.0",
+        "\n[dependencies]\ndemo = { path = \"../demo\", version = \"=0.1.0\" }\npeer = { path = \"../peer\", version = \"=0.1.0\" }\n",
+    );
     fixture.write(
         "plan.json",
-        r#"{ "schema_version": 2, "increments": [{ "name": "demo", "level": "patch" }] }"#,
+        r#"{ "schema_version": 3, "increments": [{ "name": "demo", "level": "patch" }] }"#,
     );
 
-    let result = run(&RunInput::Apply {
+    run(&RunInput::Apply {
         plan: fixture.path().join("plan.json"),
-        dry_run: true,
+        dry_run: false,
         manifest_path: fixture.manifest(),
         verbose: false,
-    });
+    })
+    .unwrap();
 
-    let error = result.expect_err("an ignored package cannot satisfy a version group");
-    assert!(
-        error.to_string().contains("unknown workspace package"),
-        "{error}"
-    );
+    let peer = fixture.read("packages/peer/Cargo.toml");
+    assert!(peer.contains("version = \"0.1.0\""), "{peer}");
+    let ignored = fixture.read("packages/ignored/Cargo.toml");
+    assert!(ignored.contains("demo = { path = \"../demo\", version = \"=0.1.1\" }"));
+    assert!(ignored.contains("peer = { path = \"../peer\", version = \"=0.1.0\" }"));
 }
 
 #[cfg_attr(miri, ignore)] // Spawns git and cargo, which Miri cannot emulate.
@@ -238,7 +241,7 @@ fn apply_rewrites_a_pin_under_a_target_specific_dependency_table() {
     let plan_path = fixture.path().join("plan.json");
     fs::write(
         &plan_path,
-        r#"{ "schema_version": 2, "increments": [{ "name": "demo", "level": "minor" }] }"#,
+        r#"{ "schema_version": 3, "increments": [{ "name": "demo", "level": "minor" }] }"#,
     )
     .unwrap();
     run(&RunInput::Apply {
@@ -317,7 +320,7 @@ fn apply_with_an_empty_plan_changes_nothing() {
     let manifest = fixture.path().join("packages/demo/Cargo.toml");
     let before = fs::read_to_string(&manifest).unwrap();
     let plan_path = fixture.path().join("plan.json");
-    fs::write(&plan_path, r#"{ "schema_version": 2, "increments": [] }"#).unwrap();
+    fs::write(&plan_path, r#"{ "schema_version": 3, "increments": [] }"#).unwrap();
 
     run(&RunInput::Apply {
         plan: plan_path,
@@ -337,7 +340,7 @@ fn apply_dry_run_does_not_write() {
     let plan_path = fixture.path().join("plan.json");
     fs::write(
         &plan_path,
-        r#"{ "schema_version": 2, "increments": [{ "name": "demo", "level": "minor" }] }"#,
+        r#"{ "schema_version": 3, "increments": [{ "name": "demo", "level": "minor" }] }"#,
     )
     .unwrap();
     let before = fs::read_to_string(fixture.path().join("packages/demo/Cargo.toml")).unwrap();
@@ -353,8 +356,44 @@ fn apply_dry_run_does_not_write() {
             assert!(message.contains("Dry run"));
             assert!(message.contains("1 manifest"));
         }
+
         other => panic!("expected apply, got {other:?}"),
     }
     let after = fs::read_to_string(fixture.path().join("packages/demo/Cargo.toml")).unwrap();
     assert_eq!(before, after);
+}
+
+/// A non-plain explicit group target is rejected before any manifest write.
+#[cfg_attr(miri, ignore)] // Spawns git and cargo, which Miri cannot emulate.
+#[test]
+fn apply_rejects_a_non_plain_group_target_before_writes() {
+    let fixture = Fixture::new("");
+    write_package(&fixture, "implementation", "0.1.0", "");
+    write_package(
+        &fixture,
+        "facade",
+        "0.1.0",
+        "\n[dependencies]\nimplementation = { path = \"../implementation\", version = \"=0.1.0\" }\n",
+    );
+    fixture.commit("group");
+    let plan = fixture.path().join("plan.json");
+    fs::write(
+        &plan,
+        r#"{ "schema_version": 3, "increments": [{ "name": "facade", "version": "0.2.0-alpha.1" }] }"#,
+    )
+    .unwrap();
+
+    let error = run(&RunInput::Apply {
+        plan,
+        dry_run: false,
+        manifest_path: fixture.manifest(),
+        verbose: false,
+    })
+    .expect_err("a group cannot be assigned a prerelease target");
+
+    assert!(error.to_string().contains("non-plain"), "{error}");
+    for package in ["facade", "implementation"] {
+        let manifest = fixture.read(&format!("packages/{package}/Cargo.toml"));
+        assert!(manifest.contains("version = \"0.1.0\""), "{manifest}");
+    }
 }

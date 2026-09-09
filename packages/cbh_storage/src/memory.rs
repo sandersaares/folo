@@ -1,3 +1,5 @@
+use std::future::{Future, ready};
+
 use crate::{ObjectAlreadyExistsError, ObjectNotFoundError, Storage, StorageError, validate_key};
 
 /// An in-memory [`Storage`] for tests: write-once keys held in a sorted map.
@@ -32,54 +34,70 @@ impl MemoryStorage {
 }
 
 impl Storage for MemoryStorage {
-    async fn put(&self, key: &str, bytes: &[u8]) -> Result<(), StorageError> {
-        validate_key(key)?;
-        let mut objects = self.objects.lock().unwrap();
-        if objects.contains_key(key) {
-            return Err(ObjectAlreadyExistsError::new(key.to_owned()).into());
-        }
-        objects.insert(key.to_owned(), bytes.to_vec());
-        Ok(())
+    fn put(&self, key: &str, bytes: &[u8]) -> impl Future<Output = Result<(), StorageError>> {
+        let result = (|| {
+            validate_key(key)?;
+            let mut objects = self.objects.lock().unwrap();
+            if objects.contains_key(key) {
+                return Err(ObjectAlreadyExistsError::new(key.to_owned()).into());
+            }
+            objects.insert(key.to_owned(), bytes.to_vec());
+            Ok(())
+        })();
+        ready(result)
     }
 
-    async fn put_overwrite(&self, key: &str, bytes: &[u8]) -> Result<(), StorageError> {
-        validate_key(key)?;
-        self.objects
-            .lock()
-            .unwrap()
-            .insert(key.to_owned(), bytes.to_vec());
-        Ok(())
+    fn put_overwrite(
+        &self,
+        key: &str,
+        bytes: &[u8],
+    ) -> impl Future<Output = Result<(), StorageError>> + Send {
+        let result = (|| {
+            validate_key(key)?;
+            self.objects
+                .lock()
+                .unwrap()
+                .insert(key.to_owned(), bytes.to_vec());
+            Ok(())
+        })();
+        ready(result)
     }
 
-    async fn get(&self, key: &str) -> Result<Vec<u8>, StorageError> {
-        validate_key(key)?;
-        self.objects
-            .lock()
-            .unwrap()
-            .get(key)
-            .cloned()
-            .ok_or_else(|| ObjectNotFoundError::new(key.to_owned()).into())
+    fn get(&self, key: &str) -> impl Future<Output = Result<Vec<u8>, StorageError>> + Send {
+        let result = (|| {
+            validate_key(key)?;
+            self.objects
+                .lock()
+                .unwrap()
+                .get(key)
+                .cloned()
+                .ok_or_else(|| ObjectNotFoundError::new(key.to_owned()).into())
+        })();
+        ready(result)
     }
 
-    async fn list(&self, prefix: &str) -> Result<Vec<String>, StorageError> {
-        Ok(self
+    fn list(&self, prefix: &str) -> impl Future<Output = Result<Vec<String>, StorageError>> {
+        ready(Ok(self
             .objects
             .lock()
             .unwrap()
             .keys()
             .filter(|key| key.starts_with(prefix))
             .cloned()
-            .collect())
+            .collect()))
     }
 
-    async fn delete(&self, key: &str) -> Result<(), StorageError> {
-        validate_key(key)?;
-        self.objects
-            .lock()
-            .unwrap()
-            .remove(key)
-            .map(|_| ())
-            .ok_or_else(|| ObjectNotFoundError::new(key.to_owned()).into())
+    fn delete(&self, key: &str) -> impl Future<Output = Result<(), StorageError>> {
+        let result = (|| {
+            validate_key(key)?;
+            self.objects
+                .lock()
+                .unwrap()
+                .remove(key)
+                .map(|_| ())
+                .ok_or_else(|| ObjectNotFoundError::new(key.to_owned()).into())
+        })();
+        ready(result)
     }
 }
 
