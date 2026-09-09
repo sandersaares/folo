@@ -80,8 +80,8 @@ impl PlanFile {
 ///
 /// The two stages carry different guarantees about the packages a document
 /// names, so resolving one is not the same operation as resolving the other.
-/// Approval is not a third stage: the expansion a caller approves is applied
-/// byte for byte, so the reviewed document and the applied document are one.
+/// The expanded document is applied byte for byte, so presentation and
+/// application use the same recorded package/version set.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum PlanStage {
     /// A planner's input, which may name a version group or a single member of
@@ -480,10 +480,9 @@ mod tests {
 
     /// An expanded plan is rejected once its group gained a member.
     ///
-    /// The expanded document is the approved set, so reaching a package it does
+    /// The expanded document records the set, so reaching a package it does
     /// not name means the derived group moved underneath it. Applying it
-    /// would edit a package nobody reviewed and that the publication check never
-    /// saw.
+    /// would edit an unlisted package that the publication check never saw.
     #[test]
     fn an_expanded_plan_rejects_a_member_added_after_it_was_written() {
         // Names only `nm`, as an expansion written while the group held it alone.
@@ -551,7 +550,7 @@ mod tests {
     /// An expanded plan carrying a level is rejected.
     ///
     /// A level is resolved against the manifests as they stand when it is
-    /// applied, so an expanded plan carrying one would let the same approved
+    /// applied, so an expanded plan carrying one would let the same expanded
     /// document apply a version other than the reviewed one.
     #[test]
     fn an_expanded_plan_rejects_an_unresolved_increment_level() {

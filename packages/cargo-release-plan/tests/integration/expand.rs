@@ -221,13 +221,13 @@ fn a_helper_directly_targets_an_all_non_publishable_group() {
     }
 }
 
-/// A group that gains an earlier-sorting helper after approval is rejected.
+/// A group that gains an earlier-sorting helper after expansion is rejected.
 ///
-/// The expanded document is what a reviewer approved and what the publication
-/// check ran over, so `apply` must not quietly reach a package it does not name.
+/// The expanded document is what gets presented and what the publication check
+/// ran over, so `apply` must not quietly reach a package it does not name.
 /// Expansion resolves entries through the current exact dependency graph, which
 /// is where a membership change between the two commands would otherwise widen
-/// the approved set and change its derived key.
+/// the recorded set and change its derived key.
 /// Ref: docs/design.md, "Version groups".
 #[cfg_attr(miri, ignore)] // Spawns git and cargo, which Miri cannot emulate.
 #[test]
@@ -266,7 +266,7 @@ fn apply_rejects_an_expanded_plan_whose_group_gained_a_member() {
         .collect();
     assert_eq!(names, vec!["shell"]);
 
-    // An exact dependency connects an earlier-sorting helper between approval and application.
+    // An exact dependency connects an earlier-sorting helper between expansion and application.
     fixture.write(
         "packages/aaa-helper/Cargo.toml",
         r#"[package]
@@ -286,7 +286,7 @@ shell = { path = "../shell", version = "=0.1.0" }
         manifest_path: fixture.manifest(),
         verbose: false,
     })
-    .expect_err("an approved expansion cannot widen to a newly connected helper");
+    .expect_err("an expanded plan cannot widen to a newly connected helper");
     assert!(error.to_string().contains("aaa-helper"), "{error}");
 
     // Nothing was written: the rejection precedes every manifest edit.

@@ -562,7 +562,7 @@ dependencies = [
 
 [[package]]
 name = "cargo-release-plan"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "clap",
  "criterion",
@@ -3301,6 +3301,30 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "91c1b7e4904c873ef0710c1f407dde2e6287de2bebc1bbbf7d430bb7cbffd939"
 dependencies = [
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "scheduled-mutation-config"
+version = "0.0.0"
+dependencies = [
+ "ohno",
+ "serde",
+ "serde_json",
+ "testing",
+ "toml",
+]
+
+[[package]]
+name = "scheduled-run-record"
+version = "0.0.0"
+dependencies = [
+ "base64 0.23.1",
+ "jiff",
+ "ohno",
+ "serde",
+ "serde_json",
+ "sha2",
+ "testing",
 ]
 
 [[package]]

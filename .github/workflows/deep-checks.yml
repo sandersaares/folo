@@ -1,0 +1,70 @@
+name: Deep checks
+
+on:
+  workflow_call:
+    inputs:
+      source_sha:
+        required: true
+        type: string
+      controller_sha:
+        required: true
+        type: string
+      matrix:
+        required: true
+        type: string
+      manifest:
+        required: true
+        type: string
+
+permissions:
+  # Candidate builds never share the reporter's issue-write authority.
+  # Ref: .github/workflows/implementation.md#immutable-execution.
+  contents: read
+
+jobs:
+  execute:
+    # Every declared leg contributes evidence even if another leg fails.
+    # Ref: .github/workflows/implementation.md#complete-evidence-and-reuse.
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(inputs.matrix) }}
+    runs-on: ${{ matrix.platform }}
+    # Mutation work needs its execution allowance plus cold-cache setup time.
+    # Ref: .github/workflows/implementation.md#immutable-execution.
+    timeout-minutes: 270
+    steps:
+      # Setup and argument construction belong to the pinned controller, not candidate edits.
+      # The separate source checkout binds tested bytes without replacing that authority.
+      # Ref: .github/workflows/implementation.md#immutable-execution.
+      - name: Checkout immutable controller
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.controller_sha }}
+          persist-credentials: false
+      - name: Setup environment from controller
+        uses: ./.github/actions/setup-environment
+      - name: Checkout immutable candidate
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.source_sha }}
+          path: candidate
+          persist-credentials: false
+      - name: Execute declared check
+        # Execute only manifest-declared scope; raw evidence binds it to this source and attempt.
+        # Ref: .github/workflows/implementation.md#evidence-decoding.
+        shell: pwsh
+        env:
+          SCHEDULED_CHECK: ${{ toJSON(matrix) }}
+          SCHEDULED_MANIFEST: ${{ inputs.manifest }}
+        run: just scheduled-check
+      - name: Preserve result and raw replay evidence
+        # Failed setup/checks still need diagnostic evidence; the output directory is hidden.
+        # Ref: .github/workflows/implementation.md#immutable-execution.
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: scheduled-result-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.id }}
+          path: .scheduled-result
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 30

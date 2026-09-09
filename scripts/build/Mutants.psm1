@@ -13,8 +13,10 @@
 # command-line `-e` argument here (see cargo-mutants issue #527).
 
 Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+$PSNativeCommandUseErrorActionPreference = $true
 
-Import-Module (Join-Path $PSScriptRoot 'Sharding.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'Sharding.psm1')
 
 function Get-MutantsExcludeArgument {
     # Builds the ordered list of `-e <glob-or-name>` exclusion arguments for cargo-mutants, given
@@ -27,11 +29,13 @@ function Get-MutantsExcludeArgument {
     [OutputType([string[]])]
     param(
         [Parameter(Mandatory)][bool] $IsWindowsPlatform,
-        [Parameter(Mandatory)][bool] $IsLinuxPlatform
+        [Parameter(Mandatory)][bool] $IsLinuxPlatform,
+        [switch] $Literal
     )
 
+    $literalArguments = $Literal.IsPresent
     function protect([string] $value) {
-        if ($IsWindowsPlatform) {
+        if ($literalArguments -or $IsWindowsPlatform) {
             return $value
         }
         # Single-quote so PowerShell on Linux does not glob-expand the literal pattern.
@@ -161,4 +165,19 @@ function Get-MutantsShardArgument {
     return @('--shard', ('{0}/{1}' -f ($shard.Index - 1), $shard.Count))
 }
 
-Export-ModuleMember -Function Get-MutantsExcludeArgument, Get-MutantsShardArgument
+function Get-MutantsReplayArgument {
+    # Names include the source location for exact selection; incident identities deliberately do
+    # not. The discovery pass must confirm that this name still denotes the intended mutation.
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    param([Parameter(Mandatory)][hashtable] $Mutant)
+
+    if (-not $Mutant.ContainsKey('name') -or [string]::IsNullOrWhiteSpace($Mutant.name)) {
+        throw [ArgumentException]::new('A replay requires the name from cargo-mutants discovery.')
+    }
+    # Escape Rust regex metacharacters, not shell syntax. Arguments are never shell expressions.
+    $pattern = [regex]::Replace($Mutant.name, '([\\.^$|?*+()[\]{}])', '\$1')
+    return @('--re', "^$pattern`$")
+}
+
+Export-ModuleMember -Function Get-MutantsExcludeArgument, Get-MutantsShardArgument, Get-MutantsReplayArgument

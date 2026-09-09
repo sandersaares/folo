@@ -74,6 +74,25 @@ Validation:
     * `Tasks: Run Test Task`
 1. Execute `just validate-local` in terminal.
 
+# Scheduled deep validation and Local App remediation
+
+The [scheduled-validation chapter](docs/scheduled-validation.md) describes deep
+checking, durable run-level evidence intake, and retention of existing Local repair
+sessions. New repair admission is blocked until evidence-bound AI triage is supported.
+Setup is reproducible from
+`.github\prompts\setup-scheduled-remediation.prompt.md`; new entries remain
+disabled/observe-only and setup does not run repairs or change account settings.
+
+`just validate-local` always runs shallow validation.
+`just package="foo bar" validate-deep-local` always runs deep validation on the
+current platform. Neither depends on scheduling policy. PR/push workflows stay
+shallow, while scheduled workflows own recurring deep checks. With scheduled
+execution disabled there is no automatic recurring deep coverage.
+The ordinary `just test-scripts` and
+`just validate-scripts` commands cover the deterministic local helpers; native
+account, host, scheduling, reuse and consent behavior still requires an operator
+pilot. See the chapter for credential safeguards before any real repair PR.
+
 # Testing Azure functionality
 
 The `cargo-bench-history` package has an Azure Blob storage backend. Its tests are
