@@ -7,28 +7,29 @@ files a run-level **Scheduled validation failed** issue with execution evidence.
 That issue requests analysis; it is not itself a diagnosed problem or a repair task.
 Evidence remains available while the local executor is unavailable.
 
-Two project-level **Local GitHub Copilot App automations** use the selected
-personal Copilot entitlement. The **triage automation** analyzes failed runs with
-AI and creates or updates deduplicated problem issues. It does not change source or
-create repair PRs. The **repair automation** scans those triaged problems and
-continues registered repair PRs toward readiness. Its fresh coordinator never edits
-source. It creates or resumes a **repair session**: a visible Local App session
-linked to the problem issue, with its own worktree, branch and AI agent. That same
-session handles code changes, CI, base, version-plan and review work. Final approval and merge remain
-human actions.
+Hosted reporting ends at durable run-level intake. It does not diagnose shared
+root causes, assign semantic problem fingerprints, create `scheduled-finding`
+issues or invoke an AI session. The Local helper boundary rejects new repair
+admissions, including when policy mode and allowlists would otherwise permit them.
+Raw execution evidence is not source-edit authorization.
+
+AI triage and repair are separate downstream responsibilities. The consumer
+contract below describes the required handoff; it does not provide an executable
+triage automation or a way to bypass the new-admission restriction.
+Existing registered repairs retain their state and can be reconciled and continued
+in their **repair session**: a visible issue-linked Local App session with its own
+worktree, branch and AI agent. Final approval and merge remain human actions.
 
 ```text
-Actions: fixed source -> job evidence -> "Scheduled validation failed" intake
+Actions: fixed source -> complete job inventory + available checker evidence
                                                     |
-Local App triage: poll -> AI analysis of every failed job -> deduplicate
+                     "Scheduled validation failed" issue + durable evidence pages
                                                     |
-                                    actionable problem issues
+                            end of hosted intake; no automatic repair admission
+
+Existing registered repairs -> retained Local session -> human review/merge
                                                     |
-Local App repair: poll -> fenced claim -> native issue/PR session
-                                                    |
-                         reproduce -> repair -> PR -> current-head readiness
-                                                    |
-                                    human review/merge -> hosted confirmation
+                                         hosted scope confirmation
 ```
 
 This is repository-level orchestration, not a per-PR timer, cloud coding agent,
@@ -44,6 +45,10 @@ reviewed defaults live under `scripts/scheduled/`; policy is not inferred from A
 state.
 
 ## Problems and triage
+
+These are the requirements for a downstream AI triage consumer. Hosted intake
+supplies the run records and evidence pages; it does not create triage or problem
+records. Neither a manually supplied record nor a label enables new Local repairs.
 
 A **problem** is a failure that can be diagnosed and addressed independently:
 for example, a Miri defect, a missed mutation, or a dependency-download failure.
@@ -65,7 +70,9 @@ problems, but do not combine their issues.
 ### Run-level intake and AI triage
 
 The hosted completion reporter publishes the run's identity, attempts, source,
-manifest, job/step inventory, structured results and diagnostic references. Its
+available manifest, complete API job/step inventory, parsed results and diagnostic
+references. It inventories jobs before parsing checker artifacts, so planning,
+checkout, setup and download failures remain visible even without a result file. Its
 run-level issue is deduplicated by repository, workflow and run identity. Repeated
 reporting of identical attempt evidence is a no-op; a rerun appends evidence and makes any
 new unprocessed failure eligible for triage. Consecutive failing runs can have
@@ -117,13 +124,24 @@ file or the AI's conversation:
 
 | Record | Writer and location | Contents |
 |---|---|---|
-| Run record | Hosted reporter, in the body of the run-level `scheduled-run-failure` issue. | Run/attempt identity, source/check identity, failed jobs and steps, diagnostic summaries, log/artifact links, evidence gaps and evidence digests. |
+| Run record | Hosted reporter: compact identity/checkpoint in the run-level `scheduled-run-failure` issue body; complete revisions reconstructed from its evidence comments. | The body shows counts and an evidence link without an unbounded history list. The publication checkpoint binds all complete revision identities and their comment references. |
+| Run evidence | Hosted reporter, in deterministically paginated comments on the same run-level issue. | Source/check identity, available manifest/results, every job and step, bounded diagnostic excerpts and original log/artifact references, and explicit evidence gaps. Page metadata binds the run, attempt, digest and page order. |
 | Triage record | Local triage automation, in one dedicated automation-owned comment on that same run-level issue. | Analysis status for each exact run ID, attempt number and evidence digest, plus each failed job's problem-issue links or explanation of a blocked/cancelled consequence. |
 | Problem record | Local triage automation, in the body of each canonical `scheduled-finding` issue. | Diagnosis, supporting evidence, affected scope and whether automated repair may proceed or needs human action. |
 
 Each writer updates its own record without replacing human discussion or another
 writer's data. The triage comment starts with `[Copilot speaking]`; updates reuse
 that comment rather than posting another status comment each poll.
+
+Hosted publication first establishes the run issue, then reconciles all evidence
+pages, and finally updates the run index with the confirmed page references.
+An interrupted publication leaves recoverable identity, not a claim that missing
+pages were persisted. Identical run/attempt/digest/page identities are reused after
+lost responses. Body/comment limits cause pagination, not dropped jobs or results.
+Captured logs are bounded and explicitly marked when truncated; the original
+Actions log remains linked. Expired or inaccessible evidence is recorded as a gap.
+The body checkpoint is compared with reconstructed comments before publication;
+deleted committed pages cannot silently disappear from the indexed history.
 
 Before marking an analysis complete, the triager must finish creating any new
 problem issues and updating matched problem issues with the evidence, diagnosis
@@ -148,12 +166,13 @@ The run-level issue receives `scheduled-triaged` and is closed when every failed
 attempt/evidence revision in its run record has a matching `complete` entry in its
 triage record. Closing that issue does not resolve its linked problems.
 
-To find unfinished analysis, every triage poll paginates the configured repository's
+To find unfinished analysis, a triage consumer must paginate the configured repository's
 issues API with `state=all` and `labels=scheduled-run-failure`, with no creation-date
 filter. It also fetches run-level issue IDs retained in local triage claims, so a
 removed label cannot abandon owned work. For each selected issue, it reads the run
-record from the body and the triage record from the automation-owned comment,
-paginating comments as needed, and compares attempt numbers and evidence digests.
+record from the body, validate/reassemble its referenced evidence pages, and read
+the triage record from its separately owned comment. It paginates comments as needed
+and compares attempt numbers and evidence digests.
 This query includes open and closed *run-level issues*, not every issue in the
 repository and not the `scheduled-finding` problem-discovery query described below.
 Missing or incomplete triage entries require analysis regardless of the issue's
@@ -294,10 +313,10 @@ using my selected personal GitHub Copilot account and a Local environment.
 Reconcile existing setup; do not run the automation or reset repair state.
 ```
 
-The [setup prompt](../.github/prompts/setup-scheduled-remediation.prompt.md) owns
-reconciliation of the canonical project, actual Local host and the separately
-identified triage and repair entries. It preserves operator choices and existing
-triage and repair ownership. Triage has its own AI instructions and run queue; the
+The [setup prompt](../.github/prompts/setup-scheduled-remediation.prompt.md) preserves
+the canonical project, actual Local host, existing repair entry and operator choices.
+It does not install or activate an AI triage role, and it cannot enable new repair
+admissions. The
 [intake skill](../.github/skills/scheduled-intake/SKILL.md) and
 [repair skill](../.github/skills/scheduled-repair/SKILL.md) own repair admission and
 repair-session continuation, not failed-run triage.
@@ -305,32 +324,28 @@ No repository configuration file is needed merely to install these automations.
 Do not put cron in `.github/github-app.yml`, use `auto_issue_session` as a poller or
 attach heavyweight `session.create` scripts to empty polling sessions.
 
-Each automation has a separately reviewed cron, model, mode, budget and installed
-identity. Both poll every three hours; repair retains cron `17 */3 * * *`.
-An offset for triage is a scheduling preference, not a dependency on its completing
-before repair starts. A problem becomes eligible when triage commits its result,
-and the next repair poll can consume it. The handoff can therefore add another
-polling interval, plus analysis, queue and machine-availability delay.
+The existing repair entry retains its reviewed cron, model, mode, budget and
+installed identity. Its cron is `17 */3 * * *`; it can inspect retained work but
+cannot admit a new repair. A downstream triage role requires its own supported
+implementation and operator authorization, not merely another timer.
 
 Native custom cron uses `interval: manual` plus `cron_expression`. Verify timezone
-and next-run preview for both entries in the installed App. Real `host_id`, project
+and next-run preview for any installed entry in the App. Real `host_id`, project
 and automation identifiers are installation data, not portable constants.
 New entries are disabled and observe-only.
 Reapplication never enables a paused entry, runs a poll, changes billing identity,
 resets a counter or discards a session. Renamed managed entries are matched by
 verified marker and repository identity; a cached ID or matching name is not proof
-of ownership. Role-specific markers distinguish the intended triage and repair
-entries from accidental duplicates. Ambiguous duplicates and unavailable native metadata require operator
+of ownership. Markers distinguish owned entries from accidental duplicates. Ambiguous duplicates and unavailable native metadata require operator
 reconciliation through supported App controls.
 
 Repair allowlists are empty by default. Enrollment, approved scope, publication
-safeguards, verified native capabilities and explicit mode authorization are required
-before admissions. Policy constrains starts, active repair sessions and continuations.
+safeguards and mode settings do not substitute for implemented AI triage and
+evidence-bound admission. New reservations remain rejected. Policy constrains
+retained repair sessions and continuations.
 Continuations have daily and lifetime-per-attempt limits; consumed reservations
-remain charged even if delivery fails. Triage separately limits analyses and
-continuations so repeated run failures cannot consume an unbounded personal budget.
-These are **admission limits, not hard token or spending caps**. The triage model
-must support substantive log/source analysis. The repair coordinator can use a
+remain charged even if delivery fails. These are **admission limits, not hard token
+or spending caps**. The repair coordinator can use a
 cheaper orchestration model and select a separate repair model. Empty polls in
 either automation are not free.
 
@@ -434,6 +449,14 @@ source-run and issue identity.
 
 ### Repair admission
 
+New repair reservation is unavailable at this boundary. The inbox reports the
+missing AI triage capability and `reserve-attempt` rejects the operation even if
+policy is set to repair mode with broad allowlists. It preserves registered work,
+consumed budgets and existing sessions; it does not reset state or fabricate a
+completed triage record.
+
+The downstream admission requirement is:
+
 The repair backlog is the complete set of open `scheduled-finding` issues whose
 problem record permits source repair for the current occurrence and identifies
 the required scope. The problem record must link to reporter-supplied evidence
@@ -444,11 +467,11 @@ session/PR ownership are then applied to decide which backlog item may start.
 Registered repairs are reconciled separately even if their issue closes or a label
 is removed; these changes cannot free a still-owned session.
 
-The repair admission protocol is:
+For already-reserved attempts, the ownership protocol remains:
 
-1. Acquire the coordinator token and scan the complete repair backlog defined above.
+1. Acquire the coordinator token and reconcile registered attempts.
 2. Reconcile recorded attempts against native sessions and GitHub PRs before selecting new work.
-3. Reserve one attempt and charge its admission under the lock.
+3. Keep the recorded attempt and its consumed admission; never replace it with a new reservation.
 4. Persist `opening-session` before native `open_issue_session` with a model-selected, strictly inert interactive bootstrap.
 5. Verify the returned session's issue/repository and ownership, then register its actual session and generated branch/head before permitting any side effect.
 6. Persist `dispatching`, then enqueue the actual autopilot repair instruction after the bootstrap. The repair session accepts its token and records native branch adoption before editing.
@@ -514,7 +537,7 @@ The example identities and path are placeholders, not enrollment defaults.
 | `acquire-coordinator` | `owner_session_id`; returns current `coordinator.token`. |
 | `release-coordinator` | `coordinator_token`. |
 | `record-scan` | `coordinator_token`, `successful`, `backlog_count`, `oldest_eligible_at`, `blocked_conditions`. Failed scans do not advance successful-scan health. |
-| `reserve-attempt` | `coordinator_token` and a validated problem descriptor binding issue, finding identity, generation, completed triage revision, hosted evidence and the entire required repair scope. |
+| `reserve-attempt` | Unavailable: rejects new reservations until evidence-bound AI triage admission is supported. Policy/profile changes do not bypass this boundary. |
 | `begin-session-open` | `coordinator_token`, `attempt_id`. |
 | `register-session` | `coordinator_token`, `attempt_id`, `session_id`, `issue_number`, `ownership_verified`, `branch`, `head_sha`. |
 | `register-branch` | Worker identity plus `expected_branch`, actual managed `branch`, unchanged `head_sha`; follows registration/acceptance and precedes source edits. |
@@ -691,6 +714,17 @@ gh run rerun <REPORT_RUN_ID> --repo folo-rs/folo
 run's ID. Rerun the reporting workflow itself, preserving its original source-run
 association. Do not rerun heavy validation checks, dispatch a fresh validation
 workflow or create a source commit merely to recover reporting.
+
+The reporter persists a per-run `publication-<repository-id>-<workflow-id>-<run-id>.json`
+journal in its uploaded report artifact before external writes. A rerun on a fresh
+runner restores that journal from the previous attempt's validated artifact before
+publication. Pending issue/page writes are reconciled against GitHub rather than
+blindly repeated. Missing recovery artifacts or an unresolved write with no visible
+result block the rerun and require operator reconciliation; deleting the journal
+is not a retry mechanism.
+An incomplete report can have partial side effects: `writes_authorized` records
+whether writes were permitted, while `applied` becomes true only when reconciliation
+finishes. The journal and actual GitHub state determine recovery, not `applied: false`.
 
 Confirm that the new attempt completes successfully and that its expected
 run-intake/coverage updates and reporting health are reconciled. Until then, retain

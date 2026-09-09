@@ -1,7 +1,7 @@
 #Requires -Modules @{ ModuleName = 'Pester'; ModuleVersion = '5.0' }
-# Protects the admission-scan contract: reporter-authored, held or already-owned incidents must be
-# deferred with an explicit reason rather than silently skipped or wrongly admitted, and a scan
-# with any rejected/malformed evidence must surface as a blocked condition rather than a clean run.
+# Protects the hosted-evidence-only boundary: no policy enables unimplemented AI triage or new
+# repairs. Legacy records remain readable for reconciliation, registered work and coverage stay
+# visible, and raw run evidence or malformed input cannot masquerade as repair authorization.
 BeforeAll {
     Import-Module (Join-Path $PSScriptRoot 'LocalInbox.psm1') -Force
     Import-Module (Join-Path $PSScriptRoot 'ScheduledContracts.psm1') -Force
@@ -23,23 +23,44 @@ BeforeAll {
         }
     }
 }
-Describe 'Full-backlog deterministic selection' {
+Describe 'Fail-closed repair capability and retained work' {
     BeforeEach {
         $policy = Get-ScheduledPolicy
         $policy.local.allowed_packages = @('cpulist')
         $policy.local.allowed_checks = @('mutants', 'miri')
         $script:state = @{ attempts = @{}; mode = 'observe'; executor_id = 'machine'; profile = $null }
     }
-    It 'retains old unresolved incidents and prioritizes correctness then age' {
+    It 'defers the entire historical backlog instead of advertising repair-ready evidence' {
         $result = Get-ScheduledInboxDecision -Policy $policy -State $state -Now '2026-09-08T12:00:00Z' `
             -Incidents @((Get-TestIncident 3 mutants '2026-09-01T00:00:00Z'),
                 (Get-TestIncident 1 mutants), (Get-TestIncident 2 miri))
-        $result.eligible.issue_number | Should -Be @(2, 1, 3)
-        $result.eligible[0].check_id | Should -Be miri-ubuntu-latest-1
-        $result.eligible[1].check_id | Should -Be mutants-ubuntu-latest-1
-        $result.eligible[1].check_kind | Should -Be mutants
-        $result.oldest_eligible_at | Should -Be '2026-08-01T00:00:00Z'
+        $result.eligible.Count | Should -Be 0
+        $result.deferred.issue_number | Should -Be @(3, 1, 2)
+        @($result.deferred | Where-Object reason -CEQ ai-triage-unavailable).Count | Should -Be 3
+        $result.oldest_eligible_at | Should -BeNullOrEmpty
+        $result.blocked_conditions | Should -Contain ai-triage-unavailable
         $result.blocked_conditions | Should -Contain observe
+    }
+    It 'does not enable admission through rollout assertions mode or complete allowlists' {
+        $policy.local.mode = 'repair'
+        $policy.local.enrolled_machine_id = $state.executor_id
+        $policy.local.allowed_checks = @('mutants', 'miri', 'miri-many', 'careful')
+        $policy.rollout.hosted_execution_enabled = $true
+        $policy.rollout.reporting_enabled = $true
+        foreach ($key in @($policy.rollout.prerequisites.Keys)) {
+            $policy.rollout.prerequisites[$key] = $true
+        }
+        $policy.rollout.prerequisites.ai_triage = $true
+        $policy.local.ai_triage_available = $true
+        $state.mode = 'repair'
+        $state.profile = @{ enabled = $true }
+        $incidents = @($policy.local.allowed_checks | ForEach-Object { Get-TestIncident 1 $_ })
+        foreach ($inputQueue in @(@{ incidents = $incidents }, @{ incidents = @() })) {
+            $result = Get-ScheduledInboxDecision -Policy $policy -State $state `
+                -Now '2026-09-08T12:00:00Z' -Incidents $inputQueue.incidents
+            $result.eligible.Count | Should -Be 0
+            $result.blocked_conditions | Should -Be @('ai-triage-unavailable')
+        }
     }
     It 'keeps ownership holds unsupported scope and dispositions out of fresh starts' {
         $held = Get-TestIncident 1; $held.held = $true
@@ -54,7 +75,7 @@ Describe 'Full-backlog deterministic selection' {
         $result.deferred.reason | Should -Contain outside-approved-scope
         $result.deferred.reason | Should -Contain reporter-disposition
     }
-    It 'uses the explicit family while preserving a package-specific many-seed catalog ID' {
+    It 'retains historical replay identity without converting it into completed triage' {
         $incident = Get-TestIncident 4 miri-many
         $incident.check_id = 'miri-many-events_once-2'
         $incident.package = 'events_once'
@@ -62,32 +83,53 @@ Describe 'Full-backlog deterministic selection' {
         $policy.local.allowed_checks += 'miri-many'
         $result = Get-ScheduledInboxDecision -Policy $policy -State $state -Now '2026-09-08T12:00:00Z' `
             -Incidents @($incident)
-        $result.eligible.Count | Should -Be 1
-        $result.eligible[0].check_id | Should -Be miri-many-events_once-2
-        $result.eligible[0].check_kind | Should -Be miri-many
-        $result.eligible[0].priority | Should -Be 0
+        $result.eligible.Count | Should -Be 0
+        $result.deferred.reason | Should -Be ai-triage-unavailable
+        $incident.check_id | Should -Be miri-many-events_once-2
+        $incident.check_kind | Should -Be miri-many
+        $incident.ContainsKey('triage') | Should -BeFalse
     }
     It 'returns registered PR attempts even when their issue is absent from the open queue' {
         $state.attempts.a = @{ issue_number = 9; attempt_id = 'a'; phase = 'pr-open'
             pr_number = 10; started_at = '2026-09-01T00:00:00Z' }
         $result = Get-ScheduledInboxDecision -Policy $policy -State $state -Now '2026-09-08T12:00:00Z' -Incidents @()
         $result.registered_attempts.pr_number | Should -Be 10
+        $result.blocked_conditions | Should -Contain ai-triage-unavailable
         $result.blocked_conditions | Should -Contain active-worker-limit
     }
-    It 'admits a validated newer generation after resolution but not a duplicate or active overlap' {
+    It 'retains all registered phases even when the issue queue is empty' {
+        $phases = @('reserved', 'opening-session', 'session-registered', 'dispatching', 'working',
+            'publishing', 'pr-open', 'awaiting-review', 'blocked', 'verifying-main', 'resolved', 'closed-unmerged')
+        foreach ($phase in $phases) {
+            $state.attempts[$phase] = @{ attempt_id = $phase; phase = $phase
+                started_at = '2026-09-08T00:00:00Z'; session_id = "session-$phase"; pr_number = 10
+                branch = "retained-$phase"; continuations = @(@{ evidence_key = 'consumed' }) }
+        }
+        $before = Get-ScheduledDigest $state
+        $result = Get-ScheduledInboxDecision -Policy $policy -State $state `
+            -Now '2026-09-08T12:00:00Z' -Incidents @()
+        $result.registered_attempts.Count | Should -Be $phases.Count
+        foreach ($attempt in $result.registered_attempts) {
+            (Get-ScheduledDigest $attempt) | Should -Be (Get-ScheduledDigest $state.attempts[$attempt.attempt_id])
+        }
+        (Get-ScheduledDigest $state) | Should -Be $before
+        $result.blocked_conditions | Should -Contain start-budget
+    }
+    It 'does not admit recurrence and still identifies duplicate or overlapping ownership' {
         $incident = Get-TestIncident 1
         $incident.generation = 2
         $state.attempts.old = @{ issue_number = 1; finding_id = $incident.finding_id
             generation = 1; attempt_id = 'old'; phase = 'resolved'; started_at = '2026-08-01T00:00:00Z' }
         $result = Get-ScheduledInboxDecision -Policy $policy -State $state -Now '2026-09-08T12:00:00Z' `
             -Incidents @($incident)
-        $result.eligible.Count | Should -Be 1
+        $result.eligible.Count | Should -Be 0
+        $result.deferred.reason | Should -Be ai-triage-unavailable
         $state.attempts.old.phase = 'pr-open'
         (Get-ScheduledInboxDecision -Policy $policy -State $state -Now '2026-09-08T12:00:00Z' `
-            -Incidents @($incident)).eligible.Count | Should -Be 0
+            -Incidents @($incident)).deferred.reason | Should -Be reconcile-owned-work
         $state.attempts.old.phase = 'closed-unmerged'; $incident.generation = 1
         (Get-ScheduledInboxDecision -Policy $policy -State $state -Now '2026-09-08T12:00:00Z' `
-            -Incidents @($incident)).eligible.Count | Should -Be 0
+            -Incidents @($incident)).deferred.reason | Should -Be reconcile-owned-work
     }
 }
 Describe 'GitHub pagination and validated intake' {
@@ -115,8 +157,12 @@ Describe 'GitHub pagination and validated intake' {
     It 'validates originating run provenance while excluding PRs and exposing invalid records' {
         $record = Get-TestIncident 1
         $body = Write-ScheduledRecord -Record $record -Kind reporter
-        InModuleScope LocalInbox -Parameters @{ Body = $body; FixtureRoot = (Join-Path $TestDrive 'state') } {
+        $runBody = Write-ScheduledRecord -Record @{ schema_version = 1 } -Kind run
+        InModuleScope LocalInbox -Parameters @{
+            Body = $body; RunBody = $runBody; FixtureRoot = (Join-Path $TestDrive 'state')
+        } {
             $script:testBody = $Body
+            $script:runBody = $RunBody
             $script:fixtureRoot = $FixtureRoot
             Mock Get-ScheduledStateRoot { throw 'The fixture must supply its isolated state root.' }
             Mock Invoke-ScheduledLocalAction {
@@ -132,6 +178,9 @@ Describe 'GitHub pagination and validated intake' {
                     @{ number = 2; body = 'untrusted'; user = @{ login = 'human' }
                         created_at = '2026-08-01T00:00:00Z'; labels = @() }
                     @{ number = 3; pull_request = @{ url = 'ignored' } }
+                    @{ number = 4; body = $script:runBody; user = @{ login = 'github-actions[bot]' }
+                        created_at = '2026-08-01T00:00:00Z'
+                        labels = @(@{ name = 'scheduled-finding' }, @{ name = 'scheduled-run-failure' }) }
                 )
             }
             Mock Invoke-ScheduledApi {
@@ -151,8 +200,11 @@ Describe 'GitHub pagination and validated intake' {
             }
             $result = Invoke-ScheduledInbox -ExecutorId machine -Now '2026-09-08T12:00:00Z' `
                 -StateRoot $script:fixtureRoot
-            $result.rejected.Count | Should -Be 1 -Because ($result.rejected | ConvertTo-Json -Compress)
+            $result.rejected.Count | Should -Be 2 -Because ($result.rejected | ConvertTo-Json -Compress)
+            $result.rejected.reason | Should -Contain run-evidence-not-repair-authorization
             $result.deferred.issue_number | Should -Be 1
+            $result.eligible.Count | Should -Be 0
+            $result.blocked_conditions | Should -Contain ai-triage-unavailable
             $result.blocked_conditions | Should -Contain hosted-staged
             $result.blocked_conditions | Should -Contain missing-or-invalid-evidence
             Should -Invoke Invoke-ScheduledApi -Exactly 1 -ParameterFilter {
@@ -161,9 +213,52 @@ Describe 'GitHub pagination and validated intake' {
             Should -Invoke Invoke-ScheduledLocalAction -Exactly 1 -ParameterFilter {
                 $StateRoot -ceq $script:fixtureRoot
             }
+            Should -Invoke Get-ScheduledApiCollection -Exactly 0 -ParameterFilter {
+                $Endpoint -like '*/issues/4/comments?*'
+            }
             Mock ConvertTo-ScheduledIncident { throw [InvalidOperationException]::new('Controller failure') }
             { Invoke-ScheduledInbox -ExecutorId machine -Now '2026-09-08T12:00:00Z' `
                 -StateRoot $script:fixtureRoot } | Should -Throw
+        }
+    }
+    It 'preserves hosted coverage health independently of unavailable repair admission' {
+        $policyPath = Join-Path $TestDrive 'coverage-policy.json'
+        $policy = Get-ScheduledPolicy
+        $policy.rollout.hosted_execution_enabled = $true
+        $policy | ConvertTo-Json -Depth 40 | Set-Content -LiteralPath $policyPath
+        InModuleScope LocalInbox -Parameters @{
+            FixtureRoot = (Join-Path $TestDrive 'state'); PolicyPath = $policyPath
+        } {
+            Mock Invoke-ScheduledLocalAction {
+                return @{ attempts = @{}; mode = 'observe'; executor_id = 'machine'; profile = $null }
+            }
+            Mock Get-ScheduledApiCollection {
+                param($Endpoint)
+                if ($Endpoint.Contains('labels=scheduled-coverage')) {
+                    return ,@(@{ number = 5; user = @{ login = 'github-actions[bot]' }; body = (
+                        Write-ScheduledRecord -Kind coverage -Record @{
+                            schema_version = 1; repository = 'folo-rs/folo'; repository_id = 850321188
+                            last_plan = @{ planned_at = '2026-09-08T11:00:00Z'; source_sha = ('a' * 40) }
+                        }) })
+                }
+                return ,@()
+            }
+            Mock Invoke-ScheduledApi {
+                param($Endpoint)
+                switch -Wildcard ($Endpoint) {
+                    'user' { return @{ login = 'sandersaares' } }
+                    'repos/folo-rs/folo' { return @{ id = 850321188; full_name = 'folo-rs/folo' } }
+                    '*/workflows/scheduled-validation.yml' { return @{ state = 'active' } }
+                    default { throw "Unexpected endpoint: $Endpoint" }
+                }
+            }
+            $result = Invoke-ScheduledInbox -ExecutorId machine -Now '2026-09-08T12:00:00Z' `
+                -StateRoot $FixtureRoot -PolicyPath $PolicyPath
+            $result.successful_scan | Should -BeTrue
+            $result.hosted_schedule_enabled | Should -BeTrue
+            [DateTimeOffset]$result.last_hosted_plan.planned_at | Should -Be ([DateTimeOffset]'2026-09-08T11:00:00Z')
+            $result.blocked_conditions | Should -Contain ai-triage-unavailable
+            @($result.blocked_conditions | Where-Object { $_.StartsWith('hosted-') }).Count | Should -Be 0
         }
     }
     It 'fails explicitly on authentication and never records successful scan output' {

@@ -77,8 +77,9 @@ Validation:
 # Scheduled deep validation and Local App remediation
 
 The [scheduled-validation chapter](docs/scheduled-validation.md) describes deep
-checking and the personal-account Local App automations for AI triage and
-repair PR readiness. Setup is reproducible from
+checking, durable run-level evidence intake, and retention of existing Local repair
+sessions. New repair admission is blocked until evidence-bound AI triage is supported.
+Setup is reproducible from
 `.github\prompts\setup-scheduled-remediation.prompt.md`; new entries remain
 disabled/observe-only and setup does not run repairs or change account settings.
 

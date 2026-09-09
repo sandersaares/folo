@@ -9,6 +9,7 @@ $PSNativeCommandUseErrorActionPreference = $true
 
 BeforeAll {
     Import-Module (Join-Path $PSScriptRoot 'ScheduledExecution.psm1') -Force
+    Import-Module (Join-Path $PSScriptRoot 'ScheduledContracts.psm1')
     $script:fixtures = Join-Path $PSScriptRoot 'fixtures\execution'
     # Keep all test-created files inside the worktree, not a machine temporary directory.
     $script:work = Join-Path $PSScriptRoot ".execution-tests-$([guid]::NewGuid().ToString('N'))"
@@ -1084,14 +1085,13 @@ Describe 'Cargo test target scope' {
     }
 
     It 'keeps identically named failures in distinct binaries separate through reporter fingerprints and replay' {
-        Import-Module (Join-Path $PSScriptRoot 'ScheduledReport.psm1')
         $check = New-Check 'miri'
         $check.packages = @()
         $path = New-TargetEvidence $check
         $result = Get-ScheduledCheckResult $check $path $script:context
         $result.outcome | Should -Be 'findings'
         $result.findings.Count | Should -Be 4
-        $ids = @($result.findings | ForEach-Object { Get-ScheduledFindingId -Repository 'folo-rs/folo' -Identity $_.identity })
+        $ids = @($result.findings | ForEach-Object { Get-ScheduledDigest $_.identity })
         @($ids | Select-Object -Unique).Count | Should -Be 4
         foreach ($finding in $result.findings) {
             $finding.replay.test_filter | Should -Be ''
@@ -1113,7 +1113,6 @@ Describe 'Cargo test target scope' {
     }
 
     It 'distinguishes targets with the same target name and source file but a different kind' {
-        Import-Module (Join-Path $PSScriptRoot 'ScheduledReport.psm1')
         $check = New-Check 'miri'
         $path = New-TargetEvidence $check
         $metadataPath = Join-Path $path 'metadata.stdout'
@@ -1130,8 +1129,8 @@ Describe 'Cargo test target scope' {
         Write-Json $execution $executionPath
         $result = Get-ScheduledCheckResult $check $path $script:context
         $result.outcome | Should -Be 'findings'
-        $binaryId = Get-ScheduledFindingId -Repository 'folo-rs/folo' -Identity $result.findings[0].identity
-        $libraryId = Get-ScheduledFindingId -Repository 'folo-rs/folo' -Identity $result.findings[1].identity
+        $binaryId = Get-ScheduledDigest $result.findings[0].identity
+        $libraryId = Get-ScheduledDigest $result.findings[1].identity
         $binaryId | Should -Not -Be $libraryId
         $result.findings[0].replay.target.kind | Should -Be 'bin'
         $result.findings[1].replay.target.kind | Should -Be 'lib'

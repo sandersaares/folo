@@ -161,42 +161,12 @@ function Invoke-LocalStateChange {
             }
         }
         'reserve-attempt' {
-            Assert-LocalCoordinator $State $Data $Now
-            Assert-LocalAdmission $State $Policy
-            Assert-LocalField $Data @('issue_number', 'finding_id', 'generation', 'check_contract_digest',
-                'check_id', 'check_kind', 'package', 'evidence_key')
-            if ($Data.check_kind -cnotin $Policy.local.allowed_checks -or
-                $Data.package -cnotin $Policy.local.allowed_packages) { throw 'Incident is outside approved scope.' }
-            $attempts = @($State.attempts.Values)
-            $active = @($attempts | Where-Object { $_.phase -cnotin @('resolved', 'closed-unmerged') })
-            if ($active.Count -ge $Policy.local.max_active_workers) { throw 'Active worker limit reached.' }
-            # Never replace a closed PR or restart an incident just because a session is idle.
-            if (@($attempts | Where-Object {
-                $_.issue_number -eq $Data.issue_number -and $_.generation -eq $Data.generation
-            }).Count -gt 0) { throw 'Incident already has an attempt; reconcile its native session.' }
-            $starts = @($attempts | Where-Object {
-                ([DateTimeOffset]$_.started_at).UtcDateTime.Date -eq $day
-            })
-            $incidentAttempts = @($attempts | Where-Object {
-                $_.finding_id -ceq $Data.finding_id -and $_.generation -eq $Data.generation
-            })
-            if ($starts.Count -ge $Policy.local.max_starts_per_day -or
-                $incidentAttempts.Count -ge $Policy.local.max_attempts_per_incident) {
-                throw 'Attempt admission budget exhausted.'
-            }
-            $id = [guid]::NewGuid().ToString()
-            $State.attempts[$id] = @{
-                attempt_id = $id; issue_number = $Data.issue_number; finding_id = $Data.finding_id
-                generation = $Data.generation; check_contract_digest = $Data.check_contract_digest
-                check_id = $Data.check_id; check_kind = $Data.check_kind
-                started_at = $stamp; session_id = $null; branch = $null; head_sha = $null
-                pr_number = $null; phase = 'reserved'; reason = $null; continuations = @()
-                handled_evidence = @(); evidence_key = $Data.evidence_key; version_evidence = $null
-                proposed_responses = @()
-                explanation = $null
-                dispatch = @{ token = [guid]::NewGuid().ToString(); status = 'reserved' }
-            }
-            $State.health.last_admission = $stamp
+            # Completed AI triage is not an executable capability. Neither rollout assertions
+            # nor reporter/run records can authorize new repair ownership. Keep this boundary
+            # separate from continuation gates so persisted work and consumed budgets survive.
+            # ../../docs/scheduled-validation.md#purpose-and-responsibility.
+            throw [NotSupportedException]::new(
+                'ai-triage-unavailable: new repair reservation is unsupported; reconcile registered attempts.')
         }
         'begin-session-open' {
             Assert-LocalCoordinator $State $Data $Now

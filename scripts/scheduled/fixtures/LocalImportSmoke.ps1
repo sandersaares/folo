@@ -37,7 +37,8 @@ foreach ($dependency in @('LocalState', 'LocalLifecycle')) {
     }
 }
 $snapshot = Invoke-ScheduledInbox -ExecutorId smoke -Now '2026-09-08T00:00:00Z'
-if (-not $snapshot.successful_scan -or $snapshot.backlog_count -ne 0) {
-    throw 'The fresh-process empty inbox did not complete.'
+if (-not $snapshot.successful_scan -or $snapshot.backlog_count -ne 0 -or
+    $snapshot.blocked_conditions -cnotcontains 'ai-triage-unavailable') {
+    throw 'The fresh-process empty inbox must expose unsupported AI triage.'
 }
 Write-Output 'local-import-smoke-ok'

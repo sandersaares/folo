@@ -1,6 +1,6 @@
 ---
 name: scheduled-repair
-description: Repair a validated scheduled finding and bring its single registered PR to readiness in the same native Local App session, including bounded CI, main, version-plan and review continuation.
+description: Continue an existing registered scheduled repair to PR readiness in its native Local App session, including bounded CI, main, version-plan and review work. New repair admission is unavailable.
 ---
 
 # Scope
@@ -10,6 +10,16 @@ attempt, native issue session, managed branch and PR. Native continuation in thi
 session is authorized by the repository automation. Final approval and merge are
 human actions. Do not create per-PR timers, background replacement agents, cloud
 sessions or another repair PR.
+
+The supported phase is **hosted evidence intake plus retained repair continuation**,
+not a working AI triage/repair automation pair. A new repair cannot be reserved:
+the executable boundary returns `ai-triage-unavailable` regardless of policy
+mode, allowlists or assertions. Do not reserve an attempt, fabricate completed
+triage, create/enable a Local automation or initialize missing ownership.
+Run-level `scheduled-run-failure` issues (`scheduled-run:v1` plus paginated
+evidence comments) are diagnostic intake, not repair authorization. Historical
+`scheduled-finding`/`scheduled-reporter:v1` records remain readable for existing
+attempts; they are not automatically converted into triaged problems.
 
 Read `docs\scheduled-validation.md`, repository/package instructions, the validated
 descriptor and current durable state. Follow `docs\testing.md` for every mutation
@@ -55,8 +65,11 @@ next action; never blindly repeat a publication or reset ownership.
 # Stage 1: Accept the native dispatch
 
 Verify current native session ID, issue association, actual branch/head and
-attempt. Accept `dispatch_token` with `accept-dispatch` before editing. An initial
-model-selected bootstrap must be entirely inert: no commands, branch/file changes,
+already persisted attempt. If that attempt or its registered session is missing,
+stop with `ai-triage-unavailable` or the specific ownership-reconciliation blocker;
+never turn the incoming issue into a new repair. Accept `dispatch_token` with
+`accept-dispatch` before editing. When recovering a previously admitted attempt,
+its initial model-selected bootstrap must be entirely inert: no commands, branch/file changes,
 diagnosis or publication until the separately enqueued registered instruction.
 After accepting the real first dispatch, use native `rename_branch` with
 `scheduled-repair-<attempt-slug>` and `register-branch` to adopt its actual

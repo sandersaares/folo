@@ -3314,6 +3314,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "scheduled-run-record"
+version = "0.0.0"
+dependencies = [
+ "base64 0.23.1",
+ "jiff",
+ "ohno",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "scoped-tls"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

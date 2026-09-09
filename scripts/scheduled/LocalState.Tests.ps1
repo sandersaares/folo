@@ -2,10 +2,12 @@
 # Protects the durable transaction protocol itself: enrollment identity must never transfer
 # implicitly, a corrupt or missing state.json must never be reinterpreted as a fresh install, and
 # every write must go through the lock/read/mutate/revision-bump/atomic-replace sequence so a
-# concurrent or interrupted transaction can never lose or duplicate an admission decision.
+# concurrent or interrupted transaction can never lose ownership or consumed budgets. Persisted
+# legacy fixtures protect continuation without enabling unsupported new repair reservation.
 BeforeAll {
     Import-Module (Join-Path $PSScriptRoot 'LocalState.psm1') -Force
     Import-Module (Join-Path $PSScriptRoot 'ScheduledContracts.psm1') -Force
+    Import-Module (Join-Path $PSScriptRoot 'fixtures' 'LocalLegacyState.psm1') -Force
 
     function Invoke-TestAction {
         param([string] $Action, [hashtable] $Data = @{})
@@ -27,21 +29,20 @@ BeforeAll {
     }
     function Invoke-TestReservation {
         param([int] $Issue = 1, [string] $Finding = ('f' * 64), [int] $Generation = 1)
-        $state = Invoke-TestAction reserve-attempt @{
+        Invoke-TestAction reserve-attempt @{
             coordinator_token = $script:coordinator; issue_number = $Issue
             finding_id = $Finding; generation = $Generation; check_contract_digest = ('c' * 64)
             package = 'cpulist'; check_id = 'mutants-ubuntu-latest-1'; check_kind = 'mutants'
             evidence_key = 'initial-evidence'
         }
-        $attempt = @($state.attempts.Values | Where-Object {
-            $_.issue_number -eq $Issue -and $_.generation -eq $Generation
-        })[0]
+    }
+    function Add-TestReservationFixture {
+        $attempt = Add-TestLegacyAttempt -StateRoot $script:root -StartedAt $script:now
         $script:attemptId = $attempt.attempt_id
         $script:dispatch = $attempt.dispatch.token
-        return $attempt
     }
     function Invoke-TestWorkerSetup {
-        $null = Invoke-TestReservation
+        Add-TestReservationFixture
         $null = Invoke-TestAction begin-session-open @{
             coordinator_token = $script:coordinator; attempt_id = $script:attemptId
         }
@@ -105,7 +106,7 @@ Describe 'Durable local transactions' {
     }
     It 'rejects corrupt state without resetting admission history' {
         Initialize-TestExecutor
-        $null = Invoke-TestReservation
+        Add-TestReservationFixture
         Set-Content -LiteralPath (Join-Path $script:root 'state.json') -Value '{"schema_version":1}'
         { Invoke-TestAction read } | Should -Throw
         { Invoke-TestAction initialize @{ operator_approved = $true } } | Should -Throw
@@ -130,7 +131,7 @@ Describe 'Durable local transactions' {
     }
     It 'fences stale coordinators without reclaiming their workers' {
         Initialize-TestExecutor
-        $null = Invoke-TestReservation
+        Add-TestReservationFixture
         { Invoke-TestAction acquire-coordinator @{ owner_session_id = 'other' } } | Should -Throw
         $script:now = $script:now.AddHours(1)
         $state = Invoke-TestAction acquire-coordinator @{ owner_session_id = 'coordinator-b' }
@@ -141,7 +142,7 @@ Describe 'Durable local transactions' {
     }
     It 'registers the idle native session before worker acceptance and rejects stale tokens' {
         Initialize-TestExecutor
-        $null = Invoke-TestReservation
+        Add-TestReservationFixture
         { Invoke-TestAction accept-dispatch @{
             attempt_id = $script:attemptId; session_id = 'worker-a'; dispatch_token = $script:dispatch
         } } | Should -Throw
@@ -221,9 +222,9 @@ Describe 'Durable local transactions' {
         } } | Should -Throw
     }
     It 'charges continuation before delivery and refuses exhausted budgets' {
+        $script:policy.local.max_continuations_per_day = 0
         Initialize-TestExecutor
         Publish-TestRepair
-        $script:policy.local.max_continuations_per_day = 0
         { Invoke-TestAction reserve-continuation @{
             coordinator_token = $script:coordinator; attempt_id = $script:attemptId
             evidence_key = 'failed-check'; expected_head = ('b' * 40)
@@ -275,7 +276,7 @@ Describe 'Durable local transactions' {
     }
     It 'registers a model bootstrap before queued repair and native branch adoption' {
         Initialize-TestExecutor
-        $null = Invoke-TestReservation
+        Add-TestReservationFixture
         $null = Invoke-TestAction begin-session-open @{
             coordinator_token = $script:coordinator; attempt_id = $script:attemptId
         }
@@ -301,31 +302,85 @@ Describe 'Durable local transactions' {
         }
         $state.attempts[$script:attemptId].branch | Should -Be scheduled-repair/finding
     }
-    It 'charges daily starts across generations but not a new generation to old incident limits' {
+    It 'rejects new reservations despite enabled policy and leaves existing state byte-identical' {
+        $script:policy.rollout.hosted_execution_enabled = $true
+        $script:policy.rollout.reporting_enabled = $true
+        $script:policy.local.allowed_checks = @('mutants', 'miri', 'miri-many', 'careful')
+        $script:policy.local.allowed_packages = @('cpulist', 'events_once')
+        # Even caller-invented assertions cannot supply an unimplemented capability.
+        $script:policy.rollout.prerequisites.ai_triage = $true
+        $script:policy.local.ai_triage_available = $true
         Initialize-TestExecutor
-        $state = Invoke-TestAction read
-        InModuleScope LocalState -Parameters @{ State = $state; Policy = $script:policy; Now = $script:now } {
-            foreach ($generation in @(1, 2)) {
-                $State.attempts["old-$generation"] = @{
-                    phase = 'resolved'; started_at = $Now.AddDays(-1).ToString('o')
-                    issue_number = 1; finding_id = ('f' * 64); generation = $generation
-                }
-            }
-            $data = @{ coordinator_token = $State.coordinator.token; issue_number = 1
-                finding_id = ('f' * 64); generation = 3; package = 'cpulist'
-                check_id = 'mutants-ubuntu-latest-1'; check_kind = 'mutants'
-                check_contract_digest = ('c' * 64); evidence_key = 'new-generation' }
-            Invoke-LocalStateChange $State $Policy reserve-attempt $data $Now
-            $State.attempts.Count | Should -Be 3
-            $latest = @($State.attempts.Values | Where-Object { $_.generation -eq 3 })[0]
-            $latest.phase = 'resolved'
-            $data.generation = 4
-            Invoke-LocalStateChange $State $Policy reserve-attempt $data $Now
-            $State.attempts.Count | Should -Be 4
-            @($State.attempts.Values | Where-Object { $_.generation -eq 4 })[0].phase = 'resolved'
-            $data.generation = 5
-            { Invoke-LocalStateChange $State $Policy reserve-attempt $data $Now } | Should -Throw
+        $before = Get-Content -LiteralPath (Join-Path $script:root 'state.json') -Raw
+        { Invoke-TestReservation } | Should -Throw -ExceptionType ([NotSupportedException])
+        (Get-Content -LiteralPath (Join-Path $script:root 'state.json') -Raw) | Should -BeExactly $before
+        foreach ($generation in @(1, 2)) {
+            $null = Add-TestLegacyAttempt -StateRoot $script:root -StartedAt $script:now `
+                -Generation $generation -Overrides @{ phase = 'resolved' }
         }
+        $before = Get-Content -LiteralPath (Join-Path $script:root 'state.json') -Raw
+        { Invoke-TestReservation -Generation 3 } | Should -Throw -ExceptionType ([NotSupportedException])
+        (Get-Content -LiteralPath (Join-Path $script:root 'state.json') -Raw) | Should -BeExactly $before
+        $state = Invoke-TestAction read
+        $state.schema_version | Should -Be 1
+        $state.attempts.Count | Should -Be 2
+        $state.attempts.Values.generation | Sort-Object | Should -Be @(1, 2)
+        @(Get-ChildItem -LiteralPath $script:root -Filter '*.tmp').Count | Should -Be 0
+    }
+    It 'retains consumed <Budget> continuation budgets across legacy attempts' -ForEach @(
+        @{ Budget = 'daily' }, @{ Budget = 'per-attempt' }
+    ) {
+        if ($Budget -ceq 'daily') { $script:policy.local.max_continuations_per_day = 1 }
+        else { $script:policy.local.max_continuations_per_attempt = 1 }
+        Initialize-TestExecutor
+        $usedAt = if ($Budget -ceq 'daily') { $script:now } else { $script:now.AddDays(-1) }
+        $prior = @{ token = 'consumed'; evidence_key = 'previous-ci'; admitted_at = $usedAt.ToString('o') }
+        $legacy = Add-TestLegacyAttempt -StateRoot $script:root -StartedAt $script:now.AddDays(-1) `
+            -Overrides @{
+                phase = if ($Budget -ceq 'daily') { 'closed-unmerged' } else { 'pr-open' }
+                session_id = if ($Budget -ceq 'daily') { 'worker-old' } else { 'worker-a' }
+                branch = 'scheduled-repair/finding'
+                head_sha = ('b' * 40); pr_number = 7; continuations = @($prior)
+                dispatch = @{ token = 'previous'; status = 'completed' }
+            }
+        # Daily accounting includes closed attempts, not just the PR requesting another turn.
+        if ($Budget -ceq 'daily') {
+            $legacy = Add-TestLegacyAttempt -StateRoot $script:root -StartedAt $script:now -Issue 2 `
+                -Overrides @{
+                    phase = 'pr-open'; session_id = 'worker-a'; branch = 'scheduled-repair/second'
+                    head_sha = ('b' * 40); pr_number = 8
+                    dispatch = @{ token = 'previous-second'; status = 'completed' }
+                }
+        }
+        $before = Get-Content -LiteralPath (Join-Path $script:root 'state.json') -Raw
+        { Invoke-TestAction reserve-continuation @{
+            coordinator_token = $script:coordinator; attempt_id = $legacy.attempt_id
+            evidence_key = 'new-ci'; expected_head = ('b' * 40)
+            session_id = 'worker-a'; native_idle_verified = $true
+        } } | Should -Throw
+        (Get-Content -LiteralPath (Join-Path $script:root 'state.json') -Raw) | Should -BeExactly $before
+        $state = Invoke-TestAction read
+        @($state.attempts.Values | ForEach-Object { $_.continuations }).Count | Should -Be 1
+        $state.attempts[$legacy.attempt_id].pr_number | Should -Be $legacy.pr_number
+        $state.attempts[$legacy.attempt_id].branch | Should -Be $legacy.branch
+    }
+    It 'closes retained quiescent work without resetting dispatch or continuation history' {
+        Initialize-TestExecutor
+        Publish-TestRepair
+        $before = (Invoke-TestAction read).attempts[$script:attemptId]
+        $state = Invoke-TestAction record-pr-disposition @{
+            coordinator_token = $script:coordinator; attempt_id = $script:attemptId
+            pr_number = 7; head_sha = ('b' * 40); disposition = 'closed-unmerged'
+            hosted_confirmation = $false; native_idle_verified = $true
+        }
+        $attempt = $state.attempts[$script:attemptId]
+        $attempt.phase | Should -Be closed-unmerged
+        $attempt.session_id | Should -Be $before.session_id
+        $attempt.branch | Should -Be $before.branch
+        $attempt.started_at | Should -Be $before.started_at
+        $attempt.dispatch.token | Should -Be $before.dispatch.token
+        $attempt.handled_evidence | Should -Be $before.handled_evidence
+        $attempt.continuations.Count | Should -Be $before.continuations.Count
     }
     It 'mirrors canonical version inputs before the initial PR event' {
         Initialize-TestExecutor
@@ -353,7 +408,7 @@ Describe 'Durable local transactions' {
     }
     It 'preserves claims and scan history when setup is reapplied or a scan fails' {
         Initialize-TestExecutor
-        $null = Invoke-TestReservation
+        Add-TestReservationFixture
         $null = Invoke-TestAction record-scan @{ coordinator_token = $script:coordinator
             successful = $true; backlog_count = 4; oldest_eligible_at = '2026-08-01T00:00:00Z'
             blocked_conditions = @('active-worker-limit') }

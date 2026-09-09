@@ -2,7 +2,7 @@
 
 # The privileged write-side GitHub adapter: runs only from the always-default-branch
 # `scheduled-report.yml`/`scheduled-health.yml` jobs (never a candidate checkout), and is the only
-# module authorized to write findings, coverage and health state back to GitHub issues, or to
+# module authorized to write run-level intake, coverage and existing confirmation state, or to
 # download and parse a run's evidence artifacts. It reads candidate artifacts as data using the
 # default-branch parser (ScheduledContracts.psm1/ScheduledExecution.psm1), never by executing
 # anything from the candidate. See
@@ -17,6 +17,8 @@ Import-Module (Join-Path $PSScriptRoot 'ScheduledPlan.psm1')
 Import-Module (Join-Path $PSScriptRoot 'ScheduledReport.psm1')
 Import-Module (Join-Path $PSScriptRoot 'ScheduledExecution.psm1')
 Import-Module (Join-Path $PSScriptRoot 'ScheduledGate.psm1')
+Import-Module (Join-Path $PSScriptRoot 'ScheduledTransport.psm1')
+Import-Module (Join-Path $PSScriptRoot 'ScheduledRunGitHub.psm1')
 
 function Invoke-ScheduledGhJson {
     [CmdletBinding()]
@@ -136,36 +138,8 @@ function Save-ScheduledArtifactArchive {
         [Parameter(Mandatory)][string] $Path,
         [Parameter(Mandatory)][long] $MaxBytes
     )
-    $start = [Diagnostics.ProcessStartInfo]::new()
-    $start.FileName = 'gh'
-    $start.UseShellExecute = $false
-    $start.RedirectStandardOutput = $true
-    $start.RedirectStandardError = $true
-    foreach ($argument in @('api', "repos/$Repository/actions/artifacts/$ArtifactId/zip")) {
-        $start.ArgumentList.Add($argument)
-    }
-    $process = [Diagnostics.Process]::new()
-    $process.StartInfo = $start
-    $file = [IO.File]::Open($Path, [IO.FileMode]::CreateNew)
-    $started = $false
-    try {
-        $started = $process.Start()
-        $errorTask = $process.StandardError.ReadToEndAsync()
-        # Bound the stream, not just the API's compressed-size claim.
-        $buffer = [byte[]]::new(81920) # .NET's normal stream-copy buffer size.
-        [long]$length = 0
-        while (($count = $process.StandardOutput.BaseStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
-            $length += $count
-            if ($length -gt $MaxBytes) { throw [FormatException]::new('Artifact download exceeds the policy size limit.') }
-            $file.Write($buffer, 0, $count)
-        }
-        $process.WaitForExit()
-        if ($process.ExitCode -ne 0) { throw [IO.IOException]::new("Artifact download failed: $($errorTask.GetAwaiter().GetResult())") }
-    } finally {
-        if ($started -and -not $process.HasExited) { $process.Kill($true) }
-        $file.Dispose()
-        $process.Dispose()
-    }
+    $null = Save-ScheduledGitHubResponse -Endpoint "repos/$Repository/actions/artifacts/$ArtifactId/zip" `
+        -Path $Path -MaxBytes $MaxBytes
 }
 
 function Expand-ScheduledArtifact {
@@ -263,12 +237,54 @@ function Get-ScheduledOwnedIssue {
     [OutputType([hashtable[]])]
     param(
         [Parameter(Mandatory)][hashtable] $Policy,
-        [Parameter(Mandatory)][ValidateSet('scheduled-finding', 'scheduled-coverage', 'scheduled-health')][string] $Label
+        [Parameter(Mandatory)][ValidateSet('scheduled-finding', 'scheduled-coverage', 'scheduled-health', 'scheduled-run-failure')][string] $Label
     )
     $pages = Invoke-ScheduledGitHubApi "repos/$($Policy.repository)/issues?labels=$Label&state=all&per_page=100" -Paginate
     return @($pages | ForEach-Object { $_ } | Where-Object {
             -not $_.ContainsKey('pull_request') -and $_.user.login -ceq $Policy.reporter_login
         })
+}
+
+function Restore-ScheduledRunPublicationState {
+    [CmdletBinding()]
+    param([hashtable] $Policy, [hashtable] $Run, [string] $OutputDirectory)
+    $attempt = [int]$env:GITHUB_RUN_ATTEMPT
+    if ($attempt -le 1) { return }
+    if ($env:GITHUB_RUN_ID -cnotmatch '^[1-9][0-9]*$') {
+        throw [FormatException]::new('Reporter rerun identity is unavailable.')
+    }
+    $journalName = "publication-$($Policy.repository_id)-$($Run.workflow_id)-$($Run.id).json"
+    $destination = Join-Path $OutputDirectory $journalName
+    if (Test-Path -LiteralPath $destination) { return }
+    $previousAttempt = $attempt - 1
+    $previous = Invoke-ScheduledGitHubApi "repos/$($Policy.repository)/actions/runs/$env:GITHUB_RUN_ID/attempts/$previousAttempt"
+    if ($previous.id -ne [long]$env:GITHUB_RUN_ID -or $previous.run_attempt -ne $previousAttempt -or
+        $previous.repository.id -ne $Policy.repository_id -or $previous.head_repository.id -ne $Policy.repository_id -or
+        $previous.path -cne '.github/workflows/scheduled-report.yml' -or $previous.head_branch -cne 'main' -or
+        $previous.status -cne 'completed') {
+        throw [FormatException]::new('Previous attempt is not the trusted reporter workflow.')
+    }
+    $pages = Invoke-ScheduledGitHubApi "repos/$($Policy.repository)/actions/runs/$env:GITHUB_RUN_ID/artifacts?per_page=100" -Paginate
+    $artifacts = @($pages | ForEach-Object { $_.artifacts })
+    $root = Join-Path $OutputDirectory "recovery-$([guid]::NewGuid().ToString('N'))"
+    $null = New-Item -ItemType Directory -Path $root
+    # A fresh runner must retain uncertainty from its previous writer before making new POSTs.
+    # Missing/expired recovery evidence is an operator blocker, not proof that no write occurred.
+    $directory = Get-ScheduledArtifact -Run $previous -Artifacts $artifacts -Policy $Policy `
+        -Name "scheduled-report-$env:GITHUB_RUN_ID-$previousAttempt" -OutputDirectory $root
+    $source = Join-Path $directory $journalName
+    if (Test-Path -LiteralPath $source) {
+        Copy-Item -LiteralPath $source -Destination $destination
+        return
+    }
+    $reportPath = Join-Path $directory 'report.json'
+    if (Test-Path -LiteralPath $reportPath) {
+        $report = Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json -AsHashtable
+        $hasRunIssue = $report.ContainsKey('run_intake') -and $null -ne $report.run_intake -and
+            $report.run_intake.ContainsKey('number')
+        if ($report.status -cin @('passed', 'not-run', 'reported') -and -not $hasRunIssue) { return }
+    }
+    throw [IO.IOException]::new('Previous reporting attempt has no recoverable publication journal; reconcile its writes before retrying.')
 }
 
 function Get-ScheduledTrustedConfirmation {
@@ -359,6 +375,9 @@ function Sync-ScheduledIssue {
     )
 
     if ($null -eq $Issue) {
+        if ($Kind -ceq 'reporter') {
+            throw [FormatException]::new('Hosted reporting cannot create problem issues; failures require AI triage.')
+        }
         $body = if ($Kind -ceq 'reporter') { Get-ScheduledFindingBody $Record } else {
             "[Copilot speaking]`n`nDurable scheduled coverage index. A skipped run never refreshes the receipt.`n`n" +
                 (Write-ScheduledRecord -Record $Record -Kind coverage)
@@ -414,7 +433,10 @@ function Invoke-ScheduledReporting {
     if ($Repository -cne $policy.repository) { throw 'Repository differs from trusted policy.' }
     $OutputDirectory = [IO.Path]::GetFullPath($OutputDirectory)
     $null = New-Item -ItemType Directory -Path $OutputDirectory -Force
-    $report = @{ schema_version = 1; status = 'incomplete'; problems = @(); actions = @(); applied = $false }
+    $report = @{
+        schema_version = 1; status = 'incomplete'; problems = @(); actions = @()
+        applied = $false; writes_authorized = $false
+    }
     try {
         $workflowEvent = Get-Content -LiteralPath $EventPath -Raw | ConvertFrom-Json -AsHashtable
         $eventRun = $workflowEvent.workflow_run
@@ -431,6 +453,21 @@ function Invoke-ScheduledReporting {
             throw [FormatException]::new('Originating controller is not on default-branch ancestry.')
         }
         $applyWrites = $Apply -and $policy.rollout.reporting_enabled
+        $report.writes_authorized = [bool]$applyWrites
+        if ($applyWrites) {
+            Restore-ScheduledRunPublicationState -Policy $policy -Run $run -OutputDirectory $OutputDirectory
+        }
+        $api = {
+            param($Endpoint, $Method = 'GET', $Body, [switch] $Paginate)
+            Invoke-ScheduledGitHubApi -Endpoint $Endpoint -Method $Method -Body $Body -Paginate:$Paginate
+        }
+        $logReader = {
+            param($Endpoint, $Path, $MaxBytes)
+            Save-ScheduledGitHubResponse -Endpoint $Endpoint -Path $Path -MaxBytes $MaxBytes -Truncate
+        }
+        $jobEvidence = Get-ScheduledRunJobEvidence -Policy $policy -Run $run -OutputDirectory $OutputDirectory `
+            -Api $api -LogReader $logReader
+        $report.problems += $jobEvidence.evidence_gaps
         $context = @{
             run_id = $run.id; run_attempt = $run.run_attempt; run_number = $run.run_number
             workflow_id = $run.workflow_id; workflow_path = $run.path
@@ -445,11 +482,24 @@ function Invoke-ScheduledReporting {
         $coverage = if ($null -ne $coverageIssue) { Read-ScheduledRecord -Text $coverageIssue.body -Kind coverage } else { $null }
         $issues = @(Get-ScheduledOwnedIssue -Policy $policy -Label scheduled-finding)
         $index = @{}
+        $ambiguous = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
         foreach ($issue in $issues) {
-            $record = Read-ScheduledRecord -Text $issue.body -Kind reporter
-            if ($record.repository -cne $Repository -or $record.repository_id -ne $policy.repository_id -or
-                $index.ContainsKey($record.finding_id)) { throw [FormatException]::new('Ambiguous or foreign finding identity.') }
-            $index[$record.finding_id] = @{ issue = $issue; record = $record }
+            try {
+                $record = Read-ScheduledRecord -Text $issue.body -Kind reporter
+                if ($record.repository -cne $Repository -or $record.repository_id -ne $policy.repository_id -or
+                    -not $record.ContainsKey('finding_id') -or [string]::IsNullOrWhiteSpace($record.finding_id)) {
+                    throw [FormatException]::new('Malformed or foreign existing repair identity.')
+                }
+                if ($ambiguous.Contains($record.finding_id) -or $index.ContainsKey($record.finding_id)) {
+                    $index.Remove($record.finding_id)
+                    $null = $ambiguous.Add($record.finding_id)
+                    throw [FormatException]::new('Ambiguous existing repair identity.')
+                }
+                $index[$record.finding_id] = @{ issue = $issue; record = $record }
+            } catch [FormatException], [ArgumentException] {
+                # An unrelated retained registration must not discard the new run's evidence.
+                $report.problems += "Issue $($issue.number) confirmation: $($_.Exception.Message)"
+            }
         }
         $apiCommand = Get-Command Test-ScheduledGitHubAncestor
         $isAncestor = { param($ancestor, $descendant)
@@ -462,6 +512,8 @@ function Invoke-ScheduledReporting {
         $confirmations = @()
         $skipped = $false
         $validatedPlan = $null
+        $artifacts = @()
+        $downloadRoot = $null
         try {
             $pages = Invoke-ScheduledGitHubApi "repos/$Repository/actions/runs/$($run.id)/artifacts?per_page=100" -Paginate
             $artifacts = @($pages | ForEach-Object { $_.artifacts })
@@ -534,18 +586,22 @@ function Invoke-ScheduledReporting {
         }
         $verdict = Test-ScheduledManifest -Manifest $manifest -Results $results
         if ($report.problems.Count -gt 0) { $skipped = $false }
+        $jobFailureContradictsResults = $jobEvidence.has_unsuccessful_jobs -and ($verdict.successful -or $skipped)
         $expectedFindingFailure = $run.conclusion -ceq 'failure' -and $verdict.complete -and
             @($results | Where-Object outcome -CEQ findings).Count -gt 0
-        $unexpectedWorkflowFailure = $run.conclusion -cne 'success' -and -not $expectedFindingFailure
+        $unexpectedWorkflowFailure = ($run.conclusion -cne 'success' -and -not $expectedFindingFailure) -or
+            $jobFailureContradictsResults
         if ($unexpectedWorkflowFailure) {
-            # Keep independently parsed defects from failed checker jobs. Workflow failure
-            # prevents a success receipt or closure, not actionable finding publication.
+            # Failed jobs remain evidence for AI triage even if apparently green artifacts exist.
+            # This is not a semantic diagnosis, and cannot mint a passing coverage receipt.
             $verdict.complete = $false
             $verdict.successful = $false
             $skipped = $false
-            $report.problems += "Originating workflow concluded $($run.conclusion)."
+            $report.problems += if ($jobFailureContradictsResults) { 'Job/step failures contradict passing or skipped check evidence.' }
+                else { "Originating workflow concluded $($run.conclusion)." }
         }
-        $executionEvidenceComplete = $verdict.complete -and $report.problems.Count -eq 0
+        $context.evidence_complete = $verdict.complete -and $report.problems.Count -eq 0
+        $executionEvidenceComplete = $context.evidence_complete
         if (-not $skipped) {
             $confirmedScope = @{}
             foreach ($declaration in $confirmations) {
@@ -556,7 +612,7 @@ function Invoke-ScheduledReporting {
                     $confirmed = Get-ScheduledTrustedConfirmation -Issue $entry.issue -Record $entry.record `
                         -Manifest $manifest -Results $results -Policy $policy -Declaration $declaration
                     if ($null -eq $confirmed) { throw [FormatException]::new('Declared confirmation has no authoritative merged registration.') }
-                    if ($unexpectedWorkflowFailure) {
+                    if (-not $executionEvidenceComplete) {
                         $confirmed.scope_complete = $false
                         $confirmed.successful = $false
                         $confirmed.status = 'retry'
@@ -568,51 +624,15 @@ function Invoke-ScheduledReporting {
                 }
             }
             $pendingIssues = @{}
-            $seenFindings = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
-            foreach ($result in $results) {
-                if ($result.findings.Count -eq 0) { continue }
-                if ($result.outcome -cnotin @('findings', 'incomplete', 'execution-error')) {
-                    throw [FormatException]::new('Parsed findings contradict the check outcome.')
-                }
-                # Completed defects remain actionable when another package or later mutation
-                # prevented the same catalog leg from establishing complete coverage.
-                foreach ($finding in $result.findings) {
-                    $id = Get-ScheduledFindingId -Repository $Repository -Identity $finding.identity
-                    if (-not $seenFindings.Add($id)) { continue }
-                    $existing = if ($index.ContainsKey($id)) { $index[$id].record } else { $null }
-                    $observation = $context.Clone()
-                    $observation.outcome = 'findings'
-                    $record = @{
-                        schema_version = 1; repository = $Repository; repository_id = $policy.repository_id
-                        finding_id = $id; generation = if ($null -eq $existing) { 1 } else { $existing.generation }
-                        status = 'open'; check_id = $result.check_id; check_kind = $result.actual_scope.kind
-                        package = $finding.identity.package
-                        platform = $finding.identity.platform; applicability = $result.actual_scope
-                        source_sha = $manifest.source_sha; controller_sha = $manifest.controller_sha
-                        check_contract_digest = $manifest.check_contract_digest; observation = $observation
-                        evidence = @{
-                            manifest = $result.actual_scope; replay = $finding.replay; summary = $finding.summary
-                            source_sha = $manifest.source_sha; controller_sha = $manifest.controller_sha
-                            check_contract_digest = $manifest.check_contract_digest
-                        }
-                        confirmation = if ($confirmedScope.ContainsKey($id)) { $confirmedScope[$id] } else { $null }
-                    }
-                    $merged = Merge-ScheduledObservation -Existing $existing -Incoming $record -IsAncestor $isAncestor
-                    $target = if ($index.ContainsKey($id)) { $index[$id].issue } else { $null }
-                    $pendingIssues[$id] = @{ issue = $target; record = $merged }
-                    # Duplicate parser identities are ambiguous, not a license to create duplicate issues.
-                    if ($null -eq $target) { $index[$id] = @{ issue = $null; record = $merged } }
-                }
-            }
+            # Retained registrations may still receive authoritative confirmation. Parsed
+            # failures are preserved in run intake instead of creating/updating problem identities.
             foreach ($entry in $index.Values) {
-                if ($null -eq $entry.issue -or $entry.record.status -ceq 'confirmed' -or
-                    $seenFindings.Contains($entry.record.finding_id)) { continue }
+                if ($null -eq $entry.issue -or $entry.record.status -ceq 'confirmed') { continue }
                 $confirmation = if ($confirmedScope.ContainsKey($entry.record.finding_id)) {
                     $confirmedScope[$entry.record.finding_id]
                 } else { $null }
                 if ($null -eq $confirmation) {
-                    # Undeclared diagnostic verification can identify findings but cannot resolve
-                    # registered incidents. An unexplained full-workspace pass still needs review.
+                    # Undeclared diagnostic verification cannot resolve registered problems.
                     if ($scope -cne 'full' -or -not $executionEvidenceComplete) { continue }
                     $matching = @($results | Where-Object { $_.check_id -ceq $entry.record.check_id -and $_.outcome -ceq 'passed' })
                     if ($matching.Count -ne 1) { continue }
@@ -628,6 +648,7 @@ function Invoke-ScheduledReporting {
                         continue
                     }
                 }
+                if ($null -eq $confirmation) { continue }
                 $incoming = $entry.record | ConvertTo-Json -Depth 100 | ConvertFrom-Json -AsHashtable
                 $incoming.source_sha = $manifest.source_sha
                 $incoming.controller_sha = $manifest.controller_sha
@@ -642,6 +663,15 @@ function Invoke-ScheduledReporting {
                 $report.actions += Sync-ScheduledIssue -Policy $policy -Issue $pending.issue -Record $pending.record -Kind reporter -Apply:$applyWrites
             }
         }
+        $intakeGaps = @($report.problems)
+        if (-not $skipped) { $intakeGaps += $verdict.problems }
+        $intake = Sync-ScheduledRunIntake -Policy $policy -Run $run -Plan $validatedPlan `
+            -Manifest $manifest -Results $results -Jobs $jobEvidence.jobs `
+            -EvidenceGaps $intakeGaps -Skipped:$skipped `
+            -Artifacts $artifacts -TransientPaths (@($OutputDirectory, $downloadRoot) + $jobEvidence.transient_paths) `
+            -OutputDirectory $OutputDirectory -Api $api -Apply:$applyWrites
+        $report.actions += $intake.actions
+        $report.run_intake = $intake
         $nextCoverage = Merge-ScheduledCoverage -Coverage $coverage -Manifest $manifest -Results $results `
             -Context $context -IsAncestor $isAncestor -Skipped:$skipped
         $nextCoverage.repository_id = $policy.repository_id
@@ -661,13 +691,15 @@ function Invoke-ScheduledReporting {
         if (-not $nextCoverage.ContainsKey('reporting') -or
             [datetimeoffset]$context.completed_at -ge [datetimeoffset]$nextCoverage.reporting.completed_at) {
             $nextCoverage.reporting = @{
-                outcome = if ($report.problems.Count -eq 0) { 'passed' } else { 'incomplete' }
+                # Capturing a failed execution as durable intake is successful reporting.
+                # Coverage and run evidence retain their own failure/incompleteness.
+                outcome = 'passed'
                 completed_at = $context.completed_at; run_id = $context.run_id; run_attempt = $context.run_attempt
             }
         }
         $report.actions += Sync-ScheduledIssue -Policy $policy -Issue $coverageIssue -Record $nextCoverage -Kind coverage -Apply:$applyWrites
-        $report.status = if ($report.problems.Count -gt 0 -or (-not $skipped -and -not $verdict.complete)) { 'incomplete' }
-            elseif ($skipped) { 'not-run' } elseif ($verdict.successful) { 'passed' } else { 'findings' }
+        $report.status = if ($intake.requires_triage) { 'reported' }
+            elseif ($skipped) { 'not-run' } else { 'passed' }
         $report.applied = [bool]$applyWrites
         $report.coverage = $nextCoverage
     } catch [FormatException], [ArgumentException], [IO.IOException] {

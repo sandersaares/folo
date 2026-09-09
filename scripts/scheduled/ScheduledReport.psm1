@@ -1,9 +1,8 @@
 #requires -Version 7
 
-# Pure record-merging logic used by ScheduledGitHub.psm1's reporting/health flows: computing a
-# finding's semantic identity, deciding whether a new observation supersedes a prior one on the
-# same finding, merging coverage evidence, and rendering issue body markdown. Kept free of GitHub
-# calls so identity and merge decisions are unit-testable in isolation from the API adapter.
+# Coverage/health merging and compatibility handling for existing registered repair records.
+# New failures are run-level intake, never assigned semantic problem identities by this module.
+# Kept free of GitHub calls so coverage and existing-confirmation transitions are unit-testable.
 # Reporter-owned state is independent of worker comments and of artifact retention. See
 # ../../.github/workflows/implementation.md#serialized-reporting and
 # ../../docs/scheduled-validation.md#health-recovery-and-rollback.
@@ -12,30 +11,6 @@ $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
 Import-Module (Join-Path $PSScriptRoot 'ScheduledContracts.psm1')
 Import-Module (Join-Path $PSScriptRoot 'ScheduledPlan.psm1')
-
-function Get-ScheduledFindingId {
-    [CmdletBinding()]
-    [OutputType([string])]
-    param(
-        [Parameter(Mandatory)][string] $Repository,
-        [Parameter(Mandatory)][hashtable] $Identity
-    )
-
-    # Only semantic identity participates. Source revisions, observations and line/column shifts
-    # are evidence, not new defects. An allow-list also excludes future volatile parser fields.
-    $canonical = @{ repository = $Repository }
-    foreach ($key in @('kind', 'package', 'platform', 'path', 'function', 'mutation', 'test', 'seed', 'flags')) {
-        if (-not $Identity.ContainsKey($key)) { throw [FormatException]::new("Missing identity: $key") }
-        $canonical[$key] = $Identity[$key]
-    }
-    $canonical.path = ([string]$canonical.path).Replace('\', '/')
-    if ([string]::IsNullOrWhiteSpace($canonical.package) -or
-        [string]::IsNullOrWhiteSpace($canonical.kind) -or
-        [string]::IsNullOrWhiteSpace($canonical.platform)) {
-        throw [FormatException]::new('Finding identity must identify a check, package and platform.')
-    }
-    return Get-ScheduledDigest $canonical
-}
 
 function Compare-ScheduledObservation {
     [CmdletBinding()]
@@ -164,6 +139,10 @@ function Merge-ScheduledCoverage {
         }
     }
     $verdict = Test-ScheduledManifest -Manifest $Manifest -Results $Results
+    if ($Context.ContainsKey('evidence_complete') -and -not $Context.evidence_complete) {
+        $verdict.complete = $false
+        $verdict.successful = $false
+    }
     $expectedFindingFailure = $Context.ContainsKey('workflow_conclusion') -and
         $Context.workflow_conclusion -ceq 'failure' -and $verdict.complete -and
         @($Results | Where-Object outcome -CEQ findings).Count -gt 0
@@ -207,7 +186,7 @@ function ConvertTo-ScheduledOwnedText {
     param(
         [Parameter(Mandatory)][AllowEmptyString()][string] $Text,
         [Parameter(Mandatory)][hashtable] $Record,
-        [Parameter(Mandatory)][ValidateSet('reporter', 'coverage', 'health')][string] $Kind
+        [Parameter(Mandatory)][ValidateSet('reporter', 'coverage', 'health', 'run')][string] $Kind
     )
 
     $null = Read-ScheduledRecord -Text $Text -Kind $Kind
@@ -336,6 +315,6 @@ function Get-ScheduledHealth {
     }
 }
 
-Export-ModuleMember -Function Get-ScheduledFindingId, Compare-ScheduledObservation,
+Export-ModuleMember -Function Compare-ScheduledObservation,
 Merge-ScheduledObservation, Merge-ScheduledCoverage, ConvertTo-ScheduledOwnedText,
 Get-ScheduledFindingBody, Get-ScheduledHealth

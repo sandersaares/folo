@@ -11,6 +11,7 @@ $PSNativeCommandUseErrorActionPreference = $true
 Import-Module (Join-Path $PSScriptRoot '..\build\Mutants.psm1')
 Import-Module (Join-Path $PSScriptRoot '..\build\Miri.psm1')
 Import-Module (Join-Path $PSScriptRoot '..\build\CargoExecutable.psm1')
+Import-Module (Join-Path $PSScriptRoot 'ScheduledTransport.psm1')
 $script:mutationDecoderExecutable = $null
 
 function Get-ScheduledToolchain {
@@ -406,40 +407,9 @@ function Invoke-ScheduledMutationDecoder {
         [switch] $DependencyContract
     )
 
-    $start = [Diagnostics.ProcessStartInfo]::new()
-    $start.FileName = $Executable
-    if ($DependencyContract) { $start.ArgumentList.Add('--dependency-contract') }
-    $start.WorkingDirectory = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\..')).Path
-    $start.UseShellExecute = $false
-    $start.RedirectStandardInput = $true
-    $start.RedirectStandardOutput = $true
-    $start.RedirectStandardError = $true
-    # Preserve TOML string values on Windows as well as Linux, independent of the console code page.
-    $start.StandardInputEncoding = [Text.UTF8Encoding]::new($false)
-    $start.StandardOutputEncoding = [Text.UTF8Encoding]::new($false)
-    $start.StandardErrorEncoding = [Text.UTF8Encoding]::new($false)
-    $process = [Diagnostics.Process]::new()
-    $process.StartInfo = $start
-    try {
-        if (-not $process.Start()) {
-            throw [InvalidOperationException]::new('Could not start the controller mutation utility.')
-        }
-        $stdout = $process.StandardOutput.ReadToEndAsync()
-        $stderr = $process.StandardError.ReadToEndAsync()
-        $process.StandardInput.Write($Text)
-        $process.StandardInput.Close()
-        $process.WaitForExit()
-        $json = $stdout.GetAwaiter().GetResult()
-        $diagnostic = $stderr.GetAwaiter().GetResult()
-        if ($process.ExitCode -ne 0) {
-            $operation = if ($DependencyContract) { 'identify controller decoder dependencies' }
-                else { 'decode mutation configuration' }
-            throw [FormatException]::new("Cannot ${operation}: $diagnostic")
-        }
-        return $json
-    } finally {
-        $process.Dispose()
-    }
+    $arguments = if ($DependencyContract) { @('--dependency-contract') } else { @() }
+    Invoke-ScheduledJsonExecutable -Executable $Executable -InputText $Text -Arguments $arguments `
+        -Directory (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\..')).Path
 }
 
 function Get-ScheduledEmptyBaselineCommand {

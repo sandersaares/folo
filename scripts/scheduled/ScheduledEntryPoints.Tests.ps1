@@ -7,7 +7,8 @@ BeforeAll {
     $script:entryRoot = Join-Path $TestDrive 'entrypoints'
     New-Item -ItemType Directory -Path $entryRoot | Out-Null
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'Invoke-ScheduledCheck.ps1'),
-        (Join-Path $PSScriptRoot 'Invoke-ScheduledHealth.ps1') -Destination $entryRoot
+        (Join-Path $PSScriptRoot 'Invoke-ScheduledHealth.ps1'),
+        (Join-Path $PSScriptRoot 'Invoke-ScheduledReport.ps1') -Destination $entryRoot
     @'
 function Invoke-ScheduledCheck {
     param($Check, $SourceRoot, $OutputDirectory, $Toolchain, $RunContext)
@@ -24,7 +25,11 @@ function Get-ScheduledGitHubHealth {
         components = @{ coverage = @{ status = 'unavailable' } }
     }
 }
-Export-ModuleMember -Function Get-ScheduledGitHubHealth
+function Invoke-ScheduledReporting {
+    param($Repository, $EventPath, $OutputDirectory, [switch] $Apply)
+    return @{ status = $env:SCHEDULED_TEST_OUTCOME }
+}
+Export-ModuleMember -Function Get-ScheduledGitHubHealth, Invoke-ScheduledReporting
 '@ | Set-Content -LiteralPath (Join-Path $entryRoot 'ScheduledGitHub.psm1')
 
     function Invoke-EntryPointFixture {
@@ -58,6 +63,18 @@ Export-ModuleMember -Function Get-ScheduledGitHubHealth
 }
 
 Describe 'Hosted entrypoint exit contracts' {
+    It 'distinguishes captured execution failures from reporting failure: <Outcome>' -TestCases @(
+        @{ Outcome = 'passed'; Code = 0 }
+        @{ Outcome = 'not-run'; Code = 0 }
+        @{ Outcome = 'reported'; Code = 0 }
+        @{ Outcome = 'incomplete'; Code = 1 }
+    ) {
+        param($Outcome, $Code)
+        $result = Invoke-EntryPointFixture -Name 'Invoke-ScheduledReport.ps1' -Outcome $Outcome `
+            -Arguments @('-Repository', 'folo-rs/folo', '-EventPath', 'event.json')
+        $result.code | Should -Be $Code
+        $result.stderr | Should -BeNullOrEmpty
+    }
     It 'exits correctly for check outcome <Outcome>' -TestCases @(
         @{ Outcome = 'passed'; Code = 0 }
         @{ Outcome = 'findings'; Code = 1 }

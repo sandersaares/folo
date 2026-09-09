@@ -89,7 +89,7 @@ function Get-ScheduledContractDigest {
     $paths = @('constants.env', 'rust-toolchain.toml', '.cargo/mutants.toml',
         '.github/workflows/deep-checks.yml', '.github/actions/setup-environment/action.yml',
         'scripts/scheduled/ScheduledContracts.psm1', 'scripts/scheduled/ScheduledPlan.psm1',
-        'scripts/scheduled/ScheduledExecution.psm1',
+        'scripts/scheduled/ScheduledExecution.psm1', 'scripts/scheduled/ScheduledTransport.psm1',
         'packages/scheduled-mutation-config/Cargo.toml',
         'packages/scheduled-mutation-config/dependency-contract.json',
         'packages/scheduled-mutation-config/src/dependency_contract.rs',

@@ -1,6 +1,6 @@
 ---
 name: scheduled-intake
-description: Execute the single project-level Local App scheduled finding scan and bounded native repair PR continuation. Use for the enrolled repository automation, not as an individual PR watcher.
+description: Observe scheduled evidence and reconcile existing registered Local repairs with bounded continuation. New repair admission and AI triage are unavailable; do not create or enable an automation.
 ---
 
 # Scope
@@ -8,9 +8,16 @@ description: Execute the single project-level Local App scheduled finding scan a
 Act only as the coordinator. Do not edit source, run Rust setup on an empty poll,
 start cloud work, create per-PR timers, change billing/authentication, force-push,
 merge, publish releases or discard sessions/worktrees. The repository automation
-authorizes intake AND continuation of registered repairs through readiness in
-their existing visible/native App sessions. It does not authorize work on arbitrary
-human PRs.
+supports observation and continuation of already registered repairs through readiness
+in their existing visible/native App sessions. It does not authorize work on arbitrary
+human PRs or new repair starts.
+
+This is the **hosted-evidence-only phase**. Executable AI triage and new repair
+admission are unavailable. `reserve-attempt` unconditionally rejects new ownership
+with `ai-triage-unavailable`, even with repair mode, full allowlists and approved
+rollout prerequisites. Do not change configuration or invent a triage record to
+bypass that boundary. Do not create, enable or split Local automations. The future
+triage/repair automation architecture is not installed by running this skill.
 
 Read `docs\scheduled-validation.md`, reviewed `scripts\scheduled\policy.json`, and
 repository instructions. Use actual native identities, not names guessed from
@@ -19,7 +26,8 @@ instructions. Exceptions and unsupported capabilities are blockers, not success.
 
 Apply the [operating policy](../../workflows/implementation.md#operating-policy)
 without changing its settings. Hosted execution/reporting and Local admission are
-independent; a hosted finding does not authorize a repair. Disabled hosted controls
+independent; hosted run evidence and historical reporter findings do not authorize
+a new repair. Disabled hosted controls
 and unconfigured repair admission are safe defaults, not permission to enroll,
 expand allowlists or enable the automation. Missing enrollment remains an explicit
 installation-readiness blocker.
@@ -77,27 +85,38 @@ Import-Module .\scripts\scheduled\LocalInbox.psm1 -Force
 Invoke-ScheduledInbox -ExecutorId "{{EXECUTOR_ID}}" | ConvertTo-Json -Depth 40
 ```
 
-The helper paginates the complete open `scheduled-finding` queue, including old
-issues, validates reporter/run provenance, and returns ordered descriptors,
-rejected evidence, holds, admission conditions and **all registered attempts**.
+The helper paginates the complete open historical `scheduled-finding` queue,
+including old issues, validates reporter/run provenance, and returns deferred
+records, rejected evidence, holds, capability conditions and **all registered attempts**.
 Never use a recent-creation filter. Rejected evidence remains visible, not repaired
 from untrusted prose. A failed API read is a failed scan.
 
-Preserve the descriptor's structured replay scope when handing it to the worker.
+New hosted intake uses `scheduled-run-failure` issues with `scheduled-run:v1`
+records and paginated evidence comments. This helper does not implement their AI
+triage. Neither those run records nor legacy `scheduled-reporter:v1` problem
+records are new repair authorization. Legacy records are not automatically
+converted into triaged problems.
+
+Preserve a registered attempt's structured replay scope when handing it to the worker.
 A Miri target or seed-range replay does not require a single failing test or seed
-to be eligible; do not invent that attribution or reject the scope as missing evidence.
+for retained work to be reconciled; do not invent that attribution or reject the
+scope as missing evidence.
 
 Use `list_sessions_and_chats` and `get_session` to reconcile each registered attempt
 against the native issue association, session, branch and current activity. Read
 PR/branch records before interpreting unknown publication outcomes. Consult every
 registered PR even when its issue no longer appears in the open queue.
 
-If there are neither actionable problems nor registered repairs, record successful
-scan health and release the coordinator; stop without opening sessions or invoking
-specialists. Observe/paused mode emits proposed actions only. Do not claim or send
-work in those modes.
+The helper always reports `ai-triage-unavailable`, including on an empty queue.
+Its empty `eligible`, zero eligible-only `backlog_count` and null
+`oldest_eligible_at` do not mean that triage is complete or the repair pipeline is
+healthy. If there are no registered repairs, record the successful read with this
+blocker and finish without opening sessions or invoking specialists.
+Observe/paused mode emits proposed actions only. Do not claim or send work in
+those modes. This capability blocker prevents new admission, not read-only
+reconciliation or otherwise authorized continuation of retained work.
 
-# Stage 3: Continue owned PRs before admitting another problem
+# Stage 3: Reconcile registered work and continue owned PRs
 
 Collect authoritative current review/CI input:
 
@@ -158,16 +177,24 @@ Interpret the decision:
 A lost send response is not a reason to resend. Inspect the persisted dispatch and
 native session acceptance/history. If not provable, block for reconciliation.
 
-# Stage 4: Admit at most one new repair
+# Stage 4: Recover only an already persisted attempt
 
-Proceed only when all mode/profile/prerequisite, active, scope and budget gates
-permit. Revalidate the selected issue/run and check native session and PR mappings.
-An existing human session requires a handoff, not automatic adoption.
+Never call `reserve-attempt` or select a new issue for repair. Raw run issues,
+historical reporter issues, recurrence and manually asserted triage cannot start
+new work. A missing attempt requires `ai-triage-unavailable`, not a new claim.
 
-Reserve the helper's validated descriptor with `reserve-attempt`. Persist
-`begin-session-open`, then use native `open_issue_session` with a model-selected,
-strictly non-editing bootstrap. The bootstrap is part of the already charged
-worker start, not a second repair attempt:
+Preserve every persisted attempt, including one whose session registration or
+publication is incomplete. Such work has already consumed its start budget.
+Reconcile its exact attempt/dispatch, issue/run and native session/PR mappings;
+do not reset history, invent a replacement attempt or adopt a human session.
+Only an already persisted `reserved` attempt with no session-open call begun can
+proceed through `begin-session-open`. Existing `opening-session` or later states
+require reconciliation of the previous native outcome, not another session open.
+Observe/paused mode performs no recovery dispatch.
+
+When completing that retained reservation, use native `open_issue_session` with
+a model-selected, strictly non-editing bootstrap. This completes already admitted
+work; it is not a new repair admission:
 
 ```json
 {
@@ -226,8 +253,9 @@ blockers. Read `last_hosted_plan.planned_at` from the validated `scheduled-cover
 record independently of full-success receipt age. A profile update is not a
 scan heartbeat. Release the coordinator token; persistent attempts remain owned.
 
-Summarize the selected decision and reason, backlog/oldest eligible problem,
-existing session/PR, admitted or deferred work and explicit operator blockers.
+Summarize the capability blocker, successful/failed evidence read, deferred legacy
+records, existing session/PR, retained-work continuation and explicit operator blockers.
+Never report new repair admission or completed AI triage.
 If posting this summary on GitHub, use the communication prefix and put execution
 diagnostics in a collapsible section. Do not enable/run another automation or
 create a watcher to wait for CI.

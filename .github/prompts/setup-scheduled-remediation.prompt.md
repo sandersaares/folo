@@ -2,9 +2,18 @@
 
 Apply this procedure to the current `folo-rs/folo` project using the operator's
 selected personal GitHub Copilot account and a **Local** App environment. This is
-reproducible setup, not a request to run a repair. Never enable or run an automation,
+reconciliation of an existing installation, not a request to run a repair. Never
+create, enable or run an automation,
 reset repair state, change billing identity or accept repository configuration
 implicitly. Preserve existing worker sessions, worktrees, claims and counters.
+
+The supported phase is **hosted evidence intake only**, with compatibility for
+registered repair recovery and bounded continuation. AI triage and new repair
+admission are not implemented. Report `ai-triage-unavailable` even when all policy
+prerequisites or allowlists are configured. No flag, assertion, issue label or
+manually supplied triage record unlocks new reservations. Running or enabling the
+historical setup does not install the future separate triage and repair
+automations. Checked-in and saved execution/reporting/Local defaults stay disabled.
 
 ## Stage 1: Read desired state and establish prerequisites
 
@@ -17,12 +26,15 @@ install missing tools without operator approval.
 Use the [operating policy](../workflows/implementation.md#operating-policy) to distinguish
 hosted execution/reporting authorization and Local admission. Reconciliation
 does not change the shallow/deep recipe split or authorize repairs.
-New installations are disabled and unconfigured by default; preserve existing
-operator-approved settings rather than treating setup as activation.
+Missing installations remain unconfigured; do not create even a disabled entry.
+Preserve existing ownership and operator choices rather than treating setup as
+activation. Hosted `scheduled-run-failure` issues use `scheduled-run:v1` records
+with paginated evidence comments. Historical `scheduled-finding` issues with
+`scheduled-reporter:v1` records remain readable for registered repairs, not
+automatically converted into completed triage or newly authorized repair work.
 
-Scheduled execution and reporting lazily build the nonpublished Rust utility
-`scheduled-mutation-config` from the trusted controller for mutation-configuration
-comparison and empty-shard baselines; see
+Hosted execution/reporting builds its required nonpublished Rust utilities from
+the trusted controller; see
 [evidence decoding](../workflows/implementation.md#evidence-decoding). Record actual
 toolchain/utility availability in each execution environment, including WSL when
 used; a Windows installation does not establish Linux availability. Do not build
@@ -59,17 +71,17 @@ Discover the real Local environment through native metadata or the App environme
 picker. Preserve the enrolled executor's machine/profile; a new installation
 requires an explicit operator choice. Do not provision a dedicated profile or
 choose another machine without that decision.
-`host_id` is required for direct native automation creation; never supply
-the project ID, machine name or the word `local` as a guessed host ID. If host
-discovery is unavailable, use the native creation confirmation dialog only after
-absence of an existing managed automation has been established, or ask the
-operator to select the host manually. Do not silently choose cloud execution.
+Never supply the project ID, machine name or the word `local` as a guessed host
+ID. If host discovery is unavailable, report the metadata blocker and ask the
+operator to verify the existing entry in the native UI. Do not open a creation
+dialog or silently choose cloud execution.
 
 Resolve executor enrollment to the absolute application-data path via
 `Get-ScheduledStateRoot`. Missing state is not first installation merely because
 this App automation is absent. Before genuine first enrollment, reconcile the
 complete reporter queue's worker records, managed PRs and native issue sessions.
 A directory with missing/corrupt state requires recovery, never empty initialization.
+This procedure does not enroll a new executor while new repair admission is unsupported.
 A different machine/account requires explicit ownership transfer with the old
 executor paused and unpublished work accounted for.
 
@@ -133,9 +145,12 @@ The desired saved prompt is short and contains the exact policy marker:
 ```text
 folo-scheduled-remediation:v1
 Run the repository's scheduled-intake skill for folo-rs/folo in Local mode.
-Read reviewed policy and use the deterministic inbox helper. Scan the whole
-unresolved backlog and reconcile registered repair PRs through readiness in
-their existing native App sessions, using bounded new-evidence continuations.
+Read reviewed policy and use the inbox helper to observe historical evidence and
+reconcile already registered repair PRs in their existing native App sessions,
+using bounded new-evidence continuations. Report ai-triage-unavailable: executable
+AI triage and new repair admission are unsupported, regardless of configuration.
+Do not reserve new attempts or treat raw scheduled-run-failure issues or historical
+scheduled-finding records as authorization. Do not create or enable automations.
 Respect observe/paused mode, enrollment, scope, budgets, profile drift and claims.
 Never edit source in this coordinator, start cloud work, create per-PR timers,
 merge, publish releases, change accounts/billing, or discard existing work.
@@ -164,8 +179,9 @@ Get-ScheduledSetupDecision -Desired $inputData.desired -Workflows $inputData.wor
 Interpret the result, never treating an exception as an empty installation:
 
 1. `unchanged`: make no native write, launch no session and leave state unchanged.
-2. `create-disabled`: show the proposed single Local entry for operator confirmation.
-3. `update`: reconcile that exact verified ID, preserving enabled/paused status.
+2. `create-disabled`: report `ai-triage-unavailable` and leave the installation absent.
+   The generic comparison helper's proposal is not authorization to create an entry.
+3. `update`: reconcile only that exact verified disabled ID, preserving disabled/paused status.
 4. `blocked`: surface the reason and, where available, the proposed differences.
 
 A changed prompt, cron, project or mode needs review before applying. Preserve an
@@ -176,17 +192,17 @@ If changing the coordinator model is explicitly requested, include `-UpdateModel
 in both preview and approved invocations. Approval of a cron/prompt refresh alone
 does not reset the model.
 
-## Stage 5: Apply through supported native tools
+## Stage 5: Reconcile only an existing disabled entry
 
-For a new entry, native `save_workflow` receives the helper's exact
-`project_id`, actual `host_id`, name, prompt, `enabled: false`, `mode: autopilot`,
-selected model, `interval: manual` and `cron_expression`. If direct creation is
-unavailable, open the creation confirmation dialog with those known values and
-have the operator select/confirm the Local host. Never guess native fields or
-introduce unsupported AI-credit/billing caps.
+Do not create a Local automation, even when the comparison helper proposes
+`create-disabled`. Do not create a separate triage or repair entry. Missing
+implementation is a capability blocker, not a remaining operator canary that can
+be asserted complete. If an existing entry is unexpectedly enabled, report its
+actual state and stop for operator reconciliation; do not activate other controls
+or silently replace it.
 
 For one existing managed entry, call `save_workflow` with its `workflow_id` and
-only approved differences. Do not set `enabled: true`, overwrite a renamed entry's
+only approved differences while keeping it disabled. Do not set `enabled: true`, overwrite a renamed entry's
 name, remove an operator model, reset native sessions or assume updating requires
 recreation. If the tool requires another confirmation, obtain it normally.
 
@@ -197,7 +213,7 @@ installation-test PR or start a repair as part of setup.
 
 ## Stage 6: Register the observed profile without changing work
 
-Re-read the actual saved entry. Confirm project, Local environment, selected account,
+Re-read the actual existing entry. Confirm project, Local environment, selected account,
 cron, timezone and next-run preview with native UI. Do not assume timezone semantics.
 Record the installed non-secret profile: automation/project/host/executor/login,
 cadence/timezone/enabled, canonical policy and saved-prompt digests, and selected
@@ -209,14 +225,10 @@ without that capability.
 
 Proposed model defaults are `gpt-5.4-mini` with medium effort for coordination and
 `gpt-6-astra` with high effort for repair, subject to the operator's selection.
-Preserve existing choices. Native idle `open_issue_session` plus subsequent
-`send_session_message` alone exposes no repair-model override. Use the supported
-`open_issue_session.kickoff` model/effort fields with the strictly inert interactive
-bootstrap specified in `scheduled-intake`. Register the actual returned session
-before enqueuing the real autopilot instruction. The bootstrap performs no
-commands, edits, branch changes or publication. Verify this ordering/model behavior
-in the pilot; retain the configured model of an existing owned session. Do not
-supply a fictitious `repair_model` field to `save_workflow`.
+Preserve existing choices and retain the configured model of every owned repair
+session. Do not open a model bootstrap or launch a repair pilot during setup.
+These recorded choices do not establish executable AI triage support.
+Do not supply a fictitious `repair_model` field to `save_workflow`.
 
 ```powershell
 Set-StrictMode -Version Latest
@@ -226,8 +238,7 @@ Import-Module .\scripts\scheduled\LocalState.psm1 -Force
 Invoke-ScheduledLocalRequest -RequestPath "{{REQUEST_PATH}}"
 ```
 
-Use an operator-approved `initialize` request only for established first enrollment,
-then `register-profile`. Existing enrollment uses only `register-profile`; unchanged
+Use only `register-profile` for a verified existing enrollment; unchanged
 registration is a no-op. Do not change mode to repair. An explicit pause stays paused
 and all attempt/start/continuation history stays intact. Do not call `record-scan`:
 setup is not successful intake.
@@ -247,12 +258,15 @@ was updated.
 
 ## Stage 7: Report installation outcome and remaining manual gates
 
-Report whether setup was unchanged, created-disabled, updated or blocked, with
+Report whether the existing setup was unchanged, updated or blocked, with
 the actual automation/project/Local host, observed schedule/timezone and mode.
+Always identify `ai-triage-unavailable` and distinguish it from operator-controlled
+readiness gates. No complete two-automation architecture or new repair admission
+is available in this phase.
 Report missing personal entitlement attribution, native consent, local tooling,
 issue-session reuse/branch naming, sleep/restart pilot, scope/enrollment or
 publication safeguards as applicable.
 
-Confirm that no run was triggered, repair was not enabled, account settings were
+Confirm that no automation was created or enabled, no run was triggered, account settings were
 not changed and existing state/session ownership was preserved. List only genuine
 remaining operator actions. Stop; no test run, background watcher or follow-up timer.

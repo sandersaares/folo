@@ -1,7 +1,6 @@
 #Requires -Modules @{ ModuleName = 'Pester'; ModuleVersion = '5.0' }
-# Protects finding identity and merge semantics: two observations of the same defect must resolve
-# to the same finding id regardless of incidental evidence (line/column shifts, run metadata), and
-# merging must never let a newer, weaker observation silently supersede stronger prior evidence.
+# Protects coverage and compatibility handling for existing repair records: newer, weaker
+# evidence must not supersede a stronger reproduction or falsely confirm an existing repair.
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
@@ -11,16 +10,10 @@ BeforeAll {
     Import-Module (Join-Path $PSScriptRoot 'ScheduledContracts.psm1') -Force
     Import-Module (Join-Path $PSScriptRoot 'ScheduledPlan.psm1')
     Import-Module (Join-Path $PSScriptRoot 'ScheduledReport.psm1') -Force
-    function Get-ReportTestIdentity {
-        @{
-            kind = 'miri'; package = 'events'; platform = 'ubuntu-latest'; path = 'src\lib.rs'
-            function = ''; mutation = ''; test = 'example'; seed = '42'; flags = @('-Zmiri-seed=42')
-        }
-    }
     function Get-ReportTestRecord {
         @{
             schema_version = 1; repository = 'folo-rs/folo'; repository_id = 850321188
-            finding_id = Get-ScheduledFindingId 'folo-rs/folo' (Get-ReportTestIdentity)
+            finding_id = 'f' * 64
             generation = 1; status = 'open'; check_id = 'miri-ubuntu-latest'; package = 'events'
             platform = 'ubuntu-latest'; applicability = @{}; source_sha = 'a' * 40
             controller_sha = 'a' * 40; check_contract_digest = 'c' * 64
@@ -48,25 +41,6 @@ BeforeAll {
             check_contract_digest = $manifest.check_contract_digest; outcome = 'passed'
             run_id = $context.run_id; run_attempt = $context.run_attempt; run_number = $context.run_number
         }
-    }
-}
-
-Describe 'Stable finding identity' {
-    It 'ignores SHA clock run and line-only movement while preserving semantic identity' {
-        $identity = Get-ReportTestIdentity
-        $id = Get-ScheduledFindingId 'folo-rs/folo' $identity
-        $identity.source_sha = 'b' * 40
-        $identity.run_id = 99
-        $identity.line = 123
-        $identity.column = 4
-        $identity.completed_at = '2026-09-09T00:00:00Z'
-        $identity.path = 'src/lib.rs'
-        Get-ScheduledFindingId 'folo-rs/folo' $identity | Should -BeExactly $id
-        $identity.test = 'other'
-        Get-ScheduledFindingId 'folo-rs/folo' $identity | Should -Not -Be $id
-    }
-    It 'requires complete semantic identity' {
-        { Get-ScheduledFindingId 'folo-rs/folo' @{} } | Should -Throw
     }
 }
 

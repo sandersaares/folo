@@ -45,11 +45,12 @@ Local App triage timer -> AI run analysis -> deduplicated actionable problem iss
 Local App repair timer -> problem intake -> owned repair session -> PR
 ```
 
-The Local triage automation polls unprocessed run-level intake. The independent repair
-automation polls completed actionable problem records and registered PRs. An issue write
-does not directly dispatch either agent. Both have reviewed three-hour schedules; repair
-retains cron `17 */3 * * *`. Their verified App timezone is independent of GitHub's UTC
-health timer. No timer offset is a completion guarantee or synchronization mechanism.
+Hosted intake does not dispatch Local AI. The retained repair coordinator can
+inspect registered work but cannot reserve new repairs; it reports the unavailable
+triage capability even if policy is otherwise permissive. A downstream triage
+consumer has the run-record contract, not a running implementation supplied by
+these workflows. The saved repair entry retains cron `17 */3 * * *` and stays
+disabled. Its verified App timezone is independent of GitHub's UTC health timer.
 A repair session's PR activity triggers normal PR workflows. A human merge
 produces the `main` push that starts targeted confirmation. Reporter completions,
 health runs and reusable child jobs do not recursively trigger scheduled reporting.
@@ -122,17 +123,18 @@ trusts pull-request and `main` subjects, not merge-group subjects.
 `scripts/scheduled/ScheduledContracts.psm1` owns versioned record validation and stable
 identities, not AI root-cause decisions. Reporter-owned run records in run-level
 issue bodies contain execution evidence; separate hosted records retain coverage
-and authoritative confirmation. Triage records in dedicated comments on run-level
+and authoritative confirmation. The downstream contract assigns triage records to dedicated comments on run-level
 issues contain analysis status and problem-issue links. Triage-owned problem records
 in problem-issue bodies contain diagnosis, actionable scope and supporting evidence.
 Repair-session and PR records
 describe repair ownership. Replacing one record preserves surrounding prose and other
 owners' records.
 
-Repair intake validates both the personal triager's problem record and its linked
-hosted source evidence. A problem issue need not have the hosted reporter as its author;
-the enrolled triage role creates it. A matching label or personal login alone cannot
-authorize a repair. Repair sessions cannot self-authorize by editing their own triage scope.
+New repair admission is rejected rather than treating a reporter-authored finding
+or a supplied triage marker as authorization. An eventual admission implementation
+must validate the triager's problem record and linked hosted source evidence;
+labels and matching logins alone are insufficient. Existing repair records remain
+available for reconciliation and authoritative confirmation.
 
 ### Immutable execution
 
@@ -209,6 +211,14 @@ GitHub persistence. Hosted reporting serializes originating workflows into one i
 candidate execution has no writer authority. The reporter checks out default-branch controller
 code, validates downloaded artifacts as data and preserves durable minimal reproduction data
 after the larger artifacts expire. It creates run-level intake, not diagnosed problem issues.
+`scheduled-run-record` is the nonpublished Rust owner of typed run evidence,
+deterministic attempt/revision reconciliation and bounded evidence-page payloads.
+It performs no GitHub operations. `ScheduledRunGitHub.psm1` supplies collected
+inputs and performs the ordered API writes. `ScheduledTransport.psm1` owns bounded
+native response capture and UTF-8 process transport, including setup failures
+before any checker result exists. Both reporting utilities are built from the
+trusted controller with its pinned toolchain and separate per-platform target
+directories, never from a candidate checkout or artifact.
 
 #### Run-level failure intake
 
@@ -216,11 +226,36 @@ Inventory actual Actions jobs and steps as well as the declared manifest: failed
 tool setup, planning or artifact upload may produce no checker result. Persist references to
 all unsuccessful jobs, their failed steps and available diagnostics. Collection or parsing
 failures are explicit evidence gaps in the intake, not an empty successful result.
-Retain valid structured observations even when another leg cannot be decoded.
+Retain valid parsed results even when another leg cannot be decoded.
+The attempt-scoped jobs API is fully paginated and checked for duplicate IDs,
+foreign-run metadata and incomplete totals. Failed-job log downloads and durable
+excerpts are bounded; truncation and unavailable logs remain explicit alongside
+the original Actions log URL.
 
 The run issue key is repository/workflow/run identity. Run attempts and their evidence
 revisions are distinct inputs within that issue. A repeated completion notification must
 not duplicate intake; a new attempt must not inherit a prior attempt's triaged checkpoint.
+The issue body holds compact run identity, a publication checkpoint and a bounded
+summary. Complete evidence is split into
+deterministic reporter-owned comment pages, and the index records their confirmed
+references only after every page exists. Retry reconciliation matches stable
+run/attempt/digest/page identity before posting, including after a lost create
+response. An incomplete publication is recoverable and fails reporting; it does
+not claim that unwritten pages were persisted. Existing human text and unrelated
+comments are preserved.
+The checkpoint binds complete revision identities and their actual comment IDs.
+Reconstruction must reproduce it, or differ only by the current revision whose
+pages survived an interrupted index update. Other differences require reconciliation,
+preventing deleted committed history from being silently replaced.
+
+The API adapter flushes a per-run publication journal before writes and preserves
+unknown page operations across retries. Hosted reruns restore it from the preceding
+reporter attempt's provenance-validated artifact. If required recovery evidence is
+missing or an uncertain write is still unobservable, reporting fails without
+repeating that POST. This is an operator-visible recovery condition, not an empty
+queue or a successful publication.
+
+The downstream triage contract is separate from hosted publication:
 The triage record in the run-level issue's automation-owned comment binds each
 analysis entry to run ID, attempt number and evidence digest. Its status is
 `in-progress`, `blocked` or `complete`; only `complete` acknowledges analyzed evidence. The
@@ -243,7 +278,9 @@ Conversely, a green rerun cannot acknowledge analysis of earlier failure evidenc
 
 #### Local AI triage and problem publication
 
-The separately scheduled triage automation follows the
+These are downstream consumer requirements, not an executable stage in hosted
+intake. No hosted parser performs semantic diagnosis or creates problem issues.
+An AI triage implementation must follow the
 [problem contract](../../docs/scheduled-validation.md#problems-and-triage).
 It claims an unprocessed run/attempt revision, uses a capable personally funded AI model to
 analyze every unsuccessful job, and compares all extracted problems with the complete
@@ -282,6 +319,9 @@ or materially changed diagnosis must reconcile existing worker/PR ownership befo
 changing repair scope. Infrastructure problems default to bounded retry/operator recovery;
 triage completeness does not make every problem eligible for a source patch. Triage and
 repair have separate capacity, budgets, pause controls and health checkpoints.
+Until that evidence-bound handoff is supported, the Local inbox and reservation
+transaction reject new repairs while retaining existing attempts and continuation
+accounting.
 
 The problem record binds a versioned set of required check/package/platform/replay
 scopes to its diagnosis and hosted evidence. Admission and managed verification
@@ -354,6 +394,8 @@ The serialized names are compatibility details. Their mapping to operating behav
 Triage has a separately reviewed authorization, installed profile and budget; the repair
 mode cannot implicitly enable it. Both roles require matching persisted enrollment and
 profile, and distinguish disabled/observe/paused behavior from active admission.
+The new-admission capability boundary is not a policy switch: enabling any of those
+settings cannot bypass the unavailable AI-triage handoff.
 
 Safe installation defaults disable hosted execution/reporting and both Local roles,
 and leave repair allowlists unconfigured. Disabled hosted execution means automatic

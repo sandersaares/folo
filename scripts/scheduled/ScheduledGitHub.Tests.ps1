@@ -2,7 +2,7 @@
 # Protects the privileged reporting/health adapter: artifact extraction must resist a path-traversal
 # or symlink-escaping zip regardless of what a candidate run produced, reporting must never publish
 # without `-Apply`/rollout consent, and reporter-owned issue state must merge deterministically
-# rather than duplicate or drop findings across repeated or partially-failed reporting runs.
+# rather than duplicate run intake or drop evidence across repeated or incomplete executions.
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
@@ -144,6 +144,76 @@ Describe 'Authoritative GitHub metadata' {
     }
 }
 
+Describe 'Reporter rerun publication recovery' {
+    InModuleScope ScheduledGitHub {
+        BeforeEach {
+            $script:savedRunId = $env:GITHUB_RUN_ID
+            $script:savedAttempt = $env:GITHUB_RUN_ATTEMPT
+            $env:GITHUB_RUN_ID = '999'; $env:GITHUB_RUN_ATTEMPT = '2'
+            $script:recoveryPolicy = @{ repository = 'owner/repo'; repository_id = 123 }
+            $script:sourceRun = @{ workflow_id = 456; id = 789 }
+            $caseRoot = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
+            $script:previousDirectory = Join-Path $caseRoot 'previous'
+            $script:currentDirectory = Join-Path $caseRoot 'current'
+            $null = New-Item -ItemType Directory -Path $previousDirectory,$currentDirectory -Force
+            $script:previousRun = @{
+                id = 999; run_attempt = 1; repository = @{ id = 123 }; head_repository = @{ id = 123 }
+                path = '.github/workflows/scheduled-report.yml'; head_branch = 'main'; status = 'completed'
+            }
+            Mock Invoke-ScheduledGitHubApi {
+                if ($Endpoint.EndsWith('/attempts/1')) { return $previousRun }
+                return @(@{ artifacts = @() })
+            }
+            Mock Get-ScheduledArtifact { $previousDirectory }
+        }
+        AfterEach {
+            $env:GITHUB_RUN_ID = $savedRunId
+            $env:GITHUB_RUN_ATTEMPT = $savedAttempt
+        }
+        It 'restores prior write uncertainty before a fresh runner can publish' {
+            $name = 'publication-123-456-789.json'
+            '{"schema_version":1,"stage":"posting-page"}' | Set-Content -LiteralPath (Join-Path $previousDirectory $name)
+            Restore-ScheduledRunPublicationState -Policy $recoveryPolicy -Run $sourceRun -OutputDirectory $currentDirectory
+            (Get-Content -LiteralPath (Join-Path $currentDirectory $name) -Raw | ConvertFrom-Json).stage |
+                Should -BeExactly 'posting-page'
+            Should -Invoke Get-ScheduledArtifact -Times 1 -ParameterFilter {
+                $Run.id -eq 999 -and $Run.run_attempt -eq 1 -and $Name -eq 'scheduled-report-999-1'
+            }
+        }
+        It 'blocks missing recovery evidence instead of assuming the previous writer did nothing' {
+            Mock Get-ScheduledArtifact { throw [IO.IOException]::new('Recovery artifact expired.') }
+            {
+                Restore-ScheduledRunPublicationState -Policy $recoveryPolicy -Run $sourceRun -OutputDirectory $currentDirectory
+            } | Should -Throw '*Recovery artifact expired*'
+        }
+        It 'requires a journal when the prior report was incomplete or created a run issue' -TestCases @(
+            @{ Status = 'incomplete'; Intake = @{} }
+            @{ Status = 'reported'; Intake = @{ number = 41 } }
+        ) {
+            param($Status, $Intake)
+            @{ status = $Status; run_intake = $Intake } | ConvertTo-Json |
+                Set-Content -LiteralPath (Join-Path $previousDirectory 'report.json')
+            {
+                Restore-ScheduledRunPublicationState -Policy $recoveryPolicy -Run $sourceRun -OutputDirectory $currentDirectory
+            } | Should -Throw '*no recoverable publication journal*'
+        }
+        It 'allows a completed no-issue report to have no publication journal' {
+            '{"status":"passed","run_intake":{"requires_triage":false}}' |
+                Set-Content -LiteralPath (Join-Path $previousDirectory 'report.json')
+            {
+                Restore-ScheduledRunPublicationState -Policy $recoveryPolicy -Run $sourceRun -OutputDirectory $currentDirectory
+            } | Should -Not -Throw
+        }
+        It 'rejects recovery artifacts from an untrusted workflow' {
+            $previousRun.path = '.github/workflows/validation.yml'
+            {
+                Restore-ScheduledRunPublicationState -Policy $recoveryPolicy -Run $sourceRun -OutputDirectory $currentDirectory
+            } | Should -Throw '*not the trusted reporter workflow*'
+            Should -Invoke Get-ScheduledArtifact -Times 0
+        }
+    }
+}
+
 Describe 'Archive extraction boundaries' {
     BeforeAll {
         function Write-ReportTestZip($path, $names, $contents = 'test') {
@@ -197,6 +267,7 @@ Describe 'Archive extraction boundaries' {
             BeforeAll {
                 $script:reporterTestRoot = Join-Path $PSScriptRoot "fixtures\reporter\$([guid]::NewGuid().ToString('N'))"
                 $null = New-Item -ItemType Directory -Path $reporterTestRoot -Force
+                $script:runIntakeImplementation = (Get-Command Sync-ScheduledRunIntake).ScriptBlock
             }
             AfterAll { Remove-Item -LiteralPath $reporterTestRoot -Recurse -Force }
             BeforeEach {
@@ -237,6 +308,25 @@ Describe 'Archive extraction boundaries' {
                 Mock Get-ScheduledContractDigest { 'c' * 64 }
                 Mock git { $global:LASTEXITCODE = 0; 'a' * 40 }
                 Mock Get-ScheduledOwnedIssue { @() }
+                Mock Restore-ScheduledRunPublicationState {}
+                Mock Sync-ScheduledRunIntake {
+                    param($Run, $Plan, $Manifest, $Results, $Jobs, $EvidenceGaps, [switch] $Skipped)
+                    $script:capturedRunEvidence = @{
+                        run = $Run; plan = $Plan; manifest = $Manifest; results = $Results
+                        jobs = $Jobs; evidence_gaps = $EvidenceGaps
+                    }
+                    $requiresTriage = $EvidenceGaps.Count -gt 0 -or
+                        (-not $Skipped -and ($Run.conclusion -cne 'success' -or
+                            @($Results | Where-Object outcome -CNE passed).Count -gt 0))
+                    return @{
+                        requires_triage = $requiresTriage
+                        actions = if ($requiresTriage) { @(@{ action = 'run-intake' }) } else { @() }
+                    }
+                }
+                Mock Save-ScheduledGitHubResponse {
+                    [IO.File]::WriteAllText($Path, 'Failed job diagnostic.')
+                    return @{ bytes = 22; truncated = $false }
+                }
                 Mock Invoke-ScheduledGitHubApi {
                     param($Endpoint, $Method)
                     if ($Method -in @('POST', 'PATCH')) { throw 'Unexpected write.' }
@@ -246,6 +336,14 @@ Describe 'Archive extraction boundaries' {
                     }
                     if ($Endpoint -like '*/git/ref/heads/main') { return @{ object = @{ sha = 'a' * 40 } } }
                     if ($Endpoint -like '*/artifacts?*') { return @{ artifacts = @() } }
+                    if ($Endpoint.StartsWith('repos/folo-rs/folo/issues?state=all&labels=scheduled-run-failure')) { return @() }
+                    if ($Endpoint -like '*/attempts/2/jobs?*') {
+                        return @{ total_count = 1; jobs = @(@{
+                            id = 77; run_id = $apiRun.id; run_attempt = $apiRun.run_attempt; head_sha = $apiRun.head_sha
+                            name = 'Execution'; status = 'completed'; conclusion = $apiRun.conclusion
+                            steps = @(@{ number = 1; name = 'Run checks'; status = 'completed'; conclusion = $apiRun.conclusion })
+                        }) }
+                    }
                     throw "Unexpected endpoint: $Endpoint"
                 }
                 Mock Get-ScheduledArtifact { $planRoot }
@@ -269,6 +367,7 @@ Describe 'Archive extraction boundaries' {
                 $report.problems | Should -BeNullOrEmpty
                 $report.status | Should -Be passed
                 $report.applied | Should -BeFalse
+                $report.writes_authorized | Should -BeFalse
                 $report.coverage.receipt.manifest.checks.Count | Should -Be 32
                 $report.coverage.receipt.created_at | Should -Be $apiRun.created_at
                 $report.coverage.receipt.workflow_id | Should -Be $apiRun.workflow_id
@@ -291,6 +390,41 @@ Describe 'Archive extraction boundaries' {
                     $Name -like 'scheduled-plan-*' -and [IO.Path]::IsPathFullyQualified($OutputDirectory)
                 }
             }
+            It 'serializes a setup-only failure through the real Rust intake contract' {
+                $apiRun.conclusion = 'failure'
+                @{
+                    action = 'completed'; workflow_run = $apiRun
+                    repository = @{ id = 850321188; full_name = 'folo-rs/folo'; default_branch = 'main' }
+                } | ConvertTo-Json -Depth 50 | Set-Content -LiteralPath $eventFile
+                Mock Get-ScheduledArtifact { throw [IO.IOException]::new('Setup produced no plan artifact.') }
+                Mock Sync-ScheduledRunIntake {
+                    param($Policy, $Run, $Plan, $Manifest, $Results, $Jobs, $EvidenceGaps, $Artifacts,
+                        $TransientPaths, $OutputDirectory, $Api, [switch] $Skipped, [switch] $Apply)
+                    & $script:runIntakeImplementation @PSBoundParameters
+                }
+                $report = Invoke-ScheduledReporting 'folo-rs/folo' $eventFile (Join-Path $caseRoot 'setup-only')
+                $report.status | Should -BeExactly 'reported'
+                $report.applied | Should -BeFalse
+                $report.coverage.receipt | Should -BeNullOrEmpty
+                $report.run_intake.actions[0].payload.labels | Should -Be @('scheduled-run-failure')
+                $comments = @(
+                    $id = 100
+                    foreach ($page in $report.run_intake.planned_pages) {
+                        @{ id = $id; body = $page.body }
+                        $id++
+                    }
+                )
+                $restored = Invoke-ScheduledRunRecord @{
+                    op = 'restore'; identity = @{ repository_id = 850321188; workflow_id = 100; run_id = 10 }
+                    comments = $comments
+                }
+                $evidence = $restored.record.revisions[0].evidence.attempt
+                $evidence.plan | Should -BeNullOrEmpty
+                $evidence.jobs[0].steps[0].name | Should -BeExactly 'Run checks'
+                $evidence.jobs[0].log.excerpt | Should -BeExactly 'Failed job diagnostic.'
+                $evidence.evidence_gaps | Should -Contain 'Setup produced no plan artifact.'
+                Should -Invoke Invoke-ScheduledGitHubApi -Times 0 -ParameterFilter { $Method -in @('POST', 'PATCH') }
+            }
             It 'routes enabled reporting without requiring hosted execution or the native App pilot' {
                 $apiPolicy.rollout.reporting_enabled = $true
                 Mock Assert-ScheduledWriteController {}
@@ -298,13 +432,15 @@ Describe 'Archive extraction boundaries' {
                 $report = Invoke-ScheduledReporting 'folo-rs/folo' $eventFile (Join-Path $caseRoot 'report') -Apply
                 $report.problems | Should -BeNullOrEmpty
                 $report.applied | Should -BeTrue
+                $report.writes_authorized | Should -BeTrue
                 Should -Invoke Assert-ScheduledWriteController -Times 1
                 Should -Invoke Invoke-ScheduledGitHubApi -Times 1 -ParameterFilter { $Method -ceq 'POST' }
             }
             It 'invalidates coverage on missing raw evidence without manufacturing a clean result' {
                 Mock Get-ScheduledArtifact { throw [IO.IOException]::new('Unavailable artifact.') } -ParameterFilter { $Name -like 'scheduled-result-*' }
                 $report = Invoke-ScheduledReporting 'folo-rs/folo' $eventFile (Join-Path $caseRoot 'report')
-                $report.status | Should -Be incomplete
+                $report.status | Should -Be reported
+                $report.run_intake.requires_triage | Should -BeTrue
                 $report.coverage.receipt | Should -BeNullOrEmpty
                 $report.coverage.invalidation.outcome | Should -Be incomplete
                 Should -Invoke Get-ScheduledCheckResult -Times 0
@@ -314,7 +450,7 @@ Describe 'Archive extraction boundaries' {
                 $apiPlan.manifest.checks = @($apiPlan.manifest.checks[0])
                 $apiPlan | ConvertTo-Json -Depth 50 | Set-Content -LiteralPath (Join-Path $planRoot 'plan.json')
                 $report = Invoke-ScheduledReporting 'folo-rs/folo' $eventFile (Join-Path $caseRoot 'report')
-                $report.status | Should -Be incomplete
+                $report.status | Should -Be reported
                 $report.coverage.receipt | Should -BeNullOrEmpty
                 Should -Invoke Get-ScheduledCheckResult -Times 0
             }
@@ -353,7 +489,7 @@ Describe 'Archive extraction boundaries' {
                 }
                 Should -Invoke Get-ScheduledCheckResult -Times 32
             }
-            It 'retains independent findings and coverage when a full-main confirmation is stale' {
+            It 'retains run evidence and coverage when an existing repair confirmation is stale' {
                 $script:staleIssue = @{
                     number = 42; state = 'open'; user = @{ login = 'github-actions[bot]' }
                     body = Write-ScheduledRecord @{
@@ -379,11 +515,12 @@ Describe 'Archive extraction boundaries' {
                     return $result
                 } -ParameterFilter { $Check.id -ceq 'miri-ubuntu-latest' }
                 $report = Invoke-ScheduledReporting 'folo-rs/folo' $eventFile (Join-Path $caseRoot 'stale')
-                $report.status | Should -Be incomplete
+                $report.status | Should -Be reported
                 $report.problems | Should -Contain 'Issue 42 confirmation: Retired executor.'
                 $report.coverage.invalidation.outcome | Should -Be findings
-                @($report.actions | Where-Object { $_.payload.labels -contains 'scheduled-finding' }).Count | Should -Be 1
-                @($report.actions | Where-Object { $_.endpoint -ceq 'repos/folo-rs/folo/issues/42' }).Count | Should -Be 0
+                $report.run_intake.requires_triage | Should -BeTrue
+                @($capturedRunEvidence.results.findings | Where-Object summary -CEQ 'Independent defect').Count | Should -Be 1
+                @($report.actions | Where-Object { $_.ContainsKey('endpoint') -and $_.endpoint -ceq 'repos/folo-rs/folo/issues/42' }).Count | Should -Be 0
             }
             It 'persists explicit incomplete output when triggering metadata is untrusted' {
                 $apiRun.head_repository.id = 999
@@ -392,7 +529,7 @@ Describe 'Archive extraction boundaries' {
                 $report.actions.Count | Should -Be 0
                 Should -Invoke Get-ScheduledArtifact -Times 0
             }
-            It 'retains reparsed <ResultOutcome> findings when the workflow is <Conclusion>' -TestCases @(
+            It 'retains reparsed <ResultOutcome> evidence for AI triage when the workflow is <Conclusion>' -TestCases @(
                 @{ Conclusion = 'success'; ResultOutcome = 'findings' }
                 @{ Conclusion = 'failure'; ResultOutcome = 'findings' }
                 @{ Conclusion = 'failure'; ResultOutcome = 'incomplete' }
@@ -422,29 +559,24 @@ Describe 'Archive extraction boundaries' {
                 $report = Invoke-ScheduledReporting 'folo-rs/folo' $eventFile (Join-Path $caseRoot 'report')
                 if ($ResultOutcome -eq 'findings') {
                     $report.problems | Should -BeNullOrEmpty
-                    $report.status | Should -Be findings
+                    $report.status | Should -Be reported
                     $report.coverage.invalidation.outcome | Should -Be findings
                 } else {
-                    $report.status | Should -Be incomplete
+                    $report.status | Should -Be reported
                     $report.coverage.invalidation.outcome | Should -Be incomplete
                 }
                 $report.coverage.receipt | Should -BeNullOrEmpty
-                $findingActions = @($report.actions | Where-Object { $_.payload.labels -contains 'scheduled-finding' })
-                $findingActions.Count | Should -Be 1
-                $findingRecord = Read-ScheduledRecord $findingActions[0].payload.body reporter
-                $findingRecord.observation.run_attempt | Should -Be 2
-                $findingRecord.check_id | Should -BeExactly 'miri-ubuntu-latest'
-                $findingRecord.check_kind | Should -BeExactly 'miri'
-                $findingRecord.status | Should -Be open
-                $findingRecord.evidence.summary | Should -Be 'Example failure'
-                $findingRecord.repository_id | Should -Be 850321188
-                $findingRecord.observation.workflow_path | Should -BeExactly $apiRun.path
-                $issue = @{
-                    number = 42; body = $findingActions[0].payload.body; user = @{ login = 'github-actions[bot]' }
-                }
-                $incident = ConvertTo-ScheduledIncident -Issue $issue -Comments @() -Repository 'folo-rs/folo' -Run $apiRun
-                $incident.finding_id | Should -BeExactly $findingRecord.finding_id
-                $incident.issue_number | Should -Be 42
+                $report.run_intake.requires_triage | Should -BeTrue
+                $capturedRunEvidence.run.run_attempt | Should -Be 2
+                $capturedRunEvidence.run.path | Should -BeExactly $apiRun.path
+                $capturedRunEvidence.jobs.Count | Should -Be 1
+                $failure = @($capturedRunEvidence.results | Where-Object check_id -CEQ 'miri-ubuntu-latest')[0]
+                $failure.actual_scope.kind | Should -BeExactly 'miri'
+                $failure.findings[0].summary | Should -BeExactly 'Example failure'
+                @($report.actions | Where-Object {
+                    $_.ContainsKey('payload') -and $_.payload.ContainsKey('labels') -and
+                    $_.payload.labels -contains 'scheduled-finding'
+                }).Count | Should -Be 0
             }
             It 'never certifies apparently green artifacts from a failed workflow' {
                 $apiRun.conclusion = 'failure'
@@ -453,10 +585,10 @@ Describe 'Archive extraction boundaries' {
                     repository = @{ id = 850321188; full_name = 'folo-rs/folo'; default_branch = 'main' }
                 } | ConvertTo-Json -Depth 50 | Set-Content -LiteralPath $eventFile
                 $report = Invoke-ScheduledReporting 'folo-rs/folo' $eventFile (Join-Path $caseRoot 'report')
-                $report.status | Should -Be incomplete
+                $report.status | Should -Be reported
                 $report.coverage.receipt | Should -BeNullOrEmpty
                 $report.coverage.invalidation.outcome | Should -Be incomplete
-                @($report.actions | Where-Object { $_.payload.labels -contains 'scheduled-finding' }).Count | Should -Be 0
+                $report.run_intake.requires_triage | Should -BeTrue
             }
             It 'consumes declared confirmations and persists confirmed needs-human and retry merge dispositions' {
                 $apiRun.name = 'Scheduled verification'
@@ -500,24 +632,33 @@ Describe 'Archive extraction boundaries' {
                     $result.outcome = $verificationOutcome; $result.findings = @()
                     return $result
                 }
-                foreach ($disposition in @('confirmed', 'needs-human', 'retry')) {
-                    $script:verificationOutcome = if ($disposition -ceq 'retry') { 'incomplete' } else { 'passed' }
+                foreach ($disposition in @('confirmed', 'needs-human', 'failed', 'retry')) {
+                    $script:verificationOutcome = switch ($disposition) {
+                        failed { 'findings' }
+                        retry { 'incomplete' }
+                        default { 'passed' }
+                    }
+                    $apiRun.conclusion = if ($disposition -ceq 'failed') { 'failure' } else { 'success' }
+                    $eventValue = Get-Content -LiteralPath $eventFile -Raw | ConvertFrom-Json -AsHashtable
+                    $eventValue.workflow_run.conclusion = $apiRun.conclusion
+                    $eventValue | ConvertTo-Json -Depth 50 | Set-Content -LiteralPath $eventFile
                     $script:trustedDisposition = @{
                         authoritative = $true; generation = 1; merge_commit_sha = 'a' * 40; pr_number = 3
-                        scope_complete = $disposition -cne 'retry'; successful = $disposition -cne 'retry'
+                        scope_complete = $disposition -cne 'retry'; successful = $disposition -cnotin @('failed', 'retry')
                         explained = $disposition -ceq 'confirmed'; status = $disposition
                     }
                     $report = Invoke-ScheduledReporting 'folo-rs/folo' $eventFile (Join-Path $caseRoot $disposition)
                     $report.problems | Should -BeNullOrEmpty
-                    $action = @($report.actions | Where-Object { $_.endpoint -ceq 'repos/folo-rs/folo/issues/42' })
+                    $action = @($report.actions | Where-Object { $_.ContainsKey('endpoint') -and $_.endpoint -ceq 'repos/folo-rs/folo/issues/42' })
                     $action.Count | Should -Be 1
                     $updated = Read-ScheduledRecord $action[0].payload.body reporter
                     $updated.confirmation.status | Should -BeExactly $disposition
                     $updated.confirmation.merge_commit_sha | Should -BeExactly ('a' * 40)
-                    $expectedState = if ($disposition -ceq 'retry') { 'open' } else { $disposition }
+                    $expectedState = if ($disposition -cin @('failed', 'retry')) { 'open' } else { $disposition }
                     $updated.status | Should -BeExactly $expectedState
+                    $updated.confirmation.scope_complete | Should -Be ($disposition -cne 'retry')
                 }
-                Should -Invoke Get-ScheduledTrustedConfirmation -Times 3 -ParameterFilter { $Declaration.issue_number -eq 42 }
+                Should -Invoke Get-ScheduledTrustedConfirmation -Times 4 -ParameterFilter { $Declaration.issue_number -eq 42 }
                 $script:verificationOutcome = 'passed'
                 $script:trustedDisposition.status = 'confirmed'
                 $script:trustedDisposition.scope_complete = $true
@@ -526,6 +667,14 @@ Describe 'Archive extraction boundaries' {
                 $script:apiRun.name = 'Scheduled validation'
                 $script:apiRun.path = '.github/workflows/scheduled-validation.yml'
                 $script:apiRun.event = 'schedule'
+                $script:apiRun.conclusion = 'failure'
+                Mock Get-ScheduledCheckResult {
+                    param($Check, $RunContext)
+                    $result = $RunContext.Clone()
+                    $result.schema_version = 1; $result.check_id = $Check.id; $result.actual_scope = $Check
+                    $result.outcome = 'findings'; $result.findings = @(@{ summary = 'Independent failure'; replay = $Check })
+                    return $result
+                } -ParameterFilter { $Check.id -ceq 'miri-windows-latest' }
                 @{
                     action = 'completed'; workflow_run = $apiRun
                     repository = @{ id = 850321188; full_name = 'folo-rs/folo'; default_branch = 'main' }
@@ -538,7 +687,8 @@ Describe 'Archive extraction boundaries' {
                 $script:verificationIssue.body = Write-ScheduledRecord $record reporter
                 $fullReport = Invoke-ScheduledReporting 'folo-rs/folo' $eventFile (Join-Path $caseRoot 'full-main')
                 $fullReport.problems | Should -BeNullOrEmpty
-                $fullAction = @($fullReport.actions | Where-Object { $_.endpoint -ceq 'repos/folo-rs/folo/issues/42' })
+                $fullReport.status | Should -BeExactly 'reported'
+                $fullAction = @($fullReport.actions | Where-Object { $_.ContainsKey('endpoint') -and $_.endpoint -ceq 'repos/folo-rs/folo/issues/42' })
                 $fullAction.Count | Should -Be 1
                 (Read-ScheduledRecord $fullAction[0].payload.body reporter).status | Should -BeExactly confirmed
                 Should -Invoke Get-ScheduledTrustedConfirmation -Times 1 -ParameterFilter { $null -eq $Declaration }
@@ -592,6 +742,12 @@ Describe 'Safe durable writes' {
             $coverage.payload.title | Should -Be 'Scheduled coverage and health'
             (Read-ScheduledRecord -Text $coverage.payload.body -Kind coverage).receipt | Should -BeNullOrEmpty
             $coverage.payload.body.StartsWith('[Copilot speaking]') | Should -BeTrue
+            Should -Invoke Invoke-ScheduledGitHubApi -Times 0
+        }
+        It 'cannot create a diagnosed problem issue even when reporting writes are enabled' {
+            $policy.rollout.reporting_enabled = $true
+            { Sync-ScheduledIssue -Policy $policy -Issue $null -Record $record -Kind reporter -Apply } |
+                Should -Throw '*cannot create problem issues*'
             Should -Invoke Invoke-ScheduledGitHubApi -Times 0
         }
         It 'updates only the coverage body and never writes a local health comment' {

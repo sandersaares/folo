@@ -1,16 +1,16 @@
 #Requires -Modules @{ ModuleName = 'Pester'; ModuleVersion = '5.0' }
-# End-to-end regression for the reporter-to-worker contract: a durable finding record written by
-# the reporting side must be readable, admissible and recognizable by the Local admission modules
-# across the full reporter -> Local admission -> recognition chain, not just within one module's
-# own unit tests where the other side's format is assumed rather than exercised.
+# End-to-end compatibility for historical reporter records and registered repairs: retained
+# ownership can reach managed PR recognition, but neither a reporter record nor enabled policy
+# authorizes new repair admission. Legacy ownership is seeded only in an isolated Pester fixture.
 BeforeAll {
-    foreach ($name in @('ScheduledContracts', 'ScheduledPlan', 'ScheduledReport', 'LocalState', 'LocalInbox', 'ScheduledGate')) {
+    foreach ($name in @('ScheduledContracts', 'ScheduledPlan', 'LocalState', 'LocalInbox', 'ScheduledGate')) {
         Import-Module (Join-Path $PSScriptRoot "$name.psm1")
     }
+    Import-Module (Join-Path $PSScriptRoot 'fixtures' 'LocalLegacyState.psm1') -Force
 }
 
-Describe 'Reporter to registered repair contract' {
-    It 'carries durable evidence through Local admission to recognition on the initial PR event' {
+Describe 'Historical evidence and retained repair contract' {
+    It 'rejects new admission while preserving legacy evidence and registered PR recognition' {
         $policy = Get-ScheduledPolicy
         $policy.local.mode = 'repair'
         $policy.local.enrolled_machine_id = 'fixture-executor'
@@ -24,11 +24,8 @@ Describe 'Reporter to registered repair contract' {
         $manifest = Get-ScheduledCheckManifest -SourceSha ('a' * 40) -ControllerSha ('a' * 40) `
             -ContractDigest ('c' * 64)
         $check = @($manifest.checks | Where-Object id -CEQ 'miri-many-events_once-2')[0]
-        $findingId = Get-ScheduledFindingId -Repository $policy.repository -Identity @{
-            kind = $check.kind; package = 'events_once'; platform = $check.platform; test = 'slot::transition'
-            path = 'packages\events_once\src\slot.rs'; function = 'slot::transition'
-            mutation = $null; seed = 31; flags = $check.flags
-        }
+        # Historical reporter identity is persisted data, not a new semantic diagnosis.
+        $findingId = 'f' * 64
         $record = @{
             schema_version = 1; repository = $policy.repository; repository_id = $policy.repository_id
             finding_id = $findingId; generation = 1; status = 'open'
@@ -49,7 +46,7 @@ Describe 'Reporter to registered repair contract' {
         }
         $issue = @{
             number = 42; state = 'open'; created_at = $now.ToString('o'); labels = @()
-            user = @{ login = $policy.reporter_login }; body = Get-ScheduledFindingBody $record
+            user = @{ login = $policy.reporter_login }; body = Write-ScheduledRecord -Kind reporter -Record $record
         }
         $run = @{
             id = 10; run_attempt = 1; run_number = 5; status = 'completed'
@@ -76,17 +73,21 @@ Describe 'Reporter to registered repair contract' {
         }
         $state = Invoke-ScheduledLocalAction @action -Action set-mode -Data @{ operator_approved = $true; mode = 'repair' }
         $decision = Get-ScheduledInboxDecision -Policy $policy -State $state -Incidents @($incident) -Now $now
-        $decision.eligible.Count | Should -Be 1
-        $eligible = $decision.eligible[0]
+        $decision.eligible.Count | Should -Be 0
+        $decision.blocked_conditions | Should -Contain ai-triage-unavailable
         $state = Invoke-ScheduledLocalAction @action -Action acquire-coordinator -Data @{ owner_session_id = 'coordinator' }
         $coordinatorToken = $state.coordinator.token
-        $state = Invoke-ScheduledLocalAction @action -Action reserve-attempt -Data @{
-            coordinator_token = $coordinatorToken; issue_number = $eligible.issue_number
-            finding_id = $eligible.finding_id; generation = $eligible.generation
-            package = $eligible.package; check_id = $eligible.check_id; check_kind = $eligible.check_kind
-            check_contract_digest = $eligible.check_contract_digest; evidence_key = Get-ScheduledDigest $eligible.evidence
-        }
-        $attempt = @($state.attempts.Values)[0]
+        $before = Get-Content -LiteralPath (Join-Path $action.StateRoot 'state.json') -Raw
+        { Invoke-ScheduledLocalAction @action -Action reserve-attempt -Data @{
+            coordinator_token = $coordinatorToken; issue_number = $incident.issue_number
+            finding_id = $incident.finding_id; generation = $incident.generation
+            package = $incident.package; check_id = $incident.check_id; check_kind = $incident.check_kind
+            check_contract_digest = $incident.check_contract_digest; evidence_key = Get-ScheduledDigest $incident.evidence
+        } } | Should -Throw -ExceptionType ([NotSupportedException])
+        (Get-Content -LiteralPath (Join-Path $action.StateRoot 'state.json') -Raw) | Should -BeExactly $before
+        $attempt = Add-TestLegacyAttempt -StateRoot $action.StateRoot -StartedAt $now `
+            -Issue $issue.number -Finding $findingId -CheckId $check.id -CheckKind $check.kind `
+            -ContractDigest $manifest.check_contract_digest -EvidenceKey (Get-ScheduledDigest $incident.evidence)
         $workerData = @{ attempt_id = $attempt.attempt_id; session_id = 'worker'; dispatch_token = $attempt.dispatch.token }
         $coordinatorData = @{ coordinator_token = $coordinatorToken; attempt_id = $attempt.attempt_id }
         $null = Invoke-ScheduledLocalAction @action -Action begin-session-open -Data $coordinatorData
@@ -115,11 +116,15 @@ Describe 'Reporter to registered repair contract' {
         $scope.packages | Should -Be @('events_once')
         $scope.check_ids.Count | Should -Be 4
         $scope.check_ids | Should -Contain 'miri-many-events_once-4'
+        $registered = Get-ScheduledInboxDecision -Policy $policy -State $state -Incidents @() -Now $now
+        $registered.registered_attempts.session_id | Should -Be worker
+        $registered.registered_attempts.branch | Should -Be $branch
+        $registered.blocked_conditions | Should -Contain ai-triage-unavailable
         $repair.explanation | Should -BeExactly $worker.explanation
         (Read-ScheduledRecord $issue.body reporter).evidence.replay.seed | Should -Be 31
         $incident.evidence.summary | Should -BeExactly $record.evidence.summary
         $record.status = 'needs-human'
-        $issue.body = Get-ScheduledFindingBody $record
+        $issue.body = Write-ScheduledRecord -Kind reporter -Record $record
         (Get-ScheduledRepairScope -PullRequest $pr -Issue $issue -Worker $worker -Policy $policy).managed | Should -BeTrue
         $incident.status = 'needs-human'
         $freshState = $state.Clone()

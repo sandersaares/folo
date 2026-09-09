@@ -10,9 +10,11 @@ Ownership of the release-validation pipeline is in [implementation.md](implement
 The [scheduled validation contract](../../docs/scheduled-validation.md) separates deterministic
 hosted evidence collection from personally authorized Local Copilot App AI. Hosted reporting
 files run-level **Scheduled validation failed** intake issues without depending on App availability.
-A triage automation analyzes each failed run and produces deduplicated problem issues.
-A separate repair automation progresses those problems through check failures, moved `main`,
-version readiness and review feedback to human acceptance; only a human approves and merges.
+Hosted workflows stop at that durable intake. AI diagnosis, causal deduplication
+and new source repairs are downstream responsibilities, not deterministic reporter
+decisions. The Local boundary rejects new repair admissions; configuration alone
+cannot turn raw run evidence into repair authority. Existing registered repairs
+retain their sessions and confirmation path. Only a human approves and merges.
 
 ### Problem tracking
 
@@ -22,7 +24,7 @@ update its existing issue; unrelated problems in the same run have separate life
 A confirmed recurrence reopens its issue with a new occurrence number. One active
 problem has at most one repair session and one PR, independently of repository capacity.
 
-The Local AI triage automation analyzes every unsuccessful job and relevant failed step
+An AI triage consumer must analyze every unsuccessful job and relevant failed step
 before reconciling problem issues. It extracts all supported problems, groups established
 duplicates across jobs and runs, and creates a problem issue only for an unmatched problem. This includes
 infrastructure failures and failed prerequisites, not just test defects. A package
@@ -41,8 +43,9 @@ can describe the same problem, and one run can describe several unrelated proble
 Closing a run issue as triaged only acknowledges complete analysis and issue linkage;
 it does not claim that its problems are resolved. Repair admission requires a completed,
 actionable triage result and never consumes an unexamined workflow-failure issue.
-The automations have independent schedules, claims, budgets and health signals.
-Neither a timer offset nor success in one queue establishes progress in the other.
+The consumer contract does not imply that an AI triage implementation or new
+repair-admission path is available. Independent schedules, claims, budgets and
+health remain requirements for that handoff; a timer is not an implementation.
 
 ### Shallow and deep validation
 
@@ -58,7 +61,7 @@ execution does not alter the local recipes or insert deep checks into ordinary C
 it leaves automatic recurring deep coverage disabled.
 
 Installation is not authorization to run or publish. Safe defaults leave hosted execution and
-reporting disabled and Local triage and repair admission unconfigured.
+reporting disabled. Local triage is not dispatched and new repair admission is rejected.
 The operator approves enrollment, scope and operating settings; installing or reconciling
 either automation does not activate them.
 
@@ -69,6 +72,11 @@ workflow or an empty defect list. Compatible full successes can be reused for un
 within the reviewed maximum age. A skip preserves the age of that success; a newer failed or
 incomplete attempt invalidates it. Setup failures are execution problems, not a defect in each
 package that setup prevented from running.
+Actual Actions jobs and steps are inventoried independently of checker artifacts.
+Failed jobs retain bounded log excerpts, original-log references and explicit
+capture gaps. Run evidence is paginated into durable issue comments rather than
+discarded to fit an issue-body limit. Recording a failed execution successfully
+is reporting success, not passing validation.
 An empty mutation shard can establish coverage only through successful exact-scope discovery and
 an unmutated baseline. Missing output and a zero-match requested replay are not empty-shard proof.
 Reproductions preserve the observed invocation scope; an unattributed Miri failure must not be

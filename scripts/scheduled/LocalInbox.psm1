@@ -3,13 +3,11 @@ $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
 
 # The `scheduled-intake` skill's single entrypoint (../../.github/skills/scheduled-intake/SKILL.md):
-# a fresh coordinator session imports only this module, scans the reporter-authored backlog and
-# decides which incident (if any) to admit, without itself editing source or calling native App
-# tools. It reads durable executor state through LocalState.psm1, collects the open finding/coverage
-# issues through LocalGitHub.psm1, validates each one through ScheduledContracts.psm1, and folds in
-# hosted-schedule staleness through LocalLifecycle.psm1's `Get-ScheduledHostedCondition` before it
-# can influence admission. See
-# ../../docs/scheduled-validation.md#durable-ownership-and-native-calls.
+# a coordinator reads historical reporter records and retained attempts for reconciliation,
+# without editing source or calling native App tools. New repair admission is unsupported until
+# executable AI triage exists; hosted run evidence is not repair authorization. Coverage and
+# schedule health remain observable through LocalGitHub.psm1 and LocalLifecycle.psm1. See
+# ../../docs/scheduled-validation.md#purpose-and-responsibility.
 Import-Module (Join-Path $PSScriptRoot 'ScheduledContracts.psm1')
 Import-Module (Join-Path $PSScriptRoot 'LocalState.psm1')
 Import-Module (Join-Path $PSScriptRoot 'LocalGitHub.psm1')
@@ -23,7 +21,6 @@ function Get-ScheduledInboxDecision {
         [Parameter(Mandatory)][AllowEmptyCollection()][object[]] $Incidents,
         [Parameter(Mandatory)][DateTimeOffset] $Now
     )
-    $eligible = [Collections.Generic.List[object]]::new()
     $deferred = [Collections.Generic.List[object]]::new()
     foreach ($incident in $Incidents) {
         $owned = @($State.attempts.Values | Where-Object {
@@ -31,32 +28,19 @@ function Get-ScheduledInboxDecision {
                 $_.generation -eq $incident.generation -or
                 $_.phase -cnotin @('resolved', 'closed-unmerged'))
         })
-        $reason = $null
+        $reason = 'ai-triage-unavailable'
         if ($incident.status -cne 'open') { $reason = 'reporter-disposition' }
         elseif ($incident.held) { $reason = 'human-hold' }
         elseif ($owned.Count -gt 0 -or $null -ne $incident.validated_worker) { $reason = 'reconcile-owned-work' }
         elseif ($incident.package -cnotin $Policy.local.allowed_packages -or
             $incident.check_kind -cnotin $Policy.local.allowed_checks) { $reason = 'outside-approved-scope' }
-        if ($null -ne $reason) {
-            $deferred.Add(@{ issue_number = $incident.issue_number; reason = $reason })
-            continue
-        }
-        # Correctness failures precede coverage misses; age and issue number give stable
-        # tie-breaking so a newly reported failure does not starve the old backlog.
-        $priority = if ($incident.check_kind -ceq 'mutants' -and
-            $incident.observation.outcome -cne 'timeout') { 1 } else { 0 }
-        $eligible.Add(@{
-            issue_number = $incident.issue_number; finding_id = $incident.finding_id
-            generation = $incident.generation; package = $incident.package; check_id = $incident.check_id
-            check_kind = $incident.check_kind
-            source_sha = $incident.source_sha; check_contract_digest = $incident.check_contract_digest
-            evidence_key = Get-ScheduledDigest -Value $incident.observation
-            created_at = $incident.created_at; priority = $priority
-            evidence = $incident.evidence
-        })
+        $deferred.Add(@{ issue_number = $incident.issue_number; reason = $reason })
     }
-    $ordered = @($eligible.ToArray() | Sort-Object -Property priority, created_at, issue_number)
     $blocked = [Collections.Generic.List[string]]::new()
+    # Report the capability gap even for an empty queue or fully enabled policy. Otherwise a
+    # successful read could falsely advertise an operational repair pipeline. The transaction
+    # boundary independently rejects reserve-attempt; no configuration flag bypasses it.
+    $blocked.Add('ai-triage-unavailable')
     if ($State.mode -cne 'repair' -or $Policy.local.mode -cne 'repair') { $blocked.Add($State.mode) }
     if ($State.executor_id -cne $Policy.local.enrolled_machine_id) { $blocked.Add('executor-not-enrolled') }
     if ($null -eq $State.profile -or $State.profile.enabled -ne $true) { $blocked.Add('automation-disabled') }
@@ -67,11 +51,9 @@ function Get-ScheduledInboxDecision {
     })
     if ($starts.Count -ge $Policy.local.max_starts_per_day) { $blocked.Add('start-budget') }
     return @{
-        eligible = $ordered; deferred = @($deferred.ToArray()); blocked_conditions = @($blocked.ToArray())
-        backlog_count = $ordered.Count
-        oldest_eligible_at = if ($ordered.Count -gt 0) {
-            ($ordered | Sort-Object -Property created_at | Select-Object -First 1).created_at
-        } else { $null }
+        eligible = @(); deferred = @($deferred.ToArray()); blocked_conditions = @($blocked.ToArray())
+        backlog_count = 0
+        oldest_eligible_at = $null
         # All registered PRs are returned even if the reporter no longer lists their issue.
         # Their disposition and current-head input still need native-session reconciliation.
         registered_attempts = @($State.attempts.Values | Sort-Object -Property started_at, attempt_id)
@@ -112,6 +94,13 @@ function Invoke-ScheduledInbox {
             continue
         }
         $seen[$issue.number] = Get-ScheduledDigest $issue
+        # Run intake has its own marker and paginated evidence comments. Even if a run issue
+        # carries the historical finding label, it must not enter reporter-record conversion.
+        if (([string]$issue.body).Contains('<!-- scheduled-run:v1 ') -or
+            @($issue.labels | Where-Object { $_.name -ceq 'scheduled-run-failure' }).Count -gt 0) {
+            $rejected.Add(@{ issue_number = $issue.number; reason = 'run-evidence-not-repair-authorization' })
+            continue
+        }
         # Validation errors are explicit rejected evidence, never an empty/healthy queue.
         # Native auth/network errors outside this conversion fail the scan immediately.
         $comments = Get-ScheduledApiCollection `

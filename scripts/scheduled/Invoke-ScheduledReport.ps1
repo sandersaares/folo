@@ -2,20 +2,22 @@
 <#
 .SYNOPSIS
 Converts one completed `scheduled-validation.yml`/`scheduled-verify.yml` run into durable
-GitHub-persisted finding, coverage and health records.
+GitHub-persisted run-level intake, coverage and existing repair-confirmation records.
 .DESCRIPTION
 Runs as the privileged `scheduled-report.yml` `workflow_run` handler, always checked out at
 default-branch `main` (never a candidate) so its parsing and issue-writing authority cannot be
 influenced by candidate content; see
 ../../.github/workflows/implementation.md#serialized-reporting. Delegates to
 `Invoke-ScheduledReporting` (ScheduledGitHub.psm1), which downloads and validates the originating
-run's plan/result artifacts, merges parsed findings into reporter-owned issues, and (only with
-`-Apply`, gated further by `policy.rollout.reporting_enabled`) writes them. `-Apply` is the switch
+run's job/step inventory and plan/result artifacts, preserves failure evidence for AI triage,
+and (only with `-Apply`, gated further by `policy.rollout.reporting_enabled`) writes run-level
+issues. It never creates diagnosed problem issues. `-Apply` is the switch
 between the workflow's dry-run/report-only path and the path with side effects; the reporting run's
 `queue: max` concurrency means a superseded or failed attempt must be recovered explicitly, not
 silently reattempted (../../docs/scheduled-validation.md#health-recovery-and-rollback). An
-`incomplete` report status fails the job so the recovery condition surfaces in Actions history
-rather than only in the durable coverage record.
+`incomplete` report status means intake could not be safely published and fails the job.
+Successfully recording a failed or incomplete execution returns `reported`: that is successful
+reporting, not proof of passing deep coverage.
 #>
 [CmdletBinding()]
 param(
