@@ -17,7 +17,7 @@ use crate::pages::{BODY_LIMIT, Comment, PAGE_BYTES, decode, paginate, prepare_pa
 use crate::record::{PageReference, Record, Revision, merge, render, restore};
 use crate::{ReadInputError, WriteOutputError, run};
 
-fn fixture() -> Value {
+pub(crate) fn fixture() -> Value {
     // Synthetic successful observation; IDs and commit names only distinguish fixture roles.
     json!({
         "repository": {"id": 123, "name": "owner/repository"},
@@ -51,7 +51,7 @@ fn fixture() -> Value {
     })
 }
 
-fn evidence(value: Value) -> Evidence {
+pub(crate) fn evidence(value: Value) -> Evidence {
     serde_json::from_value(value).unwrap()
 }
 
@@ -65,7 +65,7 @@ fn call(request: Value) -> Value {
     serde_json::from_slice(&output).unwrap()
 }
 
-fn comments(value: Value, first_id: u64) -> (Identity, Vec<Comment>) {
+pub(crate) fn comments(value: Value, first_id: u64) -> (Identity, Vec<Comment>) {
     let evidence = evidence(value).validate().unwrap();
     let comments = prepare_pages(&evidence)
         .unwrap()
@@ -79,7 +79,7 @@ fn comments(value: Value, first_id: u64) -> (Identity, Vec<Comment>) {
     (evidence.identity, comments)
 }
 
-fn record(value: Value, first_id: u64) -> Record {
+pub(crate) fn record(value: Value, first_id: u64) -> Record {
     let evidence = evidence(value).validate().unwrap();
     let pages = prepare_pages(&evidence)
         .unwrap()

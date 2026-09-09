@@ -175,6 +175,10 @@ the utility's own manifest, Rust source and reviewed `dependency-contract.json`,
 trusted mutation configuration, execution wrapper and toolchain pin. The dependency contract
 captures the utility's effective direct requirements/features and reachable registry dependency
 identities, features and edges, rather than unrelated workspace release versions.
+The graph follows normal and build dependency edges, including an edge that also has a
+development role. Dev-only requirements and edges do not contribute to the controller's
+`--bin` build and are excluded. Resolved features of every reachable compiled package
+remain bound, so test support cannot conceal a runtime dependency or feature change.
 
 The first decoder build obtains Cargo metadata from the pinned trusted controller. The Rust helper
 normalizes that metadata and requires it to match the reviewed dependency contract before caching

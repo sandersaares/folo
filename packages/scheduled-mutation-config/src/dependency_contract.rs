@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 /// Ref: .github/workflows/implementation.md, "Scheduled controller ownership".
 #[derive(Debug, Serialize)]
 struct Contract<'a> {
-    requirements: &'a BTreeSet<Requirement>,
+    requirements: BTreeSet<&'a Requirement>,
     packages: BTreeMap<String, ResolvedPackage<'a>>,
 }
 
@@ -77,8 +77,53 @@ struct Resolution {
 #[derive(Debug, Deserialize)]
 struct Node {
     id: String,
-    dependencies: BTreeSet<String>,
+    deps: Vec<Dependency>,
     features: BTreeSet<String>,
+}
+
+impl Node {
+    fn compiled_dependencies(&self) -> Result<impl Iterator<Item = &str>, AppError> {
+        if self
+            .deps
+            .iter()
+            .any(|dependency| dependency.dep_kinds.is_empty())
+        {
+            return Err(DependencyContractError::new().into());
+        }
+        // Cargo builds the controller with --bin, not --tests. Dev-only edges do not supply
+        // executable code, while normal/build edges and their resolved features remain bound.
+        Ok(self
+            .deps
+            .iter()
+            .filter(|dependency| {
+                dependency
+                    .dep_kinds
+                    .iter()
+                    .any(|kind| kind.kind != Some(DependencyKind::Dev))
+            })
+            .map(|dependency| dependency.pkg.as_str()))
+    }
+}
+
+/// A resolved Cargo edge, including aliases that share a package but have different roles.
+#[derive(Debug, Deserialize)]
+struct Dependency {
+    pkg: String,
+    dep_kinds: Vec<EdgeKind>,
+}
+
+/// Cargo uses null for normal dependencies and explicit names for other compilation roles.
+#[derive(Debug, Deserialize)]
+struct EdgeKind {
+    kind: Option<DependencyKind>,
+}
+
+/// Non-normal Cargo dependency roles relevant to native controller compilation.
+#[derive(Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "lowercase")]
+enum DependencyKind {
+    Build,
+    Dev,
 }
 
 pub(crate) fn dependency_contract(text: &str) -> Result<String, AppError> {
@@ -110,14 +155,14 @@ pub(crate) fn dependency_contract(text: &str) -> Result<String, AppError> {
         .get(helper.id.as_str())
         .ok_or_else(DependencyContractError::new)?;
     let mut contract = Contract {
-        requirements: &helper.dependencies,
+        requirements: helper
+            .dependencies
+            .iter()
+            .filter(|requirement| requirement.kind.as_deref() != Some("dev"))
+            .collect(),
         packages: BTreeMap::new(),
     };
-    let mut pending: Vec<_> = helper_node
-        .dependencies
-        .iter()
-        .map(String::as_str)
-        .collect();
+    let mut pending: Vec<_> = helper_node.compiled_dependencies()?.collect();
     let mut visited = BTreeSet::new();
     while let Some(id) = pending.pop() {
         if !visited.insert(id) {
@@ -126,12 +171,12 @@ pub(crate) fn dependency_contract(text: &str) -> Result<String, AppError> {
         let package = packages.get(id).ok_or_else(DependencyContractError::new)?;
         let node = nodes.get(id).ok_or_else(DependencyContractError::new)?;
         let mut dependencies = BTreeSet::new();
-        for dependency in &node.dependencies {
+        for dependency in node.compiled_dependencies()? {
             let dependency_package = packages
-                .get(dependency.as_str())
+                .get(dependency)
                 .ok_or_else(DependencyContractError::new)?;
             dependencies.insert(dependency_package.identity()?);
-            pending.push(dependency.as_str());
+            pending.push(dependency);
         }
         contract.packages.insert(
             package.identity()?,
@@ -154,6 +199,11 @@ struct DependencyContractError;
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
+    #![allow(
+        clippy::indexing_slicing,
+        reason = "fixed Cargo metadata fixtures use direct JSON paths to expose the changed edge"
+    )]
+
     use serde_json::{Value, json};
 
     use super::*;
@@ -172,10 +222,10 @@ mod tests {
             ],
             "workspace_members": ["helper", "unrelated"],
             "resolve": {"nodes": [
-                {"id": "helper", "dependencies": ["parser"], "features": []},
-                {"id": "parser", "dependencies": ["lexer"], "features": ["parse"]},
-                {"id": "lexer", "dependencies": [], "features": []},
-                {"id": "unrelated", "dependencies": [], "features": []}
+                {"id": "helper", "deps": [{"pkg":"parser","dep_kinds":[{"kind":null}]}], "features": []},
+                {"id": "parser", "deps": [{"pkg":"lexer","dep_kinds":[{"kind":null}]}], "features": ["parse"]},
+                {"id": "lexer", "deps": [], "features": []},
+                {"id": "unrelated", "deps": [], "features": []}
             ]}
         })
     }
@@ -202,6 +252,67 @@ mod tests {
     }
 
     #[test]
+    fn shared_dependencies_are_visited_once() {
+        let mut shared = metadata();
+        shared["resolve"]["nodes"][0]["deps"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"pkg":"lexer","dep_kinds":[{"kind":null}]}));
+        assert_eq!(contract(&shared), contract(&metadata()));
+    }
+
+    #[test]
+    fn excludes_dev_only_requirements_and_edges() {
+        let mut changed = metadata();
+        changed["packages"][0]["dependencies"] = json!([{
+            "name": "unrelated", "source": null, "req": "*", "kind": "dev",
+            "rename": null, "optional": false, "uses_default_features": false,
+            "features": [], "target": null
+        }]);
+        for index in [0, 1] {
+            changed["resolve"]["nodes"][index]["deps"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!({"pkg":"unrelated","dep_kinds":[{"kind":"dev"}]}));
+        }
+        assert_eq!(contract(&changed), contract(&metadata()));
+        changed["packages"][3]["version"] = json!("9.0.0");
+        assert_eq!(contract(&changed), contract(&metadata()));
+    }
+
+    #[test]
+    fn retains_normal_and_build_edges_even_when_the_package_is_also_a_dev_dependency() {
+        let baseline = contract(&metadata());
+        let kinds = if cfg!(miri) {
+            // Ordinary normal edges are covered by the graph fixtures; retain the mixed
+            // dev/build case here without repeating the full graph comparison under Miri.
+            vec![json!("build")]
+        } else {
+            vec![Value::Null, json!("build")]
+        };
+        for kind in kinds {
+            let mut changed = metadata();
+            changed["resolve"]["nodes"][0]["deps"][0]["dep_kinds"] =
+                json!([{"kind":"dev"},{"kind":kind}]);
+            assert_eq!(contract(&changed), baseline);
+            changed["resolve"]["nodes"][1]["features"] = json!(["different"]);
+            assert_ne!(contract(&changed), baseline);
+            changed["packages"][1]["source"] = Value::Null;
+            _ = dependency_contract(&changed.to_string()).unwrap_err();
+        }
+    }
+
+    #[test]
+    fn rejects_missing_or_unknown_edge_kinds() {
+        for kinds in [json!([]), json!([{"kind":"unknown"}])] {
+            let mut changed = metadata();
+            changed["resolve"]["nodes"][0]["deps"][0]["dep_kinds"] = kinds;
+            let error = dependency_contract(&changed.to_string()).unwrap_err();
+            _ = error.find_source::<DependencyContractError>().unwrap();
+        }
+    }
+
+    #[test]
     fn ignores_unrelated_versions_and_cargo_package_paths() {
         let mut changed = metadata();
         *changed.pointer_mut("/packages/3/version").unwrap() = json!("9.0.0");
@@ -213,15 +324,16 @@ mod tests {
 
     #[test]
     fn detects_transitive_source_version_and_feature_changes() {
+        let baseline = contract(&metadata());
         for (path, replacement) in [
             ("/packages/2/version", json!("2.0.0")),
             ("/packages/2/source", json!("registry+different")),
             ("/resolve/nodes/2/features", json!(["changed"])),
-            ("/resolve/nodes/1/dependencies", json!([])),
+            ("/resolve/nodes/1/deps", json!([])),
         ] {
             let mut changed = metadata();
             *changed.pointer_mut(path).unwrap() = replacement;
-            assert_ne!(contract(&changed), contract(&metadata()));
+            assert_ne!(contract(&changed), baseline);
         }
     }
 
@@ -243,7 +355,7 @@ mod tests {
     #[test]
     fn rejects_missing_graph_edges_and_unbound_sources() {
         for (path, replacement) in [
-            ("/resolve/nodes/1/dependencies", json!(["missing"])),
+            ("/resolve/nodes/1/deps/0/pkg", json!("missing")),
             ("/packages/2/source", Value::Null),
             ("/packages/2/source", json!("git+unreviewed")),
             ("/workspace_members", json!([])),

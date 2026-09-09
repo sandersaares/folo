@@ -773,6 +773,9 @@ the decoder's effective dependency requirements and reachable registry graph to
 checker compatibility. Shared features reachable through that graph participate;
 unrelated workspace release versions do not. Dependency drift is a prerequisite
 failure, not authorization for the reporter to rewrite the contract.
+Normal and build dependencies participate, including dependencies also used by
+tests. Dev-only dependencies are excluded from this native-binary contract; their
+presence does not remove any compiled package's resolved feature checks.
 
 For an intentional dependency change, use a trusted maintenance checkout with the
 approved pinned Rust toolchain already prepared. From that checkout's repository

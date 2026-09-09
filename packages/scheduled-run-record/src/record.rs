@@ -8,7 +8,7 @@ use serde_json::Value;
 use crate::canonical::{digest, json};
 use crate::evidence::{Evidence, Identity, require};
 use crate::pages::{
-    BODY_LIMIT, Comment, DecodedPage, PAGE_BYTES, PageHeader, SCHEMA_VERSION, decode,
+    Comment, DecodedPage, PAGE_BYTES, PageHeader, SCHEMA_VERSION, decode, validate_body_size,
 };
 
 /// Validated append-only revision catalogue reconstructed from complete evidence page sets.
@@ -357,10 +357,7 @@ pub(crate) fn render(record: Record) -> Result<Rendered, AppError> {
         record.revisions.len(),
         failed,
     );
-    require(
-        body.len() <= BODY_LIMIT,
-        "run index exceeds GitHub payload budget",
-    )?;
+    validate_body_size(&body)?;
     Ok(Rendered {
         title: "Scheduled validation failed",
         body,

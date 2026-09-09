@@ -84,6 +84,13 @@ pub(crate) fn prepare_pages(evidence: &ValidatedEvidence) -> Result<Vec<Page>, A
     )
 }
 
+pub(crate) fn validate_body_size(body: &str) -> Result<(), AppError> {
+    require(
+        body.len() <= BODY_LIMIT,
+        "body exceeds GitHub payload budget",
+    )
+}
+
 pub(crate) fn paginate(
     identity: &Identity,
     run_attempt: NonZero<u64>,
@@ -133,10 +140,7 @@ fn page_body(header: &PageHeader, bytes: &[u8]) -> Result<String, AppError> {
         header.page_count,
         STANDARD.encode(bytes),
     );
-    require(
-        body.len() <= BODY_LIMIT,
-        "evidence page exceeds GitHub payload budget",
-    )?;
+    validate_body_size(&body)?;
     Ok(body)
 }
 
@@ -144,10 +148,7 @@ pub(crate) fn decode(body: &str) -> Result<Option<DecodedPage>, AppError> {
     let Some(rest) = body.strip_prefix(PAGE_PREFIX) else {
         return Ok(None);
     };
-    require(
-        body.len() <= BODY_LIMIT,
-        "stored evidence page exceeds payload budget",
-    )?;
+    validate_body_size(body)?;
     let (header, rest) = rest
         .split_once(" -->\n")
         .ok_or_else(|| MalformedPageError::new("missing header terminator".to_owned()))?;

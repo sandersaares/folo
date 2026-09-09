@@ -21,5 +21,8 @@ serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 
+[dev-dependencies]
+testing = { path = "../testing" }
+
 [lints]
 workspace = true

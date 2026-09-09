@@ -3310,6 +3310,7 @@ dependencies = [
  "ohno",
  "serde",
  "serde_json",
+ "testing",
  "toml",
 ]
 
@@ -3323,6 +3324,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "testing",
 ]
 
 [[package]]
