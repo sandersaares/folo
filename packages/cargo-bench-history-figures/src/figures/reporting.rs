@@ -677,6 +677,10 @@ mod tests {
 
     /// Findings and census come from one pass. A glued census would let the two drift.
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "runs both complete worked suites through statistical detection to verify the book's report and census"
+    )]
     fn the_worked_report_is_one_batch_detection_pass() {
         let analysis = worked_analysis();
         let expected_judged = 2_usize.saturating_add(QUIET_SERIES);
@@ -696,6 +700,10 @@ mod tests {
     /// them from one [`Analysis`] is what makes that true; this holds the two renderings
     /// to naming the same findings.
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "detects the full worked statistical suite and renders both text and JSON excerpts"
+    )]
     fn the_text_and_json_excerpts_describe_the_same_findings() {
         let analysis = worked_analysis();
         let text = analysis.render(ReportFormat::Text);
@@ -716,6 +724,10 @@ mod tests {
     /// The annotation names the parts of a finding block by position, so a renderer that
     /// reorders or drops one would leave the table labelling the wrong lines.
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "detects and renders the complete worked statistical suite; small finding-block extraction is tested separately"
+    )]
     fn the_annotated_finding_block_carries_an_identity_a_headline_a_detail_and_a_chart() {
         let analysis = worked_analysis();
         let report = analysis.render(ReportFormat::Text);
@@ -746,13 +758,22 @@ mod tests {
     /// The excerpt exists to be a real rendering; a fence around hand-written prose would
     /// look identical in the book.
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "repeats full worked-suite detection and report rendering to verify the generated excerpt"
+    )]
     fn the_report_excerpts_are_renderings_of_the_worked_analysis() {
         let rendered = worked_analysis().render(ReportFormat::Text);
+        let excerpt = text();
 
-        assert!(text().contains(rendered.trim_end()), "{}", text());
+        assert!(excerpt.contains(rendered.trim_end()), "{excerpt}");
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "repeats full quiet-suite detection and report rendering to verify the census excerpt"
+    )]
     fn the_census_excerpt_quotes_the_coverage_the_report_states() {
         let analysis = silent_analysis();
         let report = analysis.render(ReportFormat::Text);
@@ -775,6 +796,10 @@ mod tests {
     /// A census that judged everything would render no breakdown at all, leaving the
     /// chapter's excerpt showing none of what it is about.
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "derives the worked census by detecting every full statistical example in the report suite"
+    )]
     fn the_worked_census_leaves_series_unjudged_for_more_than_one_reason() {
         let coverage = Coverage::from_census(&worked_census());
 
@@ -785,6 +810,10 @@ mod tests {
     /// The two qualification sentences say different things, so labelling both with one
     /// explanation would describe neither.
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "repeats quiet-suite statistical detection to verify the full census qualification excerpt"
+    )]
     fn each_qualification_is_explained_as_the_sentence_it_is() {
         let excerpt = census();
         let coverage = silent_analysis().coverage();
@@ -811,6 +840,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "repeatedly detects the complete worked suite and renders branch reports for every lag reason"
+    )]
     fn every_lag_reason_is_shown_with_the_line_the_report_prints_for_it() {
         let excerpt = lag();
 
@@ -835,6 +868,10 @@ mod tests {
     /// The distance the warning states must be the distance it was given, or the excerpt
     /// teaches the reader to read a number the tool did not mean.
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "detects the complete worked suite for each branch-lag report; small warning extraction is tested separately"
+    )]
     fn each_lag_warning_states_the_distance_it_was_given() {
         for (commits_behind, reason) in LAG_DISTANCES {
             let lag = ComparisonBaseLag {
@@ -846,6 +883,28 @@ mod tests {
 
             assert!(line.contains(&commits_behind.to_string()), "{line}");
         }
+    }
+
+    #[test]
+    fn a_lag_warning_is_extracted_without_neighboring_report_lines() {
+        let warning = "Warning: comparison base is behind (no recent base data)";
+        let report = format!("report heading\n\n  {warning}\n\nfinding detail");
+
+        assert_eq!(warning_line(&report).as_deref(), Some(warning));
+        assert_eq!(named_reason(warning), Some("no recent base data"));
+        assert_eq!(warning_line("a report without a lag warning"), None);
+        assert_eq!(named_reason("a line without a parenthesized reason"), None);
+    }
+
+    #[test]
+    fn a_finding_block_ends_before_the_next_report_paragraph() {
+        let report = "heading\n\nbench\n  headline\n  detail\n\nother bench\n  other headline\n";
+
+        assert_eq!(
+            finding_block(report, "bench"),
+            ["bench", "  headline", "  detail"]
+        );
+        assert!(finding_block(report, "missing").is_empty());
     }
 
     #[test]

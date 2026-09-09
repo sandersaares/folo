@@ -1394,7 +1394,17 @@ mod tests {
 
     #[test]
     fn supported_history_lengths_report_strict_range_excursions() {
-        for base_commits in [10, 20, 40, 64, 128] {
+        // Miri covers both complete-window and selector/reference evaluation. The native
+        // matrix additionally checks scaling up to the supported comparison-window cap.
+        let lengths: &[usize] = if cfg!(miri) {
+            &[
+                noise_gates::MIN_SERIES_POINTS,
+                noise_gates::MIN_BRANCH_REGIME_SELECTION_COMMITS,
+            ]
+        } else {
+            &[10, 20, 40, 64, 128]
+        };
+        for &base_commits in lengths {
             let one = series("length", "m1", &vec![100.0; base_commits], 130.0);
             let detection = find_changes(std::slice::from_ref(&one), &context(base_commits));
             assert_eq!(
@@ -1421,12 +1431,15 @@ mod tests {
     #[test]
     #[cfg(feature = "private-test-util")]
     fn spawned_branch_evaluation_matches_the_serial_result() {
+        // Worker recombination needs judged series, not regime-selection searches.
+        const BASE_COMMITS: usize = noise_gates::MIN_SERIES_POINTS;
+
         let batch: Arc<[Series]> = Arc::from([
-            series("regression", "m1", &[100.0; 20], 130.0),
-            series("quiet", "m1", &[100.0; 20], 100.0),
-            series("improvement", "m1", &[200.0; 20], 100.0),
+            series("regression", "m1", &[100.0; BASE_COMMITS], 130.0),
+            series("quiet", "m1", &[100.0; BASE_COMMITS], 100.0),
+            series("improvement", "m1", &[200.0; BASE_COMMITS], 100.0),
         ]);
-        let context = context(20);
+        let context = context(BASE_COMMITS);
         let serial = find_changes(&batch, &context);
         let spawned = block_on(find_changes_spawned(
             Arc::clone(&batch),
@@ -1580,8 +1593,9 @@ mod tests {
 
     #[test]
     fn latest_supported_regime_excludes_the_older_level() {
-        let mut base = vec![200.0; 20];
-        base.extend(std::iter::repeat_n(100.0, 20));
+        // Each alternating lane keeps a minimum-sized regime on both sides of the step.
+        let mut base = vec![200.0; 10];
+        base.extend(std::iter::repeat_n(100.0, 10));
         let one = series("regimes", "m1", &base, 200.0);
         let detection = find_changes(std::slice::from_ref(&one), &context(base.len()));
 
@@ -1595,18 +1609,19 @@ mod tests {
             .expect("branch findings carry range evidence");
         assert_eq!(branch.reference_min, 100.0);
         assert_eq!(branch.reference_max, 100.0);
-        assert_eq!(branch.current_regime_start.as_deref(), Some("c20"));
+        assert_eq!(branch.current_regime_start.as_deref(), Some("c10"));
         assert!(branch.matches_previous_regime);
         assert_eq!(
             detection.branch_trace.series[0].current_regime_start,
-            Some(20)
+            Some(10)
         );
     }
 
     #[test]
     fn an_excursion_beyond_both_current_and_previous_regimes_is_not_a_return() {
-        let mut base = vec![200.0; 20];
-        base.extend(std::iter::repeat_n(100.0, 20));
+        // Minimum-sized selector regimes suffice to identify the preceding level.
+        let mut base = vec![200.0; 10];
+        base.extend(std::iter::repeat_n(100.0, 10));
         let one = series("new-excursion", "m1", &base, 230.0);
         let detection = find_changes(std::slice::from_ref(&one), &context(base.len()));
         let branch = detection.findings[0]
@@ -1619,9 +1634,10 @@ mod tests {
 
     #[test]
     fn an_ambiguous_reference_observation_is_not_previous_regime_evidence() {
-        let mut base = vec![200.0; 20];
-        base[19] = 150.0;
-        base.extend(std::iter::repeat_n(100.0, 20));
+        // The reference immediately before the minimum-sized new regime is ambiguous.
+        let mut base = vec![200.0; 10];
+        base[9] = 150.0;
+        base.extend(std::iter::repeat_n(100.0, 10));
         let one = series("ambiguous-reference", "m1", &base, 150.0);
         let detection = find_changes(std::slice::from_ref(&one), &context(base.len()));
         let branch = detection.findings[0]
@@ -1707,8 +1723,9 @@ mod tests {
 
     #[test]
     fn a_statistical_split_below_the_practical_floor_does_not_move_the_regime() {
-        let mut base = vec![10_000.0; 20];
-        base.extend(std::iter::repeat_n(10_200.0, 20));
+        // A minimum-sized pair of selector regimes already establishes a statistical split.
+        let mut base = vec![10_000.0; 10];
+        base.extend(std::iter::repeat_n(10_200.0, 10));
         let one = series("impractical-split", "m1", &base, 11_000.0);
         let selection = select_regime(&one);
 
@@ -1717,6 +1734,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "multiple supported boundaries require repeated selection-adjusted calibration"
+    )]
     fn the_newest_of_several_supported_boundaries_becomes_the_comparison_regime() {
         // Three supported steps. The search finds the middle one first and reaches the
         // outer two by recursing into both of its sides, so the boundaries must still come
@@ -1734,6 +1755,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "a weak central split hiding an earlier regime requires a large permutation orbit"
+    )]
     fn an_unsupported_split_does_not_hide_an_earlier_supported_one() {
         // The 100 -> 100.5 step is statistically real but far below the practical floor,
         // and it sits closer to the middle than the large 90 -> 100 step, so the strongest
@@ -1758,6 +1783,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "a weak central split hiding a later regime requires repeated permutation searches"
+    )]
     fn an_unsupported_split_does_not_prevent_searching_for_a_later_supported_one() {
         let mut base = vec![100.0; 20];
         base.extend(std::iter::repeat_n(104.0, 20));
@@ -1831,7 +1860,8 @@ mod tests {
 
     #[test]
     fn a_recent_step_too_short_to_establish_is_unjudged() {
-        let mut base = vec![100.0; 36];
+        // The shortest searchable base retains two trailing selector observations.
+        let mut base = vec![100.0; 16];
         base.extend(std::iter::repeat_n(200.0, 4));
         let one = series("unresolved", "m1", &base, 220.0);
         let detection = find_changes(std::slice::from_ref(&one), &context(base.len()));
@@ -1910,9 +1940,8 @@ mod tests {
 
     #[test]
     fn a_smooth_base_drift_is_not_mistaken_for_an_unresolved_step() {
-        let base: Vec<f64> = (0_u32..40)
-            .map(|index| 100.0 + f64::from(index) / 2.0)
-            .collect();
+        // A shortest searchable base still spans a practically large, smooth drift.
+        let base: Vec<f64> = (0_u32..20).map(|index| 100.0 + f64::from(index)).collect();
         let one = series("drift", "m1", &base, 140.0);
         let detection = find_changes(std::slice::from_ref(&one), &context(base.len()));
 

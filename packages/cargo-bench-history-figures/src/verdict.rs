@@ -125,13 +125,24 @@ pub fn quiet(finding: Option<&Finding>, reading: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use cbh_detect::{evaluate_with_log, examples};
+    use std::iter;
+
+    use cbh_detect::{MIN_REGIME, evaluate_with_log, examples};
     use cbh_model::MetricKind;
 
     use super::*;
 
+    fn step_values() -> Vec<f64> {
+        // Formatting needs an ordinary reported move, not the book's scattered statistical
+        // example. The persistence minimum and tied levels keep the detector fixture small;
+        // the move comfortably clears the timing metric's practical floors.
+        iter::repeat_n(100.0, MIN_REGIME)
+            .chain(iter::repeat_n(130.0, MIN_REGIME))
+            .collect()
+    }
+
     fn a_finding() -> Finding {
-        let values = examples::clean_step();
+        let values = step_values();
         let series = examples::series("bench", &values, MetricKind::WallTime, 0);
         let context = examples::history_context(&series);
         evaluate_with_log(&series, &context).0.unwrap()

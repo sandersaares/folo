@@ -178,12 +178,14 @@ The full testing playbook: panic/error assertions, the ban on real-time delays
 and on `parking_lot`, watchdogs, the threshold-based-mutation anti-pattern,
 Miri compatibility, multithreaded synchronization tests, `static_assertions`
 for trait contracts, mutation-testing skip criteria, UI tests, and coverage
-exclusion.
+exclusion. Follow its Miri workload budget: shrink tests that take more than
+10 seconds, preserve representative interpreter coverage, and justify native-only
+scale tests rather than raising the runner deadline.
 
 **Open this when**: writing or modifying a test (unit, integration, doctest);
-hitting a hang, Miri failure, or uncaught mutation; asserting that a panic or
-error occurs; marking code as not-relevant-for-coverage; discovering a flaky
-test.
+hitting a hang, slow Miri test, Miri failure, or uncaught mutation; asserting that
+a panic or error occurs; marking code as not-relevant-for-coverage; discovering a
+flaky test.
 
 ### [docs/benchmarks.md](docs/benchmarks.md)
 

@@ -665,17 +665,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_branch_examples_report_the_outcomes_the_chapter_teaches() {
+    fn the_reported_branch_example_reports_a_regression() {
         // The chapter presents `detection-branch-reported` as a context run that reports and
         // `detection-branch-quiet` as a context run the base window explains. Pin both against the
         // real detector so a policy change fails this test rather than silently reversing a
-        // lesson while keeping the asset names. Runs the detector, not the renderer, so it
-        // needs no SVG budget.
+        // lesson while keeping the asset names. Each test evaluates only its own example so
+        // both real-detector checks fit the Miri budget without rendering the figures.
         let (_, reported) = branch_finding("detection-branch-reported", BRANCH_BASE_LEVEL * 1.30);
-        let (_, quiet) = branch_finding("detection-branch-quiet", BRANCH_BASE_LEVEL);
 
         let reported = reported.expect("the reported example must yield a branch finding");
         assert_eq!(reported.direction, Direction::Regression);
+    }
+
+    #[test]
+    fn the_quiet_branch_example_stays_quiet() {
+        let (_, quiet) = branch_finding("detection-branch-quiet", BRANCH_BASE_LEVEL);
+
         assert!(
             quiet.is_none(),
             "the quiet example must yield no finding, got {quiet:?}"
@@ -740,6 +745,10 @@ mod tests {
     /// detector ever arbitrates them the other way, the prose and the figures would
     /// contradict each other, so the claim is pinned here as well as in `cbh_detect`.
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "evaluates full scattered step and drift examples with exact rank tests and model arbitration"
+    )]
     fn the_worked_examples_report_the_methods_the_chapter_describes() {
         let (_, step) = judge_history("tokenize", &examples::clean_step(), MetricKind::WallTime);
         let (_, drift) = judge_history("index_build", &examples::slow_ramp(), MetricKind::WallTime);
@@ -788,6 +797,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "evaluates the full scattered step example with exact rank tests to verify its attribution"
+    )]
     fn a_reported_step_is_attributed_to_a_commit_inside_the_series() {
         let (_, finding) = judge_history("tokenize", &examples::clean_step(), MetricKind::WallTime);
         let finding = finding.unwrap();
@@ -798,6 +811,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "evaluates the full scattered step example with exact rank tests to verify its direction"
+    )]
     fn a_reported_step_moves_in_the_direction_the_values_do() {
         let (_, finding) = judge_history("tokenize", &examples::clean_step(), MetricKind::WallTime);
         let finding = finding.unwrap();

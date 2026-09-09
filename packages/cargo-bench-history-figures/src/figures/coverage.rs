@@ -796,13 +796,21 @@ mod tests {
         "coverage-states.md",
     ];
 
-    /// The content of the asset at `path`.
-    fn content(path: &str) -> String {
-        assets()
+    /// Selects a fragment from its own producer without generating unrelated chapter assets.
+    fn content(assets: Vec<Asset>, path: &str) -> String {
+        assets
             .into_iter()
             .find(|asset| asset.path == path)
             .unwrap_or_else(|| panic!("{path} is not produced"))
             .content
+    }
+
+    /// Judges the marginal candidate without rendering the companion staircase.
+    fn marginal_candidate(family: usize) -> Judged {
+        judge(&FAMILY_SIZE_CANDIDATES, family)
+            .into_iter()
+            .find(|candidate| candidate.label == MARGINAL_SERIES)
+            .unwrap()
     }
 
     #[test]
@@ -853,9 +861,15 @@ mod tests {
     /// The table beside the figure is the same decisions in words, so every candidate the
     /// procedure judged has to appear in it.
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "renders the complete worked staircase alongside its table; small step-up decisions are tested separately"
+    )]
     fn the_staircase_table_states_every_rank_and_threshold() {
         let judged = judge(&STAIRCASE_CANDIDATES, family_size_of_run());
-        let table = content("coverage-staircase.md");
+        let table = content(staircase(), "coverage-staircase.md");
+
+        assert!(table.contains(&percent(TARGET_FALSE_DISCOVERY_RATE)));
 
         for candidate in &judged {
             assert!(
@@ -901,31 +915,35 @@ mod tests {
     /// The figure's whole subject is the threshold moving with the size of the family.
     #[test]
     fn the_marginal_candidate_survives_the_small_family_and_not_the_large_one() {
-        let small = family_size_case(family_size_of_run());
-        let large = family_size_case(LARGE_FAMILY);
+        let small = marginal_candidate(family_size_of_run());
+        let large = marginal_candidate(LARGE_FAMILY);
 
-        assert!(small.marginal().kept, "the small family must keep it");
-        assert!(!large.marginal().kept, "the large family must drop it");
+        assert!(small.kept, "the small family must keep it");
+        assert!(!large.kept, "the large family must drop it");
         assert!(
-            large.marginal().threshold < small.marginal().threshold,
+            large.threshold < small.threshold,
             "the threshold must tighten as the family grows"
         );
     }
 
     #[test]
     fn the_same_candidate_is_judged_in_both_families() {
-        let small = family_size_case(family_size_of_run());
-        let large = family_size_case(LARGE_FAMILY);
+        let small = marginal_candidate(family_size_of_run());
+        let large = marginal_candidate(LARGE_FAMILY);
 
         assert!(
-            (small.marginal().chance_level - large.marginal().chance_level).abs() < f64::EPSILON,
+            (small.chance_level - large.chance_level).abs() < f64::EPSILON,
             "the comparison only works if the candidate itself is unchanged"
         );
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "renders both complete family-size staircases; their small candidate comparisons are tested separately"
+    )]
     fn the_family_size_table_states_both_families() {
-        let table = content("coverage-family-size.md");
+        let table = content(families(), "coverage-family-size.md");
 
         assert!(table.contains(&format!("| {} |", family_size_of_run())));
         assert!(table.contains(&format!("| {LARGE_FAMILY} |")));
@@ -949,7 +967,7 @@ mod tests {
     #[test]
     fn the_short_series_table_states_the_keep_and_drop_families() {
         let step = lone_step(MIN_SERIES_POINTS);
-        let table = content("coverage-short-series.md");
+        let table = short_series_lone_table();
         let dropped = step.largest_family.saturating_add(1);
 
         assert!(table.contains(&format!("| {} |", step.largest_family)));
@@ -975,6 +993,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "searches thousands of family sizes with repeated Benjamini-Hochberg evaluations; the detection-minimum case is tested separately"
+    )]
     fn a_lone_step_eventually_reaches_the_large_family() {
         let lengths = lone_step_lengths();
         let first = *lengths
@@ -992,8 +1014,12 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "generates and verifies the complete reach table by repeatedly searching thousands of family sizes"
+    )]
     fn the_reach_table_states_every_length() {
-        let table = content("coverage-short-series-reach.md");
+        let table = short_series_reach_table();
 
         for points in lone_step_lengths() {
             let step = lone_step(points);
@@ -1061,7 +1087,7 @@ mod tests {
 
     #[test]
     fn the_direction_order_table_states_both_orders() {
-        let table = content("coverage-direction-order.md");
+        let table = direction_order_table();
 
         assert!(table.contains("correct, then filter"));
         assert!(table.contains("filter, then correct"));
@@ -1080,7 +1106,6 @@ mod tests {
             (threshold_at(1, 1) - TARGET_FALSE_DISCOVERY_RATE).abs() < f64::EPSILON,
             "the last rank's threshold in a family of one is the share itself"
         );
-        assert!(content("coverage-staircase.md").contains(&percent(TARGET_FALSE_DISCOVERY_RATE)));
     }
 
     /// The census figure is an account, so every series it draws must be one the census
@@ -1101,7 +1126,7 @@ mod tests {
 
     #[test]
     fn every_reason_is_listed_with_a_meaning_and_a_remedy() {
-        let table = content("coverage-reasons.md");
+        let table = reasons_table();
 
         for reason in UnjudgedReason::ALL {
             assert!(
@@ -1133,7 +1158,7 @@ mod tests {
 
     #[test]
     fn every_state_is_listed_with_the_verdict_the_renderer_produces() {
-        let table = content("coverage-states.md");
+        let table = states_table();
 
         for state in CoverageState::ALL {
             let coverage = Coverage::from_census(&census_in(state));
