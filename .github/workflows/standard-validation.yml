@@ -1,4 +1,4 @@
-name: Validation
+name: Standard validation
 
 on:
   push:
@@ -13,13 +13,15 @@ on:
   # pruned job set as pull_request because every full-matrix guard keys on
   # `github.event_name == 'push'`, which is false here. Push to main remains the full
   # backstop. The concurrency group (`github.head_ref || github.ref`) already distinguishes
-  # queue refs: head_ref is empty and github.ref is unique. cancel-validation.yml stays
+  # queue refs: head_ref is empty and github.ref is unique. cancel-standard-validation.yml stays
   # pull-request-only.
   merge_group:
     branches: [main]
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  # Share the ref-specific group with the PR-close companion so closing a PR cancels stale work.
+  # Ref: .github/workflows/design.md#concurrency.
+  group: standard-validation-${{ github.head_ref || github.ref }}
   cancel-in-progress: true
 
 # Emit a backtrace whenever a test (or any Rust process) panics, so a rare flake — such as the
@@ -90,6 +92,8 @@ jobs:
         # Join live issue/attempt/head identity. Queue runs validate actual combined-candidate
         # ancestry and membership rather than guessing a PR from its synthetic ref.
         # Ref: .github/workflows/implementation.md#managed-repair-gate.
+        # Use the deployed controller's validation mode, not a candidate-only entry point.
+        # Ref: .github/workflows/implementation.md#workflow-identity.
         id: plan
         if: hashFiles('scripts/scheduled/ScheduledWorkflow.psm1') != ''
         shell: pwsh
@@ -1019,7 +1023,7 @@ jobs:
           run_command: send-notifications
           fail_ci_if_error: true
 
-  # Fan-in for merge-blocking Validation jobs. GitHub's required-checks field is a string
+  # Fan-in for merge-blocking Standard validation jobs. GitHub's required-checks field is a string
   # match on this job's name, so matrix legs that never ran cannot be listed there.
   # Succeeds when every dependency succeeded, or skipped if that job is allowed to skip;
   # fails on failure, cancelled, or any other result. Advisory jobs (`coverage-notify`)
@@ -1059,7 +1063,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       # No setup-environment: this job only classifies `needs` results. Installing the
-      # toolchain after every Validation run would add work for no benefit. PowerShell is
+      # toolchain after every Standard validation run would add work for no benefit. PowerShell is
       # preinstalled on ubuntu-latest; the module comes from the checkout.
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -1149,7 +1153,7 @@ jobs:
           $PSNativeCommandUseErrorActionPreference = $true
 
           $body = @"
-          The Validation workflow failed on a push to ``main``.
+          The Standard validation workflow failed on a push to ``main``.
 
           Push-to-``main`` validation is the backstop for the checks pruned from PR validation
           (ARM and macOS test/docs runs and ``clippy-release``), so this failure may be
@@ -1157,4 +1161,4 @@ jobs:
 
           Failed run: $env:RUN_URL
           "@
-          gh issue create --label ci-failure --title "Validation workflow failed (run $env:RUN_ID)" --body $body
+          gh issue create --label ci-failure --title "Standard validation workflow failed (run $env:RUN_ID)" --body $body

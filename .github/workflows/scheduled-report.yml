@@ -2,7 +2,9 @@ name: Scheduled reporting
 
 on:
   workflow_run:
-    workflows: [Scheduled validation, Scheduled verification]
+    # Only the deep validation entry points feed this reporter, not the reusable execution helper.
+    # Ref: .github/workflows/implementation.md#workflow-identity.
+    workflows: [Full deep validation, Selected deep validation]
     branches: [main]
     types: [completed]
 

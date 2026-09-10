@@ -46,7 +46,7 @@ function Get-ScheduledCoverageRunRisk {
     # Reporting is serialized but asynchronous. Check the execution API before reusing its
     # durable index so an unreported failure or retry cannot hide behind an older green receipt.
     $completed = [datetimeoffset]$Receipt.completed_at
-    foreach ($workflow in @('scheduled-validation.yml', 'scheduled-verify.yml')) {
+    foreach ($workflow in @('full-deep-validation.yml', 'selected-deep-validation.yml')) {
         $pages = Invoke-ScheduledReadApi "repos/$($Policy.repository)/actions/workflows/$workflow/runs?head_sha=$($Receipt.source_sha)&branch=main&per_page=100" -Paginate
         foreach ($execution in @($pages | ForEach-Object { $_.workflow_runs })) {
             if ($execution.id -eq $CurrentRunId) { continue }
@@ -108,7 +108,7 @@ function Get-ScheduledConfirmationScope {
 function Invoke-ScheduledPlanning {
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)][ValidateSet('scheduled', 'validation', 'verify')][string] $Mode,
+        [Parameter(Mandatory)][ValidateSet('full', 'validation', 'selected')][string] $Mode,
         [Parameter(Mandatory)][string] $EventPath,
         [Parameter(Mandatory)][string] $OutputDirectory,
         [datetimeoffset] $Now = [datetimeoffset]::UtcNow
@@ -117,7 +117,7 @@ function Invoke-ScheduledPlanning {
     $policy = Get-ScheduledPolicy
     if ($workflowEvent.repository.id -ne $policy.repository_id) { throw 'Wrong repository for scheduled controller.' }
     if ($Mode -ne 'validation' -and $env:GITHUB_REF -cne 'refs/heads/main') {
-        throw 'Select main under Use workflow from. To test another commit, enter its full SHA in Scheduled verification.'
+        throw 'Select main under Use workflow from. To test another commit, enter its full SHA in Selected deep validation.'
     }
     $diagnostic = $env:GITHUB_EVENT_NAME -ceq 'workflow_dispatch'
     $root = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
@@ -185,9 +185,9 @@ function Invoke-ScheduledPlanning {
             $run = $true
             $reason = 'managed-repair'
         } else {
-            $reason = 'ordinary-validation'
+            $reason = 'standard-validation'
         }
-    } elseif ($Mode -eq 'verify') {
+    } elseif ($Mode -eq 'selected') {
         $scope = 'confirmation'
         if ($diagnostic) {
             if ($workflowEvent.inputs.ContainsKey('source_sha') -and
@@ -205,7 +205,7 @@ function Invoke-ScheduledPlanning {
                 throw 'Enter check IDs and crate names separated by commas, without empty entries.'
             }
             $run = $true
-            $reason = 'explicit-verification'
+            $reason = 'manual-checks'
         } elseif ($policy.rollout.hosted_execution_enabled -and $policy.rollout.prerequisites.native_app_canary) {
             # Automatic merged-repair confirmation is the one action `hosted_execution_enabled`
             # authorizes beyond recurring execution, and only once native App readiness is
@@ -223,7 +223,7 @@ function Invoke-ScheduledPlanning {
     }
     $manifest = Get-ScheduledCheckManifest -SourceSha $sourceSha -ControllerSha $controllerSha `
         -ContractDigest $contractDigest -Scope $scope -Packages $packages -CheckIds $checkIds
-    if ($Mode -eq 'scheduled') {
+    if ($Mode -eq 'full') {
         if ($diagnostic) {
             # Run workflow is the authorization for fresh read-only checks, not a cache lookup
             # or permission for issue writes/repairs.
@@ -268,16 +268,19 @@ function Invoke-ScheduledPlanning {
             "controller_sha=$controllerSha"
         ) | Add-Content -LiteralPath $env:GITHUB_OUTPUT
     }
+    $workflowName = @{
+        full = 'Full deep validation'; selected = 'Selected deep validation'; validation = 'Standard validation'
+    }[$Mode]
     if ($diagnostic -and $env:GITHUB_STEP_SUMMARY) {
         @(
-            '## Manual checks'
+            "## $workflowName"
             ''
             "Tested commit: ``$sourceSha``."
             ''
             'Fresh execution requested. These results do not update shared main coverage or confirm a repair.'
         ) | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
     }
-    Write-Verbose "Planning $Mode source=$sourceSha contract=${contractDigest}: run=$run because $reason."
+    Write-Verbose "Planning $workflowName source=$sourceSha contract=${contractDigest}: run=$run because $reason."
     return $plan
 }
 

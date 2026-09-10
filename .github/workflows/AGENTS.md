@@ -50,7 +50,7 @@ high-level design in `design.md` and per-job mechanics in inline YAML comments.
 
 ## Required-checks fan-in
 
-- When adding a merge-blocking job to `validation.yml`, add it to the `required-checks`
+- When adding a merge-blocking job to `standard-validation.yml`, add it to the `required-checks`
   job's `needs:` list. Never add it to the GitHub ruleset. Matrix jobs with a job-level
   `if:` that can be false can only be required through this fan-in. Advisory jobs
   (`coverage-notify`) and `alert` stay off that list. If the new job has no skip

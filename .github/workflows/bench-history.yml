@@ -33,7 +33,7 @@ on:
 # Group by the commit SHA, not the ref. Distinct commits must collect in parallel - each is
 # its own history data point, and cancelling one to favour a newer commit would drop that
 # commit's measurements, defeating the per-commit goal (so the usual ref-keyed
-# cancel-in-progress from validation.yml would be wrong here). cancel-in-progress therefore
+# cancel-in-progress from standard-validation.yml would be wrong here). cancel-in-progress therefore
 # only dedups a redundant re-trigger of the SAME commit (a re-run, or a workflow_dispatch on
 # an already-pushed commit), which `--skip-existing` would make a no-op append anyway. The
 # recollect commit id is folded into the key because a workflow_dispatch's github.sha is the
@@ -69,7 +69,7 @@ jobs:
       fail-fast: false
       matrix:
         # x86_64 Linux and Windows only. ARM and macOS are only nominally supported (they must
-        # pass tests, see validation.yml) but are deliberately left out of benchmarking so we do
+        # pass tests, see standard-validation.yml) but are deliberately left out of benchmarking so we do
         # not spend runner minutes measuring platforms whose performance we do not track.
         platform: [ubuntu-latest, windows-latest]
 
@@ -455,7 +455,7 @@ jobs:
           Set-Content -Path $bodyFile -Value $body -Encoding utf8
 
           # Ensure the standing label exists (idempotent) so `gh issue create` cannot fail on a
-          # missing label. This label is shared with the per-run alerts that validation.yml and
+          # missing label. This label is shared with the per-run alerts that standard-validation.yml and
           # release.yml file, so its color and description are kept identical to the guard there.
           $PSNativeCommandUseErrorActionPreference = $false
           gh label create ci-failure --color B60205 --description "CI workflow failure" --force *> $null

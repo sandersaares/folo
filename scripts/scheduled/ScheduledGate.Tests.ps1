@@ -16,7 +16,7 @@ BeforeAll {
             source_sha = 'd' * 40; check_contract_digest = 'e' * 64
             observation = @{
                 run_id = 10; run_attempt = 1; run_number = 2
-                workflow_path = '.github/workflows/scheduled-validation.yml'
+                workflow_path = '.github/workflows/full-deep-validation.yml'
             }
         }
         $worker = @{
@@ -71,7 +71,7 @@ Describe 'Managed repair identification' {
             { Get-ScheduledRepairScope @fixture } | Should -Throw '*explanation*'
         }
     }
-    It 'preserves registered PR verification after an unexplained main pass without allowing premature closure' {
+    It 'preserves registered PR deep validation after an unexplained main pass without allowing premature closure' {
         $fixture = Get-GateFixture
         $record = Read-ScheduledRecord -Kind reporter -Text $fixture.Issue.body
         $record.status = 'needs-human'
@@ -99,7 +99,7 @@ Describe 'Managed repair identification' {
         $fixture = Get-GateFixture
         $run = @{
             id = 10; run_attempt = 1; run_number = 2; head_branch = 'main'; head_sha = 'a' * 40
-            status = 'completed'; path = '.github/workflows/scheduled-validation.yml'
+            status = 'completed'; path = '.github/workflows/full-deep-validation.yml'
             repository = @{ id = 850321188; full_name = 'folo-rs/folo' }
         }
         $comments = @(@{
@@ -117,7 +117,7 @@ Describe 'Managed repair identification' {
             $fixture = Get-GateFixture
             $run = @{
             id = 10; run_attempt = 1; run_number = 2; head_branch = 'main'; head_sha = 'a' * 40
-            status = 'completed'; path = '.github/workflows/scheduled-validation.yml'
+            status = 'completed'; path = '.github/workflows/full-deep-validation.yml'
             repository = @{ id = 850321188; full_name = 'folo-rs/folo' }
             }
             $comment = @{
@@ -165,7 +165,7 @@ Describe 'Combined merge queue scope' {
                     -ReadBase $base -ReadHead $head } | Should -Throw
         }
         It 'rejects check weakening and sibling source edits' {
-            foreach ($path in @('.github/workflows/validation.yml', 'scripts/scheduled/policy.json', 'packages/other/src/lib.rs')) {
+            foreach ($path in @('.github/workflows/standard-validation.yml', 'scripts/scheduled/policy.json', 'packages/other/src/lib.rs')) {
                 { Assert-ScheduledRepairChange -Files @(@{ filename = $path; status = 'modified' }) `
                         -Packages events_once -WorkspacePackages events_once -ReadBase { '' } -ReadHead { '' } } |
                     Should -Throw

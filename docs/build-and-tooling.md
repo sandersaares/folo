@@ -62,8 +62,9 @@ many-seed Miri and careful checking on the current platform. These recipes are
 independent: neither reads scheduling policy, and deep validation does not
 implicitly rerun the shallow suite.
 
-PR/push workflows perform shallow validation; scheduled workflows perform deep
-validation. CI composes their constituent commands into separately reported jobs
+The **Standard validation** workflow performs shallow PR/push/merge-queue checks;
+**Full deep validation** and **Selected deep validation** perform deep checks.
+CI composes their constituent commands into separately reported jobs
 and evidence-producing matrix entries rather than running one monolithic local
 recipe. Managed repair PRs also run the particular deep checks needed to verify
 their repair. Scheduling and authorization belong to workflow orchestration, not
@@ -71,7 +72,7 @@ to the definitions of the local recipes. To run just mutation testing, use
 `just package="foo bar" mutants`. Mutation timeouts and missed mutations remain
 anomalies; changing enforcement cadence does not relax test-quality requirements.
 
-See [scheduled validation and local remediation](scheduled-validation.md) for the
+See [deep validation and local remediation](scheduled-validation.md) for the
 hosted/local responsibility split, exact-head repair gates, reproducible Local App
 setup, admission limits and recovery. The local coordinator needs only the existing
 PowerShell/GitHub tooling on empty scans; prepare Rust/WSL tooling in repair sessions
@@ -79,6 +80,20 @@ when applicable rather than on every polling-session creation.
 
 We operate under a **zero warnings allowed** requirement - fix all warnings that
 validation generates.
+
+### Coverage target selection
+
+`coverage-measure` uses Cargo's `--tests --examples` selection. `--tests` includes
+library and binary unit tests and integration tests; `--examples` includes example
+test harnesses. This works for library-only, binary-only and mixed package selections
+without requiring every selected package to define a library.
+See [Cargo target selection](https://doc.rust-lang.org/cargo/commands/cargo-test.html#target-selection).
+
+Benchmark targets stay out of coverage and run through the separate `test-benches`
+smoke pass. Do not opt benchmark targets into `test = true`, because Cargo includes
+such targets in `--tests`. Doctests retain their separate `test-docs` pass.
+The library-only selectors in many-seed Miri and exact library replays are deliberate
+scope restrictions, not general test or coverage selection.
 
 ## Multiplatform codebase
 

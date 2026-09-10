@@ -27,13 +27,11 @@ coverage-measure:
 
     # This will run tests and generate test coverage data files, to be analyzed separately.
     #
-    # We enumerate `--lib --bins --tests --examples` instead of using `--all-targets`
-    # because `--all-targets` would also pull in `--benches`. Bench targets are deliberately
-    # kept out of the coverage pass: they are slow and coverage of benchmark code is not
-    # meaningful. The benches are exercised separately (a "does it still build and run"
-    # smoke check) through the `test-benches` recipe, which runs them via `cargo test
-    # --benches`.
-    cargo +{{ env_var('RUST_NIGHTLY') }} llvm-cov nextest {{ target_package }} --no-fail-fast --lib --bins --tests --examples --no-report --all-features --locked
+    # --tests selects library, binary and integration tests without requiring a library target;
+    # --examples additionally tests the examples. Do not use --all-targets: benchmark targets
+    # belong to the separate test-benches smoke pass, not coverage measurement.
+    # Ref: docs/build-and-tooling.md#coverage-target-selection.
+    cargo +{{ env_var('RUST_NIGHTLY') }} llvm-cov nextest {{ target_package }} --no-fail-fast --tests --examples --no-report --all-features --locked
 
 # This tool needs a different way to specify the package.
 coverage-package := if package == "" { "" } else { "-p " + replace(package, " ", " -p ") }

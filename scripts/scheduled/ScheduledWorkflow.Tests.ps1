@@ -9,7 +9,7 @@ BeforeAll {
 Describe 'Repair gate orchestration' {
     It 'wires manual requests without redundant checkboxes or a silent branch skip' {
         $root = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
-        foreach ($name in @('scheduled-validation.yml', 'scheduled-verify.yml')) {
+        foreach ($name in @('full-deep-validation.yml', 'selected-deep-validation.yml')) {
             $workflow = Get-Content -LiteralPath (Join-Path $root ".github\workflows\$name") -Raw
             $workflow | Should -Match '(?m)^  workflow_dispatch:\r?$'
             $workflow | Should -Match "(?m)^    if: github.repository == 'folo-rs/folo'\r?$"

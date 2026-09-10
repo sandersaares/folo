@@ -19,7 +19,7 @@ BeforeAll {
             controller_sha = 'a' * 40; check_contract_digest = 'c' * 64
             observation = @{
                 workflow_id = 100; run_id = 10; run_number = 10; run_attempt = 1
-                workflow_path = '.github/workflows/scheduled-validation.yml'
+                workflow_path = '.github/workflows/full-deep-validation.yml'
                 created_at = '2026-09-08T09:00:00Z'; run_started_at = '2026-09-08T09:00:00Z'
                 completed_at = '2026-09-08T10:00:00Z'; outcome = 'findings'
             }
@@ -92,11 +92,11 @@ Describe 'Reporter state transitions' {
         $incoming.observation.run_number = 1
         (Merge-ScheduledObservation $existing $incoming $ancestor).observation.workflow_id | Should -Be 200
     }
-    It 'does not reopen a confirmed incident for older verification that finishes later on the same source' {
+    It 'does not reopen a confirmed incident for older selected deep validation that finishes later on the same source' {
         $existing.status = 'confirmed'
         $incoming.source_sha = $existing.source_sha
         $incoming.observation.workflow_id = 200
-        $incoming.observation.workflow_path = '.github/workflows/scheduled-verify.yml'
+        $incoming.observation.workflow_path = '.github/workflows/selected-deep-validation.yml'
         $incoming.observation.run_number = 100
         $incoming.observation.created_at = '2026-09-08T08:00:00Z'
         $incoming.observation.run_started_at = '2026-09-08T08:00:00Z'
@@ -212,11 +212,11 @@ Describe 'Coverage receipts' {
         $delayed = Merge-ScheduledCoverage $invalidated $manifest @($result) $context $ancestor
         $delayed.invalidation.run_attempt | Should -Be 2
     }
-    It 'invalidates reuse after a later verification failure with a lower workflow-local run number' {
+    It 'invalidates reuse after a later selected deep validation failure with a lower workflow-local run number' {
         $context.workflow_id = 200
         $context.run_id = 11
         $context.run_number = 1
-        $context.workflow_path = '.github/workflows/scheduled-verify.yml'
+        $context.workflow_path = '.github/workflows/selected-deep-validation.yml'
         $context.created_at = '2026-09-08T10:00:00Z'
         $context.completed_at = '2026-09-08T11:00:00Z'
         $invalidated = Merge-ScheduledCoverage $coverage $manifest @() $context $ancestor
@@ -227,7 +227,7 @@ Describe 'Coverage receipts' {
         $invalidated.invalidation.created_at | Should -Be $context.created_at
         $invalidated.invalidation.workflow_path | Should -Be $context.workflow_path
     }
-    It 'keeps an older verification failure historical when it finishes after newer full coverage' {
+    It 'keeps an older selected deep validation failure historical when it finishes after newer full coverage' {
         $context.workflow_id = 200
         $context.run_id = 9
         $context.run_number = 100

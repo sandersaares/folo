@@ -9,7 +9,7 @@ implicitly. Preserve existing worker sessions, worktrees, claims and counters.
 
 This installation procedure is not required for manually requested GitHub checks.
 For those requests, follow `docs\scheduled-validation.md`, **Running checks manually**:
-use **Scheduled verification** on `main` with the requested crate and check ID.
+use **Selected deep validation** on `main` with the requested crate and check ID.
 Do not require policy edits, repair allowlists, Local enrollment or model/billing
 setup just to run a check. Manual diagnostics do not update coverage or repair issues;
 run-level issue reporting retains its separate `rollout.reporting_enabled` authorization.

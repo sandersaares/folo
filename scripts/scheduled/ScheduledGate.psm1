@@ -92,7 +92,7 @@ function Get-ScheduledRepairScope {
         throw [FormatException]::new('Managed repair is outside the reserved branch namespace.')
     }
     if ($reporter.package -cnotin $Policy.repair.allowed_packages) {
-        throw [FormatException]::new('Managed repair package is not approved for hosted verification.')
+        throw [FormatException]::new('Managed repair package is not approved for hosted deep validation.')
     }
     $catalog = Get-ScheduledCheckManifest -SourceSha $PullRequest.head.sha -ControllerSha $reporter.controller_sha `
         -ContractDigest $reporter.check_contract_digest -Scope repair -Packages @($reporter.package)

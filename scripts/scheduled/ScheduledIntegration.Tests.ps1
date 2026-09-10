@@ -35,7 +35,7 @@ Describe 'Historical evidence and retained repair contract' {
             check_contract_digest = $manifest.check_contract_digest
             observation = @{
                 run_id = 10; run_attempt = 1; run_number = 5
-                workflow_path = '.github/workflows/scheduled-validation.yml'
+                workflow_path = '.github/workflows/full-deep-validation.yml'
                 completed_at = $now.ToString('o'); outcome = 'findings'
             }
             evidence = @{

@@ -1,4 +1,4 @@
-name: Scheduled verification
+name: Selected deep validation
 
 on:
   # Confirmation tests merged main bytes, not the pre-squash repair head.
@@ -59,7 +59,7 @@ jobs:
           Set-StrictMode -Version Latest
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $true
-          ./scripts/scheduled/Invoke-ScheduledPlan.ps1 -Mode verify
+          ./scripts/scheduled/Invoke-ScheduledPlan.ps1 -Mode selected
       - uses: actions/upload-artifact@v6
         # No pending repair is valid no-work; retaining the hidden plan makes that auditable.
         # Ref: .github/workflows/implementation.md#serialized-reporting.

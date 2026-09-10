@@ -1,4 +1,4 @@
-name: Scheduled validation
+name: Full deep validation
 
 on:
   schedule:
@@ -11,7 +11,7 @@ permissions:
 concurrency:
   # Queue expensive full runs rather than duplicating or cancelling evidence collection.
   # Ref: .github/workflows/implementation.md#complete-evidence-and-reuse.
-  group: scheduled-validation
+  group: full-deep-validation
   cancel-in-progress: false
 
 jobs:
@@ -31,7 +31,7 @@ jobs:
       matrix: ${{ steps.plan.outputs.matrix }}
       manifest: ${{ steps.plan.outputs.manifest }}
     steps:
-      - name: Checkout scheduled immutable main
+      - name: Checkout immutable main for full deep validation
         # The event SHA binds the plan to one source/controller, even if main advances.
         # Ref: .github/workflows/implementation.md#immutable-execution.
         uses: actions/checkout@v7
@@ -50,7 +50,7 @@ jobs:
           Set-StrictMode -Version Latest
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $true
-          ./scripts/scheduled/Invoke-ScheduledPlan.ps1
+          ./scripts/scheduled/Invoke-ScheduledPlan.ps1 -Mode full
       - name: Preserve expected scope even when checks are not run
         # Reporting must distinguish an intentional skip from incomplete evidence.
         # Ref: .github/workflows/implementation.md#complete-evidence-and-reuse.

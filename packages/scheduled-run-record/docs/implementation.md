@@ -105,8 +105,8 @@ Input:
     "repository": { "id": 123, "name": "owner/repository" },
     "workflow": {
       "id": 456,
-      "name": "Scheduled validation",
-      "path": ".github/workflows/scheduled-validation.yml"
+      "name": "Full deep validation",
+      "path": ".github/workflows/full-deep-validation.yml"
     },
     "run_id": 789,
     "attempt": {
@@ -207,7 +207,9 @@ caller's API-returned bodies.
 
 `{ "op": "render", "record": ... }` returns `title`, `body`, `issue_marker` and `index_digest`.
 An empty record is valid for preparing the initial issue before any evidence comments exist.
-The title is `Scheduled validation failed`. Root marker syntax is
+The title for new issues is `Deep validation failed`. The publication adapter preserves
+existing issue titles, including operator edits, while refreshing the owned body.
+Run issue identity uses repository, workflow and run IDs. Root marker syntax is
 `<!-- scheduled-run:v1 {"repository_id":123,"run_id":789,"schema_version":1,"workflow_id":456} -->`.
 The reporter labels these issues `scheduled-run-failure`; labels and GitHub writes remain
 outside this utility.

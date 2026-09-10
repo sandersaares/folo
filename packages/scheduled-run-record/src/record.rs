@@ -338,7 +338,7 @@ pub(crate) fn render(record: Record) -> Result<Rendered, AppError> {
     let body = format!(
         "[Copilot speaking]\n{marker}\n\
          <!-- scheduled-run-publication:v1 {checkpoint} -->\n\
-         # Scheduled validation failed\n\n\
+         # Deep validation failed\n\n\
          Hosted evidence intake only. This issue is not a triaged problem, a semantic finding, \
          or repair authorization.\n\n\
          Repository ID: {}. Workflow ID: {}. Run ID: {}.\n\
@@ -359,7 +359,7 @@ pub(crate) fn render(record: Record) -> Result<Rendered, AppError> {
     );
     validate_body_size(&body)?;
     Ok(Rendered {
-        title: "Scheduled validation failed",
+        title: "Deep validation failed",
         body,
         issue_marker: marker,
         index_digest,

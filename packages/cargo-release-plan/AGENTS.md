@@ -58,6 +58,6 @@ groups", and `docs/implementation.md`, "Workspace snapshots".
 
 ## Release-process ownership
 
-`docs/release-versioning.md`, `docs/git-workflow.md`, `RELEASING.md`, Validation
-workflows, and `just gh-release` own the surrounding release process. Do not
+`docs/release-versioning.md`, `docs/git-workflow.md`, `RELEASING.md`, Standard
+validation, and `just gh-release` own the surrounding release process. Do not
 change them from this package.
