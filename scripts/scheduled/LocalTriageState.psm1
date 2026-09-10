@@ -40,6 +40,9 @@ function Assert-ScheduledTriageState {
             Assert-TriageField $continuation @('token', 'key', 'admitted_at')
             $null = [DateTimeOffset]$continuation.admitted_at
         }
+        foreach ($operationEntry in $analysis.operations.GetEnumerator()) {
+            Assert-TriageOperation $analysis $operationEntry.Key $operationEntry.Value
+        }
     }
     if ($null -ne $Triage.active_analysis_id -and
         -not $Triage.analyses.Contains($Triage.active_analysis_id)) {
@@ -50,6 +53,44 @@ function Assert-ScheduledTriageState {
         ($retained.Count -eq 1 -and $retained[0].id -cne $Triage.active_analysis_id) -or
         ($retained.Count -eq 0 -and $null -ne $Triage.active_analysis_id)) {
         throw 'Triage ownership does not identify exactly its retained native analysis.'
+    }
+}
+
+function Assert-TriageOperation {
+    param($Analysis, [string] $Key, [System.Collections.IDictionary] $Operation)
+    Assert-TriageField $Operation @('key', 'kind', 'issue_number', 'target_id', 'payload',
+        'preimage', 'checkpoint', 'purpose', 'id', 'stage', 'spec_digest', 'receipt')
+    if ($Operation.key -cne $Key -or [string]::IsNullOrWhiteSpace($Key) -or
+        $Operation.kind -cnotin @('create-issue', 'create-comment', 'update-issue', 'update-comment', 'create-label') -or
+        $Operation.stage -cnotin @('prepared', 'sending', 'confirmed', 'superseded') -or
+        $Operation.payload -isnot [System.Collections.IDictionary] -or $null -eq $Analysis.checkpoint -or
+        $Operation.checkpoint -lt 1 -or $Operation.checkpoint -gt $Analysis.checkpoint.analysis.checkpoint -or
+        $Operation.id -cne "$($Analysis.revision.repository_id)/$($Analysis.id)/$Key" -or
+        ($null -ne $Operation.target_id -and [string]$Operation.target_id -cnotmatch '^[1-9][0-9]*$')) {
+        throw 'Corrupt triage publication identity, kind, or stage.'
+    }
+    $specification = $Operation | ConvertTo-Json -Depth 100 | ConvertFrom-Json -AsHashtable
+    foreach ($field in @('id', 'stage', 'spec_digest', 'receipt', 'superseded_by_index')) {
+        $specification.Remove($field)
+    }
+    # Creation intents have no remote ID. Observation adds that ID without changing the
+    # immutable specification; update intents retain their original, digest-bound target.
+    if ($Operation.kind -cin @('create-issue', 'create-comment', 'create-label')) {
+        $specification.target_id = $null
+    }
+    if ($Operation.spec_digest -cne (Get-ScheduledDigest $specification)) {
+        throw 'Restored triage publication differs from its immutable intent.'
+    }
+    if ($null -ne $Operation.receipt) {
+        Assert-TriageField $Operation.receipt @('target_id', 'payload_digest', 'operation_id')
+        if ($Operation.stage -cnotin @('confirmed', 'superseded') -or $null -eq $Operation.target_id -or
+            $Operation.receipt.target_id -ne $Operation.target_id -or
+            $Operation.receipt.operation_id -cne $Operation.id -or
+            $Operation.receipt.payload_digest -cne (Get-ScheduledDigest $Operation.payload)) {
+            throw 'Restored triage publication receipt does not confirm its intent.'
+        }
+    } elseif ($Operation.stage -ceq 'confirmed') {
+        throw 'Confirmed triage publication has no durable receipt.'
     }
 }
 

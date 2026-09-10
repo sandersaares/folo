@@ -9,6 +9,7 @@ $PSNativeCommandUseErrorActionPreference = $true
 Import-Module (Join-Path $PSScriptRoot 'ScheduledContracts.psm1')
 Import-Module (Join-Path $PSScriptRoot 'ScheduledRecordTool.psm1')
 Import-Module (Join-Path $PSScriptRoot 'LocalState.psm1')
+Import-Module (Join-Path $PSScriptRoot 'LocalTriageState.psm1')
 Import-Module (Join-Path $PSScriptRoot 'ScheduledGitHub.psm1')
 Import-Module (Join-Path $PSScriptRoot 'LocalTriageInbox.psm1')
 
@@ -270,7 +271,11 @@ function Assert-TriageDocumentHistory {
 function Get-ScheduledTriageRecovery {
     [CmdletBinding()]
     param($Policy, $State, [scriptblock] $Api)
-    if (-not $State.ContainsKey('triage') -or $null -eq $State.triage.active_analysis_id) {
+    if (-not $State.ContainsKey('triage')) {
+        return @{ active = $null; evidence_key = $null; operations = @() }
+    }
+    Assert-ScheduledTriageState $State.triage
+    if ($null -eq $State.triage.active_analysis_id) {
         return @{ active = $null; evidence_key = $null; operations = @() }
     }
     $analysis = $State.triage.analyses[$State.triage.active_analysis_id]

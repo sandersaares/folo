@@ -60,12 +60,14 @@ function Invoke-ScheduledTriageRequest {
     $policy = Get-ScheduledPolicy
     $triagePolicy = Get-ScheduledTriagePolicy
     $root = Get-ScheduledStateRoot -RepositoryId $policy.repository_id
-    $user = Invoke-ScheduledTriageRead -Endpoint user
-    if ($user.login -cne $policy.worker_login) { throw 'Selected account does not match reviewed triage identity.' }
+    # Reject corrupt retained authority before even an identity lookup. This local read
+    # uses reviewed identity; the subsequent API lookup still verifies the selected account.
     $state = if (Test-Path -LiteralPath $root) {
         Invoke-ScheduledLocalAction -StateRoot $root -Policy $policy -TriagePolicy $triagePolicy `
-            -ExecutorId $request.executor_id -Login $user.login -Now $Now -Action read
+            -ExecutorId $request.executor_id -Login $policy.worker_login -Now $Now -Action read
     } else { $null }
+    $user = Invoke-ScheduledTriageRead -Endpoint user
+    if ($user.login -cne $policy.worker_login) { throw 'Selected account does not match reviewed triage identity.' }
     if ($request.action -ceq 'scan') {
         $snapshot = Get-ScheduledTriageInbox -Policy $policy -State $state
         $summary = Get-TriageSummary $snapshot

@@ -477,7 +477,11 @@ The primary digest never changes. The durable completion basis accounts for
 original gaps and supporting diagnostics without acknowledging another revision.
 
 `LocalTriageState.psm1` adds independent ownership, dispatch and publication
-accounting to the existing locked local envelope. `LocalTriagePublication.psm1`
+accounting to the existing locked local envelope. Restoring an outbox validates
+each operation's kind, identity, stage, immutable specification digest and receipt
+before GitHub access. Creation targets acquired during publication do not alter
+the original intent; update targets remain digest-bound.
+`LocalTriagePublication.psm1`
 reconciles stable issue/comment operations; problem and completion adapters advance
 roots only after their detail and required issue changes are confirmed. The native
 skill performs actual issue creation and same-session continuations between

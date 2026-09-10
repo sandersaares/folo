@@ -185,6 +185,8 @@ Describe 'Local triage JSON entry point' {
             $data.offset = $page.next_offset
         } while ($null -ne $data.offset)
         $entry = $fixture.snapshot.index.entries[0]
+        $data.offset = 0
+        (Invoke-EntryFixtureRequest problem $data).full_read_digest | Should -BeExactly $entry.record_digest
         $data.analysis.checkpoint = 3; $data.analysis.index_digest = $fixture.snapshot.index.digest
         $data.analysis.considered_issues = @($created.number)
         $data.analysis.problems[0].matching = @{

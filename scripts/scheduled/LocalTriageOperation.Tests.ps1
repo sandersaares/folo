@@ -107,6 +107,7 @@ Describe 'Evidence-bound publication operations' {
         $after = Get-ScheduledTriageRecovery $fixture.context.policy $state $fixture.api
         $after.operations[0].visible | Should -BeTrue
         $after.evidence_key | Should -Not -Be $before.evidence_key
+        $state.triage.analyses.Clear()
         $state.triage.active_analysis_id = $null
         (Get-ScheduledTriageRecovery $fixture.context.policy $state $fixture.api).active | Should -BeNullOrEmpty
     }
