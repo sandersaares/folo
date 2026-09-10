@@ -42,6 +42,14 @@ The comparison anchor depends on the environment:
 Command-level validation, fetch policy mechanics and cargo-delta parameter wiring live in
 `scripts/build/Delta.psm1`.
 
+## Baseline worktree lifetime
+
+Baseline analysis uses a temporary Git worktree without switching the caller's checkout.
+Worktree removal is attempted only after successful creation, even when analysis fails.
+An analysis failure is preserved when removal succeeds; a removal failure is surfaced even
+when analysis succeeds. If both fail, an aggregate exception retains both original exceptions,
+with the analysis failure first.
+
 ## Local usage
 
 ```bash

@@ -11,6 +11,8 @@
 # parsing, and CI output shaping.
 
 Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+$PSNativeCommandUseErrorActionPreference = $true
 
 function Read-DeltaAffectedPackage {
     # Parses the JSON emitted by `cargo delta run` and returns its list of affected package names
@@ -203,6 +205,7 @@ function Invoke-CargoDelta {
         # Use a git worktree to analyze the baseline revision without switching branches.
         $worktreeDir = Join-Path $tempDir 'main-worktree'
         git worktree add --quiet $worktreeDir $resolvedBaselineRevision | Out-Null
+        $analysisError = $null
         try {
             Write-Host "Analyzing baseline revision ($BaselineRevision)..."
             Push-Location $worktreeDir
@@ -212,8 +215,20 @@ function Invoke-CargoDelta {
             } finally {
                 Pop-Location
             }
+        } catch {
+            $analysisError = $_
+            throw
         } finally {
-            git worktree remove $worktreeDir --force | Out-Null
+            # Cleanup must not hide the analysis failure that prompted it.
+            # See docs/cargo-delta.md, "Baseline worktree lifetime".
+            try {
+                git worktree remove $worktreeDir --force | Out-Null
+            } catch {
+                if ($null -eq $analysisError) { throw }
+                throw [AggregateException]::new(
+                    "Delta baseline analysis and cleanup of '$worktreeDir' both failed.",
+                    [Exception[]] @($analysisError.Exception, $_.Exception))
+            }
         }
 
         Write-Host 'Computing delta...'
