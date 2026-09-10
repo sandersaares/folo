@@ -216,6 +216,34 @@ mod tests {
         assert_eq!(subprocess_cwd(Path::new("packages")), Path::new("packages"));
     }
 
+    #[test]
+    #[cfg_attr(miri, ignore = "spawns Git with captured standard input")]
+    fn captured_input_failure_preserves_a_nonzero_exit() {
+        // Git reads the complete object before validating its tree encoding, so this does
+        // not race the child closing stdin before the parent writes its test input.
+        let error = run_capture_input(
+            "git",
+            &["hash-object", "--stdin", "-t", "tree"],
+            b"not a tree object",
+            Path::new("."),
+        )
+        .unwrap_err();
+        assert!(error.find_source::<CommandFailedError>().is_some());
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "attempts a native process spawn")]
+    fn captured_input_propagates_a_spawn_failure() {
+        let error = run_capture_input(
+            "cargo-release-plan-no-such-program",
+            &[],
+            b"input",
+            Path::new("."),
+        )
+        .unwrap_err();
+        assert!(error.find_source::<CommandSpawnError>().is_some());
+    }
+
     #[cfg_attr(miri, ignore)] // Process spawn uses host APIs Miri cannot emulate.
     #[test]
     fn run_capture_ok_returns_stdout_on_success() {

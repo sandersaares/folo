@@ -112,6 +112,15 @@ fn final_compatibility_workspace_has_candidate_versions_and_resolution() {
     fs::write(&candidate_member, original_manifest).unwrap();
     verify(&plan, &candidate).unwrap();
 
+    let live_source = fixture.read("packages/core/src/lib.rs");
+    fixture.write(
+        "packages/core/src/lib.rs",
+        "pub fn changed_live_source() {}\n",
+    );
+    verify(&plan, &candidate).unwrap_err();
+    fixture.write("packages/core/src/lib.rs", &live_source);
+    verify(&plan, &candidate).unwrap();
+
     // Application depends on the original snapshot and captured bytes, not the retained tree.
     fs::remove_dir_all(root).unwrap();
     run(&RunInput::Apply {

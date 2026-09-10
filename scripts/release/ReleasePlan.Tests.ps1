@@ -1,5 +1,7 @@
 #Requires -Modules @{ ModuleName = 'Pester'; ModuleVersion = '5.0' }
 
+# Protects the increment-versions workflow's artifact, process, and version-propagation boundaries.
+# Cargo is injected so rejected evidence cannot run resolution, compatibility builds, or apply.
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 $PSNativeCommandUseErrorActionPreference = $true
@@ -193,6 +195,12 @@ BeforeAll {
 }
 
 Describe 'Get-ReleasePlanPackageAnchor' {
+    It 'rejects a requested package absent from the report' {
+        $path = Join-Path $TestDrive 'missing-package-anchor.json'
+        Write-TestReport -Path $path -Package @(Get-TestPackage -Name 'present' -AnchorVersion '1.0.0')
+        { Get-ReleasePlanPackageAnchor -ReportPath $path -Name 'absent' } | Should -Throw
+    }
+
     It 'returns the package version-anchor commit' {
         $path = Join-Path $TestDrive 'anchor-report.json'
         Write-TestReport -Path $path -Package @(
@@ -374,6 +382,90 @@ Describe 'Get-AffectedSemverCheckTarget' {
 }
 
 Describe 'release-plan report schema 4 validation' {
+    It 'rejects malformed report evidence: <Kind>' -TestCases @(
+        @{ Kind = 'missing file' }, @{ Kind = 'null document' }, @{ Kind = 'array document' }
+        @{ Kind = 'missing schema' }, @{ Kind = 'string schema' }
+        @{ Kind = 'missing groups' }, @{ Kind = 'array groups' }
+        @{ Kind = 'null release package' }, @{ Kind = 'missing release name' }
+        @{ Kind = 'missing release version' }, @{ Kind = 'missing status' }
+        @{ Kind = 'missing changed paths' }, @{ Kind = 'missing dependencies' }
+        @{ Kind = 'empty release name' }, @{ Kind = 'duplicate release name' }
+        @{ Kind = 'empty release version' }, @{ Kind = 'unknown status' }
+        @{ Kind = 'non-array changed paths' }, @{ Kind = 'non-array dependencies' }
+        @{ Kind = 'null helper' }, @{ Kind = 'missing helper name' }
+        @{ Kind = 'missing helper version' }, @{ Kind = 'empty helper name' }
+        @{ Kind = 'empty helper version' }, @{ Kind = 'duplicate helper name' }
+        @{ Kind = 'missing group members' }, @{ Kind = 'non-array group members' }
+        @{ Kind = 'missing consistency' }, @{ Kind = 'non-boolean consistency' }
+        @{ Kind = 'missing group version' }, @{ Kind = 'empty group version' }
+        @{ Kind = 'singleton group' }, @{ Kind = 'empty group member' }
+        @{ Kind = 'unsorted group members' }, @{ Kind = 'duplicate group member' }
+        @{ Kind = 'overlapping groups' }, @{ Kind = 'missing package group reference' }
+        @{ Kind = 'disagreeing package group reference' }
+    ) {
+        param($Kind)
+        $path = Join-Path $TestDrive 'malformed-report.json'
+        Write-TestReport -Path $path -Package @(
+            Get-TestPackage -Name 'alpha' -Group 'alpha'
+            Get-TestPackage -Name 'beta' -Group 'alpha'
+        ) -NonPublishablePackage @(Get-TestNonPublishablePackage -Name 'helper') -Group @{
+            alpha = @{ members = @('alpha', 'beta'); consistent = $true; version = '1.0.0' }
+        }
+        $report = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json -AsHashtable
+        switch ($Kind) {
+            'null document' { $report = $null }
+            'array document' { $report = @($report, $report) }
+            'missing schema' { $report.Remove('schema_version') }
+            'string schema' { $report.schema_version = '4' }
+            'missing groups' { $report.Remove('groups') }
+            'array groups' { $report.groups = @() }
+            'null release package' { $report.packages[0] = $null }
+            'missing release name' { $report.packages[0].Remove('name') }
+            'missing release version' { $report.packages[0].Remove('declared_version') }
+            'missing status' { $report.packages[0].Remove('status') }
+            'missing changed paths' { $report.packages[0].Remove('changed') }
+            'missing dependencies' { $report.packages[0].Remove('dependencies') }
+            'empty release name' { $report.packages[0].name = ' ' }
+            'duplicate release name' { $report.packages[1].name = 'alpha' }
+            'empty release version' { $report.packages[0].declared_version = ' ' }
+            'unknown status' { $report.packages[0].status = 'ungraded' }
+            'non-array changed paths' { $report.packages[0].changed = @{} }
+            'non-array dependencies' { $report.packages[0].dependencies = @{} }
+            'null helper' { $report.non_publishable_packages[0] = $null }
+            'missing helper name' { $report.non_publishable_packages[0].Remove('name') }
+            'missing helper version' { $report.non_publishable_packages[0].Remove('declared_version') }
+            'empty helper name' { $report.non_publishable_packages[0].name = ' ' }
+            'empty helper version' { $report.non_publishable_packages[0].declared_version = ' ' }
+            'duplicate helper name' { $report.non_publishable_packages += $report.non_publishable_packages[0] }
+            'missing group members' { $report.groups.alpha.Remove('members') }
+            'non-array group members' { $report.groups.alpha.members = 'alpha' }
+            'missing consistency' { $report.groups.alpha.Remove('consistent') }
+            'non-boolean consistency' { $report.groups.alpha.consistent = 'true' }
+            'missing group version' { $report.groups.alpha.Remove('version') }
+            'empty group version' { $report.groups.alpha.version = ' ' }
+            'singleton group' { $report.groups.alpha.members = @('alpha') }
+            'empty group member' { $report.groups.alpha.members = @('alpha', '') }
+            'unsorted group members' { $report.groups.alpha.members = @('beta', 'alpha') }
+            'duplicate group member' { $report.groups.alpha.members = @('alpha', 'alpha') }
+            'overlapping groups' {
+                $report.groups.beta = @{
+                    members = @('beta', 'helper'); consistent = $true; version = '1.0.0'
+                }
+                $report.non_publishable_packages[0].group = 'beta'
+            }
+            'missing package group reference' { $report.packages[1].Remove('group') }
+            'disagreeing package group reference' { $report.packages[1].group = 'beta' }
+        }
+        if ($Kind -eq 'missing file') {
+            Remove-Item -LiteralPath $path
+        } else {
+            ConvertTo-Json -InputObject $report -Depth $script:ReleasePlanReportFixtureJsonDepth |
+                Set-Content -LiteralPath $path
+        }
+
+        { Get-TestAffectedSemverCheckTarget -ReportPath $path } | Should -Throw
+    }
+
     It 'rejects the previous report schema' {
         $path = Join-Path $TestDrive 'old-schema.json'
         Write-TestReport -Path $path -Package @() -SchemaVersion $script:PreviousReleasePlanSchemaVersion
@@ -467,6 +559,25 @@ Describe 'Assert-SemverCheckExitCode' {
 }
 
 Describe 'cargo-semver-checks target directory' {
+    It 'leaves the environment unchanged when no target override is requested' {
+        InModuleScope ReleasePlan {
+            $previous = [Environment]::GetEnvironmentVariable('CARGO_TARGET_DIR', 'Process')
+            $script:observedTarget = $null
+            try {
+                $env:CARGO_TARGET_DIR = 'caller-target'
+                Invoke-SemverCheckCargo -Argument @('semver-checks') -TargetDirectory $null -Cargo {
+                    param([string[]] $Argument)
+                    $Argument | Should -Be @('semver-checks')
+                    $script:observedTarget = $env:CARGO_TARGET_DIR
+                }
+                $script:observedTarget | Should -BeExactly 'caller-target'
+                $env:CARGO_TARGET_DIR | Should -BeExactly 'caller-target'
+            } finally {
+                $env:CARGO_TARGET_DIR = $previous
+            }
+        }
+    }
+
     It 'creates a stable workspace-specific path under the temporary root' {
         InModuleScope ReleasePlan {
             $tempRoot = Join-Path $TestDrive 'temp'
@@ -563,7 +674,75 @@ Describe 'cargo-semver-checks target directory' {
     }
 }
 
+Describe 'Invoke-VerifySemverCheck' {
+    It 'runs the canary once and propagates process failure <Fails>' -TestCases @(
+        @{ Fails = $false }, @{ Fails = $true }
+    ) {
+        param($Fails)
+        $script:calls = [System.Collections.Generic.List[object]]::new()
+        $action = {
+            Invoke-VerifySemverCheck -Cargo {
+                param([string[]] $Argument)
+                $script:calls.Add(@($Argument))
+                if ($Fails) { throw [IO.IOException]::new('Canary process failure') }
+            }
+        }
+        if ($Fails) {
+            $action | Should -Throw '*Canary process failure*'
+        } else {
+            & $action
+        }
+        $script:calls.Count | Should -Be 1
+        $script:calls[0] | Should -Be @(
+            'semver-checks', '--baseline-rev', 'HEAD', '-p', 'folo_utils'
+        )
+    }
+}
+
 Describe 'Invoke-PrepareReleasePlan' {
+    It 'rejects a successful preparation without a new input snapshot' {
+        $outDir = Join-Path $TestDrive 'missing-snapshot'
+        New-Item -ItemType Directory -Path $outDir | Out-Null
+        'stale snapshot' | Set-Content -LiteralPath (Join-Path $outDir 'prepared.json')
+        Write-TestReport -Path (Join-Path $outDir 'report.json') -Package @()
+        $script:calls = [System.Collections.Generic.List[object]]::new()
+        $script:snapshotExistedAtInvocation = $null
+
+        {
+            Invoke-PrepareReleasePlan -OutDir $outDir -Cargo {
+                param([string[]] $Argument)
+                $script:calls.Add(@($Argument))
+                $script:snapshotExistedAtInvocation =
+                    Test-Path -LiteralPath (Join-Path $outDir 'prepared.json')
+                $global:LASTEXITCODE = 0
+            }
+        } | Should -Throw
+
+        $script:calls.Count | Should -Be 1
+        $script:snapshotExistedAtInvocation | Should -BeFalse
+        Test-Path -LiteralPath (Join-Path $outDir 'prepared.json') | Should -BeFalse
+        Test-Path -LiteralPath (Join-Path $outDir 'semver-checks.log') | Should -BeFalse
+    }
+
+    It 'removes partial preparation when the Cargo process throws' {
+        $outDir = Join-Path $TestDrive 'throwing-preparation'
+        $script:calls = [System.Collections.Generic.List[object]]::new()
+        {
+            Invoke-PrepareReleasePlan -OutDir $outDir -Cargo {
+                param([string[]] $Argument)
+                $script:calls.Add(@($Argument))
+                $index = [array]::IndexOf($Argument, '--output')
+                'partial snapshot' |
+                    Set-Content -LiteralPath (Join-Path $Argument[$index + 1] 'prepared.json')
+                throw [IO.IOException]::new('Preparation canary')
+            }
+        } | Should -Throw '*Preparation canary*'
+
+        $script:calls.Count | Should -Be 1
+        Test-Path -LiteralPath (Join-Path $outDir 'prepared.json') | Should -BeFalse
+        Test-Path -LiteralPath (Join-Path $outDir 'semver-checks.log') | Should -BeFalse
+    }
+
     It 'prepares offline resolution before collecting semantic evidence from its report' {
         $outDir = Join-Path $TestDrive 'prepared'
         $script:calls = [System.Collections.Generic.List[object]]::new()
@@ -704,6 +883,63 @@ Describe 'Invoke-ReleaseReport' {
 }
 
 Describe 'Write-ReleaseSemverEvidence' {
+    It 'restores the caller location and native error policy after a prospective build throws' {
+        $outDir = Join-Path $TestDrive 'throwing-evidence'
+        $prospective = Join-Path $TestDrive 'throwing-workspace'
+        New-Item -ItemType Directory -Path $outDir, $prospective | Out-Null
+        $manifest = Join-Path $prospective 'Cargo.toml'
+        'prospective manifest' | Set-Content -LiteralPath $manifest
+        Write-TestReport -Path (Join-Path $outDir 'report.json') -Package @(
+            Get-TestPackage -Name 'library' -Status 'needs-increment' `
+                -Changed @(@{ path = 'src/lib.rs' })
+        )
+        InModuleScope ReleasePlan -Parameters @{ OutDir = $outDir; Manifest = $manifest } {
+            param($OutDir, $Manifest)
+            $location = (Get-Location).Path
+            $prospectiveLocation = Split-Path -Parent $Manifest
+            $previousPreference = $PSNativeCommandUseErrorActionPreference
+            {
+                Write-ReleaseSemverEvidence -OutDir $OutDir -ManifestPath $Manifest -Cargo {
+                    param([string[]] $Argument)
+                    $Argument | Should -Be @(
+                        'semver-checks', '--all-features', '--manifest-path', $Manifest,
+                        '-p', 'library'
+                    )
+                    (Get-Location).Path | Should -Be $prospectiveLocation
+                    $PSNativeCommandUseErrorActionPreference | Should -BeFalse
+                    'Build failure evidence'
+                    throw [IO.IOException]::new('Compatibility canary')
+                }
+            } | Should -Throw '*Compatibility canary*'
+            (Get-Location).Path | Should -Be $location
+            $PSNativeCommandUseErrorActionPreference | Should -Be $previousPreference
+            Get-Content -LiteralPath (Join-Path $OutDir 'semver-checks.log') -Raw |
+                Should -Match 'Build failure evidence'
+        }
+    }
+
+    It 'retains completed comparison findings as evidence' {
+        $outDir = Join-Path $TestDrive 'finding-evidence'
+        New-Item -ItemType Directory -Path $outDir | Out-Null
+        Write-TestReport -Path (Join-Path $outDir 'report.json') -Package @(
+            Get-TestPackage -Name 'library' -Status 'needs-increment' `
+                -Changed @(@{ path = 'src/lib.rs' })
+        )
+        try {
+            InModuleScope ReleasePlan -Parameters @{ OutDir = $outDir } {
+                param($OutDir)
+                Write-ReleaseSemverEvidence -OutDir $OutDir -Cargo {
+                    'Breaking API finding'
+                    $global:LASTEXITCODE = 100
+                }
+            }
+            Get-Content -LiteralPath (Join-Path $outDir 'semver-checks.log') -Raw |
+                Should -Match 'Breaking API finding'
+        } finally {
+            $global:LASTEXITCODE = 0
+        }
+    }
+
     It 'builds the explicit prospective manifest and lockfile rather than the live tree' {
         $outDir = Join-Path $TestDrive 'prospective-semver'
         $original = Join-Path $TestDrive 'live-workspace'
@@ -770,6 +1006,35 @@ Describe 'Invoke-SemverCheck' {
 }
 
 Describe 'Invoke-ExpandReleasePlan' {
+    It 'never exposes staged output after <Failure>' -TestCases @(
+        @{ Failure = 'a throwing process' }, @{ Failure = 'a missing result' }
+    ) {
+        param($Failure)
+        $throws = $Failure -eq 'a throwing process'
+        $planPath = Join-Path $TestDrive 'stage-input.json'
+        $expandedPath = Join-Path $TestDrive 'stage-output.json'
+        '{}' | Set-Content -LiteralPath $planPath
+        'stale result' | Set-Content -LiteralPath $expandedPath
+        $script:stagingPath = $null
+        $script:calls = [System.Collections.Generic.List[object]]::new()
+        {
+            Invoke-ExpandReleasePlan -PlanPath $planPath -ExpandedPath $expandedPath -Cargo {
+                param([string[]] $Argument)
+                $script:calls.Add(@($Argument))
+                $script:stagingPath = $Argument[[array]::IndexOf($Argument, '--out') + 1]
+                if ($throws) {
+                    'partial result' | Set-Content -LiteralPath $script:stagingPath
+                    throw [IO.IOException]::new('Expansion canary')
+                }
+                $global:LASTEXITCODE = 0
+            }
+        } | Should -Throw
+        $script:calls.Count | Should -Be 1
+        Test-Path -LiteralPath $expandedPath | Should -BeFalse
+        Test-Path -LiteralPath $script:stagingPath | Should -BeFalse
+        (Get-Content -LiteralPath $planPath -Raw).Trim() | Should -Be '{}'
+    }
+
     It 'moves a successful staging expansion into the caller-visible path' {
         $planPath = Join-Path $TestDrive 'plan.json'
         $expandedPath = Join-Path $TestDrive 'expanded.json'
@@ -822,6 +1087,81 @@ Describe 'Invoke-ExpandReleasePlan' {
 }
 
 Describe 'Invoke-PreviewReleasePlan' {
+    It 'rejects an unusable prospective manifest: <Kind>' -TestCases @(
+        @{ Kind = 'missing field' }, @{ Kind = 'blank path' }
+        @{ Kind = 'relative path' }, @{ Kind = 'missing file' }, @{ Kind = 'directory' }
+    ) {
+        param($Kind)
+        $prepared = Join-Path $TestDrive 'prepared-manifest.json'
+        $proposed = Join-Path $TestDrive 'proposed-manifest.json'
+        $outDir = Join-Path $TestDrive 'manifest-preview'
+        '{}' | Set-Content -LiteralPath $prepared
+        '{}' | Set-Content -LiteralPath $proposed
+        $resolved = @{}
+        switch ($Kind) {
+            'blank path' { $resolved.evidence_manifest_path = ' ' }
+            'relative path' { $resolved.evidence_manifest_path = 'workspace\Cargo.toml' }
+            'missing file' { $resolved.evidence_manifest_path = Join-Path $outDir 'absent.toml' }
+            'directory' { $resolved.evidence_manifest_path = $outDir }
+        }
+        $script:calls = [System.Collections.Generic.List[object]]::new()
+        {
+            Invoke-PreviewReleasePlan -PreparedPath $prepared -PlanPath $proposed -OutDir $outDir -Cargo {
+                param([string[]] $Argument)
+                $script:calls.Add(@($Argument))
+                @{
+                    schema_version = $script:ValidReleasePlanSchemaVersion
+                    expanded = $true
+                    increments = @()
+                    resolved = $resolved
+                } | ConvertTo-Json -Depth $script:ExpandedPlanFixtureJsonDepth |
+                    Set-Content -LiteralPath (Join-Path $outDir 'plan.json')
+                $global:LASTEXITCODE = 0
+            }
+        } | Should -Throw
+
+        $script:calls.Count | Should -Be 1
+        Test-Path -LiteralPath (Join-Path $outDir 'plan.json') | Should -BeFalse
+        Test-Path -LiteralPath (Join-Path $outDir 'semver-checks.log') | Should -BeFalse
+        (Get-Content -LiteralPath $prepared -Raw).Trim() | Should -Be '{}'
+        (Get-Content -LiteralPath $proposed -Raw).Trim() | Should -Be '{}'
+    }
+
+    It 'verifies captured state even when no compatibility target is selected' {
+        $prepared = Join-Path $TestDrive 'empty-prepared.json'
+        $proposed = Join-Path $TestDrive 'empty-proposed.json'
+        $outDir = Join-Path $TestDrive 'empty-preview'
+        '{}' | Set-Content -LiteralPath $prepared
+        '{}' | Set-Content -LiteralPath $proposed
+        $script:calls = [System.Collections.Generic.List[object]]::new()
+        Invoke-PreviewReleasePlan -PreparedPath $prepared -PlanPath $proposed -OutDir $outDir -Cargo {
+            param([string[]] $Argument)
+            $script:calls.Add(@($Argument))
+            if ($Argument -contains 'preview') {
+                $manifest = Join-Path $outDir 'Cargo.toml'
+                'prospective manifest' | Set-Content -LiteralPath $manifest
+                @{
+                    schema_version = $script:ValidReleasePlanSchemaVersion
+                    expanded = $true
+                    increments = @()
+                    resolved = @{ evidence_manifest_path = $manifest }
+                } | ConvertTo-Json -Depth $script:ExpandedPlanFixtureJsonDepth |
+                    Set-Content -LiteralPath (Join-Path $outDir 'plan.json')
+                Write-TestReport -Path (Join-Path $outDir 'report.json') -Package @()
+            }
+            $global:LASTEXITCODE = 0
+        }
+
+        $script:calls.Count | Should -Be 2
+        $script:calls[1] | Should -Be @(
+            'run', '-p', 'cargo-release-plan', '--locked', '--',
+            'verify-preview', '--plan', (Join-Path $outDir 'plan.json'),
+            '--manifest-path', (Join-Path $outDir 'Cargo.toml')
+        )
+        Test-Path -LiteralPath (Join-Path $outDir 'plan.json') | Should -BeTrue
+        Test-Path -LiteralPath (Join-Path $outDir 'semver-checks.log') | Should -BeTrue
+    }
+
     It 'preserves the completed resolved artifact without another resolution or expansion' {
         $prepared = Join-Path $TestDrive 'prepared.json'
         $proposed = Join-Path $TestDrive 'proposed.json'
@@ -1009,6 +1349,62 @@ Describe 'Invoke-PreviewReleasePlan' {
 }
 
 Describe 'Invoke-ApplyReleasePlan' {
+    It 'rejects malformed captured plan <Kind> without calling Cargo' -TestCases @(
+        @{ Kind = 'null document' }, @{ Kind = 'array document' }, @{ Kind = 'string schema' }
+        @{ Kind = 'missing increments' }, @{ Kind = 'non-array increments' }
+        @{ Kind = 'non-boolean expansion' }, @{ Kind = 'null resolution' }
+        @{ Kind = 'array resolution' }, @{ Kind = 'string resolution' }
+    ) {
+        param($Kind)
+        $path = Join-Path $TestDrive 'malformed-captured-plan.json'
+        $plan = @{
+            schema_version = $script:ValidReleasePlanSchemaVersion
+            expanded = $true; increments = @(); resolved = @{}
+        }
+        switch ($Kind) {
+            'null document' { $plan = $null }
+            'array document' { $plan = @($plan, $plan) }
+            'string schema' { $plan.schema_version = '4' }
+            'missing increments' { $plan.Remove('increments') }
+            'non-array increments' { $plan.increments = @{} }
+            'non-boolean expansion' { $plan.expanded = 'true' }
+            'null resolution' { $plan.resolved = $null }
+            'array resolution' { $plan.resolved = @() }
+            'string resolution' { $plan.resolved = 'captured' }
+        }
+        ConvertTo-Json -InputObject $plan -Depth $script:ExpandedPlanFixtureJsonDepth |
+            Set-Content -LiteralPath $path
+        $script:called = $false
+        {
+            Invoke-ApplyReleasePlan -ExpandedPath $path -Cargo { $script:called = $true }
+        } | Should -Throw
+        $script:called | Should -BeFalse
+    }
+
+    It 'preserves the reviewed artifact and propagates failure without retrying or resolving' {
+        $path = Join-Path $TestDrive 'failed-apply.json'
+        $artifact = @{
+            schema_version = $script:ValidReleasePlanSchemaVersion
+            expanded = $true
+            increments = @(@{ name = 'library'; version = '1.0.1' })
+            resolved = @{ evidence = 'opaque Rust-owned resolved state' }
+        } | ConvertTo-Json -Depth $script:ExpandedPlanFixtureJsonDepth
+        $artifact | Set-Content -LiteralPath $path
+        $script:calls = [System.Collections.Generic.List[object]]::new()
+        {
+            Invoke-ApplyReleasePlan -ExpandedPath $path -Cargo {
+                param([string[]] $Argument)
+                $script:calls.Add(@($Argument))
+                throw [IO.IOException]::new('Apply canary')
+            }
+        } | Should -Throw '*Apply canary*'
+        $script:calls.Count | Should -Be 1
+        $script:calls[0] | Should -Be @(
+            'run', '-p', 'cargo-release-plan', '--locked', '--', 'apply', '--plan', $path
+        )
+        (Get-Content -LiteralPath $path -Raw).TrimEnd() | Should -BeExactly $artifact
+    }
+
     It 'passes an expanded plan to cargo-release-plan apply' {
         $path = Join-Path $TestDrive 'apply-expanded.json'
         [ordered]@{
@@ -1070,6 +1466,19 @@ Describe 'Invoke-ApplyReleasePlan' {
 }
 
 Describe 'Invoke-ValidateVersions' {
+    It 'runs only the locked check when GitHub output is not requested' {
+        $script:calls = [System.Collections.Generic.List[object]]::new()
+        Invoke-ValidateVersions -GitHubOutputPath '' -Base 'baseline' -Cargo {
+            param([string[]] $Argument)
+            $script:calls.Add(@($Argument))
+        }
+        $script:calls.Count | Should -Be 1
+        $script:calls[0] | Should -Be @(
+            'run', '-p', 'cargo-release-plan', '--locked', '--',
+            'check', '--format', 'github', '--base', 'baseline'
+        )
+    }
+
     It 'emits semver_targets= when the report selects nothing, then runs check' {
         $output = Join-Path $TestDrive 'github-output'
         New-Item -ItemType File -Path $output | Out-Null
@@ -1230,6 +1639,61 @@ Describe 'Assert-IncrementPackagePublished' {
             Get-TestWorkspaceMember -Name 'nm'
             Get-TestWorkspaceMember -Name 'nm_impl'
         )
+    }
+
+    It 'rejects invalid tracked membership <Kind> before querying the registry' -TestCases @(
+        @{ Kind = 'empty name' }, @{ Kind = 'duplicate name' }, @{ Kind = 'missing eligibility' }
+    ) {
+        param($Kind)
+        $path = Join-Path $TestDrive 'invalid-membership.json'
+        Write-TestExpandedPlan -Path $path -Name @('events')
+        $members = switch ($Kind) {
+            'empty name' { [pscustomobject]@{ Name = ' '; Publishable = $true } }
+            'duplicate name' { $script:workspaceMembers[0]; $script:workspaceMembers[0] }
+            'missing eligibility' { [pscustomobject]@{ Name = 'events' } }
+        }
+        $script:queried = $false
+        {
+            Assert-IncrementPackagePublished -ExpandedPath $path `
+                -GetWorkspaceMember { $members } -GetPublishStatus { $script:queried = $true }
+        } | Should -Throw
+        $script:queried | Should -BeFalse
+    }
+
+    It 'propagates registry process errors without treating them as retryable uncertainty' {
+        $path = Join-Path $TestDrive 'throwing-registry.json'
+        Write-TestExpandedPlan -Path $path -Name @('events')
+        $script:queryCount = 0
+        {
+            Assert-IncrementPackagePublished -ExpandedPath $path `
+                -GetWorkspaceMember { $script:workspaceMembers } `
+                -PublishStatusRetryAttempt 2 -PublishStatusRetryDelaySeconds 0 `
+                -GetPublishStatus {
+                    $script:queryCount++
+                    throw [IO.IOException]::new('Registry canary')
+                }
+        } | Should -Throw '*Registry canary*'
+        $script:queryCount | Should -Be 1
+    }
+
+    It 'queries each expanded package once and forwards the selected workspace manifest' {
+        $path = Join-Path $TestDrive 'duplicate-expanded-members.json'
+        $manifest = Join-Path $TestDrive 'prospective\Cargo.toml'
+        Write-TestExpandedPlan -Path $path -Name @('nm', 'events', 'nm')
+        $script:queried = [System.Collections.Generic.List[string]]::new()
+        $script:selectedManifest = $null
+        Assert-IncrementPackagePublished -ExpandedPath $path -ManifestPath $manifest `
+            -GetWorkspaceMember {
+                param($SelectedManifestPath)
+                $script:selectedManifest = $SelectedManifestPath
+                $script:workspaceMembers
+            } -GetPublishStatus {
+                param($Name)
+                $script:queried.Add($Name)
+                'Published'
+            }
+        $script:selectedManifest | Should -Be $manifest
+        $script:queried | Should -Be @('events', 'nm')
     }
 
     It 'rejects a proposed plan, which names a narrower set than it reaches' {
@@ -1421,6 +1885,106 @@ Describe 'Assert-IncrementPackagePublished' {
 }
 
 Describe 'New-ReleasePlanFile' {
+    It 'rejects invalid <VersionField> in <PackageKind> rather than generating a version' -TestCases @(
+        @{ VersionField = 'declared_version'; PackageKind = 'released package' }
+        @{ VersionField = 'anchor'; PackageKind = 'released package' }
+        @{ VersionField = 'declared_version'; PackageKind = 'alignment-only helper' }
+    ) {
+        param($VersionField, $PackageKind)
+        $reportPath = Join-Path $TestDrive 'invalid-version-report.json'
+        $decisionPath = Join-Path $TestDrive 'invalid-version-decisions.json'
+        $planPath = Join-Path $TestDrive 'invalid-version-plan.json'
+        if ($PackageKind -eq 'alignment-only helper') {
+            Write-TestReport -Path $reportPath -Package @() -NonPublishablePackage @(
+                Get-TestNonPublishablePackage -Name 'alpha' -Group 'alpha' -DeclaredVersion 'invalid'
+                Get-TestNonPublishablePackage -Name 'beta' -Group 'alpha'
+            ) -Group @{
+                alpha = @{ members = @('alpha', 'beta'); consistent = $false; version = '1.0.0' }
+            }
+            Write-TestDecision -Path $decisionPath -Change @()
+        } else {
+            $package = Get-TestPackage -Name 'library' -AnchorVersion '1.0.0'
+            if ($VersionField -eq 'anchor') {
+                $package.anchor.version = 'invalid'
+            } else {
+                $package.declared_version = 'invalid'
+            }
+            Write-TestReport -Path $reportPath -Package @($package)
+            Write-TestDecision -Path $decisionPath -Change @(@{ name = 'library'; level = 'patch' })
+        }
+        {
+            New-ReleasePlanFile -ReportPath $reportPath -DecisionPath $decisionPath `
+                -PlanPath $planPath -Confirm:$false
+        } | Should -Throw
+        Test-Path -LiteralPath $planPath | Should -BeFalse
+    }
+
+    It 'rejects decisions that leave changed packages or rewritten published dependents unmoved' -TestCases @(
+        @{ Kind = 'unplanned changes' }, @{ Kind = 'rewritten dependents' }
+    ) {
+        param($Kind)
+        $reportPath = Join-Path $TestDrive 'unmoved-report.json'
+        $decisionPath = Join-Path $TestDrive 'unmoved-decisions.json'
+        $planPath = Join-Path $TestDrive 'unmoved-plan.json'
+        $status = if ($Kind -eq 'unplanned changes') { 'needs-increment' } else { 'unchanged' }
+        Write-TestReport -Path $reportPath -Package @(
+            Get-TestPackage -Name 'dependency' -AnchorVersion '1.0.0'
+            Get-TestPackage -Name 'first' -AnchorVersion '1.0.0' -Status $status `
+                -Dependencies @(@{ name = 'dependency'; public = $false })
+            Get-TestPackage -Name 'second' -AnchorVersion '1.0.0' -Status $status `
+                -Dependencies @(@{ name = 'dependency'; public = $false })
+        )
+        Write-TestDecision -Path $decisionPath -Change @(@{ name = 'dependency'; level = 'patch' })
+        {
+            New-ReleasePlanFile -ReportPath $reportPath -DecisionPath $decisionPath `
+                -PlanPath $planPath -Confirm:$false
+        } | Should -Throw
+        Test-Path -LiteralPath $planPath | Should -BeFalse
+    }
+
+    It 'rejects malformed change decisions <Kind> without writing a proposal' -TestCases @(
+        @{ Kind = 'missing file' }, @{ Kind = 'null document' }, @{ Kind = 'array document' }
+        @{ Kind = 'missing schema' }, @{ Kind = 'unsupported schema' }, @{ Kind = 'string schema' }
+        @{ Kind = 'missing changes' }, @{ Kind = 'non-array changes' }, @{ Kind = 'null change' }
+        @{ Kind = 'empty name' }, @{ Kind = 'duplicate name' }, @{ Kind = 'missing level' }
+        @{ Kind = 'unknown package' }
+    ) {
+        param($Kind)
+        $reportPath = Join-Path $TestDrive 'decision-report.json'
+        $decisionPath = Join-Path $TestDrive 'malformed-decision.json'
+        $planPath = Join-Path $TestDrive 'rejected-proposal.json'
+        Write-TestReport -Path $reportPath -Package @(
+            Get-TestPackage -Name 'library' -AnchorVersion '1.0.0'
+        )
+        $decision = @{
+            schema_version = $script:ValidChangeDecisionSchemaVersion
+            changes = @(@{ name = 'library'; level = 'patch' })
+        }
+        switch ($Kind) {
+            'null document' { $decision = $null }
+            'array document' { $decision = @($decision, $decision) }
+            'missing schema' { $decision.Remove('schema_version') }
+            'unsupported schema' { $decision.schema_version = 2 }
+            'string schema' { $decision.schema_version = '1' }
+            'missing changes' { $decision.Remove('changes') }
+            'non-array changes' { $decision.changes = @{} }
+            'null change' { $decision.changes = @($null) }
+            'empty name' { $decision.changes[0].name = ' ' }
+            'duplicate name' { $decision.changes += $decision.changes[0] }
+            'missing level' { $decision.changes[0].Remove('level') }
+            'unknown package' { $decision.changes[0].name = 'absent' }
+        }
+        if ($Kind -ne 'missing file') {
+            ConvertTo-Json -InputObject $decision -Depth $script:ChangeDecisionFixtureJsonDepth |
+                Set-Content -LiteralPath $decisionPath
+        }
+        {
+            New-ReleasePlanFile -ReportPath $reportPath -DecisionPath $decisionPath `
+                -PlanPath $planPath -Confirm:$false
+        } | Should -Throw
+        Test-Path -LiteralPath $planPath | Should -BeFalse
+    }
+
     It 'raises a package exposing a group that realignment patch-increments' {
         # `lib` leads a drifted 0.0.z group and `lib_impl` lags. Exact alignment would leave
         # `lib` where it is, but `keeper` keeps an already-published version while pinning
@@ -2347,6 +2911,23 @@ Describe 'Get-PlanIncrement' {
         $entry['name'] | Should -Be 'nm'
         $entry['level'] | Should -Be 'patch'
         $entry.Contains('version') | Should -BeFalse
+    }
+
+    Describe 'Plan convergence state' {
+        It 'compares names and decisions rather than counts or enumeration order: <Kind>' -TestCases @(
+            @{ Kind = 'identical'; Right = [ordered]@{ alpha = 'patch'; beta = 'breaking' }; Settled = $true }
+            @{ Kind = 'reordered'; Right = [ordered]@{ beta = 'breaking'; alpha = 'patch' }; Settled = $true }
+            @{ Kind = 'renamed'; Right = [ordered]@{ gamma = 'patch'; beta = 'breaking' }; Settled = $false }
+            @{ Kind = 'raised'; Right = [ordered]@{ alpha = 'breaking'; beta = 'breaking' }; Settled = $false }
+            @{ Kind = 'removed'; Right = [ordered]@{ alpha = 'patch' }; Settled = $false }
+        ) {
+            param($Right, $Settled)
+            InModuleScope ReleasePlan -Parameters @{ Right = $Right; Settled = $Settled } {
+                param($Right, $Settled)
+                Test-PlanStateSettled -Left ([ordered]@{ alpha = 'patch'; beta = 'breaking' }) -Right $Right |
+                    Should -Be $Settled
+            }
+        }
     }
 
     It 'builds a version entry' {

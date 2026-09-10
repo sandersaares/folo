@@ -326,12 +326,21 @@ when the lockfile also contains a registry package of the same name. Offline
 resolution may reselect transitive edges among versions already locked; it is not
 limited to replacing workspace package identities.
 
+The prepared artifact contains only the post-refresh input snapshot. It cannot
+carry an alternative file overlay: both semantic grading and prospective cloning
+must start from the live state that preparation captured.
+
 Preview uses a disposable prospective workspace so version and requirement
 rewrites never become original planning inputs. Each iteration derives its
 candidate from the prepared input rather than incrementing the preceding
 candidate again. Classification uses the same pinned release baseline throughout.
 New binary closure effects and their dependent/group consequences expand the
 candidate until it is stable. Existing sufficient versions are retained.
+
+Cycle history retains a Git object digest for each complete version/artifact
+state rather than retaining serialized lockfiles and manifests for every pass.
+Input fingerprint fields use fixed-width little-endian lengths so changing the
+process pointer width does not change their encoding.
 
 The final prospective checkout is retained for external compatibility tools.
 Its evidence manifest path is separate from the original input identity used by

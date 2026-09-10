@@ -1088,6 +1088,247 @@ source = "registry+https://example.invalid"
     }
 
     #[test]
+    fn patch_selection_requires_the_origin_name_and_exact_replacement_identity() {
+        let lockfile = Lockfile::parse(
+            "[[package]]\nname = \"tool\"\nversion = \"0.1.0\"\n\
+             dependencies = [\"foo 1.0.0\", \"foo 1.1.0\"]\n\
+             [[package]]\nname = \"foo\"\nversion = \"1.0.0\"\n\
+             [[package]]\nname = \"foo\"\nversion = \"1.1.0\"\n",
+            LABEL,
+        )
+        .unwrap();
+        let mut installation = InstallationGraph::default();
+        installation.insert(
+            "tool".to_owned(),
+            Version::new(0, 1, 0),
+            vec![InstallationDependency {
+                name: "foo".to_owned(),
+                requirement: Some("1".parse().unwrap()),
+                source: DependencySource::Registry("https://example.invalid/index".to_owned()),
+            }],
+        );
+        for (origin, name) in [
+            ("https://example.invalid/index", "unrelated"),
+            ("https://example.invalid/other", "foo"),
+        ] {
+            installation.patches.push(DependencyPatch {
+                origin: origin.to_owned(),
+                name: name.to_owned(),
+                replacement: Err(installation_error(
+                    ReadFileError::new("unused patch").into(),
+                )),
+            });
+        }
+        installation.patches.push(DependencyPatch {
+            origin: "https://example.invalid/index".to_owned(),
+            name: "foo".to_owned(),
+            replacement: Ok(InstallationDependency {
+                name: "foo".to_owned(),
+                requirement: Some("1".parse().unwrap()),
+                source: DependencySource::Path(PackageIdentity {
+                    name: "foo".to_owned(),
+                    version: Version::new(1, 1, 0),
+                }),
+            }),
+        });
+        let closure = lockfile
+            .closure("tool", "0.1.0", &installation)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            closure,
+            BTreeMap::from([("foo".to_owned(), BTreeSet::from(["1.1.0".to_owned()]))])
+        );
+    }
+
+    #[test]
+    fn unresolved_patch_paths_preserve_errors_only_for_required_replacements() {
+        let lockfile = Lockfile::parse(
+            "[[package]]\nname = \"unrelated\"\nversion = \"0.1.0\"\n\
+             [[package]]\nname = \"tool\"\nversion = \"0.1.0\"\ndependencies = [\"foo\"]\n\
+             [[package]]\nname = \"foo\"\nversion = \"1.0.0\"\n",
+            LABEL,
+        )
+        .unwrap();
+        let mut installation = InstallationGraph::default();
+        installation.insert(
+            "tool".to_owned(),
+            Version::new(0, 1, 0),
+            vec![InstallationDependency {
+                name: "foo".to_owned(),
+                requirement: None,
+                source: DependencySource::Registry("https://example.invalid/index".to_owned()),
+            }],
+        );
+        installation.patches.push(DependencyPatch {
+            origin: "https://example.invalid/index".to_owned(),
+            name: "foo".to_owned(),
+            replacement: Ok(InstallationDependency {
+                name: "foo".to_owned(),
+                requirement: None,
+                source: DependencySource::UnresolvedPath(DependencyPath {
+                    path: "patches/foo".to_owned(),
+                    package_directory: None,
+                }),
+            }),
+        });
+        installation.resolve_paths(|_| Err(ReadFileError::new("patches/foo/Cargo.toml").into()));
+        assert!(
+            lockfile
+                .closure("unrelated", "0.1.0", &installation)
+                .unwrap()
+                .unwrap()
+                .is_empty()
+        );
+        let error = lockfile
+            .closure("tool", "0.1.0", &installation)
+            .unwrap_err();
+        assert!(
+            error
+                .find_source::<LockfileClosureUnavailableError>()
+                .is_some()
+        );
+        assert!(error.find_source::<ReadFileError>().is_some());
+
+        // Resolving the same declaration again must not retain a superseded read failure.
+        installation.resolve_paths(|_| Ok(None));
+        assert!(
+            lockfile
+                .closure("tool", "0.1.0", &installation)
+                .unwrap()
+                .is_none()
+        );
+        installation.resolve_paths(|_| {
+            Ok(Some(PackageIdentity {
+                name: "foo".to_owned(),
+                version: Version::new(1, 0, 0),
+            }))
+        });
+        assert_eq!(
+            lockfile
+                .closure("tool", "0.1.0", &installation)
+                .unwrap()
+                .unwrap(),
+            BTreeMap::from([("foo".to_owned(), BTreeSet::from(["1.0.0".to_owned()]))])
+        );
+    }
+
+    #[test]
+    fn named_patch_origins_require_configuration_even_for_direct_registry_declarations() {
+        let lockfile = Lockfile::parse(
+            "[[package]]\nname = \"tool\"\nversion = \"0.1.0\"\ndependencies = [\"foo\"]\n\
+             [[package]]\nname = \"foo\"\nversion = \"1.0.0\"\n",
+            LABEL,
+        )
+        .unwrap();
+        let mut installation = InstallationGraph::default();
+        installation.insert(
+            "tool".to_owned(),
+            Version::new(0, 1, 0),
+            vec![InstallationDependency {
+                name: "foo".to_owned(),
+                requirement: None,
+                source: DependencySource::Registry("https://example.invalid/index".to_owned()),
+            }],
+        );
+        installation.patches.push(DependencyPatch {
+            origin: "private".to_owned(),
+            name: "foo".to_owned(),
+            replacement: Ok(InstallationDependency {
+                name: "foo".to_owned(),
+                requirement: None,
+                source: DependencySource::Path(PackageIdentity {
+                    name: "foo".to_owned(),
+                    version: Version::new(1, 0, 0),
+                }),
+            }),
+        });
+        assert!(
+            lockfile
+                .closure("tool", "0.1.0", &installation)
+                .unwrap()
+                .is_none()
+        );
+        installation.registry_error = Some(installation_error(
+            ReadFileError::new("historical Cargo configuration").into(),
+        ));
+        let error = lockfile
+            .closure("tool", "0.1.0", &installation)
+            .unwrap_err();
+        assert!(error.find_source::<ReadFileError>().is_some());
+        installation.registry_error = None;
+        installation.registries.insert(
+            "private".to_owned(),
+            "https://example.invalid/index".to_owned(),
+        );
+        assert_eq!(
+            lockfile
+                .closure("tool", "0.1.0", &installation)
+                .unwrap()
+                .unwrap(),
+            BTreeMap::from([("foo".to_owned(), BTreeSet::from(["1.0.0".to_owned()]))])
+        );
+    }
+
+    #[test]
+    fn named_registry_replacements_require_their_own_configuration() {
+        let lockfile = Lockfile::parse(
+            "[[package]]\nname = \"tool\"\nversion = \"0.1.0\"\ndependencies = [\"foo\"]\n\
+             [[package]]\nname = \"foo\"\nversion = \"1.0.0\"\n\
+             source = \"registry+https://example.invalid/replacement\"\n",
+            LABEL,
+        )
+        .unwrap();
+        let mut installation = InstallationGraph::default();
+        installation.insert(
+            "tool".to_owned(),
+            Version::new(0, 1, 0),
+            vec![InstallationDependency {
+                name: "foo".to_owned(),
+                requirement: None,
+                source: DependencySource::Registry("https://example.invalid/original".to_owned()),
+            }],
+        );
+        installation.patches.push(DependencyPatch {
+            origin: "https://example.invalid/original".to_owned(),
+            name: "foo".to_owned(),
+            replacement: Ok(InstallationDependency {
+                name: "foo".to_owned(),
+                requirement: None,
+                source: DependencySource::NamedRegistry("replacement".to_owned()),
+            }),
+        });
+        assert!(
+            lockfile
+                .closure("tool", "0.1.0", &installation)
+                .unwrap()
+                .is_none()
+        );
+        installation.registry_error = Some(installation_error(
+            ReadFileError::new("historical Cargo configuration").into(),
+        ));
+        let error = lockfile
+            .closure("tool", "0.1.0", &installation)
+            .unwrap_err();
+        assert!(error.find_source::<ReadFileError>().is_some());
+        installation.registry_error = None;
+        installation.registries.insert(
+            "replacement".to_owned(),
+            "https://example.invalid/replacement".to_owned(),
+        );
+        assert_eq!(
+            lockfile
+                .closure("tool", "0.1.0", &installation)
+                .unwrap()
+                .unwrap(),
+            BTreeMap::from([(
+                "foo".to_owned(),
+                BTreeSet::from(["1.0.0 (registry+https://example.invalid/replacement)".to_owned()])
+            )])
+        );
+    }
+
+    #[test]
     fn an_unresolved_dependency_reference_is_malformed() {
         let text = "\
 [[package]]
@@ -1413,6 +1654,11 @@ source = \"registry+a\"
     #[test]
     fn a_package_without_a_version_is_rejected() {
         assert_malformed("[[package]]\nname = \"a\"\n");
+    }
+
+    #[test]
+    fn a_non_semver_package_version_is_rejected() {
+        assert_malformed("[[package]]\nname = \"a\"\nversion = \"1\"\n");
     }
 
     #[test]

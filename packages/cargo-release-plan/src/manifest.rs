@@ -2484,10 +2484,15 @@ autoexamples = false
         for unsupported in [
             "https://EXAMPLE.invalid/foo",
             "https://example.invalid:443/foo",
+            "https://example.invalid:0444/foo",
+            "https://example.invalid:65536/foo",
             "https://example.invalid/a/../foo",
             "https://example.invalid/f%6fo",
             "https://[::1]/foo",
             "https://0x7f.0.0.1/foo",
+            "https://127.1/foo",
+            "https://127.0.0.256/foo",
+            "https://127.0.0.01/foo",
             "https://@example.invalid/foo",
             "https://example.invalid/foo\0",
         ] {
@@ -2497,6 +2502,88 @@ autoexamples = false
             );
             assert_eq!(same_source_url(unsupported, unsupported), Some(true));
         }
+        assert_eq!(
+            same_source_url("https://127.0.0.1:444/foo.git", "https://127.0.0.1:444/foo"),
+            Some(true)
+        );
+        assert_eq!(
+            same_source_url(
+                "https://example.invalid:444/foo",
+                "https://example.invalid:445/foo"
+            ),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn malformed_git_references_are_not_treated_as_default_references() {
+        let source = DependencySource::Git {
+            repository: "https://example.invalid/foo".to_owned(),
+            reference: GitReference::Default,
+        };
+        for query in ["branch", "unknown=main", "branch=%", "tag=%ff"] {
+            assert_eq!(
+                source.matches_locked(
+                    Some(&format!("git+https://example.invalid/foo?{query}#123")),
+                    &BTreeMap::new(),
+                ),
+                None
+            );
+        }
+        assert_eq!(source.matches_locked(None, &BTreeMap::new()), Some(false));
+    }
+
+    #[test]
+    fn configured_named_registries_reject_source_less_and_git_entries() {
+        let registry = DependencySource::NamedRegistry("private".to_owned());
+        let registries = BTreeMap::from([(
+            "private".to_owned(),
+            "https://example.invalid/index".to_owned(),
+        )]);
+        for source in [None, Some("git+https://example.invalid/index#123")] {
+            assert_eq!(registry.matches_locked(source, &registries), Some(false));
+            assert_eq!(registry.matches_locked(source, &BTreeMap::new()), None);
+        }
+    }
+
+    #[test]
+    fn installation_source_declarations_preserve_git_selectors_and_registry_indices() {
+        let document = root_doc(
+            "[dependencies]\n\
+             branch = { git = \"https://example.invalid/foo\", branch = \"next\" }\n\
+             tag = { git = \"https://example.invalid/foo\", tag = \"v1\" }\n\
+             rev = { git = \"https://example.invalid/foo\", rev = \"abc\" }\n\
+             registry = { version = \"1\", registry-index = \"https://example.invalid/index\" }\n",
+        );
+        let dependencies = installation_dependencies(
+            &document,
+            &WorkspaceInherit::default(),
+            Path::new("Cargo.toml"),
+        )
+        .unwrap();
+        let sources: BTreeMap<_, _> = dependencies
+            .into_iter()
+            .map(|dependency| (dependency.name, dependency.source))
+            .collect();
+        for (name, reference) in [
+            ("branch", GitReference::Branch("next".to_owned())),
+            ("tag", GitReference::Tag("v1".to_owned())),
+            ("rev", GitReference::Rev("abc".to_owned())),
+        ] {
+            assert_eq!(
+                sources.get(name),
+                Some(&DependencySource::Git {
+                    repository: "https://example.invalid/foo".to_owned(),
+                    reference,
+                })
+            );
+        }
+        assert_eq!(
+            sources.get("registry"),
+            Some(&DependencySource::Registry(
+                "https://example.invalid/index".to_owned()
+            ))
+        );
     }
 
     #[test]
@@ -2608,6 +2695,117 @@ autoexamples = false
                 version: Version::new(1, 2, 0)
             }
         );
+    }
+
+    #[test]
+    fn an_explicit_path_workspace_owns_inheritance_instead_of_the_nearest_ancestor() {
+        let documents = BTreeMap::from([
+            (
+                "packages/foo/Cargo.toml",
+                root_doc(
+                    "[package]\nname = \"foo\"\nversion.workspace = true\n\
+                     workspace = \"../../owner\"\n",
+                ),
+            ),
+            (
+                "owner/Cargo.toml",
+                root_doc("[workspace.package]\nversion = \"1.2.0\"\n"),
+            ),
+        ]);
+        let identity =
+            path_package_identity("packages/foo/Cargo.toml", PathCase::Sensitive, |path| {
+                // Explicit workspace selection must not inspect an unrelated ancestor.
+                assert!(documents.contains_key(path));
+                Ok(documents.get(path).cloned())
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(identity.name, "foo");
+        assert_eq!(identity.version, Version::new(1, 2, 0));
+
+        let identity =
+            path_package_identity("packages/foo/Cargo.toml", PathCase::Sensitive, |path| {
+                Ok((path != "owner/Cargo.toml")
+                    .then(|| documents.get(path).cloned())
+                    .flatten())
+            })
+            .unwrap();
+        assert!(identity.is_none());
+    }
+
+    #[test]
+    fn inheritance_stops_at_an_excluding_workspace_or_the_repository_boundary() {
+        for root in [
+            None,
+            Some(
+                "[workspace]\nexclude = [\"packages/foo\"]\n[workspace.package]\nversion = \"9.0.0\"\n",
+            ),
+        ] {
+            let package = root_doc("[package]\nname = \"foo\"\nversion.workspace = true\n");
+            let identity =
+                path_package_identity("packages/foo/Cargo.toml", PathCase::Sensitive, |path| {
+                    assert!(!path.starts_with("../"));
+                    Ok(match path {
+                        "packages/foo/Cargo.toml" => Some(package.clone()),
+                        "Cargo.toml" => root.map(root_doc),
+                        _ => None,
+                    })
+                })
+                .unwrap();
+            assert!(identity.is_none());
+        }
+    }
+
+    #[test]
+    fn a_virtual_path_target_has_no_package_identity() {
+        let identity = path_package_identity("foreign/Cargo.toml", PathCase::Sensitive, |path| {
+            assert_eq!(path, "foreign/Cargo.toml");
+            Ok(Some(root_doc("[workspace]\n")))
+        })
+        .unwrap();
+        assert!(identity.is_none());
+    }
+
+    #[test]
+    fn path_identity_preserves_errors_from_its_explicit_workspace() {
+        let error = path_package_identity("foo/Cargo.toml", PathCase::Sensitive, |path| {
+            if path == "foo/Cargo.toml" {
+                Ok(Some(root_doc(
+                    "[package]\nname = \"foo\"\nversion.workspace = true\nworkspace = \"..\"\n",
+                )))
+            } else {
+                parse_document(Path::new(path), "[workspace").map(Some)
+            }
+        })
+        .unwrap_err();
+        assert!(error.find_source::<ParseTomlError>().is_some());
+    }
+
+    #[test]
+    fn absolute_dependency_paths_are_rebased_without_admitting_repository_siblings() {
+        let repository = if cfg!(windows) {
+            Path::new(r"C:\repository")
+        } else {
+            Path::new("/repository")
+        };
+        let inside = DependencyPath {
+            path: repository.join("foreign").to_string_lossy().into_owned(),
+            package_directory: Some("ignored".to_owned()),
+        };
+        assert_eq!(
+            inside.directory(repository, "workspace", "workspace"),
+            Some("foreign".to_owned())
+        );
+        let outside = DependencyPath {
+            path: repository
+                .parent()
+                .unwrap()
+                .join("sibling")
+                .to_string_lossy()
+                .into_owned(),
+            package_directory: None,
+        };
+        assert!(outside.directory(repository, "workspace", "").is_none());
     }
 
     #[test]

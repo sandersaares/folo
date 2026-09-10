@@ -1417,6 +1417,122 @@ mod tests {
     }
 
     #[test]
+    fn registry_indices_follow_effective_aliases_without_consulting_unselected_manifests() {
+        let workspace_root = Path::new("workspace");
+        let member_path = workspace_root.join("member").join("Cargo.toml");
+        let metadata: MetadataJson = serde_json::from_value(json!({
+            "workspace_root": workspace_root,
+            "workspace_members": ["member", "untracked"],
+            "packages": [
+                {
+                    "name": "member",
+                    "version": "0.1.0",
+                    "id": "member",
+                    "manifest_path": member_path,
+                    "dependencies": [
+                        {
+                            "name": "foo",
+                            "rename": "inherited",
+                            "req": "^1",
+                            "source": "registry+https://example.invalid/inherited"
+                        },
+                        {
+                            "name": "bar",
+                            "rename": "builder",
+                            "req": "^1",
+                            "kind": "build",
+                            "source": "sparse+https://example.invalid/build/"
+                        },
+                        {
+                            "name": "path_only",
+                            "req": "^1"
+                        },
+                        {
+                            "name": "git_only",
+                            "req": "^1",
+                            "source": "git+https://example.invalid/repository#123"
+                        }
+                    ]
+                },
+                {
+                    "name": "untracked",
+                    "version": "0.1.0",
+                    "id": "untracked",
+                    "manifest_path": "untracked/Cargo.toml"
+                }
+            ]
+        }))
+        .unwrap();
+        let root = "[workspace.dependencies]\n\
+            inherited = { package = \"foo\", version = \"1\", registry = \"private\" }\n";
+        let member = "[package]\nname = \"member\"\nversion = \"0.1.0\"\n\
+            [dependencies]\ninherited.workspace = true\n\
+            path_only = { path = \"../path\", registry = \"no_index\" }\n\
+            git_only = { git = \"https://example.invalid/repository\", registry = \"no_registry\" }\n\
+            [target.'cfg(unix)'.build_dependencies]\n\
+            builder = { package = \"bar\", version = \"1\", registry = \"sparse\" }\n";
+        let selected = HashSet::from(["member"]);
+        let snapshot = ManifestSnapshot::load_with(
+            &metadata,
+            &selected,
+            workspace_root,
+            |path| {
+                Ok(if path == workspace_root.join("Cargo.toml") {
+                    root.to_owned()
+                } else {
+                    assert_eq!(path, member_path);
+                    member.to_owned()
+                })
+            },
+            parse_document,
+        )
+        .unwrap();
+        let indices = registry_indices(
+            &metadata,
+            &selected,
+            &snapshot,
+            snapshot.root(workspace_root),
+            workspace_root,
+        );
+        assert_eq!(
+            indices,
+            BTreeMap::from([
+                (
+                    "private".to_owned(),
+                    "https://example.invalid/inherited".to_owned()
+                ),
+                (
+                    "sparse".to_owned(),
+                    "sparse+https://example.invalid/build/".to_owned()
+                ),
+            ])
+        );
+    }
+
+    #[test]
+    fn development_version_detection_ignores_unrelated_tables_before_a_target_declaration() {
+        let dependency: MetadataDep = serde_json::from_value(json!({
+            "name": "foo",
+            "rename": "local",
+            "req": "*",
+            "kind": "dev"
+        }))
+        .unwrap();
+        let manifest = doc("[dev-dependencies]\nunrelated = \"1\"\n\
+             [target.'cfg(unix)'.dev-dependencies]\nlocal.workspace = true\n");
+        assert!(!dev_dependency_declares_version(
+            &dependency,
+            &manifest,
+            &doc("[workspace.dependencies]\nlocal = { path = \"foo\" }\n"),
+        ));
+        assert!(dev_dependency_declares_version(
+            &dependency,
+            &manifest,
+            &doc("[workspace.dependencies]\nlocal = { path = \"foo\", version = \"*\" }\n"),
+        ));
+    }
+
+    #[test]
     fn the_legacy_group_key_is_rejected_in_every_shape() {
         for groups in [json!({}), json!([]), json!(null)] {
             let metadata = json!({ "release-plan": { "groups": groups } });

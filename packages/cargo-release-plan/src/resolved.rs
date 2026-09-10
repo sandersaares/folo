@@ -19,7 +19,7 @@ use crate::verbose::Verbose;
 use crate::{ParsePlanError, ReadFileError, UnsupportedPlanSchemaError, WriteFileError};
 
 /// Repository facts frozen before any resolver-driven release decisions.
-#[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct Inputs {
     root: PathBuf,
     pub(crate) manifest: PathBuf,
@@ -223,7 +223,7 @@ fn dependency_paths(table: &dyn TableLike, paths: &mut Vec<String>) {
 }
 
 /// The complete resolved state embedded in the explicit plan for application.
-#[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct ResolvedState {
     pub(crate) inputs: Inputs,
     pub(crate) files: Vec<Artifact>,
@@ -233,7 +233,7 @@ pub(crate) struct ResolvedState {
 }
 
 /// Exact UTF-8 bytes of one resolved manifest or workspace lockfile.
-#[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct Artifact {
     pub(crate) path: PathBuf,
     pub(crate) contents: String,
@@ -375,14 +375,17 @@ fn canonical(path: &Path) -> Result<PathBuf, AppError> {
         fs::canonicalize(path).map_err(|error| ReadFileError::caused_by(path, error))?;
     // Git and Cargo report ordinary Windows paths, not canonicalize's verbatim spelling.
     #[cfg(windows)]
-    let canonical = {
-        let text = canonical.to_string_lossy();
-        match text.strip_prefix(r"\\?\UNC\") {
-            Some(path) => PathBuf::from(format!(r"\\{path}")),
-            None => PathBuf::from(text.trim_start_matches(r"\\?\")),
-        }
-    };
+    let canonical = ordinary_windows_path(&canonical);
     Ok(canonical)
+}
+
+#[cfg(windows)]
+fn ordinary_windows_path(path: &Path) -> PathBuf {
+    let text = path.to_string_lossy();
+    match text.strip_prefix(r"\\?\UNC\") {
+        Some(path) => PathBuf::from(format!(r"\\{path}")),
+        None => PathBuf::from(text.trim_start_matches(r"\\?\")),
+    }
 }
 
 fn collect_sources(
@@ -418,8 +421,7 @@ fn fingerprint(
     for relative in paths {
         let path = root.join(relative);
         let name = relative.to_string_lossy();
-        bytes.extend_from_slice(&name.len().to_le_bytes());
-        bytes.extend_from_slice(name.as_bytes());
+        append_field(&mut bytes, name.as_bytes());
         let metadata = match fs::symlink_metadata(&path) {
             Ok(metadata) => Some(metadata),
             Err(error) if error.kind() == ErrorKind::NotFound => None,
@@ -445,11 +447,19 @@ fn fingerprint(
         };
         bytes.push(u8::from(contents.is_some()));
         if let Some(contents) = contents {
-            bytes.extend_from_slice(&contents.len().to_le_bytes());
-            bytes.extend_from_slice(&contents);
+            append_field(&mut bytes, &contents);
         }
     }
     hash_bytes(&bytes, root)
+}
+
+fn append_field(bytes: &mut Vec<u8>, field: &[u8]) {
+    // Artifact fingerprints use a fixed-width length, independent of the executing binary's
+    // pointer width. Length-prefixing also distinguishes adjacent fields with the same bytes.
+    let length = u64::try_from(field.len())
+        .expect("a slice on a supported Rust target cannot exceed u64::MAX bytes");
+    bytes.extend_from_slice(&length.to_le_bytes());
+    bytes.extend_from_slice(field);
 }
 
 /// A stale source tree must return to preparation rather than widen a captured plan.
@@ -477,7 +487,221 @@ struct WrongEvidenceWorkspace;
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
+    use tempfile::tempdir;
+
     use super::*;
+
+    #[test]
+    fn fields_use_fixed_width_little_endian_lengths() {
+        let mut bytes = Vec::new();
+        append_field(&mut bytes, b"abc");
+        append_field(&mut bytes, b"");
+        assert_eq!(
+            bytes,
+            [
+                3, 0, 0, 0, 0, 0, 0, 0, b'a', b'b', b'c', 0, 0, 0, 0, 0, 0, 0, 0
+            ]
+        );
+    }
+
+    #[test]
+    fn field_boundaries_participate_in_fingerprints() {
+        let mut left = Vec::new();
+        append_field(&mut left, b"ab");
+        append_field(&mut left, b"c");
+        let mut right = Vec::new();
+        append_field(&mut right, b"a");
+        append_field(&mut right, b"bc");
+        assert_ne!(left, right);
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn canonical_windows_paths_match_git_and_cargo_spellings() {
+        for (canonical, ordinary) in [
+            (
+                r"\\?\UNC\server\share\workspace",
+                r"\\server\share\workspace",
+            ),
+            (r"\\?\C:\workspace", r"C:\workspace"),
+            (r"C:\workspace", r"C:\workspace"),
+        ] {
+            assert_eq!(
+                ordinary_windows_path(Path::new(canonical)),
+                Path::new(ordinary)
+            );
+        }
+    }
+
+    #[test]
+    fn artifact_selection_rejects_uncaptured_non_cargo_and_duplicate_paths() {
+        let inputs = Inputs {
+            root: PathBuf::from("not-accessed"),
+            manifest: PathBuf::from("Cargo.toml"),
+            head: String::new(),
+            base: String::new(),
+            base_revision: String::new(),
+            index: String::new(),
+            paths: ["Cargo.toml", "src/lib.rs"]
+                .into_iter()
+                .map(PathBuf::from)
+                .collect(),
+            digest: String::new(),
+        };
+        for paths in [
+            vec!["uncaptured/Cargo.toml"],
+            vec!["src/lib.rs"],
+            vec!["Cargo.toml", "Cargo.toml"],
+        ] {
+            let artifacts: Vec<_> = paths
+                .into_iter()
+                .map(|path| Artifact {
+                    path: path.into(),
+                    contents: String::new(),
+                })
+                .collect();
+            let error = inputs.final_digest(&artifacts).unwrap_err();
+            assert!(error.find_source::<ResolutionRequired>().is_some());
+        }
+    }
+
+    #[test]
+    fn relative_paths_cannot_escape_the_captured_root() {
+        let root = Path::new("repository");
+        assert_eq!(
+            relative(root, &root.join("member/Cargo.toml")).unwrap(),
+            Path::new("member/Cargo.toml")
+        );
+        for path in [
+            PathBuf::from("elsewhere/Cargo.toml"),
+            root.join("../Cargo.toml"),
+        ] {
+            let error = relative(root, &path).unwrap_err();
+            assert!(error.find_source::<UnsupportedInput>().is_some());
+        }
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "reads an owned filesystem fixture")]
+    fn source_collection_handles_absence_recursion_and_non_directory_errors() {
+        let directory = tempdir().unwrap();
+        let source = directory.path().join("src");
+        let mut paths = BTreeSet::new();
+        collect_sources(directory.path(), &source, &mut paths).unwrap();
+        assert!(paths.is_empty());
+        fs::create_dir_all(source.join("nested")).unwrap();
+        fs::write(source.join("lib.rs"), "").unwrap();
+        fs::write(source.join("nested/mod.rs"), "").unwrap();
+        collect_sources(directory.path(), &source, &mut paths).unwrap();
+        assert_eq!(
+            paths,
+            ["src/lib.rs", "src/nested/mod.rs"]
+                .into_iter()
+                .map(PathBuf::from)
+                .collect()
+        );
+        let error =
+            collect_sources(directory.path(), &source.join("lib.rs"), &mut paths).unwrap_err();
+        assert!(error.find_source::<ReadFileError>().is_some());
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "reads files and invokes Git hashing")]
+    fn fingerprints_distinguish_missing_empty_content_and_paths() {
+        let directory = tempdir().unwrap();
+        let path = PathBuf::from("Cargo.lock");
+        let paths = BTreeSet::from([path.clone()]);
+        let missing = fingerprint(directory.path(), &paths, &BTreeMap::new()).unwrap();
+        fs::write(directory.path().join(&path), "").unwrap();
+        let empty = fingerprint(directory.path(), &paths, &BTreeMap::new()).unwrap();
+        assert_ne!(missing, empty);
+        let contents = b"resolved bytes".to_vec();
+        let replacements = BTreeMap::from([(path.clone(), contents.clone())]);
+        let replaced = fingerprint(directory.path(), &paths, &replacements).unwrap();
+        assert_ne!(empty, replaced);
+        fs::write(directory.path().join(&path), &contents).unwrap();
+        assert_eq!(
+            fingerprint(directory.path(), &paths, &BTreeMap::new()).unwrap(),
+            replaced
+        );
+        fs::rename(
+            directory.path().join(path),
+            directory.path().join("Cargo.toml"),
+        )
+        .unwrap();
+        let renamed = fingerprint(
+            directory.path(),
+            &BTreeSet::from([PathBuf::from("Cargo.toml")]),
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        assert_ne!(renamed, replaced);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "uses filesystem metadata")]
+    fn fingerprints_reject_a_directory_as_a_file() {
+        let directory = tempdir().unwrap();
+        fs::create_dir_all(directory.path().join("Cargo.lock")).unwrap();
+        let error = fingerprint(
+            directory.path(),
+            &BTreeSet::from([PathBuf::from("Cargo.lock")]),
+            &BTreeMap::new(),
+        )
+        .unwrap_err();
+        assert!(error.find_source::<UnsupportedInput>().is_some());
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "reads local dependency manifests")]
+    fn capture_includes_workspace_and_replacement_sources() {
+        let directory = tempdir().unwrap();
+        let root = directory.path();
+        fs::create_dir_all(root.join("replacement/src/nested")).unwrap();
+        fs::write(
+            root.join("Cargo.toml"),
+            "[workspace.dependencies]\nhelper = { path = \"replacement\" }\n\
+             [replace]\n\"helper:0.1.0\" = { path = \"replacement\" }\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("replacement/Cargo.toml"),
+            "[package]\nname = \"helper\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        fs::write(root.join("replacement/src/nested/lib.rs"), "").unwrap();
+        let mut paths = BTreeSet::new();
+        capture_path_dependencies(root, [&root.join("Cargo.toml")], &mut paths).unwrap();
+        assert_eq!(
+            paths,
+            [
+                "Cargo.toml",
+                "replacement/Cargo.toml",
+                "replacement/src/nested/lib.rs"
+            ]
+            .into_iter()
+            .map(PathBuf::from)
+            .collect()
+        );
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "reads an owned dependency manifest")]
+    fn absolute_dependency_paths_cannot_leak_back_to_the_live_workspace() {
+        let directory = tempdir().unwrap();
+        let manifest = directory.path().join("Cargo.toml");
+        fs::write(
+            &manifest,
+            format!(
+                "[dependencies]\nhelper = {{ path = {:?} }}\n",
+                directory.path()
+            ),
+        )
+        .unwrap();
+        let error = capture_path_dependencies(directory.path(), [&manifest], &mut BTreeSet::new())
+            .unwrap_err();
+        assert!(error.find_source::<UnsupportedInput>().is_some());
+    }
 
     #[test]
     fn unsupported_artifact_schema_precedes_body_validation() {

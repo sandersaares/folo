@@ -91,9 +91,10 @@ impl Prospective {
         Ok(prospective)
     }
 
-    pub(crate) fn retain(mut self, output: &Path, inputs: &Inputs) -> Result<PathBuf, AppError> {
+    pub(crate) fn retain(mut self, output: &Path, owner: &Path) -> Result<PathBuf, AppError> {
+        let manifest = relative(&self.root, &self.manifest)?;
         let destination = output.join("workspace");
-        let owner = inputs.root().to_string_lossy();
+        let owner = owner.to_string_lossy();
         if destination.exists() {
             let marker = destination.join(EVIDENCE_MARKER);
             if fs::read_to_string(&marker).ok().as_deref() != Some(owner.as_ref()) {
@@ -108,16 +109,7 @@ impl Prospective {
         fs::rename(&self.root, &destination)
             .map_err(|error| WriteFileError::caused_by(&destination, error))?;
         self.retained = true;
-        Ok(destination.join(&inputs.manifest))
-    }
-
-    pub(crate) fn install(&self, artifacts: &[Artifact]) -> Result<(), AppError> {
-        for artifact in artifacts {
-            let path = self.root.join(&artifact.path);
-            fs::write(&path, &artifact.contents)
-                .map_err(|error| WriteFileError::caused_by(&path, error))?;
-        }
-        Ok(())
+        Ok(destination.join(manifest))
     }
 
     pub(crate) fn resolve(&self, verbose: Verbose) -> Result<(), AppError> {
@@ -183,3 +175,72 @@ impl Drop for Prospective {
     "the retained workspace path is not owned by this preview; choose another output directory"
 )]
 struct EvidenceWorkspaceOccupied;
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use tempfile::tempdir;
+
+    use super::*;
+
+    fn candidate(root: &Path) -> Prospective {
+        fs::create_dir_all(root).unwrap();
+        let manifest = root.join("nested/Cargo.toml");
+        fs::create_dir_all(manifest.parent().unwrap()).unwrap();
+        fs::write(&manifest, "captured manifest").unwrap();
+        Prospective {
+            root: root.to_path_buf(),
+            manifest,
+            retained: false,
+        }
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "moves an owned filesystem fixture")]
+    fn retain_preserves_the_manifest_location_and_replaces_only_its_owner() {
+        let directory = tempdir().unwrap();
+        let output = directory.path().join("output");
+        fs::create_dir_all(&output).unwrap();
+        let owner = directory.path().join("original");
+        let prospective = candidate(&directory.path().join("candidate"));
+        fs::create_dir_all(prospective.root.join(".git")).unwrap();
+        let manifest = prospective.retain(&output, &owner).unwrap();
+        assert_eq!(manifest, output.join("workspace/nested/Cargo.toml"));
+        assert_eq!(fs::read_to_string(&manifest).unwrap(), "captured manifest");
+        assert_eq!(
+            fs::read_to_string(output.join("workspace").join(EVIDENCE_MARKER)).unwrap(),
+            owner.to_string_lossy()
+        );
+
+        let prospective = candidate(&directory.path().join("replacement"));
+        fs::create_dir_all(prospective.root.join(".git")).unwrap();
+        prospective.retain(&output, &owner).unwrap();
+        let prospective = candidate(&directory.path().join("foreign"));
+        let error = prospective
+            .retain(&output, &directory.path().join("another-owner"))
+            .unwrap_err();
+        assert!(error.find_source::<EvidenceWorkspaceOccupied>().is_some());
+        assert_eq!(fs::read_to_string(manifest).unwrap(), "captured manifest");
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "exercises owned filesystem failure paths")]
+    fn retaining_failure_cleans_the_candidate_without_creating_evidence() {
+        let directory = tempdir().unwrap();
+        let owner = directory.path().join("original");
+        for marker_available in [false, true] {
+            let root = directory.path().join("candidate");
+            let prospective = candidate(&root);
+            if marker_available {
+                fs::create_dir_all(root.join(".git")).unwrap();
+            }
+            // A missing marker directory fails before rename. A missing destination parent
+            // fails after marker creation. Both errors must discard only the owned candidate.
+            let output = directory.path().join("absent-parent");
+            let error = prospective.retain(&output, &owner).unwrap_err();
+            assert!(error.find_source::<WriteFileError>().is_some());
+            assert!(!root.exists());
+            assert!(!output.exists());
+        }
+    }
+}

@@ -11,6 +11,7 @@
 
 mod apply;
 mod baseline;
+mod captured;
 mod cli_binary;
 mod evidence;
 mod expand;

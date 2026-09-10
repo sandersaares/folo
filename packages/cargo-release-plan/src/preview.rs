@@ -8,9 +8,11 @@ use ohno::AppError;
 use semver::Version;
 use serde::{Deserialize, Serialize};
 
+use crate::WriteFileError;
 use crate::apply::compute_edits;
 use crate::check::{CheckFormat, releases_breaking_change, run_check};
 use crate::classify::{ChangedItem, Classification, PackageStatus, classify};
+use crate::command::hash_bytes;
 use crate::manifest::requirement_names_version;
 use crate::metadata::load_tracked_work_tree;
 use crate::plan::{
@@ -21,15 +23,13 @@ use crate::prospective::Prospective;
 use crate::report::write_report;
 use crate::resolved::{Artifact, Inputs, ResolvedState, read_json, write_json};
 use crate::verbose::Verbose;
-use crate::{UnsupportedPlanSchemaError, WriteFileError};
 
 /// Post-refresh workspace inputs captured before semantic grading.
 #[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct Prepared {
     schema_version: u32,
     inputs: Inputs,
-    files: Vec<Artifact>,
-    resolved_digest: String,
 }
 
 pub(crate) fn run_prepare(
@@ -47,12 +47,7 @@ pub(crate) fn run_prepare(
     inputs.verify(manifest, None)?;
     let (work_tree, _) = load_tracked_work_tree(manifest)?;
     let lockfile = work_tree.workspace_root.join("Cargo.lock");
-    if files
-        .iter()
-        .any(|file| inputs.root().join(&file.path) != lockfile)
-    {
-        return Err(InvalidPreparation::new().into());
-    }
+    validate_preparation_files(inputs.root(), &lockfile, &files)?;
     // Preparation is the explicit mutation boundary. Install only the successfully resolved
     // lockfile before capturing evidence so semantic checks run against this same live state.
     for file in files {
@@ -61,8 +56,6 @@ pub(crate) fn run_prepare(
     }
     let inputs = Inputs::capture(manifest, base)?;
     let classification = classify(manifest, Some(&inputs.base), verbose)?;
-    let files = Vec::new();
-    let resolved_digest = inputs.final_digest(&files)?;
     inputs.verify(manifest, None)?;
     write_report(&output, &classification)?;
     write_json(
@@ -70,8 +63,6 @@ pub(crate) fn run_prepare(
         &Prepared {
             schema_version: SCHEMA_VERSION,
             inputs,
-            files,
-            resolved_digest,
         },
     )?;
     Ok(format!(
@@ -98,17 +89,10 @@ pub(crate) fn run_preview(
     remove_marker(&marker)?;
     guard_output_inputs(&output, &inputs)?;
     let prepared: Prepared = read_json(prepared)?;
-    if prepared.schema_version != SCHEMA_VERSION {
-        return Err(UnsupportedPlanSchemaError::new(prepared.schema_version).into());
-    }
     prepared.inputs.verify(manifest, None)?;
-    if prepared.inputs.final_digest(&prepared.files)? != prepared.resolved_digest {
-        return Err(InvalidPreparation::new().into());
-    }
     let plan: PlanFile = read_json(plan)?;
     plan.validate_schema()?;
     let prospective = Prospective::new(&output, &prepared.inputs)?;
-    prospective.install(&prepared.files)?;
     let initial = classify(&prospective.manifest, Some(&prepared.inputs.base), verbose)?;
     let mut resolved = resolve_plan(
         &plan,
@@ -143,12 +127,10 @@ pub(crate) fn run_preview(
                 false,
                 verbose,
             )?;
-            if !passed {
-                return Err(IncompletePreview::new(message).into());
-            }
+            require_complete_preview(passed, message)?;
             prepared.inputs.verify(manifest, None)?;
             let final_digest = prepared.inputs.final_digest(&files)?;
-            let evidence_manifest_path = prospective.retain(&output, &prepared.inputs)?;
+            let evidence_manifest_path = prospective.retain(&output, prepared.inputs.root())?;
             prepared
                 .inputs
                 .verify_candidate(&evidence_manifest_path, &final_digest)?;
@@ -171,14 +153,44 @@ pub(crate) fn run_preview(
                 output.join("plan.json").display()
             ));
         }
-        let state = serde_json::to_string(&(explicit_plan(&expanded), &files))
-            .expect("version plans and artifacts contain only JSON-compatible data");
-        if !visited.insert(state) {
-            return Err(ResolutionCycle::new().into());
-        }
+        record_state(&mut visited, &expanded, &files, &prospective.root)?;
         previous_files = files;
         resolved = expanded;
     }
+}
+
+fn validate_preparation_files(
+    root: &Path,
+    lockfile: &Path,
+    files: &[Artifact],
+) -> Result<(), AppError> {
+    if files.iter().any(|file| root.join(&file.path) != lockfile) {
+        return Err(InvalidPreparation::new().into());
+    }
+    Ok(())
+}
+
+fn require_complete_preview(passed: bool, diagnostics: String) -> Result<(), AppError> {
+    if !passed {
+        return Err(IncompletePreview::new(diagnostics).into());
+    }
+    Ok(())
+}
+
+fn record_state(
+    visited: &mut BTreeSet<String>,
+    resolved: &ResolvedVersions,
+    files: &[Artifact],
+    root: &Path,
+) -> Result<(), AppError> {
+    let state = serde_json::to_vec(&(explicit_plan(resolved), files))
+        .expect("version plans and artifacts contain only JSON-compatible data");
+    // Keep a bounded digest per iteration, not another retained copy of every resolved file.
+    // Hash the complete state so a version, path, or content change cannot look like a cycle.
+    if !visited.insert(hash_bytes(&state, root)?) {
+        return Err(ResolutionCycle::new().into());
+    }
+    Ok(())
 }
 
 fn require_semantic_decisions(
@@ -374,3 +386,73 @@ struct IncompletePreview {
 #[ohno::error]
 #[display("offline release preview repeated a non-final state")]
 struct ResolutionCycle;
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use tempfile::tempdir;
+
+    use super::*;
+
+    #[test]
+    fn preparation_accepts_only_the_workspace_lockfile() {
+        let root = Path::new("repository");
+        let lockfile = root.join("workspace/Cargo.lock");
+        validate_preparation_files(root, &lockfile, &[]).unwrap();
+        let mut files = [Artifact {
+            path: "workspace/Cargo.lock".into(),
+            contents: String::new(),
+        }];
+        validate_preparation_files(root, &lockfile, &files).unwrap();
+        files[0].path = "workspace/Cargo.toml".into();
+        let error = validate_preparation_files(root, &lockfile, &files).unwrap_err();
+        assert!(error.find_source::<InvalidPreparation>().is_some());
+    }
+
+    #[test]
+    fn incomplete_preview_preserves_the_release_gate_diagnostics() {
+        require_complete_preview(true, String::new()).unwrap();
+        let diagnostics = "package requires an increment";
+        let error = require_complete_preview(false, diagnostics.to_owned()).unwrap_err();
+        assert_eq!(
+            error
+                .find_source::<IncompletePreview>()
+                .unwrap()
+                .diagnostics,
+            diagnostics
+        );
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "uses Git to hash convergence states")]
+    fn history_detects_repetition_without_retaining_artifact_contents() {
+        let directory = tempdir().unwrap();
+        let mut visited = BTreeSet::new();
+        let mut resolved = ResolvedVersions {
+            packages: BTreeMap::from([("tool".to_owned(), Version::new(1, 0, 0))]),
+        };
+        let mut files = [Artifact {
+            path: "Cargo.lock".into(),
+            contents: "initial resolution".to_owned(),
+        }];
+        record_state(&mut visited, &resolved, &files, directory.path()).unwrap();
+        let key_length = visited.first().unwrap().len();
+        let error = record_state(&mut visited, &resolved, &files, directory.path()).unwrap_err();
+        assert!(error.find_source::<ResolutionCycle>().is_some());
+        assert_eq!(visited.len(), 1);
+
+        resolved
+            .packages
+            .insert("tool".to_owned(), Version::new(1, 0, 1));
+        record_state(&mut visited, &resolved, &files, directory.path()).unwrap();
+        files[0].path = "Cargo.toml".into();
+        record_state(&mut visited, &resolved, &files, directory.path()).unwrap();
+        // Larger content establishes that retained key size is independent of artifact size.
+        files[0].contents = "resolved dependency\n".repeat(1024);
+        record_state(&mut visited, &resolved, &files, directory.path()).unwrap();
+        assert_eq!(visited.len(), 4);
+        assert!(visited.iter().all(|key| key.len() == key_length));
+    }
+}

@@ -138,6 +138,109 @@ fn apply_writes_its_summary_to_stdout() {
     assert!(stdout(&output).contains("Dry run"));
 }
 
+#[test]
+#[cfg_attr(miri, ignore = "drives the actual CLI, Git, and offline Cargo")]
+fn resolved_workflow_dispatches_every_command_to_stdout() {
+    let fixture = seeded_package();
+    let base = fixture.sha("HEAD");
+    let prepared = fixture.path().join("prepared");
+    let preview = fixture.path().join("preview");
+    let proposal = fixture.path().join("proposal.json");
+    fs::write(
+        &proposal,
+        r#"{"schema_version":4,"increments":[{"name":"demo","level":"patch"}]}"#,
+    )
+    .unwrap();
+
+    let output = release_plan(
+        &[
+            "prepare",
+            "--base",
+            &base,
+            "--output",
+            &prepared.to_string_lossy(),
+        ],
+        Some(&fixture),
+    );
+    assert!(output.status.success());
+    assert!(!stdout(&output).is_empty());
+    assert!(stderr(&output).is_empty());
+
+    let output = release_plan(
+        &[
+            "preview",
+            "--prepared",
+            &prepared.join("prepared.json").to_string_lossy(),
+            "--plan",
+            &proposal.to_string_lossy(),
+            "--output",
+            &preview.to_string_lossy(),
+        ],
+        Some(&fixture),
+    );
+    assert!(output.status.success());
+    assert!(!stdout(&output).is_empty());
+    assert!(stderr(&output).is_empty());
+
+    let plan = preview.join("plan.json");
+    let candidate = preview.join("workspace/Cargo.toml");
+    let output = release_plan(
+        &[
+            "verify-preview",
+            "--plan",
+            &plan.to_string_lossy(),
+            "--manifest-path",
+            &candidate.to_string_lossy(),
+        ],
+        Some(&fixture),
+    );
+    assert!(output.status.success());
+    assert!(!stdout(&output).is_empty());
+    assert!(stderr(&output).is_empty());
+
+    let output = release_plan(
+        &[
+            "expand",
+            "--plan",
+            &plan.to_string_lossy(),
+            "--out",
+            &fixture.path().join("portable.json").to_string_lossy(),
+        ],
+        Some(&fixture),
+    );
+    assert!(output.status.success());
+    assert!(!stdout(&output).is_empty());
+    assert!(stderr(&output).is_empty());
+
+    let output = release_plan(
+        &["apply", "--plan", &plan.to_string_lossy()],
+        Some(&fixture),
+    );
+    assert!(output.status.success());
+    assert!(!stdout(&output).is_empty());
+    assert!(stderr(&output).is_empty());
+    assert!(fixture.read("packages/demo/Cargo.toml").contains("0.1.1"));
+    assert!(
+        release_plan(&["check", "--base", &base], Some(&fixture))
+            .status
+            .success()
+    );
+
+    let output = release_plan(
+        &[
+            "verify-preview",
+            "--plan",
+            &plan.to_string_lossy(),
+            "--manifest-path",
+            &fixture.manifest().to_string_lossy(),
+        ],
+        Some(&fixture),
+    );
+    assert!(!output.status.success());
+    assert!(stdout(&output).is_empty());
+    assert!(!stderr(&output).is_empty());
+}
+
 fn seeded_package() -> Fixture {
     let fixture = Fixture::new("");
     write_package(&fixture, "demo", "0.1.0", "");

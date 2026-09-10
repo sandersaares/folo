@@ -8,6 +8,7 @@
 use std::fmt::Write as _;
 use std::fs;
 
+use cargo_release_plan::{RunInput, run};
 use serde_json::{Value, json};
 
 use crate::fixture::{Fixture, write_binary_package, write_package};
@@ -1139,6 +1140,146 @@ fn historical_installation_declaration_errors_do_not_replace_library_assessment(
             assert!(message.contains("library: needs-increment"), "{message}");
             assert_no_lockfile_changes(&fixture, &base);
         }
+    }
+}
+
+#[cfg_attr(miri, ignore = "Spawns git and cargo and reads fixture files.")]
+#[test]
+fn excluded_path_targets_share_their_explicit_owning_workspace_at_each_endpoint() {
+    let fixture = Fixture::new("exclude = [\"foreign\"]");
+    write_binary_package(
+        &fixture,
+        "tool",
+        "0.1.0",
+        "[dependencies]\n\
+         foo = { path = \"../../foreign/foo\", version = \"1\" }\n\
+         bar = { path = \"../../foreign/bar\", version = \"1\" }\n",
+    );
+    write_package(&fixture, "unrelated", "0.1.0", "");
+    fixture.write(
+        "foreign/owner/Cargo.toml",
+        "[workspace]\nmembers = [\"../foo\", \"../bar\"]\nresolver = \"2\"\n\
+         [workspace.package]\nversion = \"1.0.0\"\n",
+    );
+    for name in ["foo", "bar"] {
+        fixture.write(
+            &format!("foreign/{name}/Cargo.toml"),
+            &format!(
+                "[package]\nname = \"{name}\"\nversion.workspace = true\n\
+                 workspace = \"../owner\"\nedition = \"2021\"\n\
+                 [dependencies]\nleaf = \"1\"\n"
+            ),
+        );
+        fixture.write(&format!("foreign/{name}/src/lib.rs"), "pub fn f() {}\n");
+    }
+    let lockfile = "version = 4\n\
+        [[package]]\nname = \"tool\"\nversion = \"0.1.0\"\ndependencies = [\"foo\", \"bar\"]\n\
+        [[package]]\nname = \"foo\"\nversion = \"1.0.0\"\ndependencies = [\"leaf\"]\n\
+        [[package]]\nname = \"bar\"\nversion = \"1.0.0\"\ndependencies = [\"leaf\"]\n\
+        [[package]]\nname = \"unrelated\"\nversion = \"0.1.0\"\n\
+        [[package]]\nname = \"leaf\"\nversion = \"1.0.0\"\n\
+        source = \"registry+https://github.com/rust-lang/crates.io-index\"\n";
+    fixture.write("Cargo.lock", lockfile);
+    fixture.commit("seed explicitly owned excluded path packages");
+    let base = fixture.sha("HEAD");
+
+    let (passed, message) = check(&fixture, &base);
+    assert!(passed, "{message}");
+    fixture.write("Cargo.lock", &move_locked_package(lockfile, "leaf"));
+    let (passed, message) = check(&fixture, &base);
+    assert!(!passed, "{message}");
+    assert!(!message.contains("unrelated: needs-increment"), "{message}");
+    assert_dependency_change(&fixture, &base, "leaf", "modified");
+}
+
+#[cfg_attr(miri, ignore = "Spawns git and cargo and reads fixture files.")]
+#[test]
+fn path_targets_outside_the_repository_cannot_supply_a_released_identity() {
+    let external = Fixture::new("");
+    write_package(&external, "foo", "1.0.0", "");
+    let fixture = Fixture::new("");
+    write_binary_package(
+        &fixture,
+        "tool",
+        "0.1.0",
+        &format!(
+            "[dependencies]\nfoo = {{ path = '{}', version = \"1\" }}\n",
+            external.path().join("packages/foo").display()
+        ),
+    );
+    let lockfile = "version = 4\n\
+        [[package]]\nname = \"tool\"\nversion = \"0.1.0\"\ndependencies = [\"foo\"]\n\
+        [[package]]\nname = \"foo\"\nversion = \"1.0.0\"\n";
+    fixture.write("Cargo.lock", lockfile);
+    fixture.commit("seed a path outside the versioned repository");
+    let base = fixture.sha("HEAD");
+    let manifest = fixture.read("packages/tool/Cargo.toml");
+
+    _ = crate::harness::check_result(&fixture, &base).unwrap_err();
+    assert_eq!(fixture.read("Cargo.lock"), lockfile);
+    assert_eq!(fixture.read("packages/tool/Cargo.toml"), manifest);
+}
+
+#[cfg_attr(miri, ignore = "Spawns git and cargo and reads fixture files.")]
+#[test]
+fn historical_registry_parse_errors_only_block_closures_requiring_registry_names() {
+    for named in [false, true] {
+        let fixture = Fixture::new("");
+        let (dependency, source) = if named {
+            (
+                "foo = { version = \"1\", registry = \"private\" }",
+                "registry+https://example.invalid/index",
+            )
+        } else {
+            (
+                "foo = \"1\"",
+                "registry+https://github.com/rust-lang/crates.io-index",
+            )
+        };
+        write_binary_package(
+            &fixture,
+            "tool",
+            "0.1.0",
+            &format!("[dependencies]\n{dependency}\n"),
+        );
+        write_package(&fixture, "unrelated", "0.1.0", "");
+        fixture.write(".cargo/config.toml", "[registries =");
+        let lockfile = format!(
+            "version = 4\n\
+             [[package]]\nname = \"tool\"\nversion = \"0.1.0\"\ndependencies = [\"foo\"]\n\
+             [[package]]\nname = \"foo\"\nversion = \"1.0.0\"\nsource = \"{source}\"\n\
+             [[package]]\nname = \"unrelated\"\nversion = \"0.1.0\"\n"
+        );
+        fixture.write("Cargo.lock", &lockfile);
+        fixture.commit("seed invalid historical registry configuration");
+        let base = fixture.sha("HEAD");
+        fixture.write(
+            ".cargo/config.toml",
+            "[registries.private]\nindex = \"https://example.invalid/index\"\n",
+        );
+        let manifest = fixture.read("packages/tool/Cargo.toml");
+        if named {
+            // A failed classification must not overwrite an existing report.
+            fixture.write("report/report.json", "existing report");
+            _ = run(&RunInput::Report {
+                out_dir: fixture.path().join("report"),
+                base: Some(base),
+                manifest_path: fixture.manifest(),
+                verbose: false,
+            })
+            .unwrap_err();
+            assert_eq!(fixture.read("report/report.json"), "existing report");
+        } else {
+            let (passed, message) = check(&fixture, &base);
+            assert!(passed, "{message}");
+            fixture.write("packages/unrelated/src/lib.rs", "pub fn changed() {}\n");
+            let (passed, message) = check(&fixture, &base);
+            assert!(!passed, "{message}");
+            assert!(message.contains("unrelated: needs-increment"), "{message}");
+            assert!(!message.contains("tool: needs-increment"), "{message}");
+        }
+        assert_eq!(fixture.read("Cargo.lock"), lockfile);
+        assert_eq!(fixture.read("packages/tool/Cargo.toml"), manifest);
     }
 }
 

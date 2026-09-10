@@ -415,6 +415,125 @@ fn public_breaking_moves_propagate_without_a_second_caller_decision() {
 
 #[test]
 #[cfg_attr(miri, ignore = "spawns local Git and offline Cargo")]
+fn stable_public_contracts_take_a_major_increment_when_their_dependency_breaks() {
+    let fixture = Fixture::new("");
+    write_package(&fixture, "core", "1.0.0", "");
+    write_package(
+        &fixture,
+        "facade",
+        "1.0.0",
+        "\n[package.metadata.cargo_check_external_types]\nallowed_external_types = [\"core::*\"]\n\
+         [dependencies]\ncore = { path = \"../core\", version = \"1.0.0\" }\n",
+    );
+    fixture.commit("stable public dependency");
+    let prepared = prepare(&fixture);
+    let plan = preview(
+        &fixture,
+        prepared,
+        &json!([{"name":"core","level":"major"}]),
+    );
+    assert_eq!(versions(&plan).get("facade"), Some(&"2.0.0".to_owned()));
+    apply(&fixture, plan);
+    assert!(check(&fixture, "HEAD").0);
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "spawns local Git and offline Cargo")]
+fn a_first_publication_does_not_need_a_breaking_increment_for_its_public_dependency() {
+    let fixture = Fixture::new("");
+    write_package(&fixture, "core", "1.0.0", "");
+    fixture.commit("released core");
+    write_package(
+        &fixture,
+        "facade",
+        "1.0.0",
+        "\n[package.metadata.cargo_check_external_types]\nallowed_external_types = [\"core::*\"]\n\
+         [dependencies]\ncore = { path = \"../core\", version = \"1.0.0\" }\n",
+    );
+    fixture.git(&["add", "packages/facade"]);
+    let prepared = prepare(&fixture);
+    let plan = preview(
+        &fixture,
+        prepared,
+        &json!([{"name":"core","level":"major"}]),
+    );
+    assert_eq!(
+        versions(&plan),
+        BTreeMap::from([("core".to_owned(), "2.0.0".to_owned())])
+    );
+    apply(&fixture, plan);
+    assert!(
+        fixture
+            .read("packages/facade/Cargo.toml")
+            .contains("version = \"1.0.0\"")
+    );
+    assert!(check(&fixture, "HEAD").0);
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "spawns local Git and offline Cargo")]
+fn preview_aligns_a_lagging_unpublished_group_member_without_an_extra_increment() {
+    let fixture = Fixture::new("");
+    write_package(&fixture, "core", "0.1.0", "");
+    write_package(
+        &fixture,
+        "helper",
+        "0.1.0",
+        "\npublish = false\n[dependencies]\ncore = { path = \"../core\", version = \"=0.1.0\" }\n",
+    );
+    fixture.commit("aligned group");
+    write_package(&fixture, "core", "0.2.0", "");
+    write_package(
+        &fixture,
+        "helper",
+        "0.1.0",
+        "\npublish = false\n[dependencies]\ncore = { path = \"../core\", version = \"=0.2.0\" }\n",
+    );
+    let prepared = prepare(&fixture);
+    let plan = preview(&fixture, prepared, &json!([]));
+    assert_eq!(
+        versions(&plan),
+        BTreeMap::from([
+            ("core".to_owned(), "0.2.0".to_owned()),
+            ("helper".to_owned(), "0.2.0".to_owned()),
+        ])
+    );
+    apply(&fixture, plan);
+    assert!(check(&fixture, "HEAD").0);
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "spawns local Git and offline Cargo")]
+fn naming_an_existing_dependency_version_releases_only_the_rewritten_dependent() {
+    let fixture = Fixture::new("");
+    write_package(&fixture, "core", "0.1.0", "");
+    write_package(
+        &fixture,
+        "facade",
+        "0.1.0",
+        "\n[dependencies]\ncore = { path = \"../core\", version = \"0.1\" }\n",
+    );
+    fixture.commit("compatible but noncanonical requirement");
+    let prepared = prepare(&fixture);
+    let plan = preview(&fixture, prepared, &json!([]));
+    assert_eq!(
+        versions(&plan),
+        BTreeMap::from([
+            ("core".to_owned(), "0.1.0".to_owned()),
+            ("facade".to_owned(), "0.1.1".to_owned()),
+        ])
+    );
+    apply(&fixture, plan);
+    assert!(
+        fixture
+            .read("packages/facade/Cargo.toml")
+            .contains("version = \"0.1.0\"")
+    );
+    assert!(check(&fixture, "HEAD").0);
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "spawns local Git and offline Cargo")]
 fn plain_expansion_is_read_only_and_cannot_bypass_resolution() {
     let fixture = Fixture::new("");
     binary(&fixture, "tool", "");

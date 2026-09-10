@@ -37,7 +37,7 @@ pub(crate) const SCHEMA_VERSION: u32 = 4;
 ///
 /// Expansion and preview share explicit package/version decisions. Preview also
 /// attaches the captured state required to apply those decisions.
-#[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct PlanFile {
     pub(crate) schema_version: u32,
     /// Set by `expand`, absent in a hand-written plan.
@@ -267,7 +267,7 @@ pub(crate) fn resolve_plan(
 }
 
 /// One increment entry as stored in plan JSON.
-#[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct PlanIncrement {
     pub(crate) name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
