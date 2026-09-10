@@ -1,14 +1,95 @@
 #Requires -Modules @{ ModuleName = 'Pester'; ModuleVersion = '5.0' }
 
-# Pester suite for Examples.psm1.
+# Pester suite for the `run-examples` environment and execution boundary in Examples.psm1.
 #
 # Get-ExampleTarget walks the filesystem, so tests build a `packages/<pkg>/examples/` fixture under
 # TestDrive covering both example shapes plus the mod.rs and skip-list exclusions. Invoke-ExampleRun
 # takes an injected scriptblock in place of cargo, so its timeout/exit-code/output classification is
-# tested with fast fake commands (one short real timeout to exercise the watchdog).
+# tested with fast fake commands. The watchdog decision is mocked, not driven by a real-time delay.
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+$PSNativeCommandUseErrorActionPreference = $true
+$VerbosePreference = 'Continue'
 
 BeforeAll {
     Import-Module (Join-Path $PSScriptRoot 'Examples.psm1') -Force
+}
+
+Describe 'Initialize-ExampleEnvironment' {
+    BeforeEach {
+        $script:PreviousTargetDirectory = $env:CARGO_TARGET_DIR
+        $script:PreviousTesting = $env:IS_TESTING
+        Mock -ModuleName Examples cargo {
+            @{ target_directory = [System.IO.Path]::GetTempPath() } | ConvertTo-Json -Compress
+        }
+    }
+
+    AfterEach {
+        $env:CARGO_TARGET_DIR = $script:PreviousTargetDirectory
+        $env:IS_TESTING = $script:PreviousTesting
+    }
+
+    It 'uses Cargo output-directory resolution without the dependency graph' {
+        Initialize-ExampleEnvironment
+
+        $env:CARGO_TARGET_DIR | Should -Be ([System.IO.Path]::GetTempPath())
+        $env:IS_TESTING | Should -Be '1'
+        Should -Invoke -ModuleName Examples cargo -Times 1 -Exactly -ParameterFilter {
+            ($args -join ' ') -eq 'metadata --format-version 1 --no-deps --locked'
+        }
+    }
+
+    It 'lets Cargo resolve an existing relative target-directory override' {
+        $env:CARGO_TARGET_DIR = 'relative output'
+        Mock -ModuleName Examples cargo {
+            $env:CARGO_TARGET_DIR | Should -Be 'relative output'
+            @{ target_directory = [System.IO.Path]::GetTempPath() } | ConvertTo-Json -Compress
+        }
+
+        Initialize-ExampleEnvironment
+
+        $env:CARGO_TARGET_DIR | Should -Be ([System.IO.Path]::GetTempPath())
+    }
+
+    It 'passes the resolved directory and smoke mode to the child job' {
+        Initialize-ExampleEnvironment
+        $command = { "$env:CARGO_TARGET_DIR|$env:IS_TESTING"; return 0 }
+
+        $result = Invoke-ExampleRun -Package 'pkg' -Example 'ex' -Command $command
+
+        $result.Status | Should -Be 'Success'
+        $result.Output | Should -Be "$([System.IO.Path]::GetTempPath())|1"
+    }
+
+    It 'rejects unusable metadata without changing the environment' -TestCases @(
+        @{ Metadata = 'not json' }
+        @{ Metadata = '{}' }
+        @{ Metadata = '{"target_directory":""}' }
+        @{ Metadata = '{"target_directory":null}' }
+    ) {
+        param($Metadata)
+        $env:CARGO_TARGET_DIR = 'unchanged-target'
+        $env:IS_TESTING = 'unchanged-mode'
+        $script:MetadataResponse = $Metadata
+        Mock -ModuleName Examples cargo { $script:MetadataResponse }
+
+        { Initialize-ExampleEnvironment } | Should -Throw
+
+        $env:CARGO_TARGET_DIR | Should -Be 'unchanged-target'
+        $env:IS_TESTING | Should -Be 'unchanged-mode'
+    }
+
+    It 'propagates a Cargo failure without changing the environment' {
+        $env:CARGO_TARGET_DIR = 'unchanged-target'
+        $env:IS_TESTING = 'unchanged-mode'
+        Mock -ModuleName Examples cargo { throw 'Cargo failed.' }
+
+        { Initialize-ExampleEnvironment } | Should -Throw
+
+        $env:CARGO_TARGET_DIR | Should -Be 'unchanged-target'
+        $env:IS_TESTING | Should -Be 'unchanged-mode'
+    }
 }
 
 Describe 'Get-ExampleTarget' {
@@ -97,9 +178,19 @@ Describe 'Invoke-ExampleRun' {
         $result.Output | Should -Be 'boom'
     }
 
-    It 'reports Timeout when the command outlasts the watchdog' {
-        $command = { Start-Sleep -Seconds 30; return 0 }
-        $result = Invoke-ExampleRun -Package 'pkg' -Example 'ex' -Command $command -TimeoutSeconds 1
+    It 'preserves partial output when the watchdog reports a timeout' {
+        # Let the fixture produce output, then inject the watchdog result. The classification
+        # depends on that result, not on how quickly either process happens to be scheduled.
+        Mock -ModuleName Examples Wait-Job {
+            param($Job)
+            Microsoft.PowerShell.Core\Wait-Job -Job $Job | Out-Null
+        }
+        $command = { 'last completed phase'; 42 }
+
+        $result = Invoke-ExampleRun -Package 'pkg' -Example 'ex' -Command $command
+
         $result.Status | Should -Be 'Timeout'
+        $result.ExitCode | Should -BeNullOrEmpty
+        $result.Output | Should -Be "last completed phase`n42"
     }
 }

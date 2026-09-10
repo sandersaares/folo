@@ -14,6 +14,20 @@ production code. The only documented exception is `examples/package_name_readme.
 files (see the API documentation chapter), which may relax Clippy rules to stay
 short and simple.
 
+## Keep execution fast
+
+Stand-alone examples should complete within single-digit seconds, excluding
+compilation. Demonstrate the operation with a small, bounded workload instead of
+using the example as a performance-measurement run.
+
+Criterion examples should call `configure_from_args()` so their default invocation
+uses Criterion's single-iteration test mode. Actual benchmarking is an explicit
+opt-in via `-- --bench`, not part of example smoke execution. Keep the measured
+closure representative in either mode.
+
+The [example runner](build-and-tooling.md#example-execution) handles shared Cargo
+output-directory discovery outside the per-example runtime budget.
+
 ## Inline examples separate scenarios into separate code blocks
 
 If you create inline (doctest) examples that showcase multiple
