@@ -1350,6 +1350,13 @@ Describe 'Read-only health adapter' {
             $health.components.repair_scan.status | Should -Be fresh
             $health.components.triage_scan.status | Should -Be unavailable
             $health.healthy | Should -BeFalse
+            $healthTriage.last_successful_scan = '2026-09-08T11:00:00Z'
+            $healthTriage.Remove('blocked_conditions')
+            $health = Get-ScheduledGitHubHealth 'folo-rs/folo' ([datetimeoffset]'2026-09-08T12:00:00Z')
+            $health.components.triage_scan.status | Should -Be unavailable
+            $health.problems | Should -Not -BeNullOrEmpty
+            $health.components.repair_scan.status | Should -Be fresh
+            $healthTriage.blocked_conditions = @()
             $healthTriage.repository_id = 124
             $health = Get-ScheduledGitHubHealth 'folo-rs/folo' ([datetimeoffset]'2026-09-08T12:00:00Z')
             $health.problems | Should -Not -BeNullOrEmpty
@@ -1377,6 +1384,11 @@ Describe 'Read-only health adapter' {
             $healthLocal.executor_id = 'other'
             $health = Get-ScheduledGitHubHealth 'folo-rs/folo' ([datetimeoffset]'2026-09-08T12:00:00Z')
             $health.components.repair_scan.status | Should -Be unavailable
+            $healthLocal.executor_id = 'executor'
+            $healthLocal.Remove('blocked_conditions')
+            $health = Get-ScheduledGitHubHealth 'folo-rs/folo' ([datetimeoffset]'2026-09-08T12:00:00Z')
+            $health.components.repair_scan.status | Should -Be unavailable
+            $health.problems | Should -Not -BeNullOrEmpty
             Mock Invoke-ScheduledGitHubApi { throw [IO.IOException]::new('GitHub unavailable.') }
             $health = Get-ScheduledGitHubHealth 'folo-rs/folo' ([datetimeoffset]'2026-09-08T12:00:00Z')
             $health.healthy | Should -BeFalse

@@ -32,7 +32,14 @@ function Get-ScheduledRoleScan {
         if ($Role -ceq 'repair') { return $record }
         throw [FormatException]::new('Triage health has no successful-scan checkpoint.')
     }
-    $conditions = @($record.blocked_conditions)
+    $blockers = $record['blocked_conditions']
+    # An absent or malformed inventory is unavailable health, not evidence of no blockers.
+    if ($blockers -isnot [System.Collections.IList] -or @($blockers | Where-Object {
+        $_ -isnot [string] -or [string]::IsNullOrWhiteSpace($_)
+    }).Count -gt 0) {
+        throw [FormatException]::new('Role health has no complete blocked-condition inventory.')
+    }
+    $conditions = @($blockers)
     if ($Role -ceq 'triage') {
         $installed = $record['profile']
         if ($null -eq $installed -or
