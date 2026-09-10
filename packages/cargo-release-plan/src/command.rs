@@ -10,7 +10,7 @@ use std::process::{Command, ExitStatus, Output, Stdio};
 
 use ohno::AppError;
 
-use crate::{CommandFailedError, CommandSpawnError};
+use crate::{CommandFailedError, CommandIoError};
 
 /// Hashes captured input bytes without writing an object into the repository.
 pub(crate) fn hash_bytes(bytes: &[u8], cwd: &Path) -> Result<String, AppError> {
@@ -34,16 +34,16 @@ pub(crate) fn run_capture_input(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|error| CommandSpawnError::caused_by(program, error))?;
+        .map_err(|error| CommandIoError::caused_by(program, error))?;
     child
         .stdin
         .take()
         .expect("the child was started with a piped standard input")
         .write_all(bytes)
-        .map_err(|error| CommandSpawnError::caused_by(program, error))?;
+        .map_err(|error| CommandIoError::caused_by(program, error))?;
     let output = child
         .wait_with_output()
-        .map_err(|error| CommandSpawnError::caused_by(program, error))?;
+        .map_err(|error| CommandIoError::caused_by(program, error))?;
     if !output.status.success() {
         return Err(CommandFailedError::new(
             program,
@@ -59,7 +59,7 @@ pub(crate) fn run_capture_input(
 ///
 /// # Errors
 ///
-/// Returns [`CommandSpawnError`] if the process cannot be created, or
+/// Returns [`CommandIoError`] if starting or communicating with the process fails, or
 /// [`CommandFailedError`] if it exits unsuccessfully.
 pub(crate) fn run_capture(program: &str, args: &[&str], cwd: &Path) -> Result<String, AppError> {
     run_capture_os(program, args, cwd)
@@ -197,7 +197,7 @@ fn spawn(
         .env("CARGO_TERM_COLOR", "never")
         .env("LC_ALL", "C")
         .output()
-        .map_err(|error| CommandSpawnError::caused_by(program, error).into())
+        .map_err(|error| CommandIoError::caused_by(program, error).into())
 }
 
 #[cfg(test)]
@@ -207,7 +207,7 @@ mod tests {
     use std::os::unix::process::ExitStatusExt as _;
 
     use super::*;
-    use crate::CommandSpawnError;
+    use crate::CommandIoError;
 
     #[test]
     fn empty_cwd_uses_process_current_directory() {
@@ -241,7 +241,7 @@ mod tests {
             Path::new("."),
         )
         .unwrap_err();
-        assert!(error.find_source::<CommandSpawnError>().is_some());
+        assert!(error.find_source::<CommandIoError>().is_some());
     }
 
     #[cfg_attr(miri, ignore)] // Process spawn uses host APIs Miri cannot emulate.
@@ -275,12 +275,12 @@ mod tests {
         // all is a real error the caller must see.
         let error =
             run_capture_ok("cargo-release-plan-no-such-program", &[], Path::new(".")).unwrap_err();
-        assert!(error.find_source::<CommandSpawnError>().is_some());
+        assert!(error.find_source::<CommandIoError>().is_some());
     }
 
     #[cfg_attr(miri, ignore)] // Process spawn uses host APIs Miri cannot emulate.
     #[test]
-    fn spawn_failure_maps_to_command_spawn_error() {
+    fn spawn_failure_maps_to_command_io_error() {
         // A program name that cannot exist on PATH cannot be spawned.
         let error = spawn(
             "cargo-release-plan-no-such-program",
@@ -288,7 +288,7 @@ mod tests {
             Path::new("."),
         )
         .unwrap_err();
-        assert!(error.find_source::<CommandSpawnError>().is_some());
+        assert!(error.find_source::<CommandIoError>().is_some());
     }
 
     #[cfg(unix)]

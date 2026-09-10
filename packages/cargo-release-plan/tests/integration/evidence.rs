@@ -9,7 +9,7 @@ use ohno::AppError;
 use serde_json::Value;
 
 use crate::fixture::{Fixture, write_package};
-use crate::harness::{check, resolved_plan};
+use crate::harness::{check, report_json, resolved_plan};
 
 fn evidence_manifest(plan: &Path) -> PathBuf {
     let plan: Value = serde_json::from_slice(&fs::read(plan).unwrap()).unwrap();
@@ -175,4 +175,54 @@ fn repreview_replaces_owned_evidence_and_rejects_an_unowned_directory() {
     .unwrap_err();
     assert_eq!(fs::read(retained_source).unwrap(), retained_bytes);
     assert!(!plan.exists());
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "captures real Git and Cargo workspace inputs")]
+fn local_source_inputs_invalidate_evidence_without_becoming_release_reasons() {
+    let fixture = Fixture::new("");
+    write_package(&fixture, "library", "0.1.0", "");
+    fixture.write(".gitignore", "packages/library/src/generated.rs\n");
+    fixture.commit("released library");
+    let inputs = [
+        "packages/library/src/untracked.rs",
+        "packages/library/src/generated.rs",
+    ];
+    for path in inputs {
+        fixture.write(path, "pub fn local_input() {}\n");
+    }
+    let report: Value = serde_json::from_str(&report_json(&fixture, "HEAD")).unwrap();
+    assert_eq!(
+        report
+            .get("packages")
+            .unwrap()
+            .get(0)
+            .unwrap()
+            .get("status")
+            .unwrap(),
+        "unchanged"
+    );
+    fixture.write(
+        "proposal.json",
+        r#"{"schema_version":4,"increments":[{"name":"library","level":"patch"}]}"#,
+    );
+    let plan = resolved_plan(&fixture, &fixture.path().join("proposal.json"));
+    let candidate = evidence_manifest(&plan);
+    for path in inputs {
+        fixture.write(path, "pub fn changed_local_input() {}\n");
+        verify(&plan, &candidate).unwrap_err();
+        let report: Value = serde_json::from_str(&report_json(&fixture, "HEAD")).unwrap();
+        assert_eq!(
+            report
+                .get("packages")
+                .unwrap()
+                .get(0)
+                .unwrap()
+                .get("status")
+                .unwrap(),
+            "unchanged"
+        );
+        fixture.write(path, "pub fn local_input() {}\n");
+        verify(&plan, &candidate).unwrap();
+    }
 }

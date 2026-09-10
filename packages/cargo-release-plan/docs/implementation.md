@@ -348,6 +348,11 @@ application. Compatibility tooling uses both that manifest and its working
 directory; a subsequent read-only verification compares the retained checkout
 with the captured state. Generated build products do not become released inputs.
 
+The source fingerprint also includes untracked and ignored files beneath `src/`,
+because they can affect a workspace build even though they are excluded from
+Git-based release classification. Changing them requires fresh compatibility
+evidence, not an additional release reason.
+
 The resolved artifact binds the original input snapshot to captured output
 files, not to temporary workspace paths. Application recognizes either the
 original snapshot or the fully applied snapshot. It rejects other states before

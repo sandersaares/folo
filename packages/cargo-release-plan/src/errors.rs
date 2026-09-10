@@ -25,15 +25,15 @@ use semver::Version;
 
 use crate::text::Quotable as _;
 
-/// A helper process could not be started.
+/// An OS-level failure prevented starting or communicating with a helper process.
 #[ohno::error]
-#[display("Failed to spawn `{program}`")]
-pub(crate) struct CommandSpawnError {
+#[display("I/O failure while executing `{program}`")]
+pub(crate) struct CommandIoError {
     program: String,
 }
 
-impl UnwindSafe for CommandSpawnError {}
-impl RefUnwindSafe for CommandSpawnError {}
+impl UnwindSafe for CommandIoError {}
+impl RefUnwindSafe for CommandIoError {}
 
 /// A helper process exited unsuccessfully.
 #[ohno::error]
@@ -590,7 +590,7 @@ mod tests {
     use super::*;
 
     assert_impl_all!(
-        CommandSpawnError: Send,
+        CommandIoError: Send,
         Sync,
         Debug,
         error::Error,
@@ -855,10 +855,17 @@ mod tests {
         RefUnwindSafe
     );
     #[test]
-    fn command_spawn_error_retains_source() {
-        let error =
-            CommandSpawnError::caused_by("git", io::Error::new(io::ErrorKind::NotFound, "missing"));
-        assert!(error.find_source::<io::Error>().is_some());
+    fn command_io_error_retains_start_write_and_wait_causes() {
+        for (kind, cause) in [
+            (io::ErrorKind::NotFound, "process creation"),
+            (io::ErrorKind::BrokenPipe, "stdin write"),
+            (io::ErrorKind::Other, "process wait"),
+        ] {
+            let error = CommandIoError::caused_by("git", io::Error::new(kind, cause));
+            let source = error.find_source::<io::Error>().unwrap();
+            assert_eq!(source.kind(), kind);
+            assert_eq!(source.to_string(), cause);
+        }
     }
 
     #[test]
