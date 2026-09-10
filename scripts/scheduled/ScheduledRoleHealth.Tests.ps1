@@ -54,6 +54,21 @@ Describe 'Complete <Role> health observations' -ForEach @(@{ Role = 'repair' }, 
             { Invoke-HealthProjection $record $Role } | Should -Throw -ExceptionType ([FormatException])
         }
     }
+
+    It 'rejects malformed triage profile objects through the structured health boundary without affecting repair' {
+        foreach ($field in @('profile', 'profile_scan', 'profile_observation')) {
+            $original = $record[$field]
+            foreach ($invalid in @(@{ value = 'not-an-object' }, @{ value = 42 }, @{ value = @('not-an-object') })) {
+                $record[$field] = $invalid.value
+                if ($Role -ceq 'triage') {
+                    { Invoke-HealthProjection $record $Role } | Should -Throw -ExceptionType ([FormatException])
+                } else {
+                    (Invoke-HealthProjection $record $Role).outcome | Should -Be passed
+                }
+            }
+            $record[$field] = $original
+        }
+    }
 }
 
 Describe 'Legacy repair health observation' {

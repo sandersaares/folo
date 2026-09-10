@@ -42,6 +42,11 @@ function Get-ScheduledRoleScan {
     }
     $conditions = @($blockers)
     if ($Role -ceq 'triage') {
+        foreach ($field in @('profile', 'profile_scan', 'profile_observation')) {
+            if ($null -ne $record[$field] -and $record[$field] -isnot [hashtable]) {
+                throw [FormatException]::new("Triage health $field must be an object or absent.")
+            }
+        }
         $installed = $record['profile']
         $scan = $record['profile_scan']
         $observed = Test-ScheduledTriageHealthObservation $installed $record['profile_observation'] $scan

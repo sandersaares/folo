@@ -38,6 +38,43 @@ Describe 'Exact attempt acknowledgement across reporter deliveries' {
         $fixture.store.issues[20L].state | Should -Be open
     }
 
+    It 'does not confirm a run closure when reporting advances the index between its read and PATCH' {
+        $null = Publish-TriageFixtureProblem $fixture download
+        $next = Copy-TriageFixtureValue $fixture.evidence
+        $next.attempt.run_attempt = 2
+        $script:injected = @{ revision = $null }
+        $api = {
+            param($Endpoint, $Method = 'GET', $Body, [switch] $Paginate)
+            if ($Method -ceq 'PATCH' -and $Endpoint -ceq 'repos/owner/repository/issues/20' -and
+                $Body.state -ceq 'closed') {
+                $injected.revision = Add-TriageFixtureRevision $fixture $next
+            }
+            & $fixture.api -Endpoint $Endpoint -Method $Method -Body $Body -Paginate:$Paginate
+        }
+        { Complete-ScheduledTriageAnalysis $fixture.context $api } | Should -Throw -ExceptionType ([FormatException])
+        $state = Invoke-TriageTransaction $fixture.context read
+        $analysis = $state.triage.analyses[$fixture.context.analysis_id]
+        $analysis.phase | Should -Not -Be complete
+        $stale = @($analysis.operations.Values | Where-Object { $_.purpose -ceq 'run-presentation' })
+        $stale.Count | Should -Be 1
+        $stale[0].stage | Should -Be sending
+        $current = Get-ScheduledTriageInbox $fixture.context.policy $state $fixture.api
+        $current.pending.Count | Should -Be 1
+        $current.pending[0].digest | Should -BeExactly $injected.revision.digest
+        $current.pending[0].run_attempt | Should -Be 2
+
+        $result = Complete-ScheduledTriageAnalysis $fixture.context $fixture.api
+        $result.run_triaged | Should -BeFalse
+        $result.pending_revision_count | Should -Be 1
+        $fixture.store.issues[20L].state | Should -Be open
+        @($fixture.store.issues[20L].labels | ForEach-Object { $_.name }) | Should -Not -Contain scheduled-triaged
+        $state = Invoke-TriageTransaction $fixture.context read
+        $state.triage.analyses[$fixture.context.analysis_id].operations[$stale[0].key].stage | Should -Be superseded
+        @($fixture.store.writes | Where-Object {
+            $_.endpoint -ceq 'repos/owner/repository/issues/20' -and $_.method -ceq 'PATCH'
+        }).Count | Should -Be 2
+    }
+
     It 'retains an unanalyzed failure across a green rerun then discovers new failure on its closed issue' {
         $green = Copy-TriageFixtureValue $fixture.evidence
         $green.attempt.run_attempt = 2

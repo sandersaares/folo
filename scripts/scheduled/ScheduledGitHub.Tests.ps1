@@ -1363,6 +1363,15 @@ Describe 'Read-only health adapter' {
             $health = Get-ScheduledGitHubHealth 'folo-rs/folo' ([datetimeoffset]'2026-09-08T12:00:00Z')
             $health.components.triage_scan.status | Should -Be fresh
             $health.components.repair_scan.status | Should -Be fresh
+            foreach ($field in @('profile', 'profile_scan', 'profile_observation')) {
+                $original = $healthTriage[$field]
+                $healthTriage[$field] = 'not-an-object'
+                $health = Get-ScheduledGitHubHealth 'folo-rs/folo' ([datetimeoffset]'2026-09-08T12:00:00Z')
+                $health.components.triage_scan.status | Should -Be unavailable
+                $health.components.repair_scan.status | Should -Be fresh
+                $health.problems | Should -Not -BeNullOrEmpty
+                $healthTriage[$field] = $original
+            }
             $healthTriage.Remove('blocked_conditions')
             $health = Get-ScheduledGitHubHealth 'folo-rs/folo' ([datetimeoffset]'2026-09-08T12:00:00Z')
             $health.components.triage_scan.status | Should -Be unavailable

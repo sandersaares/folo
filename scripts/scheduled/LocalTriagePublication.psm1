@@ -140,6 +140,14 @@ function Test-TriageOperationTarget {
     }
     if ($Operation.kind -ceq 'create-comment') { return $Target.body -ceq $Operation.payload.body }
     if ($Operation.purpose -ceq 'run-presentation') {
+        # A matching label/state is not confirmation if reporting advanced the evidence.
+        # This guard applies to initial reconciliation and the post-write readback alike.
+        $root = Read-ScheduledRecord $Target.body run
+        $index = Read-ScheduledRecord $Target.body run-publication
+        if ($root.repository_id -ne $Context.policy.repository_id -or
+            $root.run_id -ne $Operation.run_id -or $index.index_digest -cne $Operation.preimage) {
+            throw [FormatException]::new('Run evidence changed during presentation; rescan instead of acknowledging it.')
+        }
         $names = @($Target.labels | ForEach-Object { $_.name })
         return $Target.state -ceq $Operation.payload.state -and
             (('scheduled-triaged' -iin $names) -eq $Operation.triaged)
@@ -197,12 +205,6 @@ function Invoke-ScheduledTriageOperation {
     if ($operation.kind -cin @('update-issue', 'update-comment')) {
         if ($null -eq $target) { throw [FormatException]::new('Known publication target is missing.') }
         if ($operation.purpose -ceq 'run-presentation') {
-            $root = Read-ScheduledRecord $target.body run
-            $index = Read-ScheduledRecord $target.body run-publication
-            if ($root.repository_id -ne $Context.policy.repository_id -or
-                $root.run_id -ne $operation.run_id -or $index.index_digest -cne $operation.preimage) {
-                throw [FormatException]::new('Run evidence changed before presentation; rescan instead of acknowledging it.')
-            }
             # Modify only the role label and state; never rewrite the reporter's issue body.
             $payload.labels = @($target.labels | ForEach-Object { $_.name } |
                 Where-Object { $_ -ine 'scheduled-triaged' })

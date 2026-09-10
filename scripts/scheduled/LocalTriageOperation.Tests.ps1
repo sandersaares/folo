@@ -79,11 +79,18 @@ Describe 'Evidence-bound publication operations' {
         $fixture.store.writes.Count | Should -Be 0
     }
 
-    It 'does not acknowledge presentation for a different reporter index' {
+    It 'does not acknowledge a different reporter index when matching presentation is <AlreadyPresented>' -ForEach @(
+        @{ AlreadyPresented = $false }, @{ AlreadyPresented = $true }
+    ) {
         $spec.kind = 'update-issue'; $spec.target_id = 20; $spec.purpose = 'run-presentation'
         $spec.preimage = 'stale'; $spec.run_id = 789; $spec.triaged = $true; $spec.payload = @{ state = 'closed' }
+        if ($AlreadyPresented) {
+            $fixture.store.issues[20L].state = 'closed'
+            $fixture.store.issues[20L].labels += @{ name = 'scheduled-triaged' }
+        }
         { Invoke-ScheduledTriageOperation $fixture.context $spec $fixture.api } | Should -Throw
-        $fixture.store.issues[20L].state | Should -Be open
+        $fixture.store.issues[20L].state | Should -Be $(if ($AlreadyPresented) { 'closed' } else { 'open' })
+        $fixture.store.writes.Count | Should -Be 0
     }
 
     It 'preserves a human state transition after problem preparation and reconciles an actual lost reopening response' {
