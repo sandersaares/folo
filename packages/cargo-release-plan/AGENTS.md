@@ -5,9 +5,10 @@
 Do not add `git2`, `gix`, or any other Git library. All Git access is
 `std::process::Command` spawning `git`; the rationale and its trade-off are in
 [docs/implementation.md](docs/implementation.md), "Subprocess boundaries".
-Classification may also spawn `cargo metadata --no-deps` (and
-`cargo package --list` / `cargo update` for verify-packaging and apply). Do not
-contact crates.io and do not compile as part of classification.
+Classification may also spawn `cargo metadata --no-deps`; verify-packaging may
+spawn `cargo package --list`. Keep full resolution in explicit preparation and
+preview, using `cargo update --offline --workspace`, never in report, check, or
+application. Do not contact crates.io and do not compile as part of classification.
 
 ## Integration tests must be hermetic Git
 

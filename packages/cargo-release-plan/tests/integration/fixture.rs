@@ -110,6 +110,7 @@ resolver = "2"
     /// outside the workspace and a registry lookup would make tests non-hermetic.
     pub(crate) fn cargo(&self, args: &[&str]) -> String {
         let output = Command::new("cargo")
+            .current_dir(self.path())
             .args(args)
             .arg("--manifest-path")
             .arg(self.manifest())

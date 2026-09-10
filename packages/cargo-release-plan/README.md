@@ -1,8 +1,8 @@
 # cargo-release-plan
 
 A Cargo subcommand that classifies every publishable workspace package against its
-version **anchor**, reports changes to **released content**, and applies an
-prepared increment plan (group expansion, `=`-pin rewrites, lockfile refresh).
+version **anchor**, reports changes to **released content**, and prepares a
+complete increment plan with its resolved dependency effects.
 
 A package has unreleased changes when its released content differs between its
 version anchor and the work tree. Such a package is pending release once its
@@ -19,6 +19,11 @@ elsewhere), or `cargo install cargo-release-plan` to always build from source. T
 ```text
 cargo release-plan report --out-dir <dir> [--base <rev>] [--manifest-path <path>] [--verbose]
 cargo release-plan check [--base <rev>] [--manifest-path <path>] [--format text|github] [--verify-packaging] [--verbose]
+cargo release-plan prepare --output <dir> [--base <rev>] [--manifest-path <path>] [--verbose]
+cargo release-plan preview --prepared <prepared.json> --plan <plan.json> --output <dir>
+    [--manifest-path <path>] [--verbose]
+cargo release-plan verify-preview --plan <plan.json> --manifest-path <prospective-manifest>
+    [--verbose]
 cargo release-plan expand --plan <plan.json> --out <expanded.json>
     [--manifest-path <path>] [--verbose]
 cargo release-plan apply --plan <plan.json> [--dry-run] [--manifest-path <path>] [--verbose]
@@ -69,6 +74,17 @@ Cargo's package-preparation work, so gating on it would give up the normal
 offline, no-resolve path. A divergence on a clean tree is evidence that the
 rules need fixing.
 
+### `prepare`
+
+Prepares the workflow's intended offline workspace dependency resolution before
+writing release evidence. Review changes from this prepared report before
+choosing semantic increment levels. Preparation does not request blanket
+third-party upgrades.
+
+Preparation can modify the workspace lockfile. It writes `prepared.json`,
+`report.json`, and per-package `diffs/` beneath the output directory. Read-only
+`report` and `check` never perform this refresh.
+
 ### `expand`
 
 Resolves a plan's version groups and increment levels into one explicit entry
@@ -81,43 +97,75 @@ the input plan did not mention, at the version each will carry. Applying it also
 rewrites requirements inside those packages' dependents, which take no version
 from the plan and so are not named.
 
-The output is itself a plan, so the expanded document can be passed unchanged to
-`apply`. Every entry carries an explicit `version`. Review and approval policy
-belong to the caller, not the tool.
+Every entry carries an explicit `version`. This is structural expansion only:
+it does not predict Cargo resolution effects and is not sufficient as a
+complete resolved artifact.
 
 Re-expand after changing the input plan. Editing an expanded plan by hand risks
 giving one group's members different versions, which both `expand` and `apply`
 reject.
 
+### `preview`
+
+Resolves proposed version and dependency-requirement changes in a disposable
+workspace against the prepared inputs. The proposal expands until version
+groups, requirement propagation, and installable binary lockfile effects are
+covered. Existing adequate increments are retained rather than raised again
+on each iteration.
+
+The output directory contains an expanded `plan.json` with captured resolved
+files and input identity, plus the prospective `report.json` and `diffs/`.
+The final prospective checkout remains in `workspace/`. Its manifest path is
+recorded in `resolved.evidence_manifest_path` so compatibility tools can build
+the same source, manifest versions, and lockfile that the report describes.
+Use its complete target set and additional dependency evidence to assess release
+impact; a mechanically required release does not establish that a change is
+semantically compatible. Adjust semantic levels and preview again when needed.
+Apply the captured artifact unchanged. Review and approval policy belong to the
+caller, not the tool.
+
+### `verify-preview`
+
+Checks the retained prospective workspace against its captured resolved plan
+without dependency resolution or compilation. Run it after external compatibility
+analysis, using the recorded evidence manifest path, to detect source, manifest,
+configuration, or lockfile changes made during that analysis.
+
+This evidence path does not become the application destination: `apply` remains
+bound to the original post-preparation workspace inputs.
+
 ### `apply`
 
-The tool does not choose increment levels. Deciding whether a change is
+The tool does not infer semantic compatibility. Deciding whether a change is
 breaking, additive, or neither is a semantic judgement, and nothing here
-compiles code or compares API surfaces. `report` supplies what that judgement
-needs; a caller records a level per package in a plan; `apply` then owns the
-mechanical part, including deriving the resulting version numbers.
+compiles code or compares API surfaces. Prepared evidence supplies what that
+judgement needs; a caller records a level per package in a plan; prospective
+preview completes the mechanical consequences before application.
 
-Reads a plan and:
+For a resolved expanded plan, the command:
 
 * sets each listed package's `version`
-* expands version groups so every member receives the new version
 * rewrites intra-workspace dependency requirements that must follow, including
   `=` pins
-* refreshes the workspace lockfile so `--locked` builds keep working
+* installs the captured resolved lockfile so `--locked` builds keep working
 
-Manifests are edited structurally, so comments and layout are preserved. Every
-reason a plan can be rejected is found before anything is written: an unknown
-target, a version that would move backwards, or an unreadable manifest is
-reported while every manifest is still untouched. Writes themselves are
-sequential, so an accepted plan that then fails on an I/O error can leave earlier
-manifests updated; revert the work tree with `git` in that case. `--dry-run`
-reports the manifests that would change and writes nothing.
+Comments and layout are preserved in the prepared edits. Input and artifact
+validation precede writes. Changed original inputs require fresh preparation;
+apply does not silently widen the target set or resolve new lockfile effects.
+Applying the same artifact to its fully applied state is a no-op. Writes can
+still fail on I/O errors, so inspect a partial failure before taking recovery
+action. `--dry-run` reports what would change and writes nothing.
 
-The plan schema is:
+Applying a proposed plan is a low-level manifest-only operation: it resolves
+version groups and edits manifests, but does not prepare or install a lockfile.
+It is not the complete release-planning workflow. Use `preview` and apply its resolved
+expanded artifact when preparing a complete release.
+
+The proposed-plan schema is:
 
 ```json
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "increments": [
     { "name": "nm", "level": "patch" },
     { "name": "events", "version": "0.7.14" }
@@ -137,7 +185,7 @@ highest, while explicit versions must match.
 An optional top-level `expanded` records which planning stage a document belongs to. A **proposed
 plan** leaves it absent: its entries may name a version group and let resolution reach the
 members, and may carry an increment level resolved when the plan is applied, so what it names is
-a starting point rather than the full set it moves. An **expanded plan**, written by `expand`,
+a starting point rather than the full set it moves. An **expanded plan**
 sets it, names every package whose version the plan sets, and gives each an explicit `version`.
 Both are
 required of it: an entry left at a level would be resolved against the manifests as they stand
@@ -145,7 +193,16 @@ when it is applied, so the same document could apply a version other than the re
 Resolving an expanded plan must reproduce exactly the set it names; reaching any other package
 means the workspace's derived version groups changed after the document was written, and is rejected
 rather than applied. Requirement rewrites inside those packages' dependents are not part of that
-set, because the plan gives a dependent no version of its own.
+set, because the plan gives a dependent no version of its own. The resolved
+artifact additionally captures the resolved files and original inputs;
+the expanded stamp alone is not a substitute for that evidence.
+
+`preview` supplies the required `resolved` object in the expanded
+artifact. Treat it and `prepared.json` as opaque tool-owned evidence: keep the
+files intact rather than synthesizing or editing them. Expanded `apply` requires
+this resolved artifact and does not accept a structural expansion alone.
+Unsupported schema versions require regenerating evidence with `prepare` and
+the resolved artifact with `preview`; they do not select a compatibility mode.
 
 ### Plan and report schema
 
@@ -193,11 +250,20 @@ declared version below the anchor's version is an error rather than a status.
 
 Cargo includes a generated lockfile in every package archive, but a
 library-only consumer resolves the library in its own dependency graph instead
-of using that file. A package that publishes an executable also releases its
+of using that file. A package with an installable binary target also releases its
 resolved dependency closure because `cargo install --locked` uses the archive's
 lockfile. A workspace lockfile change that moves such a package's dependencies
 is therefore a released-content change; the same change against a library is
-not.
+not. A mixed library/binary package qualifies, but examples, benchmarks, tests,
+and build scripts do not. The binary closure includes normal and build
+dependencies, not development-only workspace dependency edges.
+
+Source-aware matching distinguishes aliased dependencies with the same name and
+version from different sources and accounts for workspace patches. Missing
+registry mappings or source spellings whose equivalence cannot be reconstructed
+are operational errors. Unequal URLs requiring complex normalization, such as
+percent-encoded or internationalized spellings, are not treated as equivalent
+by approximation.
 
 A packaged file's executable bit is released content too, since Cargo carries
 the mode Git records into the archive. Making a packaged file executable is
@@ -230,5 +296,7 @@ workspace.
 
 Classification shells out only to `git` and `cargo metadata --no-deps`. It does
 not contact crates.io, resolve a dependency graph, or compile. `check
---verify-packaging` may spawn `cargo package --list`. `apply` may spawn
-`cargo update --offline` to refresh the workspace lockfile.
+--verify-packaging` may spawn `cargo package --list`. Explicit preparation and
+prospective preview use `cargo update --offline --workspace`. Application
+installs the captured resolved files without running dependency resolution.
+`verify-preview` also performs no dependency resolution or compilation.

@@ -58,6 +58,28 @@ impl Cli {
     #[must_use]
     pub fn into_input(self) -> RunInput {
         match self.command {
+            Command::VerifyPreview(args) => RunInput::VerifyPreview {
+                plan: args.plan,
+                manifest_path: args.manifest_path,
+                verbose: args.verbose,
+            },
+            Command::Prepare(args) => RunInput::Prepare {
+                output: args.output,
+                base: args.base,
+                manifest_path: args
+                    .manifest_path
+                    .unwrap_or_else(|| PathBuf::from("Cargo.toml")),
+                verbose: args.verbose,
+            },
+            Command::Preview(args) => RunInput::Preview {
+                plan: args.plan,
+                prepared: args.prepared,
+                output: args.output,
+                manifest_path: args
+                    .manifest_path
+                    .unwrap_or_else(|| PathBuf::from("Cargo.toml")),
+                verbose: args.verbose,
+            },
             Command::Report(args) => RunInput::Report {
                 out_dir: args.out_dir,
                 base: args.base,
@@ -130,6 +152,12 @@ impl EarlyExit {
 /// Clap grammar for the subcommands.
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Refresh the live lockfile offline and capture evidence before semantic grading.
+    Prepare(PrepareArgs),
+    /// Resolve all prospective plan effects offline and capture the state for application.
+    Preview(PreviewArgs),
+    /// Verify that the retained compatibility workspace still matches the resolved plan.
+    VerifyPreview(VerifyPreviewArgs),
     /// Write report.json and per-package diffs for the changes needing a release.
     Report(ReportArgs),
     /// Fail on a release the workspace's manifests cannot support.
@@ -140,10 +168,61 @@ enum Command {
     /// malformed, or when a package whose public API exposes a workspace dependency stays
     /// compatible while that dependency releases a breaking change.
     Check(CheckArgs),
-    /// Produce the explicit package/version plan to pass to apply.
+    /// Expand groups without resolution; pass the result through preview before apply.
     Expand(ExpandArgs),
-    /// Apply an increment plan to manifests and the lockfile.
+    /// Install captured files without resolution, or make proposed manifest-only edits.
     Apply(ApplyArgs),
+}
+
+/// Arguments for explicit pre-grading preparation.
+#[derive(Debug, Parser)]
+struct PrepareArgs {
+    /// Directory receiving report.json, diffs/, and prepared.json.
+    #[arg(long, visible_alias = "out-dir")]
+    output: PathBuf,
+    /// Release baseline, defaulting to the remote default branch.
+    #[arg(long)]
+    base: Option<String>,
+    /// Path to the workspace Cargo.toml.
+    #[arg(long)]
+    manifest_path: Option<PathBuf>,
+    /// Print explanatory preparation notes.
+    #[arg(long)]
+    verbose: bool,
+}
+
+/// Arguments for proposal-specific offline resolution.
+#[derive(Debug, Parser)]
+struct PreviewArgs {
+    /// Proposed version decisions.
+    #[arg(long)]
+    plan: PathBuf,
+    /// Prepared artifact whose report was assessed.
+    #[arg(long)]
+    prepared: PathBuf,
+    /// Directory receiving plan.json, report.json, diffs/, and retained workspace/.
+    #[arg(long)]
+    output: PathBuf,
+    /// Path to the workspace Cargo.toml.
+    #[arg(long)]
+    manifest_path: Option<PathBuf>,
+    /// Print explanatory expansion and resolver notes.
+    #[arg(long)]
+    verbose: bool,
+}
+
+/// Explicit candidate selection prevents compatibility checks from using the original tree.
+#[derive(Debug, Parser)]
+struct VerifyPreviewArgs {
+    /// Path to the resolved plan JSON.
+    #[arg(long)]
+    plan: PathBuf,
+    /// The `resolved.evidence_manifest_path` emitted by preview.
+    #[arg(long)]
+    manifest_path: PathBuf,
+    /// Print explanatory verification notes.
+    #[arg(long)]
+    verbose: bool,
 }
 
 /// Arguments for `report`.
@@ -219,11 +298,11 @@ struct ExpandArgs {
 /// Arguments for `apply`.
 #[derive(Debug, Parser)]
 struct ApplyArgs {
-    /// Path to the plan JSON file.
+    /// Path to the plan JSON file to apply.
     #[arg(long)]
     plan: PathBuf,
 
-    /// Compute edits without writing files or refreshing the lockfile.
+    /// Validate and describe planned writes without changing files.
     #[arg(long)]
     dry_run: bool,
 

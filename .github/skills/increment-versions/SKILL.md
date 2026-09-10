@@ -19,7 +19,8 @@ version numbers, and it does not decide which packages a level reaches. The tool
 decided levels to version numbers, derives group membership from valid exact intra-workspace
 dependency requirements, keeps every
 [version group](../../../packages/cargo-release-plan/README.md#plan-and-report-schema) on a
-single version, rewrites dependency requirements, and refreshes `Cargo.lock`.
+single version, and resolves dependency requirements and `Cargo.lock` before application.
+Application installs the captured resolved state without another dependency refresh.
 
 Decide and apply the plan without a separate human approval request, for every change level.
 Human review of the pull request as a whole is the approval step, including its version/release
@@ -48,13 +49,17 @@ afterwards, and read a later stage's inputs from these files rather than from me
 | File | Written in | Contents |
 |------|------------|----------|
 | `base.txt` | Stage 2 | The release baseline commit. |
-| `report.json` | Stage 2 | The cargo-release-plan report. |
+| `prepared.json` | Stage 2 | The prepared input snapshot bound to the release baseline. |
+| `report.json` | Stage 2 | The cargo-release-plan report after explicit offline preparation. |
 | `diffs/{{PACKAGE}}.patch` | Stage 2 | A package's released-content diff against its anchor. |
 | `semver-checks.log` | Stage 2 | The console output of `cargo-semver-checks`. |
 | `analysis-order.json` | Stage 3 | The analysis batches. |
-| `decisions.json` | Stage 4 | The change levels decided from the current evidence, without a separate approval gate. |
+| `decisions.json` | Stage 4 | The change levels decided from current evidence, without a separate approval gate. |
 | `plan.json` | Stage 5 | The proposed plan: change levels mapped to increment levels. |
-| `expanded.json` | Stage 5 | The expanded plan: that proposal with every package it reaches named. |
+| `preview/plan.json` | Stage 5 | The complete expanded plan with captured resolved files and original input identity. |
+| `preview/report.json`, `preview/diffs/` | Stage 5 | The prospective release evidence for the resolved proposal. |
+| `preview/semver-checks.log` | Stage 5 | Compatibility evidence built from the final prospective source, versions, and lockfile. |
+| `preview/workspace/` | Stage 5 | The retained prospective workspace used only for compatibility evidence. |
 
 Commit none of them.
 
@@ -63,12 +68,12 @@ Commit none of them.
 | Placeholder | Description |
 |-------------|-------------|
 | `WORK_DIR` | The absolute path of the untracked directory holding this run's working files. |
-| `VERIFY_DIR` | A second untracked directory, also absolute, written by Stage 7 and adopted as `WORK_DIR` when Stage 7 sends the run back to Stage 4. |
+| `VERIFY_DIR` | A second untracked directory, also absolute, holding Stage 7 verification evidence without replacing the original preparation artifacts. |
 | `DIFF_PATH` | A package's `diff_path` value from `report.json`. |
 | `PACKAGE` | A package name. |
 | `CHANGE_LEVEL` | A decided change level: `breaking`, `nonbreaking`, or `patch`. |
 | `PREVIOUS_VERSION` | A package's version at its release anchor, before the pull request's pending increment. |
-| `NEW_VERSION` | A package's resolved version from `expanded.json`, or its `declared_version` in `report.json` for a retained pending increment absent from the plan. |
+| `NEW_VERSION` | A package's resolved version from `preview/plan.json`, or its `declared_version` for a retained pending increment absent from the plan. |
 
 # Stage 1: Run preflight checks
 
@@ -82,12 +87,12 @@ publishable crates that still need their one-time manual first publication:
 Stop and report if either command exits non-zero. A checker that cannot execute must not be
 interpreted as an absence of a required increment. `check-never-published` is an advisory scan of
 the whole workspace: report its warnings, then continue. Stage 6 performs the exact fail-closed
-check over the publishable targets in the expanded plan.
+check over the publishable targets in the resolved plan.
 
-# Stage 2: Collect evidence
+# Stage 2: Prepare resolution and collect evidence
 
-Create the directory, record the release baseline, then write the report, the per-package diffs,
-and the SemVer evidence:
+Create the directory, record the release baseline, then prepare offline resolution before writing
+the report, per-package diffs, and SemVer evidence:
 
 > New-Item -ItemType Directory -Force -Path "{{WORK_DIR}}"
 >
@@ -95,11 +100,21 @@ and the SemVer evidence:
 >
 > git rev-parse FETCH_HEAD > "{{WORK_DIR}}/base.txt"
 >
-> $env:RELEASE_PLAN_BASE = Get-Content -LiteralPath "{{WORK_DIR}}/base.txt"; just release-report "{{WORK_DIR}}"
+> $env:RELEASE_PLAN_BASE = Get-Content -LiteralPath "{{WORK_DIR}}/base.txt"; just release-prepare "{{WORK_DIR}}"
 
-Stop and report if any command exits non-zero. `just release-report` accepts the documented
+Stop and report if any command exits non-zero. `just release-prepare` accepts the documented
 cargo-semver-checks finding exit and fails on every other non-zero exit, so a non-zero exit
 here means the evidence is incomplete.
+
+Preparation performs the workflow's intended `cargo update --offline --workspace` resolution.
+It can change the work-tree lockfile and must precede semantic grading. It does not request a
+blanket third-party upgrade. If the tool must be built, the preparation launcher also allows
+offline resolution so a stale lockfile does not prevent preparation from starting.
+
+An unchanged-manifest refresh does not predict all proposal effects. Stage 5 separately resolves
+prospective member versions and rewritten requirements, including re-selection among versions
+already present in the lockfile. Read-only `release-report` and `validate-versions` do not perform
+either refresh.
 
 The baseline is the tip of the branch releases are made from, not the branch this pull request
 targets. A stacked pull request targets an unreleased parent branch, and anchoring on it would
@@ -135,7 +150,7 @@ non-publishable. `consistent: true` can reflect an exemption for a member absent
 Stage 5 still aligns unequal declared versions. `just validate-versions` fails on a
 non-exempt inconsistency as well as on a publishable package needing an increment.
 
-The files describe the current work-tree content against the recorded release baseline. If the
+The files describe the prepared work-tree content against the recorded release baseline. If the
 source, manifests, group membership, or release baseline changes before application, repeat this
 stage and the analysis and planning stages that follow. Do not combine fresh inputs with stale
 decisions or an old expanded plan.
@@ -242,11 +257,11 @@ dependents take no version from the plan, so they are not named here; Stage 4 gi
 change level of its own, which is what puts any that would otherwise keep a published version into
 the table.
 
-Write the proposed plan, then expand it:
+Write the proposed plan, then preview its resolved effects:
 
 > just create-release-plan "{{WORK_DIR}}/report.json" "{{WORK_DIR}}/decisions.json" "{{WORK_DIR}}/plan.json"
 >
-> just expand-release-plan "{{WORK_DIR}}/plan.json" "{{WORK_DIR}}/expanded.json"
+> just preview-release-plan "{{WORK_DIR}}/prepared.json" "{{WORK_DIR}}/plan.json" "{{WORK_DIR}}/preview"
 
 Stop and report if either command exits non-zero. `create-release-plan` retains sufficient
 existing pending-release increments, raises insufficient ones, raises any package whose public
@@ -255,41 +270,44 @@ declared versions that the decisions leave unnamed. Realignment usually targets 
 version any publishable or non-publishable member declares. It instead patch-increments the whole
 group when exact alignment would rewrite released content under an unchanged published version,
 or when the highest version has a prerelease or build suffix and therefore cannot be used in a
-valid exact group requirement. `expand-release-plan` names every member of a group the plan
-reaches, at the single version that group resolves to.
+valid exact group requirement. `preview-release-plan` resolves the proposed member versions,
+rewritten requirements, and lockfile in a disposable workspace. It expands mechanical release
+effects internally until the complete plan is stable, including transitive binary closures and
+re-selection among already-locked dependency versions. It does not increment libraries merely
+because their lockfile closure changed.
 
-`expanded.json` carries an explicit `version` on every entry, and an `expanded` stamp recording
-which stage it is:
+The preview wrapper builds compatibility evidence from the retained prospective workspace, with
+both Cargo's manifest path and working directory pointing there. It then verifies that the
+compatibility build did not change the captured source, manifests, or lockfile. A failed build or
+state comparison invalidates the resolved artifact; stop rather than using partial evidence.
 
-```json
-{
-  "schema_version": 3,
-  "expanded": true,
-  "increments": [
-    { "name": "nm", "version": "2.0.0" },
-    { "name": "nm_impl", "version": "2.0.0" },
-    { "name": "nm_test_helper", "version": "2.0.0" }
-  ]
-}
-```
+Read `preview/report.json`, its patches, and `preview/semver-checks.log` alongside the original
+prepared evidence. Apply the Stage 4 floor rules to the final prospective compatibility log.
+Explain every additional target and dependency effect. A mechanically required release establishes a minimum,
+not a semantic compatibility judgement: apply [determining-level.md](determining-level.md) to
+new dependency evidence and raise `decisions.json` where required, then repeat the commands above.
+These are internal planning iterations before application, with no separate approval pause. Always generate
+from the original prepared `report.json`, not the prospective report's already-incremented
+versions, so repeated preview does not accumulate increments.
 
-That stamp prevents application from adding an unnamed target. It is not a fingerprint of the
-dependency graph: a split can preserve the same targets, and a merge of already named groups can
-also preserve them. After any dependency requirement or group-membership edit, repeat Stage 2
-and regenerate the decisions and proposal before presenting or applying another plan. Never
+`preview/plan.json` uses schema revision 4, carries an explicit `version` on every entry, and
+records both its expanded stage and the captured resolved state. The artifact binds application
+to the original prepared inputs, not to temporary preview paths. Structural `expand-release-plan`
+output does not carry that resolved evidence and must not be used as the resolved artifact.
+After any input edit, repeat Stage 2 and regenerate the decisions and proposal. Never
 widen an exact requirement merely to remove unexpected membership; that changes declared
 grouping intent and requires the caller's direction.
 
-There is no approval document or pause: Stage 6 applies this expanded plan unchanged.
+There is no approval document or pause: Stage 6 applies the complete resolved plan unchanged.
 
 Prepare a **Version/release plan** section for the pull request description. Its release set is
-every package named by `expanded.json` plus every `pending-release` package in `report.json`:
-the tooling omits sufficient existing increments from the plan, but they still release on merge.
-Present one row per version group reached by that set, naming every member, and one per ungrouped
-package in the set. Read members and anchor versions from `report.json`; read proposed versions
-from `expanded.json` where present, otherwise from the report's `declared_version`. The previous
+every package named by `preview/plan.json` plus every `pending-release` package in the final
+`preview/report.json`: sufficient existing increments may be absent from the plan, but still
+release on merge. Present one row per version group reached by that set, naming every member,
+and one per ungrouped package. Read members and anchor versions from the report; read target
+versions from the plan where present, otherwise from the report's `declared_version`. The previous
 version is the anchor's version, not a version already incremented on this branch. Every other
-analyzed package belongs in the no-increment summary below rather than in this table.
+analyzed package belongs in the no-increment summary.
 
 | Packages / group members | Previous version(s) | Proposed version | Change level | Publication | Reason |
 |--------------------------|---------------------|------------------|--------------|-------------|--------|
@@ -299,29 +317,29 @@ A group's row lists every member and the level that governs the group, which is 
 required by its members, including public-dependency propagation. If members have different
 previous versions, identify each member's version rather than presenting one as shared.
 A group present only because it was realigned has no change level, so write `none` in that column
-and give the reason in the row's explanation. Likewise, distinguish a retained version-only
-increment from a substantive released-content change rather than inventing a change level. Read the
-versions from `expanded.json` rather than assuming which form realignment took: a group usually
+and give the reason in the row's explanation. Distinguish a retained version-only increment from
+a substantive released-content change rather than inventing a change level. Read the
+versions from `preview/plan.json` rather than assuming which form realignment took: a group usually
 moves onto the highest version one of its members already declared, in which case name the
 members that move, because each receives a new version while the member already there keeps the
 version it has. Mark every non-publishable member as **version alignment only, not published**.
-A grouped row must also show each member's current declared version when they differ, rather than
-showing only the group's common target. Non-publishable helpers have no release anchor; show their
-current declared version as the alignment starting point, not as a previous release.
+A grouped row must also show each member's current declared version when they differ, using the
+original prepared report. Non-publishable helpers have no release anchor; show their current
+declared version as the alignment starting point, not as a previous release.
 A group whose members all move to a version none of them declared was patch-incremented instead,
 because exact alignment would rewrite released content under an unchanged published version;
 describe which publishable members become pending releases and which helpers only align.
 
-Keep supporting evidence with the working explanation, citing the `report.json` entry, diff path,
-or `semver-checks.log` summary it rests on. In the PR section, explain the substantive reasons,
-including levels above the SemVer floor, dependent requirement or public-API movements, and members
-moving only because they share a group. Do not copy local artifact paths, a changed-file inventory,
-or a validation log into the PR. State that the remaining analyzed packages need no increment,
-and report any `untracked` path left deliberately unreleased to the caller.
+Keep supporting evidence with the working explanation, citing the prepared or prospective
+report, diff, or compatibility summary it rests on. In the PR section, explain substantive
+reasons, including levels above the SemVer floor, prospective dependency-resolution effects,
+dependent requirement or public-API movements, and group-only movement. Do not copy local
+artifact paths, a changed-file inventory, or a validation log into the PR. State that the remaining
+analyzed packages need no increment, and report deliberately unreleased untracked paths to the caller.
 
 If the final evidence shows no released-content or version changes, say so explicitly in the PR
-section instead of omitting it. An empty plan alone is not sufficient evidence for that statement:
-account for existing pending increments and first-publication packages as well.
+section instead of omitting it. An empty plan alone does not establish this: account for existing
+pending increments and first-publication packages as well.
 
 Report separately, and outside that table, every entry in `report.json.packages` that has no
 `anchor`. Such a publishable package has never been released, so it has no version to increment.
@@ -336,44 +354,42 @@ the initial declared version and the absence of a released predecessor.
 
 Proceed without asking the caller to approve the levels. If further evidence or review feedback
 changes a decision, return to Stage 4 to reassess it and its dependents, respecting every SemVer
-floor, then regenerate both plans and refresh the PR section. Report a requested level below a
-floor as a conflict rather than recording it. Never edit `plan.json` or `expanded.json` directly;
-a hand-edited expansion can give one group's members different versions, which the tool rejects.
+floor, then regenerate the proposal and resolved plan and refresh the PR section. Report a
+requested level below a floor as a conflict rather than recording it. Never edit generated plans
+or captured artifacts directly.
 
-# Stage 6: Apply the expanded plan
+# Stage 6: Apply the resolved plan
 
-Before applying, confirm the working evidence and decisions still describe the current tree and
-refresh the release-branch tip:
+Confirm the working evidence and decisions still describe the current tree and refresh the
+release-branch tip:
 
 > git fetch origin main
 >
 > git rev-parse FETCH_HEAD
 
 Stop and report if either command exits non-zero. Compare the returned commit with
-`{{WORK_DIR}}/base.txt`. If it differs, return to Stage 2 rather than applying a plan based on a
-stale release baseline. For changed source or group membership, also return to Stage 2; for
-changed decisions alone, repeat Stages 4 and 5. Regenerate the plan and its PR section before
-continuing.
+`{{WORK_DIR}}/base.txt`. If it differs, return to Stage 2 rather than applying against a stale
+release baseline. Changed source or group membership also requires Stage 2; changed decisions
+alone require Stages 4 and 5. Regenerate the plan and its PR section before continuing.
 
 `cargo-release-plan apply` raises existing versions and cannot create a crate on crates.io, so
-confirm that every publishable target in the expanded plan is already published.
+confirm that every publishable target in the resolved expanded plan is already published.
 Alignment-only helpers are validated as current Git-tracked workspace members but cause no
 registry query:
 
-> just check-increment-published "{{WORK_DIR}}/expanded.json"
+> just check-increment-published "{{WORK_DIR}}/preview/plan.json"
 
 Stop and report without applying anything if the command exits non-zero, following the
 first-publication handoff above rather than publishing anything from this run.
 
-Apply the expanded plan used to prepare the PR section, without a separate approval gate:
+Apply the complete resolved plan used to prepare the PR section, without a separate approval gate:
 
-> just apply-release-plan "{{WORK_DIR}}/expanded.json"
+> just apply-release-plan "{{WORK_DIR}}/preview/plan.json"
 
-A non-zero exit here can leave the work tree partly edited: the command writes the manifests it
-computed one after another and then refreshes the lockfile, so a failure part way through has
-already written some of them. Treat it as a mutating failure. Inspect `git status` and `git diff`,
-report which manifests and which lockfile the run touched, and stop rather than rerunning the
-command over a partly edited tree.
+A stale-input rejection requires fresh preparation and a regenerated plan. Do not bypass
+it or refresh the lockfile manually to force the stale artifact to apply. An I/O failure can
+leave the work tree partly edited. Inspect `git status` and `git diff`, report the affected files,
+and stop rather than regenerating a proposal over an unexplained partial application.
 
 # Stage 7: Verify the result
 
@@ -390,43 +406,35 @@ directory:
 >
 > $env:RELEASE_PLAN_BASE = Get-Content -LiteralPath "{{VERIFY_DIR}}/base.txt"; just validate-versions
 
-Stop and report if `just verify-lockfile` exits non-zero. Refreshing the lockfile is part of
-applying a plan, so a stale lockfile here is a defect to report rather than a decision to revisit.
+Stop and report if `just verify-lockfile` exits non-zero. Application installs the captured
+resolved lockfile, so a stale lockfile here is a defect rather than a reason for a late refresh.
 
 Stop and report if `just release-report` exits non-zero as well. As in Stage 2 that means the
 evidence is incomplete, and incomplete evidence cannot show that a decision was wrong. Only a
 report that completed establishes the state the remaining checks are read against.
 
-A verdict from `just validate-versions` is what sends the run back to Stage 4. Confirm from its
-output that it rejected a package or a version group rather than failing to run, because the
-command exits non-zero either way. Report an execution failure instead of revisiting the
-decisions, which cannot repair it.
+Stop and report a non-zero `just validate-versions` result. With unchanged inputs, preview has
+already accounted for version, requirement, group, and binary lockfile effects, so verification
+must not become a routine second versioning/application cycle. Distinguish a release-readiness
+failure from an execution failure and preserve both prepared and verification evidence.
 
 Manifest defects are not decisions to revisit. A requirement that does not name the version its
 target declares, an in-scope exact requirement that is not a plain `=major.minor.patch`, or legacy
 `workspace.metadata.release-plan.groups` configuration cannot be repaired by a change level.
-Make the edit the message names, then repeat Stage 2 so dependency-derived membership and all
-evidence are regenerated before another proposal.
+Report the defect and restart at Stage 2 only after the underlying input is corrected, so
+dependency-derived membership and all evidence are regenerated.
 
 `just release-report` exits zero on a SemVer finding, so read `{{VERIFY_DIR}}/semver-checks.log`
-as well. Return to Stage 4 the same way if any package's `Summary` line now demands a level
-above the one that was applied to it.
-
-Before returning to Stage 4, adopt `{{VERIFY_DIR}}` as the run's `{{WORK_DIR}}`: the applied
-increments changed the report, and every later stage reads its inputs from `{{WORK_DIR}}`, so
-leaving the old directory in place would regenerate a plan from pre-apply evidence and increment
-the same packages a second time. The copied `base.txt` keeps the adopted directory on the
-original baseline. Rerun Stage 3 against the adopted directory's `report.json` first.
+as well. Report any floor above the assessed level rather than silently changing the captured
+versions. Do not overwrite the original preparation artifacts with verification output; those
+artifacts establish what was assessed and applied.
 
 Commit the resulting `Cargo.toml`, dependency requirement, and `Cargo.lock` edits, and publish
 the **Version/release plan** section prepared in Stage 5 in the pull request description.
-Keep `[Copilot speaking]` first in an agent-authored PR body, before this or any other section.
-Follow the presentation contract in
+Keep `[Copilot speaking]` first in an agent-authored PR body. Follow the presentation contract in
 [`docs/git-workflow.md`](../../../docs/git-workflow.md#versionrelease-plan-section).
 
-Reconcile the section with the final evidence, covering every package/group reached by the
-expanded plan and any retained pending release. If verification required another pass, use the
-regenerated plan, not a history of intermediate increments. Later source, base, group, or decision
-changes require fresh assessment and an updated section before the PR is ready for human review.
-Human review and merge of the complete PR remain the final approval; completing this skill
-does not authorize either.
+Reconcile the section with final evidence, covering every resolved target and retained pending
+release. Later source, base, group, or decision changes require fresh assessment and an updated
+section before the PR is ready for human review. Human review and merge of the complete PR remain
+the final approval; completing this skill authorizes neither.

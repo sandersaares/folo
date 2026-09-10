@@ -47,6 +47,8 @@ from the initial PR event, including credential exclusions and exact-head identi
 | `TRUSTED_CONTROLLER_ROOT` | Session-owned checkout/copy of reviewed controller code at the pinned baseline, not the user's main checkout or candidate-modified tooling. |
 | `RELEASE_PLAN_EXE` | Absolute trusted `cargo-release-plan` executable built from that controller. |
 | `VERSION_EVIDENCE_PATH` | Absolute artifact with the canonical version evidence object described below. |
+| `RESOLVED_PLAN_PATH` | Absolute final `preview/plan.json` produced by `increment-versions`. |
+| `PORTABLE_PLAN_PATH` | Absolute output path for the portable version-target export, outside worktrees. |
 | `TEMP_ROOT` | Owned scratch directory for the canonical helper's temporary validation worktree. |
 
 Execute state transitions from this worker's repository root:
@@ -151,11 +153,26 @@ Commit the complete non-version source repair with baseline-identical Cargo file
 recording its immutable `pre_version_sha`, then regenerate the whole version plan.
 
 Invoke `increment-versions` for the canonical released-content report, decisions,
-plan expansion and application. There is no separate version approval gate; human
+offline preparation, prospective evidence and captured application. There is no separate version approval gate; human
 review of the complete PR provides that approval.
 Refresh whenever source, release baseline or decisions change. Preserve legitimate
 expanded dependency/group movements; no unauthorized external dependency/feature
 changes. Never run `just gh-release`.
+
+Export the complete resolved version set with the trusted controller tool:
+
+```powershell
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+$PSNativeCommandUseErrorActionPreference = $true
+& "{{RELEASE_PLAN_EXE}}" expand --plan "{{RESOLVED_PLAN_PATH}}" --out "{{PORTABLE_PLAN_PATH}}"
+```
+
+Stop on any non-zero exit. Read `expanded_plan` from `PORTABLE_PLAN_PATH` and compute
+`expanded_plan_digest` from that object. This structural export preserves every
+resolved target but omits machine-local snapshot and prospective-workspace paths.
+It is comparison evidence, not the artifact used for apply. Do not export the
+initial proposal before its resolution effects have been completed.
 
 Commit the applied result with the repository's required trailer and run
 `cargo clean` after each commit. Record `version_evidence` with `pre_version_sha`,
@@ -178,7 +195,8 @@ Assert-ScheduledCanonicalVersion -Root (Get-Location).Path -HeadSha '{{HEAD_SHA}
     -TrustedControllerRoot "{{TRUSTED_CONTROLLER_ROOT}}" -TemporaryRoot "{{TEMP_ROOT}}"
 ```
 
-Stop on any exception. The helper regenerates the canonical expansion/application
+Stop on any exception. The helper regenerates preparation, prospective resolution,
+the portable target export and captured application
 only from a pre-version checkpoint whose Cargo bytes match the trusted baseline,
 then compares all resulting Cargo files to the committed head. An empty expansion
 is valid for a test-only repair only when that baseline prerequisite also holds;

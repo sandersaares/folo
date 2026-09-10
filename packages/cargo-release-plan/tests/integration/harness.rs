@@ -4,7 +4,7 @@
 //! drive one run and reduce its outcome to what a test asserts on.
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use cargo_release_plan::{CheckFormat, RunInput, RunOutcome, run};
 
@@ -140,7 +140,7 @@ pub(crate) fn apply_increment(fixture: &Fixture, name: &str, level: &str) {
     fs::write(
         &plan_path,
         format!(
-            r#"{{ "schema_version": 3, "increments": [{{ "name": "{name}", "level": "{level}" }}] }}"#
+            r#"{{ "schema_version": 4, "increments": [{{ "name": "{name}", "level": "{level}" }}] }}"#
         ),
     )
     .unwrap();
@@ -152,4 +152,30 @@ pub(crate) fn apply_increment(fixture: &Fixture, name: &str, level: &str) {
         verbose: true,
     })
     .unwrap();
+}
+
+pub(crate) fn resolved_plan(fixture: &Fixture, proposal: &Path) -> PathBuf {
+    let prepared = prepare(fixture);
+    let output = fixture.path().join("preview");
+    run(&RunInput::Preview {
+        plan: proposal.to_path_buf(),
+        prepared,
+        output: output.clone(),
+        manifest_path: fixture.manifest(),
+        verbose: false,
+    })
+    .unwrap();
+    output.join("plan.json")
+}
+
+pub(crate) fn prepare(fixture: &Fixture) -> PathBuf {
+    let prepared = fixture.path().join("prepared");
+    run(&RunInput::Prepare {
+        output: prepared.clone(),
+        base: Some("HEAD".to_owned()),
+        manifest_path: fixture.manifest(),
+        verbose: false,
+    })
+    .unwrap();
+    prepared.join("prepared.json")
 }

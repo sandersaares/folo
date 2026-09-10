@@ -1,8 +1,8 @@
 #requires -Version 7
 
 # Backs Invoke-ScheduledVersion.ps1: independently regenerates cargo-release-plan's
-# report/expand/apply output from a repair's recorded pre-versioning checkpoint and compares it
-# byte-for-byte against what the worker actually published. Mechanical version evidence is
+# prepared/resolved output from a repair's recorded pre-versioning checkpoint and compares its
+# portable version targets and resulting Cargo bytes with what the worker published. Evidence is
 # reproduced from a source checkpoint whose Cargo tree matches the trusted release baseline.
 # Worker-selected versions cannot become the generation reference; only this independent
 # regeneration can. See ../../.github/workflows/implementation.md#canonical-version-validation and
@@ -25,10 +25,20 @@ function Assert-ScheduledVersionArtifact {
     Assert-ScheduledSha $Evidence.pre_version_sha
     Assert-ScheduledSha $Evidence.base_sha
     if ($Evidence.base_sha -cne $BaseSha) { throw 'Version evidence is stale for the current release baseline.' }
+    if ($Evidence.expanded_plan -isnot [hashtable] -or
+        -not $Evidence.expanded_plan.ContainsKey('schema_version') -or
+        $Evidence.expanded_plan.schema_version -ne $Expanded.schema_version) {
+        throw 'Version evidence uses an unsupported release-plan schema; regenerate it with increment-versions.'
+    }
+    # Rust's structural export preserves the complete resolved version set without machine-local
+    # input/evidence paths. Captured resolution is independently enforced by the Cargo byte check.
+    if ($Expanded.ContainsKey('resolved') -or $Evidence.expanded_plan.ContainsKey('resolved')) {
+        throw 'Canonical version evidence requires the portable target plan exported by expand from the resolved preview.'
+    }
     $expectedDigest = Get-ScheduledDigest $Expanded
     if ($Evidence.expanded_plan_digest -cne $expectedDigest -or
         (Get-ScheduledDigest $Evidence.expanded_plan) -cne $expectedDigest) {
-        throw 'Published version plan differs from independently generated expansion.'
+        throw 'Published version plan differs from independently generated resolution; regenerate the complete version evidence.'
     }
 }
 
@@ -123,18 +133,24 @@ function Assert-ScheduledCanonicalVersion {
         $decisionPath = Join-Path $artifactDirectory 'decisions.json'
         $planPath = Join-Path $artifactDirectory 'proposed.json'
         $expandedPath = Join-Path $artifactDirectory 'expanded.json'
+        $previewDirectory = Join-Path $artifactDirectory 'preview'
+        $resolvedPath = Join-Path $previewDirectory 'plan.json'
         $Evidence.decisions | ConvertTo-Json -Depth 100 | Set-Content -LiteralPath $decisionPath
         Import-Module (Join-Path $TrustedControllerRoot 'scripts/release/ReleasePlan.psm1')
         Push-Location $reference
         try {
-            & $ReleasePlanExecutable report --base $BaseSha --out-dir $artifactDirectory
+            & $ReleasePlanExecutable prepare --base $BaseSha --output $artifactDirectory
             New-ReleasePlanFile -ReportPath (Join-Path $artifactDirectory 'report.json') `
                 -DecisionPath $decisionPath -PlanPath $planPath -Confirm:$false
-            & $ReleasePlanExecutable expand --plan $planPath --out $expandedPath
+            & $ReleasePlanExecutable preview --prepared (Join-Path $artifactDirectory 'prepared.json') `
+                --plan $planPath --output $previewDirectory
+            # Export only after resolution reaches its fixed point: an initial group expansion
+            # may omit binary lockfile effects. Apply still consumes the full captured artifact.
+            & $ReleasePlanExecutable expand --plan $resolvedPath --out $expandedPath
             $expanded = Get-Content -LiteralPath $expandedPath -Raw | ConvertFrom-Json -AsHashtable
             Assert-ScheduledVersionArtifact -Evidence $Evidence -BaseSha $BaseSha -Expanded $expanded
-            & $AssertPublished $expandedPath
-            & $ReleasePlanExecutable apply --plan $expandedPath
+            & $AssertPublished $resolvedPath
+            & $ReleasePlanExecutable apply --plan $resolvedPath
             $expected = Get-ScheduledGitCargoFile -Root $reference -Revision HEAD
             $actual = Get-ScheduledGitCargoFile -Root $Root -Revision $HeadSha
             foreach ($path in @($expected.Keys)) {

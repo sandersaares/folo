@@ -28,7 +28,7 @@ azure_identity = { version = "1.0.0", default-features = false }
 azure_storage_blob = { version = "1.0.0", default-features = false }
 base64 = { version = "0.23.1", default-features = false, features = ["std"] }
 cargo-freeze-deps = { version = "0.1.12", path = "packages/cargo-freeze-deps", default-features = false }
-cargo-release-plan = { version = "0.2.3", path = "packages/cargo-release-plan", default-features = false }
+cargo-release-plan = { version = "0.3.0", path = "packages/cargo-release-plan", default-features = false }
 cbh_analyze = { version = "=0.2.10", path = "packages/cbh_analyze", default-features = false }
 cbh_cli = { version = "=0.2.10", path = "packages/cbh_cli", default-features = false }
 cbh_codec = { version = "=0.2.10", path = "packages/cbh_codec", default-features = false }

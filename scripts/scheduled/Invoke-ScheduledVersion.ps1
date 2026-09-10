@@ -8,7 +8,7 @@ Called from validation.yml alongside the deep-checks matrix for any PR/merge-gro
 plan (Invoke-ScheduledPlan.ps1's output) marked `managed`. Delegates to
 `Invoke-ScheduledVersionVerification` in ScheduledVersion.psm1, which builds a trusted controller
 copy of `cargo-release-plan`, checks out each repair's `version_evidence.pre_version_sha` into a
-disposable worktree, regenerates report/expand/apply there, and compares the resulting Cargo
+disposable worktree, regenerates prepare/preview/captured apply there, and compares the resulting Cargo
 manifests and lockfile byte-for-byte with the published head. A worker cannot make its own
 selected version numbers authoritative merely by publishing them; only this independent
 regeneration can. See

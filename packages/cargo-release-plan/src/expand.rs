@@ -2,8 +2,8 @@
 //
 // A proposed plan may name a version group, or one member of it, instead of
 // every package whose version the release decision sets. This command resolves
-// it and writes the explicit package/version set, so a caller reviews the same
-// document `apply` consumes.
+// it and writes the explicit package/version set without running resolution.
+// Preview must capture the remaining effects before an expanded plan can be applied.
 
 use std::fs;
 use std::path::Path;
@@ -21,12 +21,12 @@ use crate::{
 
 /// On-disk body of an expanded plan.
 ///
-/// An expanded plan is itself applyable, so a caller reviews and applies one
-/// document rather than a rendering of another. Every entry carries an explicit
+/// Every entry carries an explicit
 /// version because resolution has already applied the increment to the group's
 /// highest declared member version. The `expanded` stamp records the planning
 /// stage, which is what holds the document to the package set it names instead
-/// of letting the derived group of the day widen it.
+/// of letting the derived group of the day widen it. No resolved artifact is
+/// attached here because this operation is deliberately read-only.
 #[derive(Serialize)]
 struct ExpandedPlanFile {
     schema_version: u32,
@@ -51,6 +51,7 @@ pub(crate) fn run_expand(
         .map_err(|error| ReadFileError::caused_by(plan_path, error))?;
     let plan: PlanFile =
         serde_json::from_str(&plan).map_err(|error| ParsePlanError::caused_by(plan_path, error))?;
+    plan.validate_schema()?;
 
     let (work_tree, _) = load_tracked_work_tree(manifest_path)?;
     // Every Git-tracked member is a valid version target, and a group increments

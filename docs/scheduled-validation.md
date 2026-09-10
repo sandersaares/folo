@@ -619,6 +619,13 @@ byte-identical to the pinned current trusted release baseline. An agent-selected
 checkpoint containing pending increments is not a valid starting point, even if
 the resulting expansion is empty.
 
+`expanded_plan` is the portable version-target document exported by `expand` from the
+completed resolved preview, not the initial proposal or its machine-bound captured
+state. Its digest covers that entire export. The controller independently prepares
+and resolves the reference, compares the portable target set, then applies its own
+captured files and compares every committed Cargo file. This preserves resolution
+equivalence without equating worker and controller filesystem paths.
+
 For continuation, preserve the source repair and restore only the repair session's proven
 mechanical Cargo edits to the current baseline before recording a new source
 checkpoint and regenerating the full plan. Preserve human-owned, unrelated or
@@ -673,7 +680,7 @@ replacement session or background watcher. Safe merges from `main` are preferred
 no force-push or overwriting human edits. Real design ambiguity, unknown publication
 outcomes, permissions, quota and unexpected head changes are explicit blockers.
 
-Use `increment-versions` and its canonical report/plan/expand/apply tooling whenever
+Use `increment-versions` and its canonical preparation, prospective evidence and captured apply whenever
 released content or base changes require a fresh decision. There is no separate
 version approval gate for these repairs. Every PR description starts with
 `[Copilot speaking]`, explains motivation and substantive behavior, and includes a

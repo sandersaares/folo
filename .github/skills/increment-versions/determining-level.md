@@ -19,10 +19,14 @@ inherited value alone, without appearing in any original file diff. Read the pac
 `Cargo.toml` to establish which fields it inherits rather than assuming a workspace-wide
 convention.
 
-Evaluate every `source: "lockfile"` entry the same way. A package that publishes an executable
+Evaluate every `source: "lockfile"` entry the same way. A package with an installable binary
 releases its resolved dependency closure, so a locked dependency change is a released-content
 change even though it produces no package diff. Judge the consumer impact of the moved
 dependency; it establishes at least `patch`.
+
+Library-only packages have no lockfile-based release effects, even when they contain executable
+examples, benchmarks, tests, or build scripts. Published source and manifest requirement changes
+still establish their normal release requirements.
 
 A package that is already `pending-release` is judged by these same criteria. Its existing
 version movement is retained, but it does not replace analysis of the accumulated changes: an

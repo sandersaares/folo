@@ -33,7 +33,7 @@ so a brand-new crate's first version must be published manually:
    Subsequent releases then go through `release.yml` automatically.
 
 The `increment-versions` skill runs `just check-never-published` as an early,
-workspace-wide advisory. Before applying an expanded plan,
+workspace-wide advisory. Before applying a resolved plan,
 `just check-increment-published` fails unless every **publishable** package the
 plan reaches has already reached crates.io. Version-alignment targets with
 publication disabled do not require a first-publication handoff. The gate cannot
@@ -41,6 +41,13 @@ verify Trusted Publisher configuration or the release-workflow follow-up, so
 complete those remaining steps explicitly before retrying the increment.
 The skill only reports this maintainer handoff; it does not perform a manual
 first publication or an emergency publish.
+
+The skill prepares offline dependency resolution and previews prospective version
+and requirement rewrites before application. The resolved plan includes the complete
+release set and resolved lockfile. Application uses those captured files without
+a late update; changed inputs require fresh preparation. Library-only lockfile
+changes do not require releases, but their version rewrites still require a
+consistent lockfile.
 
 ## Emergency manual publish
 

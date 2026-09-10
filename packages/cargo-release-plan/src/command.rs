@@ -4,18 +4,62 @@
 // Cargo library, so this is the only subprocess boundary.
 
 use std::ffi::OsStr;
+use std::io::Write;
 use std::path::Path;
-use std::process::{Command, ExitStatus, Output};
+use std::process::{Command, ExitStatus, Output, Stdio};
 
 use ohno::AppError;
 
-use crate::{CommandFailedError, CommandSpawnError};
+use crate::{CommandFailedError, CommandIoError};
+
+/// Hashes captured input bytes without writing an object into the repository.
+pub(crate) fn hash_bytes(bytes: &[u8], cwd: &Path) -> Result<String, AppError> {
+    run_capture_input("git", &["hash-object", "--stdin"], bytes, cwd)
+        .map(|output| output.trim().to_owned())
+}
+
+/// Sends captured bytes to a subprocess without involving a shell or staging file.
+pub(crate) fn run_capture_input(
+    program: &str,
+    args: &[&str],
+    bytes: &[u8],
+    cwd: &Path,
+) -> Result<String, AppError> {
+    let mut child = Command::new(program)
+        .args(args)
+        .current_dir(subprocess_cwd(cwd))
+        .env("CARGO_TERM_COLOR", "never")
+        .env("LC_ALL", "C")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| CommandIoError::caused_by(program, error))?;
+    child
+        .stdin
+        .take()
+        .expect("the child was started with a piped standard input")
+        .write_all(bytes)
+        .map_err(|error| CommandIoError::caused_by(program, error))?;
+    let output = child
+        .wait_with_output()
+        .map_err(|error| CommandIoError::caused_by(program, error))?;
+    if !output.status.success() {
+        return Err(CommandFailedError::new(
+            program,
+            failure_status(output.status),
+            String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        )
+        .into());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
 
 /// Runs `program` with `args` in `cwd` and returns UTF-8 stdout on success.
 ///
 /// # Errors
 ///
-/// Returns [`CommandSpawnError`] if the process cannot be created, or
+/// Returns [`CommandIoError`] if starting or communicating with the process fails, or
 /// [`CommandFailedError`] if it exits unsuccessfully.
 pub(crate) fn run_capture(program: &str, args: &[&str], cwd: &Path) -> Result<String, AppError> {
     run_capture_os(program, args, cwd)
@@ -153,7 +197,7 @@ fn spawn(
         .env("CARGO_TERM_COLOR", "never")
         .env("LC_ALL", "C")
         .output()
-        .map_err(|error| CommandSpawnError::caused_by(program, error).into())
+        .map_err(|error| CommandIoError::caused_by(program, error).into())
 }
 
 #[cfg(test)]
@@ -163,13 +207,41 @@ mod tests {
     use std::os::unix::process::ExitStatusExt as _;
 
     use super::*;
-    use crate::CommandSpawnError;
+    use crate::CommandIoError;
 
     #[test]
     fn empty_cwd_uses_process_current_directory() {
         assert_eq!(subprocess_cwd(Path::new("")), Path::new("."));
         assert_eq!(subprocess_cwd(Path::new(".")), Path::new("."));
         assert_eq!(subprocess_cwd(Path::new("packages")), Path::new("packages"));
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "spawns Git with captured standard input")]
+    fn captured_input_failure_preserves_a_nonzero_exit() {
+        // Git reads the complete object before validating its tree encoding, so this does
+        // not race the child closing stdin before the parent writes its test input.
+        let error = run_capture_input(
+            "git",
+            &["hash-object", "--stdin", "-t", "tree"],
+            b"not a tree object",
+            Path::new("."),
+        )
+        .unwrap_err();
+        assert!(error.find_source::<CommandFailedError>().is_some());
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "attempts a native process spawn")]
+    fn captured_input_propagates_a_spawn_failure() {
+        let error = run_capture_input(
+            "cargo-release-plan-no-such-program",
+            &[],
+            b"input",
+            Path::new("."),
+        )
+        .unwrap_err();
+        assert!(error.find_source::<CommandIoError>().is_some());
     }
 
     #[cfg_attr(miri, ignore)] // Process spawn uses host APIs Miri cannot emulate.
@@ -203,12 +275,12 @@ mod tests {
         // all is a real error the caller must see.
         let error =
             run_capture_ok("cargo-release-plan-no-such-program", &[], Path::new(".")).unwrap_err();
-        assert!(error.find_source::<CommandSpawnError>().is_some());
+        assert!(error.find_source::<CommandIoError>().is_some());
     }
 
     #[cfg_attr(miri, ignore)] // Process spawn uses host APIs Miri cannot emulate.
     #[test]
-    fn spawn_failure_maps_to_command_spawn_error() {
+    fn spawn_failure_maps_to_command_io_error() {
         // A program name that cannot exist on PATH cannot be spawned.
         let error = spawn(
             "cargo-release-plan-no-such-program",
@@ -216,7 +288,7 @@ mod tests {
             Path::new("."),
         )
         .unwrap_err();
-        assert!(error.find_source::<CommandSpawnError>().is_some());
+        assert!(error.find_source::<CommandIoError>().is_some());
     }
 
     #[cfg(unix)]

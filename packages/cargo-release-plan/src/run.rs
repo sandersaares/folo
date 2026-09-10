@@ -5,7 +5,9 @@ use ohno::AppError;
 use crate::apply::run_apply;
 use crate::check::{CheckFormat, run_check};
 use crate::expand::run_expand;
+use crate::preview::{run_prepare, run_preview};
 use crate::report::run_report;
+use crate::resolved::run_verify_preview;
 use crate::verbose::Verbose;
 
 /// Input parameters for [`run`].
@@ -16,6 +18,39 @@ use crate::verbose::Verbose;
     reason = "Hidden enum for internal/test use only"
 )]
 pub enum RunInput {
+    /// Refresh the live workspace lockfile offline before semantic grading.
+    Prepare {
+        /// Directory receiving report evidence and prepared.json.
+        output: PathBuf,
+        /// Release baseline; defaults to the remote default branch.
+        base: Option<String>,
+        /// Workspace manifest to prepare.
+        manifest_path: PathBuf,
+        /// Print explanatory resolver decisions.
+        verbose: bool,
+    },
+    /// Resolve a proposed plan to a complete, captured state for application.
+    Preview {
+        /// Semantic release proposal.
+        plan: PathBuf,
+        /// Prepared artifact whose report supplied semantic grading evidence.
+        prepared: PathBuf,
+        /// Directory receiving the final report, plan, and compatibility workspace.
+        output: PathBuf,
+        /// Workspace manifest whose inputs must match preparation.
+        manifest_path: PathBuf,
+        /// Print explanatory expansion and resolver decisions.
+        verbose: bool,
+    },
+    /// Check that compatibility evidence uses the captured final workspace unchanged.
+    VerifyPreview {
+        /// Resolved plan whose captured state must match.
+        plan: PathBuf,
+        /// Required retained candidate manifest; the original workspace is not accepted.
+        manifest_path: PathBuf,
+        /// Print explanatory verification notes.
+        verbose: bool,
+    },
     /// `report` — write `report.json` and per-package diffs.
     Report {
         /// Directory that receives `report.json` and `diffs/`.
@@ -60,11 +95,11 @@ pub enum RunInput {
         /// When set, print explanatory decision notes to stderr.
         verbose: bool,
     },
-    /// `apply` — rewrite manifests according to a plan.
+    /// `apply` — install captured files or perform proposed manifest-only edits.
     Apply {
         /// Path to the plan JSON file.
         plan: PathBuf,
-        /// When set, compute edits without writing files or refreshing the lockfile.
+        /// When set, validate and describe planned writes without changing files.
         dry_run: bool,
         /// Workspace manifest to edit. Used verbatim.
         manifest_path: PathBuf,
@@ -81,6 +116,21 @@ pub enum RunInput {
     reason = "Hidden enum for internal/test use only"
 )]
 pub enum RunOutcome {
+    /// Preparation completed and wrote frozen evidence.
+    Prepare {
+        /// Human-readable summary.
+        message: String,
+    },
+    /// Preview completed and wrote the resolved release artifact.
+    Preview {
+        /// Human-readable summary.
+        message: String,
+    },
+    /// The retained compatibility workspace matches the resolved plan.
+    VerifyPreview {
+        /// Human-readable summary.
+        message: String,
+    },
     /// `report` finished and wrote its artifacts.
     Report {
         /// Human-readable summary for stdout. Empty when there is nothing to say.
@@ -109,9 +159,8 @@ pub enum RunOutcome {
 
 /// Executes one requested operation and reports its outcome.
 ///
-/// Selects the command named by `input` and returns what that command produced:
-/// the report summary, the check verdict and its diagnostics, the expanded-plan
-/// summary, or the apply summary.
+/// Selects the command named by `input` and returns its summary or the check
+/// verdict and diagnostics.
 ///
 /// # Errors
 ///
@@ -121,6 +170,44 @@ pub enum RunOutcome {
 #[doc(hidden)]
 pub fn run(input: &RunInput) -> Result<RunOutcome, AppError> {
     match input {
+        RunInput::VerifyPreview {
+            plan,
+            manifest_path,
+            verbose,
+        } => {
+            let message = run_verify_preview(plan, manifest_path, Verbose::new(*verbose))?;
+            Ok(RunOutcome::VerifyPreview { message })
+        }
+        RunInput::Prepare {
+            output,
+            base,
+            manifest_path,
+            verbose,
+        } => {
+            let message = run_prepare(
+                output,
+                base.as_deref(),
+                manifest_path,
+                Verbose::new(*verbose),
+            )?;
+            Ok(RunOutcome::Prepare { message })
+        }
+        RunInput::Preview {
+            plan,
+            prepared,
+            output,
+            manifest_path,
+            verbose,
+        } => {
+            let message = run_preview(
+                plan,
+                prepared,
+                output,
+                manifest_path,
+                Verbose::new(*verbose),
+            )?;
+            Ok(RunOutcome::Preview { message })
+        }
         RunInput::Report {
             out_dir,
             base,

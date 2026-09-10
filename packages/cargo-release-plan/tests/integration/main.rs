@@ -11,7 +11,9 @@
 
 mod apply;
 mod baseline;
+mod captured;
 mod cli_binary;
+mod evidence;
 mod expand;
 mod fixture;
 mod groups;
@@ -20,5 +22,7 @@ mod history;
 mod lockfile;
 mod nesting;
 mod packaging;
+mod preview;
+mod preview_safety;
 mod report;
 mod status;

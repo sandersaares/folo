@@ -1,4 +1,4 @@
-// `apply` command: rewrite versions, expand groups, refresh the lockfile.
+// Manifest rewrites for prospective resolution and proposed manifest-only edits.
 
 use std::collections::{BTreeMap, HashSet};
 use std::fmt::Write as _;
@@ -9,20 +9,22 @@ use ohno::AppError;
 use semver::Version;
 use toml_edit::{DocumentMut, Formatted, Item, TableLike, Value};
 
-use crate::command::run_capture;
 use crate::inherited::is_workspace_inherit;
-use crate::manifest::{DEPENDENCY_TABLES, parse_document, requirement_names_version};
+use crate::manifest::{
+    DEPENDENCY_TABLES, dependency_table_name, parse_document, requirement_names_version,
+};
 use crate::metadata::{WorkTree, load_tracked_work_tree};
-use crate::plan::{PlanFile, ResolvedVersions, resolve_plan};
+use crate::plan::{PlanFile, PlanStage, ResolvedVersions, resolve_plan};
+use crate::resolved::apply_resolved;
 use crate::text::plural;
 use crate::verbose::Verbose;
 use crate::{ParsePlanError, ReadFileError, WriteFileError, quote_path};
 
 /// One on-disk manifest after an in-memory rewrite, waiting to be written.
-struct ManifestEdit {
-    path: PathBuf,
-    original: String,
-    updated: String,
+pub(crate) struct ManifestEdit {
+    pub(crate) path: PathBuf,
+    pub(crate) original: String,
+    pub(crate) updated: String,
 }
 
 /// What a `path` dependency has to resolve to before `apply` rewrites it.
@@ -87,7 +89,11 @@ pub(crate) fn run_apply(
         .map_err(|error| ReadFileError::caused_by(plan_path, error))?;
     let plan: PlanFile =
         serde_json::from_str(&plan).map_err(|error| ParsePlanError::caused_by(plan_path, error))?;
+    plan.validate_schema()?;
 
+    if plan.stage() == PlanStage::Expanded || plan.resolved.is_some() {
+        return apply_resolved(&plan, manifest_path, dry_run, verbose);
+    }
     let (work_tree, _) = load_tracked_work_tree(manifest_path)?;
     // Git-tracked members decide which plan targets are valid and supply their
     // increment bases. All Cargo-visible member manifests remain
@@ -107,15 +113,7 @@ pub(crate) fn run_apply(
     let changed = changed_edit_count(&edits);
 
     if dry_run {
-        let skip = lockfile_refresh_skip_reason(&work_tree.workspace_root, &resolved);
-        if let Some(reason) = skip {
-            verbose.note(|| reason.to_string());
-        }
-        return Ok(dry_run_summary(
-            &edits,
-            resolved.packages.len(),
-            skip.is_none(),
-        ));
+        return Ok(dry_run_summary(&edits));
     }
 
     for edit in &edits {
@@ -130,20 +128,13 @@ pub(crate) fn run_apply(
         ));
     }
 
-    let refreshed = refresh_lockfile(&work_tree, &resolved, verbose)?;
-
-    let lockfile = if refreshed {
-        "refreshed the workspace lockfile"
-    } else {
-        "left the workspace lockfile untouched"
-    };
     Ok(format!(
-        "Updated {} and {lockfile}",
+        "Updated {} and left the workspace lockfile untouched; use prepare and preview for a resolved release plan",
         plural(changed, "manifest")
     ))
 }
 
-fn compute_edits(
+pub(crate) fn compute_edits(
     work_tree: &WorkTree,
     resolved: &ResolvedVersions,
     verbose: Verbose,
@@ -164,7 +155,7 @@ fn compute_edits(
     seen.insert(root);
     // Every member is rewritten, not just the publishable ones: a `publish = false`
     // member can still carry an `=` pin on a package the plan increments, and
-    // leaving it stale would break the workspace lockfile refresh below.
+    // leaving it stale would break prospective workspace resolution.
     for manifest_path in &work_tree.member_manifests {
         if !seen.insert(manifest_path.clone()) {
             continue;
@@ -184,7 +175,7 @@ fn compute_edits(
     Ok(edits)
 }
 
-fn dry_run_summary(edits: &[ManifestEdit], package_count: usize, would_refresh: bool) -> String {
+fn dry_run_summary(edits: &[ManifestEdit]) -> String {
     let changed = changed_edit_count(edits);
     let mut message = format!("Dry run: {} would change", plural(changed, "manifest"));
     for edit in edits {
@@ -193,18 +184,7 @@ fn dry_run_summary(edits: &[ManifestEdit], package_count: usize, would_refresh: 
                 .expect("writing to String");
         }
     }
-    if would_refresh {
-        // The refresh is workspace-wide, so the count describes the plan that
-        // triggers it rather than the set of lockfile entries Cargo re-resolves.
-        write!(
-            message,
-            "; the workspace lockfile would be refreshed for {}",
-            plural(package_count, "planned package")
-        )
-        .expect("writing to String");
-    } else {
-        message.push_str("; the workspace lockfile would be left untouched");
-    }
+    message.push_str("; the workspace lockfile would be left untouched");
     message
 }
 
@@ -281,7 +261,10 @@ fn rewrite_dependency_tables(
     resolved: &ResolvedVersions,
     verbose: Verbose,
 ) {
-    for table_name in DEPENDENCY_TABLES {
+    for canonical in DEPENDENCY_TABLES {
+        let Some(table_name) = dependency_table_name(doc.as_table(), canonical) else {
+            continue;
+        };
         if let Some(table) = doc.get_mut(table_name).and_then(Item::as_table_like_mut) {
             rewrite_dep_table(table, targets, resolved, verbose, table_name);
         }
@@ -292,13 +275,20 @@ fn rewrite_dependency_tables(
         None => Vec::new(),
     };
     for spec in specs {
-        for table_name in DEPENDENCY_TABLES {
-            let Some(table) = doc
-                .get_mut("target")
-                .and_then(Item::as_table_like_mut)
-                .and_then(|target| target.get_mut(spec.as_str()))
-                .and_then(Item::as_table_like_mut)
-                .and_then(|spec_table| spec_table.get_mut(table_name))
+        let Some(spec_table) = doc
+            .get_mut("target")
+            .and_then(Item::as_table_like_mut)
+            .and_then(|target| target.get_mut(spec.as_str()))
+            .and_then(Item::as_table_like_mut)
+        else {
+            continue;
+        };
+        for canonical in DEPENDENCY_TABLES {
+            let Some(table_name) = dependency_table_name(spec_table, canonical) else {
+                continue;
+            };
+            let Some(table) = spec_table
+                .get_mut(table_name)
                 .and_then(Item::as_table_like_mut)
             else {
                 continue;
@@ -467,89 +457,36 @@ fn rewrite_req(old: &str, new_version: &Version) -> String {
     new_version.to_string()
 }
 
-// Spawns `cargo update --offline`; lockfile is not released content.
-#[cfg_attr(test, mutants::skip)]
-/// Explains why a lockfile refresh would be skipped, or `None` when it would run.
-///
-/// The dry run and the real apply both consult this, so the summary a dry run
-/// prints never claims an operation the subsequent apply would decline.
-fn lockfile_refresh_skip_reason(
-    workspace_root: &Path,
-    resolved: &ResolvedVersions,
-) -> Option<&'static str> {
-    if resolved.packages.is_empty() {
-        return Some(
-            "plan expands to no packages, so apply skips the lockfile refresh rather than \
-             running a workspace-wide cargo update",
-        );
-    }
-    if !workspace_root.join("Cargo.lock").exists() {
-        return Some(
-            "no Cargo.lock present, so apply skips the lockfile refresh; the lockfile is not \
-             released content",
-        );
-    }
-    None
-}
-
-fn refresh_lockfile(
-    work_tree: &WorkTree,
-    resolved: &ResolvedVersions,
-    verbose: Verbose,
-) -> Result<bool, AppError> {
-    if let Some(reason) = lockfile_refresh_skip_reason(&work_tree.workspace_root, resolved) {
-        verbose.note(|| reason.to_string());
-        return Ok(false);
-    }
-    let manifest = work_tree
-        .workspace_root
-        .join("Cargo.toml")
-        .to_string_lossy()
-        .into_owned();
-    // `--workspace` rather than one `-p <name>` per planned package: a bare name is
-    // an ambiguous package-ID spec whenever the lockfile also holds a registry
-    // package of that name, and by this point the manifests are already written, so
-    // a failure would leave the work tree applied but the lockfile stale. `--workspace`
-    // is exactly Cargo's documented answer to "you changed a workspace member's
-    // version"; members outside the plan re-resolve to the same path source, and
-    // non-member packages already in the lockfile are left alone.
-    let args = [
-        "update",
-        "--offline",
-        "--workspace",
-        "--manifest-path",
-        &manifest,
-    ];
-    verbose.note(|| format!(
-        "refreshing the workspace lockfile with `cargo {}` so --locked builds observe the new \
-         path-dependency versions; the lockfile is not released content and cannot re-trigger check",
-        rendered_arguments(&args)
-    ));
-    _ = run_capture("cargo", &args, &work_tree.workspace_root)?;
-    Ok(true)
-}
-
-/// Renders command arguments for a diagnostic.
-///
-/// One of them is a workspace path, which a repository controls, so every
-/// argument goes through the same escaping as any other path a diagnostic
-/// names. Ref: docs/implementation.md, "Diagnostics".
-fn rendered_arguments(args: &[&str]) -> String {
-    args.iter()
-        .map(|arg| quote_path(arg))
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     #[cfg(unix)]
     use std::os::unix::fs::symlink;
 
-    use tempfile::{TempDir, tempdir};
+    use tempfile::tempdir;
 
     use super::*;
+    use crate::UnsupportedPlanSchemaError;
+
+    #[test]
+    #[cfg_attr(miri, ignore = "writes a plan file through the host filesystem")]
+    fn unsupported_proposed_and_expanded_schemas_fail_before_workspace_access() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("plan.json");
+        for stage in [PlanStage::Proposed, PlanStage::Expanded] {
+            let mut plan = PlanFile::new(stage, Vec::new());
+            plan.schema_version = 3;
+            fs::write(&path, serde_json::to_vec(&plan).unwrap()).unwrap();
+            let error = run_apply(
+                &path,
+                false,
+                &directory.path().join("absent").join("Cargo.toml"),
+                Verbose::new(false),
+            )
+            .unwrap_err();
+            assert!(error.find_source::<UnsupportedPlanSchemaError>().is_some());
+        }
+    }
 
     fn v(text: &str) -> Version {
         text.parse().unwrap()
@@ -582,41 +519,102 @@ mod tests {
         ];
         assert_eq!(changed_edit_count(&edits), 1);
         assert_eq!(changed_edit_count(&edits[..1]), 0);
-        let summary = dry_run_summary(&edits, 2, true);
+        let summary = dry_run_summary(&edits);
         assert!(summary.contains("changed.toml"));
         assert!(!summary.contains("unchanged.toml"));
-        assert!(summary.contains("lockfile would be refreshed for 2 planned packages"));
+        assert!(summary.contains("lockfile would be left untouched"));
     }
 
     #[test]
-    fn a_dry_run_that_would_not_refresh_the_lockfile_says_so() {
-        let summary = dry_run_summary(&[], 0, false);
-        assert!(
-            summary.contains("lockfile would be left untouched"),
-            "{summary}"
+    fn empty_manifest_only_dry_run_reports_no_writes() {
+        let summary = dry_run_summary(&[]);
+        assert_eq!(
+            summary,
+            "Dry run: 0 manifests would change; the workspace lockfile would be left untouched"
         );
-        assert!(!summary.contains("would be refreshed"), "{summary}");
     }
 
     #[test]
-    fn an_empty_plan_skips_the_lockfile_refresh() {
-        let resolved = ResolvedVersions {
-            packages: BTreeMap::new(),
+    fn legacy_dependency_tables_are_rewritten_at_root_and_under_targets() {
+        let mut document: DocumentMut = concat!(
+            "[build_dependencies]\ndemo = { path = \"../demo\", version = \"=0.1.0\" }\n",
+            "[dev_dependencies]\ndemo = { path = \"../demo\", version = \"^0.1.0\" }\n",
+            "[target.'cfg(unix)'.build_dependencies]\ndemo = { path = \"../demo\", version = \"=0.1.0\" }\n",
+            "[target.'cfg(unix)'.dev_dependencies]\ndemo = { path = \"../demo\", version = \"^0.1.0\" }\n",
+        ).parse().unwrap();
+        rewrite_test_dependencies(&mut document);
+        assert_eq!(
+            demo_requirement(&document, &["build_dependencies"]),
+            "=0.2.0"
+        );
+        assert_eq!(demo_requirement(&document, &["dev_dependencies"]), "0.2.0");
+        assert_eq!(
+            demo_requirement(&document, &["target", "cfg(unix)", "build_dependencies"]),
+            "=0.2.0"
+        );
+        assert_eq!(
+            demo_requirement(&document, &["target", "cfg(unix)", "dev_dependencies"]),
+            "0.2.0"
+        );
+    }
+
+    #[test]
+    fn canonical_dependency_tables_override_legacy_even_when_empty() {
+        let mut document: DocumentMut = concat!(
+            "[build_dependencies]\ndemo = { path = \"../demo\", version = \"=0.1.0\" }\n",
+            "[build-dependencies]\n",
+            "[dev_dependencies]\ndemo = { path = \"../demo\", version = \"=0.1.0\" }\n",
+            "[dev-dependencies]\ndemo = { path = \"../demo\", version = \"^0.1.0\" }\n",
+            "[target.'cfg(unix)'.build_dependencies]\ndemo = { path = \"../demo\", version = \"=0.1.0\" }\n",
+            "[target.'cfg(unix)'.build-dependencies]\n",
+        ).parse().unwrap();
+        rewrite_test_dependencies(&mut document);
+        assert_eq!(
+            demo_requirement(&document, &["build_dependencies"]),
+            "=0.1.0"
+        );
+        assert_eq!(demo_requirement(&document, &["dev_dependencies"]), "=0.1.0");
+        assert_eq!(demo_requirement(&document, &["dev-dependencies"]), "0.2.0");
+        assert_eq!(
+            demo_requirement(&document, &["target", "cfg(unix)", "build_dependencies"]),
+            "=0.1.0"
+        );
+        assert!(
+            document
+                .get("build-dependencies")
+                .unwrap()
+                .as_table_like()
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    fn rewrite_test_dependencies(document: &mut DocumentMut) {
+        let members = demo_members();
+        let targets = DepTargets {
+            manifest_dir: PathBuf::from("/ws/packages/user"),
+            members_by_dir: &members,
         };
-        assert!(lockfile_refresh_skip_reason(Path::new("/ws"), &resolved).is_some());
+        let resolved = ResolvedVersions {
+            packages: BTreeMap::from([("demo".to_owned(), v("0.2.0"))]),
+        };
+        rewrite_dependency_tables(document, &targets, &resolved, Verbose::new(false));
     }
 
-    #[cfg_attr(miri, ignore)] // Creates a temporary directory, which Miri cannot do.
-    #[test]
-    fn a_missing_lockfile_skips_the_lockfile_refresh() {
-        let dir = TempDir::new().unwrap();
-        let mut packages = BTreeMap::new();
-        packages.insert("demo".to_string(), v("0.2.0"));
-        let resolved = ResolvedVersions { packages };
-        assert!(lockfile_refresh_skip_reason(dir.path(), &resolved).is_some());
-
-        fs::write(dir.path().join("Cargo.lock"), "").unwrap();
-        assert!(lockfile_refresh_skip_reason(dir.path(), &resolved).is_none());
+    fn demo_requirement<'a>(document: &'a DocumentMut, path: &[&str]) -> &'a str {
+        let mut table: &dyn TableLike = document.as_table();
+        for key in path {
+            table = table.get(key).unwrap().as_table_like().unwrap();
+        }
+        table
+            .get("demo")
+            .unwrap()
+            .as_table_like()
+            .unwrap()
+            .get("version")
+            .unwrap()
+            .as_str()
+            .unwrap()
     }
 
     /// Every requirement is rewritten to name the new version unless it already does.
@@ -986,23 +984,6 @@ version = \"0.1.0\"
 
         assert!(!targets.declares("../gone", "demo"));
     }
-    /// Rendered arguments escapes a repository controlled path.
-    ///
-    /// The workspace path reaches a verbose note through this rendering, and a directory name
-    /// holding a newline or an escape sequence is legal, so it must not be able to forge a further
-    /// line.
-    #[test]
-    fn rendered_arguments_escapes_a_repository_controlled_path() {
-        let rendered =
-            rendered_arguments(&["update", "--manifest-path", "/ws\nnote: forged/Cargo.toml"]);
-
-        assert_eq!(
-            rendered,
-            "update --manifest-path \"/ws\\nnote: forged/Cargo.toml\""
-        );
-        assert!(!rendered.contains('\n'));
-    }
-
     /// A workspace whose only member is `demo`.
     ///
     /// It is laid out under a shared root so the rewrite tests can express both
