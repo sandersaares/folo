@@ -489,7 +489,7 @@ mod tests {
             &Config::default(),
             selection,
             DirtyTipPolicy::WhenWorkingTreeDirty,
-            &RecordingReporter::new(),
+            &RecordingReporter::quiet(),
         ))
         .err()
         .unwrap()
@@ -584,7 +584,7 @@ mod tests {
             &git,
             &ancestry,
             "c2",
-            &RecordingReporter::new(),
+            &RecordingReporter::quiet(),
         ))
         .unwrap();
         assert_eq!(fork.as_deref(), Some("c1"));
@@ -603,7 +603,7 @@ mod tests {
             &git,
             &ancestry,
             "root",
-            &RecordingReporter::new(),
+            &RecordingReporter::quiet(),
         ))
         .unwrap();
         assert_eq!(fork, None);

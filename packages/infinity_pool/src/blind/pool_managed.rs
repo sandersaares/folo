@@ -293,6 +293,7 @@ mod tests {
     use std::sync::atomic::{AtomicI32, Ordering};
     use std::thread;
 
+    use new_zealand::nz;
     use static_assertions::assert_impl_all;
 
     use super::*;
@@ -308,6 +309,11 @@ mod tests {
         fn drop(&mut self) {
             self.counter.fetch_add(1, Ordering::Relaxed);
         }
+    }
+
+    fn prepare_small_slab<T: Send + 'static>(pool: &BlindPool) {
+        // Type-dispatch tests need shared slots and slab growth, not the bulk-allocation policy.
+        ensure_inner_pool::<T>(&mut pool.core.lock().unwrap()).set_slab_capacity(nz!(2));
     }
 
     #[test]
@@ -368,6 +374,10 @@ mod tests {
     #[test]
     fn multiple_types_different_layouts() {
         let pool = BlindPool::new();
+        prepare_small_slab::<String>(&pool);
+        prepare_small_slab::<u32>(&pool);
+        prepare_small_slab::<u64>(&pool);
+        prepare_small_slab::<Vec<i32>>(&pool);
 
         // Insert different types with different layouts
         let string_handle = pool.insert("Test string".to_string());
@@ -553,8 +563,20 @@ mod tests {
     #[test]
     fn large_variety_of_types() {
         let pool = BlindPool::new();
+        prepare_small_slab::<String>(&pool);
+        prepare_small_slab::<u8>(&pool);
+        prepare_small_slab::<u16>(&pool);
+        prepare_small_slab::<u32>(&pool);
+        prepare_small_slab::<u64>(&pool);
+        prepare_small_slab::<i8>(&pool);
+        prepare_small_slab::<i16>(&pool);
+        prepare_small_slab::<i32>(&pool);
+        prepare_small_slab::<i64>(&pool);
+        prepare_small_slab::<bool>(&pool);
+        prepare_small_slab::<char>(&pool);
+        prepare_small_slab::<Vec<i32>>(&pool);
+        prepare_small_slab::<Option<String>>(&pool);
 
-        // Insert many different types (avoiding floating point for comparison issues)
         let string_handle = pool.insert("String".to_string());
         let u8_handle = pool.insert(255_u8);
         let u16_handle = pool.insert(65535_u16);
@@ -571,7 +593,6 @@ mod tests {
 
         assert_eq!(pool.len(), 13);
 
-        // Verify all values
         assert_eq!(&*string_handle, "String");
         assert_eq!(*u8_handle, 255);
         assert_eq!(*u16_handle, 65535);

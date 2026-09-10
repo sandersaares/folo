@@ -405,6 +405,9 @@ mod tests {
 
     #[test]
     fn multiple_iterations_minimal() {
+        // Repeated execution and metadata propagation need only a few distinct iterations.
+        const ITERATIONS: u64 = 3;
+
         let processors = SystemHardware::current()
             .processors()
             .to_builder()
@@ -428,13 +431,13 @@ mod tests {
                     iteration_count.fetch_add(1, atomic::Ordering::Relaxed);
                 }
             })
-            .execute_on(&mut pool, 9999);
+            .execute_on(&mut pool, ITERATIONS);
 
-        assert_eq!(iteration_count.load(atomic::Ordering::Relaxed), 9999);
+        assert_eq!(iteration_count.load(atomic::Ordering::Relaxed), ITERATIONS);
 
-        // Verify RunMeta contains the correct iteration count
+        // Verify RunMeta contains the correct iteration count.
         let meta = run_meta_seen.lock().unwrap().unwrap();
-        assert_eq!(meta.iterations(), 9999);
+        assert_eq!(meta.iterations(), ITERATIONS);
         assert_eq!(meta.group_index(), 0);
         assert_eq!(meta.group_count().get(), 1);
     }

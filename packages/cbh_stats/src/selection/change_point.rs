@@ -595,15 +595,17 @@ mod tests {
 
     #[test]
     fn clean_tied_step_survives_selection_adjustment() {
-        let mut values = vec![10.0; 10];
-        values.extend(std::iter::repeat_n(20.0, 10));
+        // Leave multiple admissible splits, but keep the complete tied orbit small.
+        const REGIME_POINTS: usize = 5;
+        let mut values = vec![10.0; REGIME_POINTS];
+        values.extend(std::iter::repeat_n(20.0, REGIME_POINTS));
         let adjusted = selection_adjusted_change_point(
             &values,
-            5,
+            REGIME_POINTS - 1,
             calibration(NonZero::new(2_000).expect("the test budget is nonzero")),
         )
         .expect("the clean middle split is reportable");
-        assert_eq!(adjusted.index, 10);
+        assert_eq!(adjusted.index, REGIME_POINTS);
         assert!(adjusted.adjusted_p < 0.025, "{adjusted:?}");
         assert!(adjusted.adjusted_p >= adjusted.tainted_p);
         assert_eq!(adjusted.superiority, 1.0);

@@ -10,3 +10,5 @@ The crate owns the shared diagnostic-reporting abstraction and deterministic dia
 helpers. Producers report through that abstraction without owning a process stream, while the
 shell supplies the production sink. Private test support records the same reporting operations so
 orchestration can be verified without writing to a terminal.
+Tests that do not inspect verbose diagnostics use a quiet recorder: announcements remain
+observable, but per-object diagnostic formatting and stage recording stay disabled.

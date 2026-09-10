@@ -115,57 +115,74 @@ mod tests {
     #[test]
     fn smoke_test_with_generics() {
         let input = quote! {
-            struct Foo<'y, T: Clone, X>
+            struct Foo<'y, T: Clone>
             where
-                X: Debug
+                T: Debug
             {
-                something: X,
-                something_else: &'y Y,
+                x: &'y T,
             }
         };
 
-        let result = entrypoint(&TokenStream::new(), &input);
+        let result = entrypoint(&TokenStream::new(), &input).to_string();
 
+        // The non-generic smoke test checks complete method bodies under Miri. This case needs
+        // only the generic-bearing declarations there, while native runs compare the full output.
+        #[cfg(miri)]
+        for declaration in [
+            quote!(struct Foo<'y, T: Clone> where T: Debug),
+            quote!(x: &'y T),
+            quote!(impl<'y, T: Clone> ::linked::Object for Foo<'y, T> where T: Debug),
+            quote!(impl<'y, T: Clone> Clone for Foo<'y, T> where T: Debug),
+            quote!(
+                impl<'y, T: Clone> ::std::convert::From<::linked::Family<Foo<'y, T> >>
+                    for Foo<'y, T> where T: Debug
+            ),
+            quote!(fn from(family: ::linked::Family<Foo<'y, T> >) -> Self),
+        ] {
+            assert!(result.contains(&declaration.to_string()));
+        }
+
+        #[cfg(not(miri))]
         let expected = quote! {
-            struct Foo<'y, T: Clone, X>
+            struct Foo<'y, T: Clone>
             where
-                X: Debug
+                T: Debug
             {
-                something: X,
-                something_else: &'y Y,
+                x: &'y T,
                 #[doc(hidden)]
                 __private_linked_link: ::linked::__private::Link<Self>
             }
 
-            impl<'y, T: Clone, X> ::linked::Object for Foo<'y, T, X>
+            impl<'y, T: Clone> ::linked::Object for Foo<'y, T>
             where
-                X: Debug
+                T: Debug
             {
                 fn family(&self) -> ::linked::Family<Self> {
                     self.__private_linked_link.family()
                 }
             }
 
-            impl<'y, T: Clone, X> Clone for Foo<'y, T, X>
+            impl<'y, T: Clone> Clone for Foo<'y, T>
             where
-            X: Debug
+                T: Debug
             {
                 fn clone(&self) -> Self {
                     ::linked::__private::clone(self)
                 }
             }
 
-            impl<'y, T: Clone, X> ::std::convert::From<::linked::Family<Foo<'y, T, X> >> for Foo<'y, T, X>
+            impl<'y, T: Clone> ::std::convert::From<::linked::Family<Foo<'y, T> >> for Foo<'y, T>
             where
-                X: Debug
+                T: Debug
             {
-                fn from(family: ::linked::Family<Foo<'y, T, X> >) -> Self {
+                fn from(family: ::linked::Family<Foo<'y, T> >) -> Self {
                     family.__private_into()
                 }
             }
         };
 
-        assert_eq!(result.to_string(), expected.to_string());
+        #[cfg(not(miri))]
+        assert_eq!(result, expected.to_string());
     }
 
     #[test]

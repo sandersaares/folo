@@ -2,7 +2,7 @@
 name = "many_cpus_benchmarking"
 description = "Criterion benchmark harness to easily compare different processor configurations"
 publish = true
-version = "0.2.11"
+version = "0.2.12"
 
 authors.workspace = true
 edition.workspace = true

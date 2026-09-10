@@ -1032,21 +1032,94 @@ fn resolve_packages(workspace: bool, package: Vec<String>) -> Vec<String> {
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
+    #[cfg(miri)]
+    use clap::FromArgMatches;
+    use clap::{Command as ClapCommand, CommandFactory};
+
     use super::*;
 
+    /// Builds one real argument schema without registering unrelated commands.
+    fn command_schema(name: &str) -> Option<ClapCommand> {
+        let command = match name {
+            "analyze" => AnalyzeCommand::augment_args(ClapCommand::new("analyze")),
+            "backfill" => BackfillCommand::augment_args(ClapCommand::new("backfill")),
+            "bless" => BlessCommand::augment_args(ClapCommand::new("bless")),
+            "collect" => CollectCommand::augment_args(ClapCommand::new("collect")),
+            "examine" => ExamineCommand::augment_args(ClapCommand::new("examine")),
+            "import" => ImportCommand::augment_args(ClapCommand::new("import")),
+            "install" => InstallCommand::augment_args(ClapCommand::new("install")),
+            "list" => ListCommand::augment_args(ClapCommand::new("list")),
+            "machine-key" => MachineKeyCommand::augment_args(ClapCommand::new("machine-key")),
+            "prune" => PruneCommand::augment_args(ClapCommand::new("prune")),
+            "unbless" => UnblessCommand::augment_args(ClapCommand::new("unbless")),
+            _ => return None,
+        };
+        Some(command)
+    }
+
+    fn from_args(command_name: &[&str], args: &[&str]) -> Result<Cli, EarlyExit> {
+        #[cfg(not(miri))]
+        {
+            Cli::from_args(command_name, args)
+        }
+        #[cfg(miri)]
+        {
+            // Each option test needs only its selected subcommand. Use its real Args schema and
+            // the real Cli conversion, avoiding construction of every unrelated schema in Miri.
+            // Native runs retain the full root parser, including subcommand registration.
+            let Some(command) = args.first().copied().and_then(command_schema) else {
+                // Root-level and unknown-command cases retain the production parser's behavior.
+                return Cli::from_args(command_name, args);
+            };
+            ClapCommand::new("cargo-bench-history")
+                .disable_help_subcommand(true)
+                .disable_version_flag(true)
+                .subcommand_required(true)
+                .arg_required_else_help(true)
+                .subcommand(command)
+                .try_get_matches_from(command_name.iter().chain(args).copied())
+                .and_then(|matches| Cli::from_arg_matches(&matches))
+                .map_err(|error| EarlyExit::from_clap(&error))
+        }
+    }
+
     fn parse(args: &[&str]) -> Command {
-        Cli::from_args(&["cargo-bench-history"], args)
+        from_args(&["cargo-bench-history"], args)
             .unwrap()
             .into_command()
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "compares the full command catalog; individual schemas run under Miri"
+    )]
+    fn isolated_schemas_cover_registered_commands() {
+        let root = Cli::command();
+        for registered in root.get_subcommands() {
+            let name = registered.get_name();
+            let schema = command_schema(name)
+                .unwrap_or_else(|| panic!("missing isolated argument schema for {name}"));
+            assert_eq!(schema.get_name(), name);
+        }
+    }
+
+    #[test]
+    fn isolated_schema_rejects_unknown_commands() {
+        assert!(command_schema("frobnicate").is_none());
+    }
+
+    #[test]
     fn cli_is_debug_formatted() {
-        let cli = Cli::from_args(&["cargo-bench-history"], &["collect"]).unwrap();
+        let cli = from_args(&["cargo-bench-history"], &["collect"]).unwrap();
         assert!(format!("{cli:?}").contains("Collect"), "{cli:?}");
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "renders the full command catalog; option schemas run individually under Miri"
+    )]
     fn help_lists_every_command() {
         let help = Cli::help("cargo-bench-history");
         assert!(!help.is_empty(), "help text is non-empty");
@@ -1059,6 +1132,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "renders the full command catalog; option schemas run individually under Miri"
+    )]
     fn import_is_hidden_from_help() {
         // `import` parses (it is registered below) but is deliberately kept out of
         // the public help, so it must not appear as an entry in the command list.
@@ -1103,14 +1180,14 @@ mod tests {
     fn import_requires_target_dir() {
         // The harvest is ungated, so the tree to scan must be named explicitly
         // rather than defaulting to the shared `target/` directory.
-        let error = Cli::from_args(&["cargo-bench-history"], &["import"]).unwrap_err();
+        let error = from_args(&["cargo-bench-history"], &["import"]).unwrap_err();
         assert_eq!(error.status, Err(()));
         assert!(error.output.contains("--target-dir"), "{}", error.output);
     }
 
     #[test]
     fn import_overwrite_and_skip_existing_conflict() {
-        let error = Cli::from_args(
+        let error = from_args(
             &["cargo-bench-history"],
             &[
                 "import",
@@ -1156,7 +1233,7 @@ mod tests {
 
     #[test]
     fn collect_workspace_and_package_conflict() {
-        let error = Cli::from_args(
+        let error = from_args(
             &["cargo-bench-history"],
             &["collect", "--workspace", "-p", "nm"],
         )
@@ -1217,7 +1294,7 @@ mod tests {
     }
 
     #[test]
-    fn collect_best_of_defaults_to_one_and_parses_a_value() {
+    fn collect_best_of_defaults_to_one() {
         let Command::Collect(options) = parse(&["collect"]) else {
             panic!("expected collect command");
         };
@@ -1226,7 +1303,10 @@ mod tests {
             1,
             "--best-of defaults to a single run"
         );
+    }
 
+    #[test]
+    fn collect_best_of_parses_a_value() {
         let Command::Collect(options) = parse(&["collect", "--best-of", "5", "--no-store"]) else {
             panic!("expected collect command");
         };
@@ -1236,13 +1316,13 @@ mod tests {
 
     #[test]
     fn collect_best_of_rejects_zero() {
-        let parsed = Cli::from_args(&["cargo-bench-history"], &["collect", "--best-of", "0"]);
+        let parsed = from_args(&["cargo-bench-history"], &["collect", "--best-of", "0"]);
         assert!(parsed.is_err(), "--best-of 0 must be rejected");
     }
 
     #[test]
     fn collect_exclude_and_package_conflict() {
-        let error = Cli::from_args(
+        let error = from_args(
             &["cargo-bench-history"],
             &["collect", "--exclude", "nm", "-p", "many_cpus"],
         )
@@ -1257,7 +1337,7 @@ mod tests {
 
     #[test]
     fn backfill_workspace_and_package_conflict() {
-        let error = Cli::from_args(
+        let error = from_args(
             &["cargo-bench-history"],
             &["backfill", "abc", "def", "--workspace", "-p", "nm"],
         )
@@ -1303,7 +1383,7 @@ mod tests {
 
     #[test]
     fn backfill_exclude_and_package_conflict() {
-        let error = Cli::from_args(
+        let error = from_args(
             &["cargo-bench-history"],
             &[
                 "backfill",
@@ -1345,7 +1425,7 @@ mod tests {
 
     #[test]
     fn collect_rejects_skip_existing_with_overwrite() {
-        let parsed = Cli::from_args(
+        let parsed = from_args(
             &["cargo-bench-history"],
             &["collect", "--overwrite", "--skip-existing"],
         );
@@ -1457,10 +1537,10 @@ mod tests {
     }
 
     #[test]
-    fn cache_conflicts_with_local() {
+    fn analyze_cache_conflicts_with_local() {
         // The read-through cache applies only to the cloud backend, so pairing
         // `--cache` with `--local` is a usage error rather than a silent ignore.
-        let parsed = Cli::from_args(
+        let parsed = from_args(
             &["cargo-bench-history"],
             &["analyze", "--local=./store", "--cache=./mirror"],
         );
@@ -1468,10 +1548,12 @@ mod tests {
             parsed.is_err(),
             "--cache and --local are mutually exclusive"
         );
+    }
 
-        // The same conflict holds for the other read commands that carry both flags.
+    #[test]
+    fn list_cache_conflicts_with_local() {
         assert!(
-            Cli::from_args(
+            from_args(
                 &["cargo-bench-history"],
                 &[
                     "list",
@@ -1483,8 +1565,12 @@ mod tests {
             .is_err(),
             "list must reject --cache with --local"
         );
+    }
+
+    #[test]
+    fn prune_cache_conflicts_with_local() {
         assert!(
-            Cli::from_args(
+            from_args(
                 &["cargo-bench-history"],
                 &["prune", "--clean", "--local=./store", "--cache=./mirror"],
             )
@@ -1499,7 +1585,10 @@ mod tests {
             panic!("expected collect command");
         };
         assert!(options.verbose);
+    }
 
+    #[test]
+    fn collect_verbose_defaults_to_false() {
         let Command::Collect(options) = parse(&["collect"]) else {
             panic!("expected collect command");
         };
@@ -1530,7 +1619,10 @@ mod tests {
             panic!("expected install command");
         };
         assert!(options.verbose);
+    }
 
+    #[test]
+    fn install_verbose_defaults_to_false() {
         let Command::Install(options) = parse(&["install"]) else {
             panic!("expected install command");
         };
@@ -1549,7 +1641,10 @@ mod tests {
             panic!("expected machine-key command");
         };
         assert!(options.verbose);
+    }
 
+    #[test]
+    fn machine_key_verbose_defaults_to_false() {
         let Command::MachineKey(options) = parse(&["machine-key"]) else {
             panic!("expected machine-key command");
         };
@@ -1562,7 +1657,10 @@ mod tests {
             panic!("expected analyze command");
         };
         assert!(options.verbose);
+    }
 
+    #[test]
+    fn analyze_verbose_defaults_to_false() {
         let Command::Analyze(options) = parse(&["analyze"]) else {
             panic!("expected analyze command");
         };
@@ -1618,37 +1716,38 @@ mod tests {
         assert!(options.since.is_none());
     }
 
+    fn assert_until_rejected(args: &[&str]) {
+        // `--context`, not `--until`, selects the timeline's end.
+        let error = from_args(&["cargo-bench-history"], args).unwrap_err();
+        assert!(error.status.is_err());
+    }
+
     #[test]
-    fn until_flag_is_rejected_after_removal() {
-        // `--until` was removed in favour of `--context` as the timeline's end, so
-        // every command that previously accepted it now rejects it as unknown.
-        for args in [
-            vec!["analyze", "--until", "2024-06-01"],
-            vec!["list", "runs", "--until", "2024-06-01"],
-            vec![
-                "examine",
-                "--benchmark",
-                "b",
-                "--metric",
-                "m",
-                "--until",
-                "2024-06-01",
-            ],
-            vec!["prune", "--dirty", "--until", "2024-06-01"],
-        ] {
-            let error = Cli::from_args(&["cargo-bench-history"], &args).unwrap_err();
-            assert!(error.status.is_err(), "{args:?} should reject --until");
-            assert!(
-                error.output.contains("--until"),
-                "{args:?} error should name the rejected flag: {}",
-                error.output
-            );
-            assert!(
-                error.output.contains("unexpected argument"),
-                "{args:?} error should reject --until as an unexpected argument: {}",
-                error.output
-            );
-        }
+    fn analyze_rejects_until() {
+        assert_until_rejected(&["analyze", "--until", "2024-06-01"]);
+    }
+
+    #[test]
+    fn list_rejects_until() {
+        assert_until_rejected(&["list", "runs", "--until", "2024-06-01"]);
+    }
+
+    #[test]
+    fn examine_rejects_until() {
+        assert_until_rejected(&[
+            "examine",
+            "--benchmark",
+            "b",
+            "--metric",
+            "m",
+            "--until",
+            "2024-06-01",
+        ]);
+    }
+
+    #[test]
+    fn prune_rejects_until() {
+        assert_until_rejected(&["prune", "--dirty", "--until", "2024-06-01"]);
     }
 
     #[test]
@@ -1680,7 +1779,7 @@ mod tests {
 
     #[test]
     fn list_requires_a_subject() {
-        let parsed = Cli::from_args(&["cargo-bench-history"], &["list"]);
+        let parsed = from_args(&["cargo-bench-history"], &["list"]);
         let early = parsed.unwrap_err();
         assert!(early.status.is_err(), "a missing subject is a parse error");
         for subject in ["runs", "discriminants", "blessings"] {
@@ -1704,6 +1803,24 @@ mod tests {
             "--base",
             "master",
             "--no-dirty",
+            "--verbose",
+        ]);
+        let Command::List(options) = command else {
+            panic!("expected list command");
+        };
+        assert_eq!(options.subject, ListSubject::Runs);
+        assert_eq!(options.repo, Some(PathBuf::from("/work/folo")));
+        assert_eq!(options.context.as_deref(), Some("feature"));
+        assert_eq!(options.base.as_deref(), Some("master"));
+        assert!(options.no_dirty);
+        assert!(options.verbose);
+    }
+
+    #[test]
+    fn list_runs_collects_discriminants_and_output() {
+        let command = parse(&[
+            "list",
+            "runs",
             "--engine",
             "callgrind",
             "--target-triple",
@@ -1715,16 +1832,11 @@ mod tests {
             "list.md",
             "--json",
             "list.json",
-            "--verbose",
         ]);
         let Command::List(options) = command else {
             panic!("expected list command");
         };
         assert_eq!(options.subject, ListSubject::Runs);
-        assert_eq!(options.repo, Some(PathBuf::from("/work/folo")));
-        assert_eq!(options.context.as_deref(), Some("feature"));
-        assert_eq!(options.base.as_deref(), Some("master"));
-        assert!(options.no_dirty);
         assert_eq!(options.engine, vec!["callgrind".to_owned()]);
         assert_eq!(
             options.target_triple,
@@ -1734,7 +1846,6 @@ mod tests {
         assert!(options.no_text);
         assert_eq!(options.markdown, Some(PathBuf::from("list.md")));
         assert_eq!(options.json, Some(PathBuf::from("list.json")));
-        assert!(options.verbose);
     }
 
     #[test]
@@ -1752,7 +1863,10 @@ mod tests {
         };
         assert_eq!(options.subject, ListSubject::Blessings);
         assert!(options.all);
+    }
 
+    #[test]
+    fn list_blessings_all_defaults_to_false() {
         let Command::List(options) = parse(&["list", "blessings"]) else {
             panic!("expected list command");
         };
@@ -1760,7 +1874,7 @@ mod tests {
     }
 
     #[test]
-    fn examine_collects_selection_scope_and_output() {
+    fn examine_collects_selection_and_scope() {
         let command = parse(&[
             "examine",
             "--benchmark",
@@ -1774,19 +1888,8 @@ mod tests {
             "--base",
             "master",
             "--no-dirty",
-            "--engine",
-            "callgrind",
-            "--target-triple",
-            "x86_64-unknown-linux-gnu",
-            "--machine-key",
-            "ci-pool",
             "--since",
             "2024-01-01",
-            "--no-text",
-            "--markdown",
-            "examine.md",
-            "--json",
-            "examine.json",
             "--verbose",
         ]);
         let Command::Examine(options) = command else {
@@ -1798,32 +1901,60 @@ mod tests {
         assert_eq!(options.context.as_deref(), Some("feature"));
         assert_eq!(options.base.as_deref(), Some("master"));
         assert!(options.no_dirty);
+        assert_eq!(options.since.as_deref(), Some("2024-01-01"));
+        assert!(options.verbose);
+    }
+
+    #[test]
+    fn examine_collects_discriminants_and_output() {
+        let command = parse(&[
+            "examine",
+            "--benchmark",
+            "b",
+            "--metric",
+            "m",
+            "--engine",
+            "callgrind",
+            "--target-triple",
+            "x86_64-unknown-linux-gnu",
+            "--machine-key",
+            "ci-pool",
+            "--no-text",
+            "--markdown",
+            "examine.md",
+            "--json",
+            "examine.json",
+        ]);
+        let Command::Examine(options) = command else {
+            panic!("expected examine command");
+        };
         assert_eq!(options.engine, vec!["callgrind".to_owned()]);
         assert_eq!(
             options.target_triple,
             vec!["x86_64-unknown-linux-gnu".to_owned()]
         );
         assert_eq!(options.machine_key, vec!["ci-pool".to_owned()]);
-        assert_eq!(options.since.as_deref(), Some("2024-01-01"));
         assert!(options.no_text);
         assert_eq!(options.markdown, Some(PathBuf::from("examine.md")));
         assert_eq!(options.json, Some(PathBuf::from("examine.json")));
-        assert!(options.verbose);
     }
 
     #[test]
-    fn examine_requires_benchmark_and_metric() {
+    fn examine_requires_scope() {
         // With neither required scope flag, clap reports both as missing.
-        let early = Cli::from_args(&["cargo-bench-history"], &["examine"]).unwrap_err();
+        let early = from_args(&["cargo-bench-history"], &["examine"]).unwrap_err();
         assert!(
             early.status.is_err(),
             "missing required flags are a parse error"
         );
         assert!(early.output.contains("--benchmark"), "{}", early.output);
         assert!(early.output.contains("--metric"), "{}", early.output);
+    }
 
+    #[test]
+    fn examine_requires_metric() {
         // Supplying only one still fails, naming the other.
-        let missing_metric = Cli::from_args(
+        let missing_metric = from_args(
             &["cargo-bench-history"],
             &["examine", "--benchmark", "nm/nm::observe/pull"],
         )
@@ -1874,7 +2005,7 @@ mod tests {
     #[test]
     fn bless_all_conflicts_with_prefixes() {
         let error =
-            Cli::from_args(&["cargo-bench-history"], &["bless", "--all", "foo/bar"]).unwrap_err();
+            from_args(&["cargo-bench-history"], &["bless", "--all", "foo/bar"]).unwrap_err();
         assert_eq!(error.status, Err(()));
         assert!(
             error.output.contains("cannot be used with"),
@@ -1885,7 +2016,7 @@ mod tests {
 
     #[test]
     fn bless_rejects_an_empty_prefix() {
-        let error = Cli::from_args(&["cargo-bench-history"], &["bless", ""]).unwrap_err();
+        let error = from_args(&["cargo-bench-history"], &["bless", ""]).unwrap_err();
         assert_eq!(error.status, Err(()));
         assert!(
             error.output.contains("benchmark-id prefix"),
@@ -1930,17 +2061,8 @@ mod tests {
             "master",
             "--since",
             "2024-01-01T00:00:00Z",
-            "--engine",
-            "callgrind",
-            "--target-triple",
-            "x86_64-unknown-linux-gnu",
-            "--machine-key",
-            "ci-pool",
             "--dirty",
             "--dry-run",
-            "--no-text",
-            "--json",
-            "prune.json",
             "--verbose",
         ]);
         let Command::Prune(options) = command else {
@@ -1954,18 +2076,38 @@ mod tests {
             vec!["abc123".to_owned(), "def456".to_owned()]
         );
         assert_eq!(options.since.as_deref(), Some("2024-01-01T00:00:00Z"));
+        assert!(options.dirty);
+        assert!(!options.clean);
+        assert!(options.dry_run);
+        assert!(options.verbose);
+    }
+
+    #[test]
+    fn prune_collects_discriminants_and_output() {
+        let command = parse(&[
+            "prune",
+            "--dirty",
+            "--engine",
+            "callgrind",
+            "--target-triple",
+            "x86_64-unknown-linux-gnu",
+            "--machine-key",
+            "ci-pool",
+            "--no-text",
+            "--json",
+            "prune.json",
+        ]);
+        let Command::Prune(options) = command else {
+            panic!("expected prune command");
+        };
         assert_eq!(options.engine, vec!["callgrind".to_owned()]);
         assert_eq!(
             options.target_triple,
             vec!["x86_64-unknown-linux-gnu".to_owned()]
         );
         assert_eq!(options.machine_key, vec!["ci-pool".to_owned()]);
-        assert!(options.dirty);
-        assert!(!options.clean);
-        assert!(options.dry_run);
         assert!(options.no_text);
         assert_eq!(options.json, Some(PathBuf::from("prune.json")));
-        assert!(options.verbose);
     }
 
     #[test]
@@ -2012,11 +2154,17 @@ mod tests {
     }
 
     #[test]
+    fn prune_requires_a_scope() {
+        let error = from_args(&["cargo-bench-history"], &["prune"]).unwrap_err();
+        assert!(error.status.is_err());
+    }
+
+    #[test]
     fn prune_rejects_combining_clean_and_dirty() {
         // `--clean`, `--dirty`, and `--all` remain mutually exclusive alternatives;
         // `--all` is the way to remove both run kinds.
         let error =
-            Cli::from_args(&["cargo-bench-history"], &["prune", "--clean", "--dirty"]).unwrap_err();
+            from_args(&["cargo-bench-history"], &["prune", "--clean", "--dirty"]).unwrap_err();
         assert!(
             error.output.contains("cannot be used with")
                 || error.output.contains("conflict")
@@ -2054,8 +2202,31 @@ mod tests {
     }
 
     #[test]
+    fn backfill_help_documents_range_positionals() {
+        #[cfg(not(miri))]
+        let early_exit = from_args(&["cargo-bench-history"], &["backfill", "--help"]).unwrap_err();
+        #[cfg(miri)]
+        let early_exit = {
+            // This check concerns the range positionals, not rendering every flag's description.
+            // Keep the real schema, but hide unrelated flags in the interpreted help fixture.
+            // Native runs render the complete production help.
+            let error = BackfillCommand::augment_args(ClapCommand::new("backfill"))
+                .mut_args(|arg| {
+                    let positional = arg.is_positional();
+                    arg.hide(!positional)
+                })
+                .try_get_matches_from(["backfill", "--help"])
+                .unwrap_err();
+            EarlyExit::from_clap(&error)
+        };
+        assert!(early_exit.status.is_ok());
+        assert!(early_exit.output.contains("FROM"));
+        assert!(early_exit.output.contains("TO"));
+    }
+
+    #[test]
     fn backfill_requires_from_and_to() {
-        let parsed = Cli::from_args(&["cargo-bench-history"], &["backfill", "abc123"]);
+        let parsed = from_args(&["cargo-bench-history"], &["backfill", "abc123"]);
         assert!(parsed.is_err(), "a missing `to` must be rejected");
     }
 
@@ -2066,7 +2237,10 @@ mod tests {
             panic!("expected backfill command");
         };
         assert!(options.verbose);
+    }
 
+    #[test]
+    fn backfill_verbose_defaults_to_false() {
         let Command::Backfill(options) = parse(&["backfill", "abc123", "def456"]) else {
             panic!("expected backfill command");
         };
@@ -2074,7 +2248,7 @@ mod tests {
     }
 
     #[test]
-    fn backfill_best_of_defaults_to_one_and_parses_a_value() {
+    fn backfill_best_of_defaults_to_one() {
         let Command::Backfill(options) = parse(&["backfill", "abc123", "def456"]) else {
             panic!("expected backfill command");
         };
@@ -2083,7 +2257,10 @@ mod tests {
             1,
             "--best-of defaults to a single run"
         );
+    }
 
+    #[test]
+    fn backfill_best_of_parses_a_value() {
         let Command::Backfill(options) = parse(&["backfill", "abc123", "def456", "--best-of", "3"])
         else {
             panic!("expected backfill command");
@@ -2093,7 +2270,7 @@ mod tests {
 
     #[test]
     fn backfill_best_of_rejects_zero() {
-        let parsed = Cli::from_args(
+        let parsed = from_args(
             &["cargo-bench-history"],
             &["backfill", "abc123", "def456", "--best-of", "0"],
         );
@@ -2102,15 +2279,20 @@ mod tests {
 
     #[test]
     fn unknown_subcommand_is_rejected() {
-        Cli::from_args(&["cargo-bench-history"], &["frobnicate"]).unwrap_err();
+        let error = from_args(&["cargo-bench-history"], &["frobnicate"]).unwrap_err();
+        assert!(error.status.is_err());
     }
 
     #[test]
     fn collect_rejects_unknown_flag() {
-        Cli::from_args(&["cargo-bench-history"], &["collect", "--frobnicate"]).unwrap_err();
+        from_args(&["cargo-bench-history"], &["collect", "--frobnicate"]).unwrap_err();
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "renders the full command catalog; option schemas run individually under Miri"
+    )]
     fn help_request_lists_subcommands() {
         let early_exit = Cli::from_args(&["cargo-bench-history"], &["--help"]).unwrap_err();
         assert!(
@@ -2126,6 +2308,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "renders the full command catalog; option schemas run individually under Miri"
+    )]
     fn help_text_describes_each_command_in_alphabetical_order() {
         let help = Cli::help("cargo-bench-history");
 
@@ -2151,5 +2337,12 @@ mod tests {
             positions.is_sorted(),
             "commands should be listed alphabetically: {help}"
         );
+    }
+
+    #[test]
+    fn subcommand_help_is_a_successful_early_exit() {
+        let early = from_args(&["cargo-bench-history"], &["install", "--help"]).unwrap_err();
+        assert!(early.status.is_ok());
+        assert!(early.output.contains("--config"));
     }
 }

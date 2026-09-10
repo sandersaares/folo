@@ -455,7 +455,7 @@ impl GitRepo {
     /// Ids come back in the order the paths were given.
     pub(crate) fn hash_objects(&self, rel_paths: &[&str]) -> Result<Vec<String>, AppError> {
         let mut ids = Vec::with_capacity(rel_paths.len());
-        for chunk in command_line_batches(rel_paths)? {
+        for chunk in command_line_batches(rel_paths, PATH_ARG_BUDGET)? {
             // The paths are handed to the child borrowed: they outlive the call
             // and copying them would duplicate every path in the request.
             let args = ["hash-object", "-w", "--"].into_iter().chain(chunk);
@@ -509,16 +509,19 @@ const PATH_ARG_BUDGET: usize = 30_000;
 /// path is charged its worst-case rendered cost, so an ordinary package still
 /// takes one round trip while a deeply nested one is split instead of failing
 /// to spawn.
-fn command_line_batches<'p>(rel_paths: &[&'p str]) -> Result<Vec<Vec<&'p str>>, AppError> {
+fn command_line_batches<'p>(
+    rel_paths: &[&'p str],
+    budget: usize,
+) -> Result<Vec<Vec<&'p str>>, AppError> {
     let mut batches = Vec::new();
     let mut current: Vec<&'p str> = Vec::new();
     let mut spent = 0_usize;
     for path in rel_paths {
         let cost = rendered_arg_cost(path);
-        if cost > PATH_ARG_BUDGET {
+        if cost > budget {
             return Err(PathTooLongError::new(*path).into());
         }
-        if spent.saturating_add(cost) > PATH_ARG_BUDGET && !current.is_empty() {
+        if spent.saturating_add(cost) > budget && !current.is_empty() {
             batches.push(mem::take(&mut current));
             spent = 0;
         }
@@ -1017,27 +1020,30 @@ mod tests {
     /// extra round trips.
     #[test]
     fn short_paths_all_fit_one_batch() {
-        let paths: Vec<&str> = vec!["packages/foo/src/lib.rs"; 256];
-        let batches = command_line_batches(&paths).unwrap();
-        assert_eq!(batches.len(), 1);
-        let only = batches.first().expect("one batch was just asserted");
-        assert_eq!(only.len(), paths.len());
+        let paths = ["a", "b"];
+        // Exactly filling the budget also checks that equality does not start a new batch.
+        let budget = paths.iter().map(|path| rendered_arg_cost(path)).sum();
+        let batches = command_line_batches(&paths, budget).unwrap();
+        assert_eq!(batches, vec![paths.to_vec()]);
     }
 
     /// Batching is bounded by the rendered command line, not by a path count.
     #[test]
     fn long_paths_are_split_across_batches() {
-        // Long enough that two paths cannot share a command line.
-        let long = "x".repeat(PATH_ARG_BUDGET.div_euclid(3));
-        let paths: Vec<&str> = vec![long.as_str(); 4];
-        let batches = command_line_batches(&paths).unwrap();
-        assert!(batches.len() > 1);
-        assert_eq!(batches.iter().map(Vec::len).sum::<usize>(), paths.len());
+        // A small budget exercises the same batching boundary without long strings under Miri.
+        let paths = ["a", "bb", "c"];
+        let budget = rendered_arg_cost("bb");
+        let batches = command_line_batches(&paths, budget).unwrap();
+        assert_eq!(batches, vec![vec!["a"], vec!["bb"], vec!["c"]]);
     }
 
     #[test]
     fn an_empty_request_produces_no_batches() {
-        assert!(command_line_batches(&[]).unwrap().is_empty());
+        assert!(
+            command_line_batches(&[], PATH_ARG_BUDGET)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     /// A path longer than the budget is rejected.
@@ -1046,9 +1052,15 @@ mod tests {
     /// message that names no path.
     #[test]
     fn a_path_longer_than_the_budget_is_rejected() {
-        let huge = "x".repeat(PATH_ARG_BUDGET);
-        let error = command_line_batches(&[huge.as_str()]).unwrap_err();
+        let path = "x";
+        let error = command_line_batches(&[path], rendered_arg_cost(path) - 1).unwrap_err();
         assert!(error.find_source::<PathTooLongError>().is_some());
+    }
+
+    #[test]
+    fn rendered_path_cost_counts_utf16_and_quoting() {
+        // The supplementary character occupies a surrogate pair; the quote also needs escaping.
+        assert_eq!(rendered_arg_cost("a😀\""), 4 * 2 + 3);
     }
 
     #[test]

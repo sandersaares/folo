@@ -235,11 +235,10 @@ mod tests {
             let capacity_for_one = WAKER_META_POOL.with(Pool::capacity);
             release_ref(first);
 
-            // Churning far past the initial capacity must not grow the pool, because every
-            // release returns its slot for the next allocation to take. Asserting on capacity
-            // rather than on slot addresses keeps this independent of which free slot the
-            // pool decides to hand back.
-            for _ in 0..(capacity_for_one.saturating_mul(4).max(1024)) {
+            // Together with the first allocation above, this loop makes more allocations than
+            // the initial capacity can hold without reuse. Retaining every slot would force
+            // growth. Checking capacity avoids depending on which free slot the pool hands back.
+            for _ in 0..capacity_for_one {
                 let meta = create_waker_meta(&shared_parent);
                 release_ref(meta);
             }

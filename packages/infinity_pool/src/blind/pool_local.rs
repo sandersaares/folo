@@ -280,6 +280,7 @@ mod tests {
     use std::panic::{RefUnwindSafe, UnwindSafe};
     use std::rc::Rc;
 
+    use new_zealand::nz;
     use static_assertions::{assert_impl_all, assert_not_impl_any};
 
     use super::*;
@@ -296,6 +297,11 @@ mod tests {
             let mut count = self.counter.borrow_mut();
             *count = count.checked_add(1).expect("Drop count overflow");
         }
+    }
+
+    fn prepare_small_slab<T: 'static>(pool: &LocalBlindPool) {
+        // Type-dispatch tests need shared slots and slab growth, not the bulk-allocation policy.
+        ensure_inner_pool::<T>(&mut pool.core.borrow_mut()).set_slab_capacity(nz!(2));
     }
 
     #[test]
@@ -333,6 +339,10 @@ mod tests {
     #[test]
     fn multiple_types_different_layouts() {
         let pool = LocalBlindPool::new();
+        prepare_small_slab::<String>(&pool);
+        prepare_small_slab::<u32>(&pool);
+        prepare_small_slab::<u64>(&pool);
+        prepare_small_slab::<Vec<i32>>(&pool);
 
         // Insert different types with different layouts
         let string_handle = pool.insert("Test string".to_string());
@@ -489,8 +499,20 @@ mod tests {
     #[test]
     fn large_variety_of_types() {
         let pool = LocalBlindPool::new();
+        prepare_small_slab::<String>(&pool);
+        prepare_small_slab::<u8>(&pool);
+        prepare_small_slab::<u16>(&pool);
+        prepare_small_slab::<u32>(&pool);
+        prepare_small_slab::<u64>(&pool);
+        prepare_small_slab::<i8>(&pool);
+        prepare_small_slab::<i16>(&pool);
+        prepare_small_slab::<i32>(&pool);
+        prepare_small_slab::<i64>(&pool);
+        prepare_small_slab::<bool>(&pool);
+        prepare_small_slab::<char>(&pool);
+        prepare_small_slab::<Vec<i32>>(&pool);
+        prepare_small_slab::<Option<String>>(&pool);
 
-        // Insert many different types (avoiding floating point for comparison issues)
         let string_handle = pool.insert("String".to_string());
         let u8_handle = pool.insert(255_u8);
         let u16_handle = pool.insert(65535_u16);
@@ -507,7 +529,6 @@ mod tests {
 
         assert_eq!(pool.len(), 13);
 
-        // Verify all values
         assert_eq!(&*string_handle, "String");
         assert_eq!(*u8_handle, 255);
         assert_eq!(*u16_handle, 65535);
@@ -561,6 +582,10 @@ mod tests {
         use std::rc::Rc;
 
         let pool = LocalBlindPool::new();
+        prepare_small_slab::<Rc<String>>(&pool);
+        prepare_small_slab::<RefCell<i32>>(&pool);
+        prepare_small_slab::<Rc<RefCell<Vec<i32>>>>(&pool);
+        prepare_small_slab::<NonSendType>(&pool);
 
         // Rc is not Send, but LocalBlindPool should handle it since it is single-threaded
         let rc_handle = pool.insert(Rc::new("Non-Send data".to_string()));

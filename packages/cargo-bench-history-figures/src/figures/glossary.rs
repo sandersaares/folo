@@ -152,17 +152,40 @@ mod tests {
     #[test]
     fn a_chapter_table_carries_the_glossary_definition() {
         let assets = chapter_terms();
+        // Index each row once instead of repeatedly searching complete chapter tables.
+        let definitions: BTreeMap<_, _> = assets
+            .iter()
+            .map(|asset| {
+                let rows: BTreeMap<_, _> = asset
+                    .content
+                    .lines()
+                    .skip(2)
+                    .map(|line| {
+                        let mut cells = line.split('|').skip(1).map(str::trim);
+                        let phrase = cells
+                            .next()
+                            .unwrap()
+                            .strip_prefix("**")
+                            .unwrap()
+                            .strip_suffix("**")
+                            .unwrap();
+                        (phrase, cells.next().unwrap())
+                    })
+                    .collect();
+                (asset.path.as_str(), rows)
+            })
+            .collect();
 
         for term in TERMS {
             let stem = term.chapter.strip_suffix(".md").unwrap_or(term.chapter);
             let expected = format!("terms-{stem}.md");
-            let asset = assets
-                .iter()
-                .find(|asset| asset.path == expected)
+            let chapter = definitions
+                .get(expected.as_str())
                 .unwrap_or_else(|| panic!("no terms table for {}", term.chapter));
 
-            assert!(
-                asset.content.contains(term.definition),
+            assert_eq!(
+                chapter.get(term.phrase).copied(),
+                Some(term.definition),
                 "'{}' is defined differently in {}",
                 term.phrase,
                 expected

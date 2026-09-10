@@ -1124,14 +1124,45 @@ mod tests {
         (2.0 * lower.min(upper) / total).min(1.0)
     }
 
-    #[test]
-    fn mann_whitney_exact_matches_brute_force_with_ties() {
+    fn assert_exact_matches_brute_force(left: &[f64], right: &[f64]) {
         // Hand-authored samples with heavy ties pit the subset-sum tail against the
         // independent enumeration, and check the p-value is symmetric in its two
         // arguments (the null does not privilege a side).
-        // Distinct values on the left against tied values on the right exercise the
-        // same rank handling in a smaller Miri orbit; native keeps the wider enumeration.
-        let mixed_ties: (&[f64], &[f64]) = if cfg!(miri) {
+        let actual = mann_whitney_u_pvalue(left, right);
+        close(actual, brute_two_sided_p(left, right), 1e-12);
+        close(actual, mann_whitney_u_pvalue(right, left), 1e-12);
+    }
+
+    #[test]
+    fn mann_whitney_exact_matches_brute_force_without_ties() {
+        assert_exact_matches_brute_force(&[1.0, 2.0, 3.0], &[4.0, 5.0, 6.0]);
+    }
+
+    #[test]
+    fn mann_whitney_exact_matches_brute_force_with_ties_on_both_sides() {
+        assert_exact_matches_brute_force(&[1.0, 1.0, 2.0, 3.0], &[2.0, 3.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn mann_whitney_exact_matches_brute_force_with_a_tied_upper_sample() {
+        assert_exact_matches_brute_force(&[5.0, 5.0, 5.0], &[1.0, 2.0, 5.0]);
+    }
+
+    #[test]
+    fn mann_whitney_exact_matches_brute_force_with_overlapping_tie_groups() {
+        assert_exact_matches_brute_force(&[1.0, 2.0, 2.0, 3.0, 3.0], &[2.0, 3.0, 3.0, 4.0, 5.0]);
+    }
+
+    #[test]
+    fn mann_whitney_exact_matches_brute_force_with_one_outlier() {
+        assert_exact_matches_brute_force(&[10.0; 4], &[10.0, 10.0, 10.0, 20.0]);
+    }
+
+    #[test]
+    fn mann_whitney_exact_matches_brute_force_with_mixed_ties() {
+        // Native retains the wider enumeration; Miri still exercises distinct values
+        // on the left against tied values on the right.
+        let (left, right): (&[f64], &[f64]) = if cfg!(miri) {
             (&[1.0, 2.0, 3.0], &[2.0, 2.0, 4.0])
         } else {
             (
@@ -1139,19 +1170,7 @@ mod tests {
                 &[3.0, 3.0, 3.0, 7.0, 8.0, 9.0],
             )
         };
-        let cases: &[(&[f64], &[f64])] = &[
-            (&[1.0, 2.0, 3.0], &[4.0, 5.0, 6.0]),
-            (&[1.0, 1.0, 2.0, 3.0], &[2.0, 3.0, 3.0, 4.0]),
-            (&[5.0, 5.0, 5.0], &[1.0, 2.0, 5.0]),
-            (&[1.0, 2.0, 2.0, 3.0, 3.0], &[2.0, 3.0, 3.0, 4.0, 5.0]),
-            (&[10.0, 10.0, 10.0, 10.0], &[10.0, 10.0, 10.0, 20.0]),
-            mixed_ties,
-        ];
-        for &(left, right) in cases {
-            let actual = mann_whitney_u_pvalue(left, right);
-            close(actual, brute_two_sided_p(left, right), 1e-12);
-            close(actual, mann_whitney_u_pvalue(right, left), 1e-12);
-        }
+        assert_exact_matches_brute_force(left, right);
     }
 
     #[test]

@@ -326,22 +326,6 @@ async fn prune_all_removes_clean_and_dirty_for_a_commit() {
     assert_eq!(parsed["totals"]["runs"], 1, "{message}");
 }
 
-/// `prune` requires an action: invoking it without `--clean`, `--dirty`, `--all`,
-/// or `--include-blessings` is rejected at parse time, protecting against an
-/// accidental wipe with no intent.
-#[test]
-fn prune_requires_a_scope() {
-    let error = Cli::from_args(&["cargo-bench-history"], &["prune"]).unwrap_err();
-    assert!(
-        error
-            .output
-            .contains("the following required arguments were not provided")
-            || error.output.contains("required"),
-        "the error should name the missing required scope: {}",
-        error.output
-    );
-}
-
 /// `--all` deletes the whole selected data set, but Design B preserves base-branch
 /// history: pruning the feature context removes only the feature-unique commits,
 /// leaving the base commit at the merge-base intact.

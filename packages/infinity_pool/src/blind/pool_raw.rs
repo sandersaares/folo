@@ -327,6 +327,7 @@ mod tests {
     use std::mem::MaybeUninit;
     use std::panic::{RefUnwindSafe, UnwindSafe};
 
+    use new_zealand::nz;
     use static_assertions::{assert_impl_all, assert_not_impl_any};
 
     use super::*;
@@ -415,10 +416,13 @@ mod tests {
     #[test]
     fn remove_decreases_length() {
         let mut pool = RawBlindPool::new();
+        // Length bookkeeping needs an occupied slot, not the default bulk-allocation capacity.
+        pool.inner_pool_of_mut::<u32>().set_slab_capacity(nz!(2));
 
         let handle = pool.insert(42_u32);
         assert_eq!(pool.len(), 1);
 
+        // SAFETY: This live handle belongs to the pool and no references to its value remain.
         unsafe {
             pool.remove(handle);
         }
@@ -428,10 +432,13 @@ mod tests {
     #[test]
     fn remove_with_shared_handle() {
         let mut pool = RawBlindPool::new();
+        // Handle conversion and removal do not need the default bulk-allocation capacity.
+        pool.inner_pool_of_mut::<u32>().set_slab_capacity(nz!(2));
 
         let handle_mut = pool.insert(42_u32);
         let handle_shared = handle_mut.into_shared();
 
+        // SAFETY: This live handle belongs to the pool and no references to its value remain.
         unsafe {
             pool.remove(handle_shared);
         }
@@ -569,6 +576,12 @@ mod tests {
     #[test]
     fn multiple_types_different_layouts() {
         let mut pool = RawBlindPool::new();
+        // Type dispatch needs shared slots, not the bulk-allocation capacity policy.
+        pool.inner_pool_of_mut::<String>().set_slab_capacity(nz!(2));
+        pool.inner_pool_of_mut::<u32>().set_slab_capacity(nz!(2));
+        pool.inner_pool_of_mut::<u64>().set_slab_capacity(nz!(2));
+        pool.inner_pool_of_mut::<Vec<i32>>()
+            .set_slab_capacity(nz!(2));
 
         // Insert different types with different layouts
         let string_handle = pool.insert("test".to_string());

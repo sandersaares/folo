@@ -1485,13 +1485,17 @@ mod tests {
 
     #[test]
     fn member_pattern_matches_one_segment_star() {
-        let packages = members(&["packages/*"]);
-        assert!(is_workspace_member("packages/foo", &packages));
-        assert!(!is_workspace_member("packages/foo/bar", &packages));
-        assert!(!is_workspace_member("other/foo", &packages));
-        let crates = members(&["crates/foo-*"]);
-        assert!(is_workspace_member("crates/foo-bar", &crates));
-        assert!(!is_workspace_member("crates/foo-bar/nested", &crates));
+        let packages = members(&["p/*"]);
+        assert!(is_workspace_member("p/a", &packages));
+        assert!(!is_workspace_member("p/a/b", &packages));
+        assert!(!is_workspace_member("q/a", &packages));
+    }
+
+    #[test]
+    fn member_pattern_matches_a_partial_segment_star() {
+        let crates = members(&["p/a-*"]);
+        assert!(is_workspace_member("p/a-b", &crates));
+        assert!(!is_workspace_member("p/a-b/c", &crates));
     }
 
     /// A member pattern matches only at the workspace root.
@@ -1502,10 +1506,13 @@ mod tests {
     /// the wrong package directory at that end of the comparison.
     #[test]
     fn a_member_pattern_matches_only_at_the_workspace_root() {
-        let bare = members(&["foo*"]);
-        assert!(is_workspace_member("foo-bar", &bare));
-        assert!(!is_workspace_member("packages/foo-bar", &bare));
+        let bare = members(&["a*"]);
+        assert!(is_workspace_member("ab", &bare));
+        assert!(!is_workspace_member("p/ab", &bare));
+    }
 
+    #[test]
+    fn an_exclusion_matches_only_at_the_workspace_root() {
         let excluded = WorkspaceMembers {
             members: Vec::new(),
             exclude: compile_patterns(&["skip".to_string()], PathCase::Sensitive).unwrap(),
@@ -1579,13 +1586,19 @@ mod tests {
     /// A member pattern that already anchors itself against the workspace root keeps that meaning,
     /// and one that does not is anchored for it. Ref: the `anchored` documentation.
     #[test]
-    fn a_member_pattern_matches_from_the_workspace_root_however_it_is_spelled() {
-        for literal in ["packages/*", "/packages/*"] {
-            let pattern = MemberPattern::new(literal, PathCase::Sensitive).unwrap();
+    fn a_member_pattern_is_anchored_to_the_workspace_root() {
+        assert_root_anchored("p/*");
+    }
 
-            assert!(pattern.matches("packages/foo"), "{literal}");
-            assert!(!pattern.matches("nested/packages/foo"), "{literal}");
-        }
+    #[test]
+    fn an_explicitly_anchored_member_pattern_stays_anchored() {
+        assert_root_anchored("/p/*");
+    }
+
+    fn assert_root_anchored(literal: &str) {
+        let pattern = MemberPattern::new(literal, PathCase::Sensitive).unwrap();
+        assert!(pattern.matches("p/a"));
+        assert!(!pattern.matches("q/p/a"));
     }
 
     /// A cloned member pattern matches the same directories.
@@ -1594,19 +1607,24 @@ mod tests {
     /// exactly what the original matched.
     #[test]
     fn a_cloned_member_pattern_matches_the_same_directories() {
-        let pattern = MemberPattern::new("packages/*", PathCase::Sensitive).unwrap();
+        // The anchored literal still queries the compiled matcher because its stored spelling
+        // differs from the candidate. It avoids wildcard-regex compilation under Miri while
+        // native runs retain wildcard clone coverage.
+        let (literal, included, excluded) = if cfg!(miri) {
+            ("/a", "a", "b")
+        } else {
+            ("*", "a", "p/a")
+        };
+        let pattern = MemberPattern::new(literal, PathCase::Sensitive).unwrap();
 
         let cloned = pattern.clone();
 
-        assert_eq!(
-            cloned.matches("packages/foo"),
-            pattern.matches("packages/foo")
-        );
-        assert_eq!(cloned.matches("other/foo"), pattern.matches("other/foo"));
-        assert!(cloned.matches("packages/foo"));
-        assert!(!cloned.matches("other/foo"));
+        assert_eq!(cloned.matches(included), pattern.matches(included));
+        assert_eq!(cloned.matches(excluded), pattern.matches(excluded));
+        assert!(cloned.matches(included));
+        assert!(!cloned.matches(excluded));
         assert!(
-            format!("{cloned:?}").contains("packages/*"),
+            format!("{cloned:?}").contains(literal),
             "the compiled matcher cannot be shown, so the literal identifies the pattern"
         );
     }
@@ -1689,10 +1707,10 @@ publish = false
 
     #[test]
     fn member_pattern_double_star_matches_the_prefix_directory() {
-        let packages = members(&["packages/**"]);
-        assert!(is_workspace_member("packages", &packages));
-        assert!(is_workspace_member("packages/foo", &packages));
-        assert!(!is_workspace_member("other", &packages));
+        let packages = members(&["p/**"]);
+        assert!(is_workspace_member("p", &packages));
+        assert!(is_workspace_member("p/a", &packages));
+        assert!(!is_workspace_member("q", &packages));
     }
 
     #[test]
@@ -1714,23 +1732,27 @@ publish = false
     }
 
     #[test]
-    fn workspace_members_exclude_and_empty_members() {
+    fn workspace_members_honor_exclude() {
         let declared = parse_workspace_members(
             r#"
 [workspace]
-members = ["packages/*"]
-exclude = ["packages/skip"]
+members = ["p/*"]
+exclude = ["p/b"]
 "#,
             Path::new("Cargo.toml"),
             PathCase::Sensitive,
         )
         .unwrap();
-        assert!(is_workspace_member("packages/foo", &declared));
-        assert!(!is_workspace_member("packages/skip", &declared));
-        assert!(!is_workspace_member("examples/foo", &declared));
+        assert!(is_workspace_member("p/a", &declared));
+        assert!(!is_workspace_member("p/b", &declared));
+        assert!(!is_workspace_member("q/a", &declared));
         // A non-virtual root's own package is a member even though no pattern
         // names it.
         assert!(is_workspace_member("", &declared));
+    }
+
+    #[test]
+    fn empty_workspace_members_only_selects_the_root() {
         // Without a `members` list the only member is the root package, matching
         // Cargo rather than treating every manifest in the tree as a member.
         let empty = parse_workspace_members(
@@ -1746,14 +1768,14 @@ exclude = ["packages/skip"]
     #[test]
     fn workspace_exclusion_is_queried_independently_of_membership() {
         let declared = parse_workspace_members(
-            "[workspace]\nmembers = [\"packages/*\"]\nexclude = [\"packages/skip\"]\n",
+            "[workspace]\nmembers = [\"p/*\"]\nexclude = [\"p/b\"]\n",
             Path::new("Cargo.toml"),
             PathCase::Sensitive,
         )
         .unwrap();
-        assert!(is_workspace_excluded("packages/skip", &declared));
+        assert!(is_workspace_excluded("p/b", &declared));
         // Not named by either list: outside the workspace, but not excluded.
-        assert!(!is_workspace_excluded("examples/foo", &declared));
+        assert!(!is_workspace_excluded("q/a", &declared));
     }
 
     /// A directory name containing a backslash is one component.
@@ -1791,34 +1813,58 @@ exclude = ["packages/skip"]
     }
 
     #[test]
-    fn path_dependencies_are_collected_from_every_dependency_table() {
+    fn path_dependencies_are_collected_from_normal_dependencies() {
+        assert_path_dependency("[dependencies]");
+    }
+
+    #[test]
+    fn path_dependencies_are_collected_from_build_dependencies() {
+        assert_path_dependency("[build-dependencies]");
+    }
+
+    #[test]
+    fn path_dependencies_are_collected_from_dev_dependencies() {
+        assert_path_dependency("[dev-dependencies]");
+    }
+
+    #[test]
+    fn path_dependencies_are_collected_from_target_dependencies() {
+        assert_path_dependency("[target.'cfg(windows)'.dependencies]");
+    }
+
+    #[test]
+    fn path_dependencies_accumulate_across_dependency_tables() {
+        // Aggregation needs all table kinds together, but not a complete package manifest.
+        let doc = root_doc(
+            "[dependencies]\nb.path = 'b'\n\
+             [build-dependencies]\nc.path = 'c'\n\
+             [dev-dependencies]\nd.path = 'd'\n\
+             [target.'cfg(windows)'.dependencies]\ne.path = 'e'\n",
+        );
+        let mut paths = path_dependencies(&doc);
+        paths.sort();
+        assert_eq!(paths, vec!["b", "c", "d", "e"]);
+    }
+
+    fn assert_path_dependency(table: &str) {
         let parsed = parse_package_manifest(
-            r#"
+            &format!(
+                r#"
 [package]
 name = "a"
 version = "0.1.0"
 
-[dependencies]
-b = { path = "../b" }
+{table}
+b = {{ path = "../b" }}
 registry = "1"
-
-[build-dependencies]
-c = { path = "../c" }
-
-[dev-dependencies]
-d = { path = "../d" }
-
-[target.'cfg(windows)'.dependencies]
-e = { path = "../e" }
-"#,
+"#
+            ),
             "packages/a/Cargo.toml",
             &WorkspaceInherit::default(),
         )
         .unwrap()
         .unwrap();
-        let mut paths = parsed.path_dependencies;
-        paths.sort();
-        assert_eq!(paths, vec!["../b", "../c", "../d", "../e"]);
+        assert_eq!(parsed.path_dependencies, vec!["../b"]);
     }
 
     /// A dependency look alike table is not a dependency table.
@@ -1852,19 +1898,25 @@ b = { path = "../b" }
     }
 
     #[test]
+    fn case_sensitive_matching_follows_the_probed_filesystem() {
+        let strict = cased_members(&["P/*"], PathCase::Sensitive);
+        assert!(!is_workspace_member("p/a", &strict));
+        assert!(is_workspace_member("P/a", &strict));
+    }
+
+    #[test]
     fn case_insensitive_matching_follows_the_probed_filesystem() {
-        let strict = cased_members(&["Packages/*"], PathCase::Sensitive);
-        assert!(!is_workspace_member("packages/foo", &strict));
-        assert!(is_workspace_member("Packages/foo", &strict));
+        let relaxed = cased_members(&["P/*"], PathCase::Insensitive);
+        assert!(is_workspace_member("p/a", &relaxed));
+        assert!(is_workspace_member("P/a", &relaxed));
+    }
 
-        let relaxed = cased_members(&["Packages/*"], PathCase::Insensitive);
-        assert!(is_workspace_member("packages/foo", &relaxed));
-        assert!(is_workspace_member("Packages/foo", &relaxed));
-
+    #[test]
+    fn case_insensitive_prefix_matching_follows_the_probed_filesystem() {
         // The literal and `foo/**` prefix fast paths follow the same rules as
         // the compiled matcher.
-        let prefix = cased_members(&["Packages/**"], PathCase::Insensitive);
-        assert!(is_workspace_member("packages", &prefix));
+        let prefix = cased_members(&["P/**"], PathCase::Insensitive);
+        assert!(is_workspace_member("p", &prefix));
     }
 
     #[cfg_attr(miri, ignore)] // Reads a real directory, which Miri cannot emulate.
@@ -1935,7 +1987,7 @@ publish = []
 [package]
 name = "foo"
 version = "0.1.0"
-include = ["src/**", "README.md"]
+include = ["/src/", "/README.md"]
 "#,
             "packages/foo/Cargo.toml",
             &WorkspaceInherit::default(),
@@ -1943,6 +1995,7 @@ include = ["src/**", "README.md"]
         .unwrap()
         .unwrap();
         assert!(parsed.packaging.is_released("src/lib.rs"));
+        assert!(parsed.packaging.is_released("README.md"));
         assert!(!parsed.packaging.is_released("tests/x.rs"));
     }
 

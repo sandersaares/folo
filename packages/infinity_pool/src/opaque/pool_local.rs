@@ -406,6 +406,7 @@ impl FusedIterator for LocalOpaquePoolIterator<'_> {}
 mod tests {
     use std::panic::{RefUnwindSafe, UnwindSafe};
 
+    use new_zealand::nz;
     use static_assertions::{assert_impl_all, assert_not_impl_any};
 
     use super::*;
@@ -453,6 +454,8 @@ mod tests {
     #[test]
     fn capacity_grows_when_needed() {
         let pool = LocalOpaquePool::with_layout_of::<u64>();
+        // Keep multiple live slots before crossing the slab boundary.
+        pool.inner.borrow_mut().set_slab_capacity(nz!(2));
 
         assert_eq!(pool.capacity(), 0);
 
@@ -475,7 +478,7 @@ mod tests {
         // One more insert should expand capacity
         let _handle = pool.insert(999_u64);
 
-        assert!(pool.capacity() >= initial_capacity);
+        assert!(pool.capacity() > initial_capacity);
     }
 
     #[test]
@@ -1051,45 +1054,52 @@ mod tests {
 
     #[test]
     fn non_send_types() {
-        // Custom non-Send type with raw pointer
-        struct NonSendType(*const u8);
-        // SAFETY: Only used in single-threaded local test environment, never shared across threads
-        unsafe impl Sync for NonSendType {}
-
-        // LocalOpaquePool should work with non-Send types since it is single-threaded
-        use std::cell::RefCell;
-        use std::rc::Rc;
-
         let pool = LocalOpaquePool::with_layout_of::<Rc<String>>();
+        // This fixture exercises type support and iteration, not bulk capacity.
+        pool.inner.borrow_mut().set_slab_capacity(nz!(2));
 
-        // Rc is not Send, but LocalOpaquePool should handle it since it is single-threaded
         let rc_handle = pool.insert(Rc::new("Non-Send data".to_string()));
         assert_eq!(pool.len(), 1);
         assert_eq!(&**rc_handle, "Non-Send data");
 
-        // Test with RefCell pool
-        let refcell_pool = LocalOpaquePool::with_layout_of::<RefCell<i32>>();
-        let refcell_handle = refcell_pool.insert(RefCell::new(42));
-        assert_eq!(refcell_pool.len(), 1);
-        assert_eq!(*refcell_handle.borrow(), 42);
-
-        // Test with custom non-Send type
-        let custom_pool = LocalOpaquePool::with_layout_of::<NonSendType>();
-        let raw_ptr = 0x1234 as *const u8;
-        let non_send_handle = custom_pool.insert(NonSendType(raw_ptr));
-        assert_eq!(custom_pool.len(), 1);
-        assert_eq!(non_send_handle.0, raw_ptr);
-
-        // Test iteration with non-Send types
         pool.with_iter(|iter| {
             let values: Vec<String> = iter
                 .map(|ptr| {
-                    // SAFETY: We know these point to Rc<String> we inserted
+                    // SAFETY: rc_handle keeps this initialized value alive throughout iteration;
+                    // this single-threaded test only shares it and never borrows it exclusively.
                     unsafe { ptr.cast::<Rc<String>>().as_ref().as_ref().clone() }
                 })
                 .collect();
             assert_eq!(values, vec!["Non-Send data"]);
         });
+    }
+
+    #[test]
+    fn non_sync_types() {
+        let refcell_pool = LocalOpaquePool::with_layout_of::<RefCell<i32>>();
+        // This fixture exercises type support, not bulk capacity.
+        refcell_pool.inner.borrow_mut().set_slab_capacity(nz!(2));
+        let refcell_handle = refcell_pool.insert(RefCell::new(42));
+        assert_eq!(refcell_pool.len(), 1);
+        assert_eq!(*refcell_handle.borrow(), 42);
+    }
+
+    #[test]
+    fn non_send_raw_pointer() {
+        /// A pointer payload verifies that local storage does not require thread mobility.
+        struct NonSendType(*const u8);
+
+        // SAFETY: This fixture only compares pointer values; it never dereferences the pointer.
+        unsafe impl Sync for NonSendType {}
+
+        let custom_pool = LocalOpaquePool::with_layout_of::<NonSendType>();
+        // This fixture exercises type support, not bulk capacity.
+        custom_pool.inner.borrow_mut().set_slab_capacity(nz!(2));
+        let value = 42;
+        let raw_ptr = &raw const value;
+        let non_send_handle = custom_pool.insert(NonSendType(raw_ptr));
+        assert_eq!(custom_pool.len(), 1);
+        assert_eq!(non_send_handle.0, raw_ptr);
     }
 
     #[test]

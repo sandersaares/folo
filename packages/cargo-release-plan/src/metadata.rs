@@ -1381,8 +1381,10 @@ mod tests {
                 let mut reads = reads.borrow_mut();
                 *reads.entry(path.to_path_buf()).or_default() += 1;
                 if path == root_path {
+                    // Membership comes from metadata; this fixture only needs the root package
+                    // and workspace roles whose reads and parses must be shared.
                     Ok(
-                        "[workspace]\nmembers = [\"packages/member\"]\n\n[package]\nname = \"root\"\nversion = \"0.1.0\"\n"
+                        "[workspace]\n[package]\nname = \"root\"\nversion = \"0.1.0\"\n"
                             .to_string(),
                     )
                 } else if path == member_path {

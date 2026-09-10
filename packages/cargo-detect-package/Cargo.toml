@@ -3,7 +3,7 @@
 name = "cargo-detect-package"
 description = "A Cargo tool to detect the package that a file belongs to, passing the package name to a subcommand"
 publish = true
-version = "1.0.32"
+version = "1.0.33"
 
 authors.workspace = true
 edition.workspace = true

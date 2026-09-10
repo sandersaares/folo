@@ -491,6 +491,7 @@ mod tests {
     use ohno::ErrorExt as _;
 
     use super::*;
+    use crate::testing::run_points_json;
 
     fn config() -> Config {
         Config::default()
@@ -526,7 +527,7 @@ mod tests {
             BenchmarkId::new(nonempty!["all_the_time".to_owned(), "read_cell".to_owned()]),
             vec![Metric::new(MetricKind::InstructionCount, 100.0)],
         );
-        Run::new(context, vec![record]).to_json().unwrap()
+        run_points_json(&Run::new(context, vec![record]))
     }
 
     fn clean_key(commit: &str) -> String {
@@ -581,7 +582,7 @@ mod tests {
             &auto(),
             ts(1_700_000_000),
             "0.0.1",
-            &RecordingReporter::new(),
+            &RecordingReporter::quiet(),
         ))
     }
 
@@ -787,7 +788,7 @@ mod tests {
             &config(),
             &unbless,
             &auto(),
-            &RecordingReporter::new(),
+            &RecordingReporter::quiet(),
         ))
         .unwrap();
         assert!(message.contains("at commit c1"), "{message}");
@@ -948,7 +949,7 @@ mod tests {
             &config(),
             &UnblessOptions::default(),
             &auto(),
-            &RecordingReporter::new(),
+            &RecordingReporter::quiet(),
         ))
         .unwrap();
         assert!(message.contains("Removed"), "{message}");
@@ -966,7 +967,7 @@ mod tests {
             &config(),
             &UnblessOptions::default(),
             &auto(),
-            &RecordingReporter::new(),
+            &RecordingReporter::quiet(),
         ))
         .unwrap();
         assert!(message.contains("No blessings"), "{message}");
@@ -996,7 +997,7 @@ mod tests {
             &config(),
             &UnblessOptions::default(),
             &auto(),
-            &RecordingReporter::new(),
+            &RecordingReporter::quiet(),
         ))
         .unwrap_err();
         let found = error.find_source::<UnresolvedRefError>().unwrap();
@@ -1061,7 +1062,7 @@ mod tests {
     fn bless_announces_the_effective_selection() {
         let storage = MemoryStorage::new();
         block_on(storage.put(&clean_key("c2"), clean_run_json("c2", 1000).as_bytes())).unwrap();
-        let reporter = RecordingReporter::new();
+        let reporter = RecordingReporter::quiet();
         block_on(bless_with(
             &master_git(),
             &storage,
@@ -1104,7 +1105,7 @@ mod tests {
         block_on(storage.put(&clean_key("c2"), clean_run_json("c2", 1000).as_bytes())).unwrap();
         let git = master_git();
         drive_bless(&storage, &git, &bless_options(&["all_the_time/read_cell"])).unwrap();
-        let reporter = RecordingReporter::new();
+        let reporter = RecordingReporter::quiet();
         block_on(unbless_with(
             &git,
             &storage,

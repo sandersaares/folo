@@ -43,44 +43,52 @@ mod tests {
     };
 
     #[test]
-    fn engine_interval_support_matches_adapter_output() {
-        for engine in Engine::ALL {
-            match engine {
-                Engine::Criterion => {
-                    assert_eq!(engine.interval_support(), IntervalSupport::Always);
-                    let record =
-                        parse_criterion_case(CRITERION_BENCHMARK, CRITERION_ESTIMATES).unwrap();
-                    assert_all_metrics_have_intervals(&record);
-                }
-                Engine::Callgrind => {
-                    assert_eq!(engine.interval_support(), IntervalSupport::Never);
-                    let record = parse_callgrind_summary(CALLGRIND_SUMMARY).unwrap();
-                    assert_no_metrics_have_intervals(&record);
-                }
-                Engine::AllocTracker => {
-                    assert_eq!(engine.interval_support(), IntervalSupport::MultiSpanOnly);
-                    let single_span = parse_alloc_tracker_operation(ALLOC_TRACKER_SINGLE_SPAN)
-                        .unwrap()
-                        .unwrap();
-                    let multi_span = parse_alloc_tracker_operation(ALLOC_TRACKER_MULTI_SPAN)
-                        .unwrap()
-                        .unwrap();
-                    assert_no_metrics_have_intervals(&single_span);
-                    assert_all_metrics_have_intervals(&multi_span);
-                }
-                Engine::AllTheTime => {
-                    assert_eq!(engine.interval_support(), IntervalSupport::MultiSpanOnly);
-                    let single_span = parse_all_the_time_operation(ALL_THE_TIME_SINGLE_SPAN)
-                        .unwrap()
-                        .unwrap();
-                    let multi_span = parse_all_the_time_operation(ALL_THE_TIME_MULTI_SPAN)
-                        .unwrap()
-                        .unwrap();
-                    assert_no_metrics_have_intervals(&single_span);
-                    assert_all_metrics_have_intervals(&multi_span);
-                }
-            }
-        }
+    fn criterion_interval_support_matches_adapter_output() {
+        assert_eq!(
+            Engine::Criterion.interval_support(),
+            IntervalSupport::Always
+        );
+        let record = parse_criterion_case(CRITERION_BENCHMARK, CRITERION_ESTIMATES).unwrap();
+        assert_all_metrics_have_intervals(&record);
+    }
+
+    #[test]
+    fn callgrind_interval_support_matches_adapter_output() {
+        assert_eq!(Engine::Callgrind.interval_support(), IntervalSupport::Never);
+        let record = parse_callgrind_summary(CALLGRIND_SUMMARY).unwrap();
+        assert_no_metrics_have_intervals(&record);
+    }
+
+    #[test]
+    fn alloc_tracker_interval_support_matches_adapter_output() {
+        assert_eq!(
+            Engine::AllocTracker.interval_support(),
+            IntervalSupport::MultiSpanOnly
+        );
+        let single_span = parse_alloc_tracker_operation(ALLOC_TRACKER_SINGLE_SPAN)
+            .unwrap()
+            .unwrap();
+        let multi_span = parse_alloc_tracker_operation(ALLOC_TRACKER_MULTI_SPAN)
+            .unwrap()
+            .unwrap();
+        assert_no_metrics_have_intervals(&single_span);
+        assert_all_metrics_have_intervals(&multi_span);
+    }
+
+    #[test]
+    fn all_the_time_interval_support_matches_adapter_output() {
+        assert_eq!(
+            Engine::AllTheTime.interval_support(),
+            IntervalSupport::MultiSpanOnly
+        );
+        let single_span = parse_all_the_time_operation(ALL_THE_TIME_SINGLE_SPAN)
+            .unwrap()
+            .unwrap();
+        let multi_span = parse_all_the_time_operation(ALL_THE_TIME_MULTI_SPAN)
+            .unwrap()
+            .unwrap();
+        assert_no_metrics_have_intervals(&single_span);
+        assert_all_metrics_have_intervals(&multi_span);
     }
 
     fn assert_all_metrics_have_intervals(record: &BenchmarkResult) {

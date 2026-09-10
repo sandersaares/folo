@@ -1140,7 +1140,9 @@ mod tests {
         // iteration creates a real future and awaits it while a
         // separate thread calls set() concurrently.
         testing::with_watchdog(|| {
-            const ITERATIONS: usize = 200;
+            // Miri explores interleavings across seeds; a few rounds still exercise reuse on
+            // real competing threads without repeating the native stress workload.
+            const ITERATIONS: usize = if cfg!(miri) { 4 } else { 200 };
 
             let event = AutoResetEvent::boxed();
 

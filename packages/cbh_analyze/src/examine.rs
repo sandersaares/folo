@@ -725,13 +725,14 @@ mod tests {
         BenchmarkId, BenchmarkResult, EnvironmentInfo, GitInfo, Metric, MetricKind, Run,
         RunContext, ToolchainInfo,
     };
-    use cbh_storage::{MemoryStorage, Storage};
+    use cbh_storage::MemoryStorage;
     use futures::executor::block_on;
     use jiff::Timestamp;
     use nonempty::nonempty;
     use ohno::ErrorExt as _;
 
     use super::*;
+    use crate::testing::store_run as store;
     use crate::{EmptyBenchmarkError, UnknownMetricError, UnresolvedRefError};
 
     fn config() -> Config {
@@ -823,11 +824,6 @@ mod tests {
         format!("v1/folo/objects/callgrind/x86_64-unknown-linux-gnu/m1/{commit}/dirty-{unix}.json")
     }
 
-    fn store(storage: &MemoryStorage, key: &str, run: &Run) {
-        let json = run.to_json().unwrap();
-        block_on(storage.put(key, json.as_bytes())).unwrap();
-    }
-
     /// A linear history `c0 <- c1 <- c2 <- c3` with commit titles, on the default
     /// branch `master`.
     fn linear_git() -> FakeGitHistory {
@@ -869,7 +865,7 @@ mod tests {
             options,
             &auto(),
             Timestamp::from_second(0).unwrap(),
-            &RecordingReporter::new(),
+            &RecordingReporter::quiet(),
             &spawner(),
         ))
         .unwrap()
@@ -894,7 +890,7 @@ mod tests {
             &options,
             &auto(),
             Timestamp::from_second(0).unwrap(),
-            &RecordingReporter::new(),
+            &RecordingReporter::quiet(),
             &spawner(),
         ))
         .unwrap();
@@ -922,7 +918,7 @@ mod tests {
             &options,
             &auto(),
             Timestamp::from_second(0).unwrap(),
-            &RecordingReporter::new(),
+            &RecordingReporter::quiet(),
             &spawner(),
         ))
         .unwrap();
@@ -1524,8 +1520,7 @@ mod tests {
         assert_eq!(points[2]["value"], 200.0, "{report}");
     }
 
-    #[test]
-    fn no_dirty_leaves_the_commit_as_an_n_a_row() {
+    fn dirty_tip_fixture() -> (MemoryStorage, FakeGitHistory) {
         // c2 has a clean run and the tip c3 only a dirty snapshot, admitted by the
         // base-tip dirty exception. `--no-dirty` drops that snapshot, and the tip
         // becomes an `n/a` row rather than vanishing from the listing.
@@ -1542,7 +1537,12 @@ mod tests {
         );
         let mut git = linear_git();
         git.mark_dirty();
+        (storage, git)
+    }
 
+    #[test]
+    fn a_dirty_only_tip_is_listed_with_its_value() {
+        let (storage, git) = dirty_tip_fixture();
         let admitted = examine_json(&storage, &git, &options());
         let parsed: serde_json::Value = serde_json::from_str(&admitted).unwrap();
         let points = parsed["sets"][0]["points"].as_array().unwrap();
@@ -1551,7 +1551,11 @@ mod tests {
             "the snapshot is listed: {admitted}"
         );
         assert_eq!(points[1]["dirty"], true, "{admitted}");
+    }
 
+    #[test]
+    fn no_dirty_leaves_the_commit_as_an_n_a_row() {
+        let (storage, git) = dirty_tip_fixture();
         let opts = ExamineOptions {
             no_dirty: true,
             ..options()
@@ -1866,7 +1870,7 @@ mod tests {
             &opts,
             &auto(),
             Timestamp::from_second(0).unwrap(),
-            &RecordingReporter::new(),
+            &RecordingReporter::quiet(),
             &spawner(),
         ))
         .unwrap_err();
@@ -1891,7 +1895,7 @@ mod tests {
             &opts,
             &auto(),
             Timestamp::from_second(0).unwrap(),
-            &RecordingReporter::new(),
+            &RecordingReporter::quiet(),
             &spawner(),
         ))
         .unwrap_err();
@@ -1945,7 +1949,7 @@ mod tests {
             &options(),
             &auto(),
             Timestamp::from_second(0).unwrap(),
-            &RecordingReporter::new(),
+            &RecordingReporter::quiet(),
             &spawner(),
         ))
         .unwrap_err();

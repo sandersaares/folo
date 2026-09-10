@@ -296,6 +296,8 @@ mod tests {
             // size rather than a fraction of the cap, so a cap that no longer
             // clears an ordinary burst fails here.
             const BURST_BYTES: usize = 2 * 1024 * 1024;
+            // An in-flight write and multiple queued messages exercise both sides of the queue.
+            const MIRI_CHUNKS: usize = 3;
 
             const {
                 assert!(
@@ -309,9 +311,23 @@ mod tests {
             // being written out as fast as it is filled.
             transport.stall(server);
             let outbox = Outbox::start(transport.clone(), server);
-            let chunk = vec![0_u8; 64 * 1024];
-            let rounds = BURST_BYTES.div_euclid(chunk.len());
-            for _ in 0..rounds {
+            // Miri checks message contents and boundaries with a small multi-byte payload;
+            // native tests also exercise full-sized console writes.
+            let chunk = if cfg!(miri) {
+                b"data".to_vec()
+            } else {
+                vec![0_u8; 64 * 1024]
+            };
+            // Miri needs an in-flight write and multiple queued messages, not the full native
+            // burst. The compile-time assertion still protects the cap's ordinary-burst floor.
+            let rounds = if cfg!(miri) {
+                MIRI_CHUNKS
+            } else {
+                BURST_BYTES.div_euclid(chunk.len())
+            };
+            outbox.send(Message::Output(chunk.clone()));
+            transport.wait_for_stalled_send(server);
+            for _ in 1..rounds {
                 outbox.send(Message::Output(chunk.clone()));
             }
             transport.resume(server);
@@ -324,6 +340,7 @@ mod tests {
                     Message::Output(chunk.clone())
                 );
             }
+            transport.recv(client).unwrap_err();
         });
     }
 

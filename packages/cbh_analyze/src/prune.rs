@@ -763,14 +763,10 @@ mod tests {
     use cbh_config::Config;
     use cbh_diag::RecordingReporter;
     use cbh_git::FakeGitHistory;
-    use cbh_model::{
-        BenchmarkId, BenchmarkResult, Engine, EnvironmentInfo, GitInfo, Metric, MetricKind, Run,
-        RunContext, ToolchainInfo,
-    };
+    use cbh_model::Engine;
     use cbh_storage::{MemoryStorage, Storage};
     use futures::executor::block_on;
     use jiff::Timestamp;
-    use nonempty::nonempty;
     use ohno::ErrorExt as _;
 
     use super::*;
@@ -802,31 +798,6 @@ mod tests {
         }
     }
 
-    /// A minimal clean result set for `commit`. Topology (not the stored object)
-    /// now carries commit dates, so the run needs no timestamp of its own.
-    fn set(commit: &str) -> Run {
-        let context = RunContext::new(
-            Timestamp::from_second(0).unwrap(),
-            GitInfo {
-                commit: Some(commit.to_owned()),
-                branch: Some("main".to_owned()),
-                dirty: false,
-            },
-            EnvironmentInfo::default(),
-            ToolchainInfo::default(),
-            "0.0.1".to_owned(),
-        );
-        let record = BenchmarkResult::new(
-            BenchmarkId::new(nonempty![
-                "nm".to_owned(),
-                "nm::observe".to_owned(),
-                "pull".to_owned(),
-            ]),
-            vec![Metric::new(MetricKind::InstructionCount, 100.0)],
-        );
-        Run::new(context, vec![record])
-    }
-
     fn clean_key(commit: &str) -> String {
         format!("v1/folo/objects/callgrind/x86_64-unknown-linux-gnu/m1/{commit}/clean.json")
     }
@@ -839,9 +810,9 @@ mod tests {
         format!("v1/folo/objects/callgrind/x86_64-unknown-linux-gnu/m1/{commit}/bless-{unix}.json")
     }
 
-    fn store(storage: &MemoryStorage, key: &str, value: &Run) {
-        let json = value.to_json().unwrap();
-        block_on(storage.put(key, json.as_bytes())).unwrap();
+    /// Pruning selects keys and never parses bodies, so fixture bodies need no run data.
+    fn store(storage: &MemoryStorage, key: &str) {
+        block_on(storage.put(key, b"{}")).unwrap();
     }
 
     /// Stores a blessing sidecar. `prune` never parses these (it only deletes
@@ -936,7 +907,7 @@ mod tests {
             options,
             &auto(),
             now(),
-            &RecordingReporter::new(),
+            &RecordingReporter::quiet(),
         ))
         .unwrap();
         rendered
@@ -959,7 +930,7 @@ mod tests {
             &options,
             &auto(),
             now(),
-            &RecordingReporter::new(),
+            &RecordingReporter::quiet(),
         ))
         .unwrap();
         rendered
@@ -986,7 +957,7 @@ mod tests {
             &options,
             &auto(),
             now(),
-            &RecordingReporter::new(),
+            &RecordingReporter::quiet(),
         ))
         .unwrap();
         rendered
@@ -997,8 +968,8 @@ mod tests {
     #[test]
     fn prune_announces_the_effective_selection() {
         let storage = MemoryStorage::new();
-        store(&storage, &dirty_key("f2", 300), &set("f2"));
-        let reporter = RecordingReporter::new();
+        store(&storage, &dirty_key("f2", 300));
+        let reporter = RecordingReporter::quiet();
         block_on(prune_with(
             &feature_git(),
             &storage,
@@ -1037,12 +1008,12 @@ mod tests {
     #[test]
     fn prune_announces_an_explicit_since_reason() {
         let storage = MemoryStorage::new();
-        store(&storage, &dirty_key("f2", 300), &set("f2"));
+        store(&storage, &dirty_key("f2", 300));
         let options = PruneOptions {
             since: Some("2024-01-01".to_owned()),
             ..dirty_options()
         };
-        let reporter = RecordingReporter::new();
+        let reporter = RecordingReporter::quiet();
         block_on(prune_with(
             &feature_git(),
             &storage,
@@ -1065,7 +1036,7 @@ mod tests {
     fn prune_skips_a_run_whose_commit_is_off_history() {
         let storage = MemoryStorage::new();
         // A dirty run on a commit that is not on the analyzed (HEAD) history.
-        store(&storage, &dirty_key("z9", 100), &set("z9"));
+        store(&storage, &dirty_key("z9", 100));
         let reporter = RecordingReporter::new();
         block_on(prune_with(
             &linear_git(),
@@ -1090,14 +1061,14 @@ mod tests {
     #[test]
     fn dirty_scope_removes_target_side_dirty_runs_on_a_feature_branch() {
         let storage = MemoryStorage::new();
-        // Clean runs across the whole history.
-        for commit in ["c0", "c1", "f1", "f2"] {
-            store(&storage, &clean_key(commit), &set(commit));
+        // A clean run on each side proves that pruning only removes dirty snapshots.
+        for commit in ["c1", "f1"] {
+            store(&storage, &clean_key(commit));
         }
         // Dirty snapshots: base-side (c1) must survive; target-side (f1, f2) go.
-        store(&storage, &dirty_key("c1", 150), &set("c1"));
-        store(&storage, &dirty_key("f1", 200), &set("f1"));
-        store(&storage, &dirty_key("f2", 300), &set("f2"));
+        store(&storage, &dirty_key("c1", 150));
+        store(&storage, &dirty_key("f1", 200));
+        store(&storage, &dirty_key("f2", 300));
         let git = feature_git();
 
         let report = prune_json(&storage, &git, &dirty_options());
@@ -1130,11 +1101,11 @@ mod tests {
         // dirty runs are still removed (no working-tree-dirty guard). Earlier
         // base-side dirty runs stay untouched.
         let storage = MemoryStorage::new();
-        for commit in ["c0", "c1", "c2", "c3"] {
-            store(&storage, &clean_key(commit), &set(commit));
+        for commit in ["c1", "c3"] {
+            store(&storage, &clean_key(commit));
         }
-        store(&storage, &dirty_key("c1", 150), &set("c1"));
-        store(&storage, &dirty_key("c3", 300), &set("c3"));
+        store(&storage, &dirty_key("c1", 150));
+        store(&storage, &dirty_key("c3", 300));
         let git = linear_git(); // No mark_dirty: the working tree is clean.
 
         let report = prune(&storage, &git, &dirty_options());
@@ -1154,11 +1125,11 @@ mod tests {
     #[test]
     fn all_scope_with_include_blessings_removes_clean_dirty_and_blessings_for_a_commit() {
         let storage = MemoryStorage::new();
-        store(&storage, &clean_key("f1"), &set("f1"));
-        store(&storage, &dirty_key("f1", 200), &set("f1"));
+        store(&storage, &clean_key("f1"));
+        store(&storage, &dirty_key("f1", 200));
         store_bless(&storage, &bless_key("f1", 50));
         // A second commit's data must survive a commit-scoped prune.
-        store(&storage, &clean_key("f2"), &set("f2"));
+        store(&storage, &clean_key("f2"));
         store_bless(&storage, &bless_key("f2", 60));
         let git = feature_git();
 
@@ -1194,8 +1165,8 @@ mod tests {
     #[test]
     fn pruning_runs_keeps_blessings_without_include_blessings() {
         let storage = MemoryStorage::new();
-        store(&storage, &clean_key("f1"), &set("f1"));
-        store(&storage, &dirty_key("f1", 200), &set("f1"));
+        store(&storage, &clean_key("f1"));
+        store(&storage, &dirty_key("f1", 200));
         store_bless(&storage, &bless_key("f1", 50));
         let git = feature_git();
 
@@ -1227,8 +1198,8 @@ mod tests {
     #[test]
     fn include_blessings_with_clean_scope_removes_clean_and_blessings_but_keeps_dirty() {
         let storage = MemoryStorage::new();
-        store(&storage, &clean_key("f1"), &set("f1"));
-        store(&storage, &dirty_key("f1", 200), &set("f1"));
+        store(&storage, &clean_key("f1"));
+        store(&storage, &dirty_key("f1", 200));
         store_bless(&storage, &bless_key("f1", 50));
         let git = feature_git();
 
@@ -1278,7 +1249,7 @@ mod tests {
     #[test]
     fn include_blessings_alone_leaves_runs_untouched() {
         let storage = MemoryStorage::new();
-        store(&storage, &clean_key("f1"), &set("f1"));
+        store(&storage, &clean_key("f1"));
         store_bless(&storage, &bless_key("f1", 50));
         let git = feature_git();
 
@@ -1303,7 +1274,7 @@ mod tests {
     #[test]
     fn prune_without_any_action_is_an_error() {
         let storage = MemoryStorage::new();
-        store(&storage, &clean_key("f1"), &set("f1"));
+        store(&storage, &clean_key("f1"));
         let git = feature_git();
 
         let error = block_on(prune_with(
@@ -1314,7 +1285,7 @@ mod tests {
             &PruneOptions::default(),
             &auto(),
             now(),
-            &RecordingReporter::new(),
+            &RecordingReporter::quiet(),
         ))
         .unwrap_err();
         assert!(error.find_source::<PruneSelectionRequiredError>().is_some());
@@ -1323,7 +1294,7 @@ mod tests {
     #[test]
     fn include_blessings_leaves_a_blessing_whose_commit_is_off_history() {
         let storage = MemoryStorage::new();
-        store(&storage, &clean_key("f1"), &set("f1"));
+        store(&storage, &clean_key("f1"));
         // A blessing sidecar on a commit that is not on the analyzed history; the
         // blessing pass skips it because the range only covers commits on history.
         store_bless(&storage, &bless_key("z9", 70));
@@ -1347,7 +1318,7 @@ mod tests {
     #[test]
     fn prune_requires_a_scope() {
         let storage = MemoryStorage::new();
-        store(&storage, &clean_key("f1"), &set("f1"));
+        store(&storage, &clean_key("f1"));
         let git = feature_git();
 
         let error = block_on(prune_with(
@@ -1358,7 +1329,7 @@ mod tests {
             &PruneOptions::default(),
             &auto(),
             now(),
-            &RecordingReporter::new(),
+            &RecordingReporter::quiet(),
         ))
         .unwrap_err();
         assert!(error.find_source::<PruneSelectionRequiredError>().is_some());
@@ -1372,7 +1343,7 @@ mod tests {
         // leaves nothing to produce, so the selection is rejected before any
         // pruning work — even with an otherwise-valid scope.
         let storage = MemoryStorage::new();
-        store(&storage, &clean_key("f1"), &set("f1"));
+        store(&storage, &clean_key("f1"));
         let git = feature_git();
 
         let opts = PruneOptions {
@@ -1388,7 +1359,7 @@ mod tests {
             &opts,
             &auto(),
             now(),
-            &RecordingReporter::new(),
+            &RecordingReporter::quiet(),
         ))
         .unwrap_err();
         assert!(error.find_source::<NoOutputSelectedError>().is_some());
@@ -1400,7 +1371,7 @@ mod tests {
     fn all_scope_keeps_base_side_history_on_a_feature_branch() {
         let storage = MemoryStorage::new();
         for commit in ["c0", "c1", "f1", "f2"] {
-            store(&storage, &clean_key(commit), &set(commit));
+            store(&storage, &clean_key(commit));
         }
         let git = feature_git();
 
@@ -1429,7 +1400,7 @@ mod tests {
     #[test]
     fn base_prune_requires_prune_base() {
         let storage = MemoryStorage::new();
-        store(&storage, &clean_key("c3"), &set("c3"));
+        store(&storage, &clean_key("c3"));
         let git = linear_git(); // HEAD on master, which is the base branch.
 
         let opts = PruneOptions {
@@ -1444,7 +1415,7 @@ mod tests {
             &opts,
             &auto(),
             now(),
-            &RecordingReporter::new(),
+            &RecordingReporter::quiet(),
         ))
         .unwrap_err();
         let found = error
@@ -1458,7 +1429,7 @@ mod tests {
     #[test]
     fn prune_base_confirms_base_branch_deletion() {
         let storage = MemoryStorage::new();
-        store(&storage, &clean_key("c3"), &set("c3"));
+        store(&storage, &clean_key("c3"));
         let git = linear_git();
 
         let opts = PruneOptions {
@@ -1476,10 +1447,10 @@ mod tests {
     #[test]
     fn dry_run_previews_without_deleting() {
         let storage = MemoryStorage::new();
-        store(&storage, &clean_key("c0"), &set("c0"));
-        store(&storage, &clean_key("c1"), &set("c1"));
-        store(&storage, &clean_key("f1"), &set("f1"));
-        store(&storage, &dirty_key("f1", 200), &set("f1"));
+        store(&storage, &clean_key("c0"));
+        store(&storage, &clean_key("c1"));
+        store(&storage, &clean_key("f1"));
+        store(&storage, &dirty_key("f1", 200));
         let git = feature_git();
 
         let before = keys(&storage);
@@ -1499,9 +1470,9 @@ mod tests {
     #[test]
     fn text_format_reports_would_remove_under_dry_run() {
         let storage = MemoryStorage::new();
-        store(&storage, &clean_key("c0"), &set("c0"));
-        store(&storage, &clean_key("f1"), &set("f1"));
-        store(&storage, &dirty_key("f1", 200), &set("f1"));
+        store(&storage, &clean_key("c0"));
+        store(&storage, &clean_key("f1"));
+        store(&storage, &dirty_key("f1", 200));
         let git = feature_git();
 
         let opts = PruneOptions {
@@ -1518,7 +1489,7 @@ mod tests {
     fn dirty_scope_never_touches_clean_runs() {
         let storage = MemoryStorage::new();
         for commit in ["c0", "c1", "f1", "f2"] {
-            store(&storage, &clean_key(commit), &set(commit));
+            store(&storage, &clean_key(commit));
         }
         let git = feature_git();
 
@@ -1531,7 +1502,7 @@ mod tests {
     #[test]
     fn prune_rejects_an_unresolved_head() {
         let storage = MemoryStorage::new();
-        store(&storage, &dirty_key("c0", 100), &set("c0"));
+        store(&storage, &dirty_key("c0", 100));
         let git = FakeGitHistory::new(); // No commits: HEAD does not resolve.
         let error = block_on(prune_with(
             &git,
@@ -1541,7 +1512,7 @@ mod tests {
             &dirty_options(),
             &auto(),
             now(),
-            &RecordingReporter::new(),
+            &RecordingReporter::quiet(),
         ))
         .unwrap_err();
         let found = error.find_source::<UnresolvedRefError>().unwrap();
@@ -1551,13 +1522,13 @@ mod tests {
     #[test]
     fn engine_discriminant_restricts_removal() {
         let storage = MemoryStorage::new();
-        store(&storage, &clean_key("f1"), &set("f1"));
-        store(&storage, &dirty_key("f1", 200), &set("f1"));
+        store(&storage, &clean_key("f1"));
+        store(&storage, &dirty_key("f1", 200));
         // A criterion dirty run on the same commit must survive an engine-scoped
         // callgrind prune.
         let criterion_dirty =
             "v1/folo/objects/criterion/x86_64-unknown-linux-gnu/m1/f1/dirty-200.json";
-        store(&storage, criterion_dirty, &set("f1"));
+        store(&storage, criterion_dirty);
         let git = feature_git();
 
         let opts = PruneOptions {
@@ -1583,9 +1554,9 @@ mod tests {
         // One dirty snapshot per dated feature commit. The window is decided from
         // each commit's committer date in the topology, not from the stored object,
         // so the `dirty-<unix>` key second is irrelevant to the cutoff.
-        store(&storage, &dirty_key("f1", 10), &set("f1"));
-        store(&storage, &dirty_key("f2", 20), &set("f2"));
-        store(&storage, &dirty_key("f3", 30), &set("f3"));
+        store(&storage, &dirty_key("f1", 10));
+        store(&storage, &dirty_key("f2", 20));
+        store(&storage, &dirty_key("f3", 30));
         let git = dated_feature_git();
 
         let opts = PruneOptions {
@@ -1639,8 +1610,8 @@ mod tests {
     #[test]
     fn commit_filter_restricts_removal_to_the_named_commit() {
         let storage = MemoryStorage::new();
-        store(&storage, &dirty_key("f1", 200), &set("f1"));
-        store(&storage, &dirty_key("f2", 300), &set("f2"));
+        store(&storage, &dirty_key("f1", 200));
+        store(&storage, &dirty_key("f2", 300));
         let git = feature_git();
 
         let opts = PruneOptions {
@@ -1663,8 +1634,8 @@ mod tests {
     #[test]
     fn commits_are_listed_oldest_first_by_topology() {
         let storage = MemoryStorage::new();
-        store(&storage, &dirty_key("f2", 300), &set("f2"));
-        store(&storage, &dirty_key("f1", 200), &set("f1"));
+        store(&storage, &dirty_key("f2", 300));
+        store(&storage, &dirty_key("f1", 200));
         let git = feature_git();
 
         let opts = PruneOptions {
@@ -1681,8 +1652,8 @@ mod tests {
     #[test]
     fn markdown_format_renders_a_table_per_set() {
         let storage = MemoryStorage::new();
-        store(&storage, &dirty_key("f1", 200), &set("f1"));
-        store(&storage, &dirty_key("f2", 300), &set("f2"));
+        store(&storage, &dirty_key("f1", 200));
+        store(&storage, &dirty_key("f2", 300));
         let git = feature_git();
 
         let opts = PruneOptions {
@@ -1700,7 +1671,7 @@ mod tests {
     fn markdown_format_reports_no_match_for_an_empty_plan() {
         let storage = MemoryStorage::new();
         for commit in ["c0", "c1", "f1", "f2"] {
-            store(&storage, &clean_key(commit), &set(commit));
+            store(&storage, &clean_key(commit));
         }
         let git = feature_git();
 
