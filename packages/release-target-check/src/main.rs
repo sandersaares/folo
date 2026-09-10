@@ -3,7 +3,7 @@
 //! This nonpublished controller utility reads a separate, caller-owned worktree;
 //! GitHub operations and publication remain the responsibility of release orchestration.
 
-#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
+#![cfg_attr(all(coverage_nightly, test), feature(coverage_attribute))]
 
 use std::env::args_os;
 use std::process::ExitCode;
@@ -26,5 +26,6 @@ fn main() -> ExitCode {
 
 mod cli;
 mod command;
+mod metadata;
 mod repository;
 mod verify;

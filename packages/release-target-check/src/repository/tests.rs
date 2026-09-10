@@ -1,11 +1,10 @@
 use std::fs;
-use std::path::Path;
-use std::process::Command;
 
-use tempfile::{Builder, TempDir};
+use tempfile::TempDir;
 use testing::with_watchdog;
 
 use super::*;
+use crate::repository::fixture::{command, fixture};
 
 #[test]
 #[cfg_attr(miri, ignore = "Executes Git against filesystem fixtures")]
@@ -48,60 +47,127 @@ fn rejects_head_changed_during_verification() {
     });
 }
 
-fn fixture() -> (TempDir, Repository) {
-    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("target")
-        .join("fixtures");
-    fs::create_dir_all(&fixtures).unwrap();
-    let directory = Builder::new()
-        .prefix("evidence-")
-        .tempdir_in(fixtures)
-        .unwrap();
-    let root = directory.path().join("repository");
-    fs::create_dir_all(&root).unwrap();
-    fs::write(directory.path().join("global-config"), "").unwrap();
-    command(&root, &["init", "-b", "main"]);
-    fs::write(root.join("Cargo.toml"), "tracked input").unwrap();
-    command(&root, &["add", "-A"]);
-    command(&root, &["commit", "-m", "initial"]);
-    let head = command(&root, &["rev-parse", "HEAD"]).trim().to_owned();
-    let repository = Repository::discover(&root.join("Cargo.toml"), &head).unwrap();
-    (directory, repository)
+#[test]
+#[cfg_attr(miri, ignore = "Executes Git against filesystem fixtures")]
+fn rejects_dirty_inputs_before_invoking_the_operation() {
+    with_watchdog(|| {
+        let (_directory, repository) = fixture();
+        fs::write(repository.root.join("Cargo.toml"), "changed input").unwrap();
+        let mut invoked = false;
+        let result = repository.checked(|| {
+            invoked = true;
+            Ok(())
+        });
+        assert!(result.is_err());
+        assert!(!invoked);
+    });
 }
 
-fn command(root: &Path, arguments: &[&str]) -> String {
-    let output = Command::new("git")
-        .args([
-            "-c",
-            "user.name=Release Target Test",
-            "-c",
-            "user.email=release-target@example.invalid",
-            "-c",
-            "commit.gpgsign=false",
-            "-c",
-            "gc.auto=0",
-            "-c",
-            "core.autocrlf=false",
-        ])
-        .args(arguments)
-        .current_dir(root)
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env(
-            "GIT_CONFIG_GLOBAL",
-            root.parent().unwrap().join("global-config"),
+#[test]
+#[cfg_attr(miri, ignore = "Executes Git against filesystem fixtures")]
+fn preserves_operation_errors_when_evidence_is_unchanged() {
+    with_watchdog(|| {
+        let (_directory, repository) = fixture();
+        let error = repository
+            .checked(|| Err::<(), _>(OperationError::new().into()))
+            .unwrap_err();
+        assert!(error.find_source::<OperationError>().is_some());
+    });
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "Inspects native filesystem paths")]
+fn rejects_missing_and_root_directory_manifest_paths() {
+    let directory = TempDir::new().unwrap();
+    let absent = directory.path().join("absent.toml");
+    let error = Repository::discover(&absent, "unused").unwrap_err();
+    assert!(error.find_source::<VerificationError>().is_some());
+    let root = directory.path().ancestors().last().unwrap();
+    let error = Repository::discover(root, "unused").unwrap_err();
+    assert!(error.find_source::<VerificationError>().is_some());
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "Executes Git against filesystem fixtures")]
+fn rejects_a_manifest_outside_a_git_repository() {
+    with_watchdog(|| {
+        let directory = TempDir::new().unwrap();
+        let manifest = directory.path().join("Cargo.toml");
+        fs::write(&manifest, "input").unwrap();
+        _ = Repository::discover(&manifest, "unused").unwrap_err();
+    });
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "Executes Git against filesystem fixtures")]
+fn rejects_inputs_outside_the_repository_or_ignored_by_git() {
+    with_watchdog(|| {
+        let (directory, repository) = fixture();
+        _ = repository
+            .require_tracked(&directory.path().join("global-config"))
+            .unwrap_err();
+        fs::write(repository.root.join(".git/info/exclude"), "ignored-input\n").unwrap();
+        let ignored = repository.root.join("ignored-input");
+        fs::write(&ignored, "not tracked").unwrap();
+        repository.ensure_clean_head().unwrap();
+        _ = repository.require_tracked(&ignored).unwrap_err();
+        assert_eq!(
+            repository
+                .require_tracked(&repository.root.join("Cargo.toml"))
+                .unwrap(),
+            repository.root.join("Cargo.toml")
+        );
+    });
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "Executes Git against filesystem fixtures")]
+fn propagates_an_unreadable_git_index() {
+    with_watchdog(|| {
+        let (_directory, repository) = fixture();
+        fs::write(repository.root.join(".git/index"), "invalid index").unwrap();
+        _ = repository.ensure_clean_head().unwrap_err();
+    });
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "Executes Git against filesystem fixtures")]
+fn rejects_an_unavailable_release_line() {
+    with_watchdog(|| {
+        let (_directory, repository) = fixture();
+        _ = repository.ensure_first_parent(&"0".repeat(40)).unwrap_err();
+    });
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "Executes Git against filesystem fixtures")]
+fn propagates_an_unavailable_parent_in_release_history() {
+    with_watchdog(|| {
+        let (_directory, repository) = fixture();
+        let parent = command(&repository.root, &["rev-parse", "HEAD"])
+            .trim()
+            .to_owned();
+        command(
+            &repository.root,
+            &["commit", "--allow-empty", "-m", "next snapshot"],
+        );
+        let head = command(&repository.root, &["rev-parse", "HEAD"])
+            .trim()
+            .to_owned();
+        let repository = Repository::discover(&repository.root.join("Cargo.toml"), &head).unwrap();
+        // The fixture disables automatic GC, so its parent is a loose object. Remove only that
+        // owned object to exercise history traversal failure after commit resolution succeeds.
+        let (prefix, suffix) = parent.split_at(2);
+        fs::remove_file(
+            repository
+                .root
+                .join(".git/objects")
+                .join(prefix)
+                .join(suffix),
         )
-        .env_remove("GIT_CONFIG_COUNT")
-        .env_remove("GIT_CONFIG_PARAMETERS")
-        .env("GIT_AUTHOR_DATE", "2000-01-01T00:00:00Z")
-        .env("GIT_COMMITTER_DATE", "2000-01-01T00:00:00Z")
-        .output()
         .unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    String::from_utf8(output.stdout).unwrap()
+        _ = repository.ensure_first_parent(&head).unwrap_err();
+    });
 }
 
 /// Models a failed verification subprocess without running or replacing Cargo.

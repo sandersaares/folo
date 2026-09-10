@@ -4,4 +4,8 @@ mod snapshot;
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
+pub(crate) mod fixture;
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests;

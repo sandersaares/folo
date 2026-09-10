@@ -166,6 +166,29 @@ fn rejects_index_flags_that_conceal_source_changes() {
             "packages/widget/src/lib.rs",
         ]);
         fixture.write("packages/widget/src/lib.rs", "pub fn value() -> u8 { 2 }\n");
+        assert!(fixture.git(&["status", "--porcelain"]).is_empty());
+        assert!(
+            !fixture
+                .verify(&commit, &commit, "widget@1.0.0")
+                .status
+                .success()
+        );
+    });
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "Executes Git and Cargo against filesystem fixtures")]
+fn rejects_skip_worktree_flags_that_conceal_source_changes() {
+    with_watchdog(|| {
+        let fixture = Fixture::new();
+        let commit = fixture.head();
+        fixture.git(&[
+            "update-index",
+            "--skip-worktree",
+            "packages/widget/src/lib.rs",
+        ]);
+        fixture.write("packages/widget/src/lib.rs", "pub fn value() -> u8 { 2 }\n");
+        assert!(fixture.git(&["status", "--porcelain"]).is_empty());
         assert!(
             !fixture
                 .verify(&commit, &commit, "widget@1.0.0")

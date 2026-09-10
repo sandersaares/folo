@@ -34,6 +34,23 @@ checker, including failing invocations. These checks detect subprocess-induced
 changes; the caller retains exclusive ownership of the worktree throughout
 verification and its subsequent use.
 
+## Verification boundary tests
+
+Metadata decoding, resource ownership and package identity are tested independently
+of process execution. This lets malformed or inconsistent metadata exercise the
+same validation used by the executable without requiring a broken Cargo process.
+Checker-result handling likewise has an observable diagnostic callback; production
+sends those diagnostics to stderr, while unit tests verify verdicts, warning
+forwarding and unexpected result rejection.
+
+Real Git fixtures cover clean and concealed index state, corrupt or unavailable
+history, and ownership failures. Native temporary directories avoid cross-filesystem
+overhead when the checkout is mounted into another operating system. A Unix symlink
+loop provides a deterministic filesystem lookup failure without racing a deletion
+or relying on runner privilege. End-to-end tests continue to execute real Cargo
+and the real release checker. These boundary tests supplement that path rather
+than replacing it.
+
 ## Release policy reuse
 
 The existing `cargo-release-plan` library owns package filtering, inherited values,

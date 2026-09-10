@@ -140,6 +140,9 @@ struct InvalidArgumentsError {
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
+    #[cfg(unix)]
+    use std::os::unix::ffi::OsStringExt;
+
     use super::*;
 
     fn arguments() -> Vec<OsString> {
@@ -165,11 +168,62 @@ mod tests {
         );
         let cli = Cli::parse(arguments).unwrap();
         assert!(cli.verbose);
+        assert_eq!(cli.manifest_path, PathBuf::from("Cargo.toml"));
+        assert_eq!(cli.commit, "a".repeat(40));
+        assert_eq!(cli.release_line, "b".repeat(40));
         assert_eq!(
             cli.packages.get("example-crate").unwrap(),
             &Version::new(1, 2, 3)
         );
         assert_eq!(cli.packages.len(), 2);
+    }
+
+    #[test]
+    fn rejects_empty_values_and_options_in_place_of_values() {
+        for option in ["--manifest-path", "--commit", "--release-line", "--package"] {
+            for value in ["", "--verbose", "--package"] {
+                let mut arguments = arguments();
+                // Replace the original value so duplicate-option rejection cannot satisfy this
+                // missing-value assertion for the wrong reason.
+                let position = arguments
+                    .iter()
+                    .position(|argument| argument == option)
+                    .unwrap();
+                *arguments.get_mut(position + 1).unwrap() = value.into();
+                _ = Cli::parse(arguments).unwrap_err();
+            }
+        }
+    }
+
+    #[test]
+    fn accepts_quiet_mode_and_opaque_manifest_paths() {
+        let mut arguments = arguments();
+        let path = PathBuf::from("directory with spaces").join("Cargo.toml");
+        *arguments.get_mut(1).unwrap() = path.clone().into_os_string();
+        let cli = Cli::parse(arguments).unwrap();
+        assert!(!cli.verbose);
+        assert_eq!(cli.manifest_path, path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_non_utf8_text_but_preserves_manifest_path_bytes() {
+        let invalid = OsString::from_vec(vec![0xff]);
+        _ = immutable_id(invalid.clone()).unwrap_err();
+        _ = package_request(&invalid).unwrap_err();
+        let mut unknown_option = arguments();
+        unknown_option.push(invalid.clone());
+        _ = Cli::parse(unknown_option).unwrap_err();
+
+        let mut arguments = arguments();
+        *arguments.get_mut(1).unwrap() = invalid.clone();
+        assert_eq!(
+            Cli::parse(arguments)
+                .unwrap()
+                .manifest_path
+                .into_os_string(),
+            invalid
+        );
     }
 
     #[test]

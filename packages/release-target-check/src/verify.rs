@@ -1,13 +1,12 @@
 use std::ffi::OsStr;
-use std::path::PathBuf;
 
 use cargo_release_plan::{CheckFormat, RunInput, RunOutcome, run};
 use ohno::AppError;
-use serde::Deserialize;
 
 use crate::cli::Cli;
 use crate::command::capture;
-use crate::repository::{Repository, VerificationError, canonicalize};
+use crate::metadata::Metadata;
+use crate::repository::{Repository, VerificationError};
 
 pub(crate) fn verify(cli: &Cli) -> Result<String, AppError> {
     let repository = Repository::discover(&cli.manifest_path, &cli.commit)?;
@@ -37,56 +36,9 @@ pub(crate) fn verify(cli: &Cli) -> Result<String, AppError> {
             &repository.root,
         )
     })?;
-    let metadata: Metadata = serde_json::from_slice(&metadata).map_err(|error| {
-        VerificationError::caused_by("cannot decode candidate Cargo metadata", error)
-    })?;
-    _ = repository.require_tracked(&metadata.workspace_root.join("Cargo.toml"))?;
-    let lockfile = metadata.workspace_root.join("Cargo.lock");
-    if lockfile.try_exists().map_err(|error| {
-        VerificationError::caused_by("cannot inspect candidate workspace lockfile", error)
-    })? {
-        _ = repository.require_tracked(&lockfile)?;
-    }
-    for package in &metadata.packages {
-        _ = repository.require_tracked(&package.manifest_path)?;
-    }
-    let workspace_root = canonicalize(&metadata.workspace_root)?;
-    if !manifest.starts_with(&workspace_root) {
-        return Err(VerificationError::new(
-            "candidate manifest is outside the metadata workspace root",
-        )
-        .into());
-    }
-    for (name, version) in &cli.packages {
-        let mut matches = metadata
-            .packages
-            .iter()
-            .filter(|package| package.name == *name);
-        let package = matches.next().ok_or_else(|| {
-            VerificationError::new(format!(
-                "requested package is absent from candidate metadata: {name}"
-            ))
-        })?;
-        if matches.next().is_some()
-            || !metadata.workspace_members.contains(&package.id)
-            || package.publish.as_ref().is_some_and(Vec::is_empty)
-            || package.version != version.to_string()
-        {
-            return Err(VerificationError::new(format!(
-                "candidate must contain one publishable workspace member {name}@{version}; \
-                 metadata reports version {}",
-                package.version
-            ))
-            .into());
-        }
-        if cli.verbose {
-            eprintln!(
-                "[release-target-check] {name}@{version} matches a tracked publishable workspace \
-                 member; locked, offline, no-deps metadata supplies identity without refreshing \
-                 dependency resolution"
-            );
-        }
-    }
+    let metadata = Metadata::parse(&metadata)?;
+    metadata.validate_inputs(&repository, &manifest)?;
+    metadata.validate_packages(&cli.packages, cli.verbose)?;
     if cli.verbose {
         eprintln!(
             "[release-target-check] release invariants use candidate {} as their baseline, not \
@@ -104,32 +56,7 @@ pub(crate) fn verify(cli: &Cli) -> Result<String, AppError> {
             verbose: cli.verbose,
         })
     })?;
-    match outcome {
-        RunOutcome::Check {
-            passed,
-            message,
-            warnings,
-        } => {
-            if !warnings.is_empty() {
-                eprintln!("{warnings}");
-            }
-            if !passed {
-                return Err(VerificationError::new(message).into());
-            }
-            if cli.verbose {
-                eprintln!(
-                    "[release-target-check] {message} HEAD and cleanliness still match the \
-                     candidate after metadata and release verification"
-                );
-            }
-        }
-        _ => {
-            return Err(VerificationError::new(
-                "release checker did not return the requested check outcome",
-            )
-            .into());
-        }
-    }
+    finish_check(outcome, cli.verbose, |message| eprintln!("{message}"))?;
     let packages = cli
         .packages
         .iter()
@@ -142,21 +69,92 @@ pub(crate) fn verify(cli: &Cli) -> Result<String, AppError> {
     ))
 }
 
-/// Captures only the Cargo identity fields needed before release-policy checking.
-#[derive(Debug, Deserialize)]
-struct Metadata {
-    packages: Vec<Package>,
-    workspace_members: Vec<String>,
-    workspace_root: PathBuf,
+/// Interprets the checker's operation-specific verdict and forwards its diagnostics.
+fn finish_check(
+    outcome: RunOutcome,
+    verbose: bool,
+    mut diagnostic: impl FnMut(&str),
+) -> Result<(), AppError> {
+    match outcome {
+        RunOutcome::Check {
+            passed,
+            message,
+            warnings,
+        } => {
+            if !warnings.is_empty() {
+                diagnostic(&warnings);
+            }
+            if !passed {
+                return Err(VerificationError::new(message).into());
+            }
+            if verbose {
+                diagnostic(&format!(
+                    "[release-target-check] {message} HEAD and cleanliness still match the \
+                     candidate after metadata and release verification"
+                ));
+            }
+        }
+        _ => {
+            return Err(VerificationError::new(
+                "release checker did not return the requested check outcome",
+            )
+            .into());
+        }
+    }
+    Ok(())
 }
 
-/// Carries the candidate's declared identity and Cargo publication eligibility.
-#[derive(Debug, Deserialize)]
-struct Package {
-    name: String,
-    version: String,
-    id: String,
-    manifest_path: PathBuf,
-    /// Cargo uses null for unrestricted publication and an empty array for disabled publication.
-    publish: Option<Vec<String>>,
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn preserves_verdicts_and_diagnostic_order() {
+        for passed in [false, true] {
+            for warnings in ["", "warning canary\n"] {
+                for verbose in [false, true] {
+                    let mut diagnostics = Vec::new();
+                    let result = finish_check(
+                        RunOutcome::Check {
+                            passed,
+                            message: "verdict canary".into(),
+                            warnings: warnings.into(),
+                        },
+                        verbose,
+                        |message| diagnostics.push(message.to_owned()),
+                    );
+                    assert_eq!(result.is_ok(), passed);
+                    if let Err(error) = result {
+                        assert!(error.find_source::<VerificationError>().is_some());
+                    }
+                    assert_eq!(
+                        diagnostics.len(),
+                        usize::from(!warnings.is_empty()) + usize::from(passed && verbose)
+                    );
+                    if !warnings.is_empty() {
+                        assert_eq!(diagnostics.first().unwrap(), warnings);
+                    }
+                    if passed && verbose {
+                        assert!(diagnostics.last().unwrap().contains("verdict canary"));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn rejects_unexpected_checker_operations() {
+        let mut diagnostics = Vec::new();
+        let error = finish_check(
+            RunOutcome::Report {
+                message: "not a check verdict".into(),
+            },
+            true,
+            |message| diagnostics.push(message.to_owned()),
+        )
+        .unwrap_err();
+        assert!(error.find_source::<VerificationError>().is_some());
+        assert!(diagnostics.is_empty());
+    }
 }
