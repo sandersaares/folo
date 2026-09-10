@@ -161,7 +161,7 @@ mod tests {
     /// in its own listings still comes off.
     #[test]
     fn a_backslash_is_part_of_a_file_name() {
-        let rules = rules(Some(&["src/**"]), None).unwrap();
+        let rules = rules(Some(&["/src/"]), None).unwrap();
         assert!(rules.is_released("./src/lib.rs"));
         assert!(rules.is_released(r"src/odd\name.rs"));
         assert!(!rules.is_released(r"benches\bench.rs"));
@@ -187,7 +187,7 @@ mod tests {
 
     #[test]
     fn cargo_toml_is_always_released() {
-        let rules = rules(Some(&["src/**"]), None).unwrap();
+        let rules = rules(Some(&["/src/"]), None).unwrap();
         assert!(rules.is_released("Cargo.toml"));
     }
 
@@ -201,19 +201,12 @@ mod tests {
     }
 
     #[test]
-    fn the_build_directory_is_never_released() {
+    fn the_build_directory_is_never_released_by_default() {
         // Cargo drops it before reading either manifest key, so neither the
         // default selection nor an `include` naming it can pack build output.
         let default = PackagingRules::default();
         assert!(!default.is_released("target"));
         assert!(!default.is_released("target/debug/demo"));
-
-        let included = rules(Some(&["target/**", "src/**"]), None).unwrap();
-        assert!(!included.is_released("target/debug/demo"));
-        assert!(included.is_released("src/lib.rs"));
-
-        let excluded = rules(None, Some(&["tests/**"])).unwrap();
-        assert!(!excluded.is_released("target/debug/demo"));
 
         // Only the directory itself is special; a name that merely starts with
         // the same letters is ordinary source.
@@ -222,8 +215,21 @@ mod tests {
     }
 
     #[test]
+    fn the_build_directory_is_never_released_by_include() {
+        let included = rules(Some(&["/target/", "/src/"]), None).unwrap();
+        assert!(!included.is_released("target/debug/demo"));
+        assert!(included.is_released("src/lib.rs"));
+    }
+
+    #[test]
+    fn the_build_directory_is_never_released_by_exclude() {
+        let excluded = rules(None, Some(&["/tests/"])).unwrap();
+        assert!(!excluded.is_released("target/debug/demo"));
+    }
+
+    #[test]
     fn include_allow_list_keeps_matching_paths() {
-        let rules = rules(Some(&["src/**", "README.md"]), None).unwrap();
+        let rules = rules(Some(&["/src/", "/README.md"]), None).unwrap();
         assert!(rules.is_released("src/lib.rs"));
         assert!(rules.is_released("README.md"));
         assert!(!rules.is_released("tests/foo.rs"));
@@ -232,22 +238,31 @@ mod tests {
 
     #[test]
     fn include_later_negation_drops_a_subset() {
-        let rules = rules(Some(&["src/**", "!src/private/**"]), None).unwrap();
+        let rules = rules(Some(&["/src/", "!/src/private/"]), None).unwrap();
         assert!(rules.is_released("src/lib.rs"));
         assert!(!rules.is_released("src/private/x.rs"));
     }
 
     #[test]
     fn exclude_drops_matching_paths_when_include_absent() {
-        let rules = rules(None, Some(&["tests/**"])).unwrap();
+        let rules = rules(None, Some(&["/tests/"])).unwrap();
         assert!(rules.is_released("src/lib.rs"));
         assert!(!rules.is_released("tests/foo.rs"));
     }
 
     #[test]
     fn include_ignores_exclude() {
-        let rules = rules(Some(&["src/**", "tests/**"]), Some(&["tests/**"])).unwrap();
+        let rules = rules(Some(&["/tests/"]), Some(&["/tests/"])).unwrap();
         assert!(rules.is_released("tests/foo.rs"));
+    }
+
+    #[test]
+    fn recursive_glob_includes_nested_files() {
+        // Most rule tests need only literal directory matching. Keep recursive-glob coverage
+        // on a short prefix so regex compilation does not dominate the Miri workload.
+        let rules = rules(Some(&["s/**"]), None).unwrap();
+        assert!(rules.is_released("s/a/b"));
+        assert!(!rules.is_released("t/a"));
     }
 
     /// An invalid include pattern is an error.

@@ -1176,11 +1176,9 @@ mod tests {
     use cbh_diag::RecordingReporter;
     use cbh_engines::testing::{
         ALL_THE_TIME_READ_CELL as ALL_THE_TIME_FIXTURE,
-        ALLOC_TRACKER_ALLOCATE_VEC as ALLOC_TRACKER_FIXTURE,
-        CALLGRIND_PARAMETRIZED as PARAMETRIZED_FIXTURE,
-        CALLGRIND_SINGLE_UNPARAMETRIZED as SINGLE_FIXTURE,
-        CRITERION_STD_INSTANT_BENCHMARK as CRITERION_BENCHMARK_FIXTURE,
-        CRITERION_STD_INSTANT_ESTIMATES as CRITERION_ESTIMATES_FIXTURE,
+        ALLOC_TRACKER_ALLOCATE_VEC as ALLOC_TRACKER_FIXTURE, CALLGRIND_MINIMAL as SINGLE_FIXTURE,
+        CRITERION_MINIMAL_BENCHMARK as CRITERION_BENCHMARK_FIXTURE,
+        CRITERION_MINIMAL_ESTIMATES as CRITERION_ESTIMATES_FIXTURE,
     };
     use cbh_engines::{Harvest, RawCriterionCase, RawOperationFile, RawSummary};
     use cbh_git::{EngineStatus, parse_git_info};
@@ -1603,6 +1601,43 @@ mod tests {
         resolve_machine_key(&FakeProbe::new().hardware)
     }
 
+    /// Establishes an existing object without rerunning collection as test setup.
+    ///
+    /// The literal key independently checks collection's identity mapping. The
+    /// seed's tool version differs from collection's so replacement is observable.
+    fn seed_callgrind_run(storage: &MemoryStorage, dirty: bool, now_unix: u64) -> String {
+        let mut probe = FakeProbe::new();
+        probe.git.dirty = dirty;
+        let context = RunContext::new(
+            Timestamp::from_second(i64::try_from(now_unix).unwrap()).unwrap(),
+            probe.git,
+            EnvironmentInfo::default(),
+            ToolchainInfo {
+                target_triple: TargetTriple::from("x86_64-pc-windows-msvc"),
+                rustc_version: probe.rustc.version,
+            },
+            "0.0.0".to_owned(),
+        );
+        let record = parse_callgrind_summary(SINGLE_FIXTURE).unwrap();
+        // The extra case must disappear on overwrite, so these tests distinguish
+        // replacement from merging old records with the new harvest.
+        let mut stale_record = record.clone();
+        stale_record.id.segments.push("stale".to_owned());
+        let run = Run::new(context, vec![record, stale_record]);
+        let machine = probe_machine_key();
+        let snapshot = if dirty {
+            format!("dirty-{now_unix}")
+        } else {
+            "clean".to_owned()
+        };
+        let key = format!(
+            "v1/folo/objects/callgrind/x86_64-pc-windows-msvc/{machine}/\
+             deadbeefdeadbeefdeadbeefdeadbeefdeadbeef/{snapshot}.json"
+        );
+        block_on(storage.put(&key, run.to_json().unwrap().as_bytes())).unwrap();
+        key
+    }
+
     #[derive(Clone, Default)]
     struct FakeOutput {
         callgrind: Vec<RawSummary>,
@@ -1613,6 +1648,16 @@ mod tests {
     }
 
     impl FakeOutput {
+        fn with_callgrind_summary() -> Self {
+            Self {
+                callgrind: vec![RawSummary {
+                    path: PathBuf::from("a/summary.json"),
+                    content: SINGLE_FIXTURE.to_owned(),
+                }],
+                ..Self::default()
+            }
+        }
+
         fn with_two_callgrind_summaries() -> Self {
             Self {
                 callgrind: vec![
@@ -1622,7 +1667,9 @@ mod tests {
                     },
                     RawSummary {
                         path: PathBuf::from("b/summary.json"),
-                        content: PARAMETRIZED_FIXTURE.to_owned(),
+                        // A distinct parameter preserves the multi-record scenario
+                        // without parsing a second full producer schema canary.
+                        content: SINGLE_FIXTURE.replace(r#""id":null"#, r#""id":"other""#),
                     },
                 ],
                 ..Self::default()
@@ -1651,7 +1698,7 @@ mod tests {
         }
 
         fn with_callgrind_and_criterion() -> Self {
-            let mut output = Self::with_two_callgrind_summaries();
+            let mut output = Self::with_callgrind_summary();
             output.criterion = Self::with_criterion_case().criterion;
             output
         }
@@ -1777,7 +1824,8 @@ mod tests {
         output: &FakeOutput,
         storage: &MemoryStorage,
     ) -> Result<RunOutcome, AppError> {
-        let reporter = StderrReporter::new(true);
+        // Tests asserting verbose output inject a RecordingReporter explicitly.
+        let reporter = RecordingReporter::quiet();
         drive_at_with(now_unix, options, runner, probe, output, storage, &reporter)
     }
 
@@ -1816,7 +1864,7 @@ mod tests {
     fn verbose_collect_notes_the_command_and_stored_key() {
         let runner = FakeRunner::succeeding();
         let probe = FakeProbe::new();
-        let output = FakeOutput::with_two_callgrind_summaries();
+        let output = FakeOutput::with_callgrind_summary();
         let storage = MemoryStorage::new();
         let reporter = RecordingReporter::new();
 
@@ -1852,7 +1900,7 @@ mod tests {
     fn collect_announces_the_effective_storage_partition() {
         let runner = FakeRunner::succeeding();
         let probe = FakeProbe::new();
-        let output = FakeOutput::with_two_callgrind_summaries();
+        let output = FakeOutput::with_callgrind_summary();
         let storage = MemoryStorage::new();
         let reporter = RecordingReporter::new();
 
@@ -1962,7 +2010,7 @@ mod tests {
             &CollectOptions::default(),
             &FakeRunner::succeeding(),
             &FakeProbe::new(),
-            &FakeOutput::with_two_callgrind_summaries(),
+            &FakeOutput::with_callgrind_summary(),
             &storage,
         )
         .unwrap();
@@ -1984,20 +2032,14 @@ mod tests {
     #[test]
     fn clean_re_run_of_the_same_commit_is_refused_as_a_duplicate() {
         let storage = MemoryStorage::new();
-        drive(
-            &CollectOptions::default(),
-            &FakeRunner::succeeding(),
-            &FakeProbe::new(),
-            &FakeOutput::with_two_callgrind_summaries(),
-            &storage,
-        )
-        .unwrap();
+        let key = seed_callgrind_run(&storage, false, FROZEN_UNIX);
+        let original = block_on(storage.get(&key)).unwrap();
 
         let error = drive(
             &CollectOptions::default(),
             &FakeRunner::succeeding(),
             &FakeProbe::new(),
-            &FakeOutput::with_two_callgrind_summaries(),
+            &FakeOutput::with_callgrind_summary(),
             &storage,
         )
         .unwrap_err();
@@ -2007,26 +2049,14 @@ mod tests {
         assert!(error.find_source::<StorageError>().is_some());
         // The second run left the single stored object untouched.
         assert_eq!(storage.keys().len(), 1);
+        assert_eq!(block_on(storage.get(&key)).unwrap(), original);
     }
 
     #[test]
     fn skip_existing_treats_a_same_commit_re_run_as_a_no_op_success() {
         let storage = MemoryStorage::new();
-        // A first clean run stores the canonical point.
-        drive(
-            &CollectOptions::default(),
-            &FakeRunner::succeeding(),
-            &FakeProbe::new(),
-            &FakeOutput::with_two_callgrind_summaries(),
-            &storage,
-        )
-        .unwrap();
-        let machine = probe_machine_key();
-        let original = block_on(storage.get(&format!(
-            "v1/folo/objects/callgrind/x86_64-pc-windows-msvc/{machine}/\
-             deadbeefdeadbeefdeadbeefdeadbeefdeadbeef/clean.json",
-        )))
-        .unwrap();
+        let key = seed_callgrind_run(&storage, false, FROZEN_UNIX);
+        let original = block_on(storage.get(&key)).unwrap();
 
         // A re-run of the same commit under --skip-existing succeeds without a
         // duplicate error and leaves the stored object byte-for-byte unchanged
@@ -2039,14 +2069,7 @@ mod tests {
             &skip,
             &FakeRunner::succeeding(),
             &FakeProbe::new(),
-            // Different harvest content: a true overwrite would change the bytes.
-            &FakeOutput {
-                callgrind: vec![RawSummary {
-                    path: PathBuf::from("a/summary.json"),
-                    content: SINGLE_FIXTURE.to_owned(),
-                }],
-                ..FakeOutput::default()
-            },
+            &FakeOutput::with_callgrind_summary(),
             &storage,
         )
         .unwrap();
@@ -2060,15 +2083,8 @@ mod tests {
     #[test]
     fn overwrite_replaces_a_clean_result_in_place() {
         let storage = MemoryStorage::new();
-        drive(
-            &CollectOptions::default(),
-            &FakeRunner::succeeding(),
-            &FakeProbe::new(),
-            // First run harvests two records.
-            &FakeOutput::with_two_callgrind_summaries(),
-            &storage,
-        )
-        .unwrap();
+        let key = seed_callgrind_run(&storage, false, FROZEN_UNIX);
+        let original = block_on(storage.get(&key)).unwrap();
 
         let overwrite = CollectOptions {
             overwrite: true,
@@ -2078,14 +2094,7 @@ mod tests {
             &overwrite,
             &FakeRunner::succeeding(),
             &FakeProbe::new(),
-            // Second run harvests a single record over the same key.
-            &FakeOutput {
-                callgrind: vec![RawSummary {
-                    path: PathBuf::from("a/summary.json"),
-                    content: SINGLE_FIXTURE.to_owned(),
-                }],
-                ..FakeOutput::default()
-            },
+            &FakeOutput::with_callgrind_summary(),
             &storage,
         )
         .unwrap();
@@ -2094,26 +2103,15 @@ mod tests {
         assert_eq!(keys.len(), 1, "{keys:?}");
         assert!(keys[0].ends_with("/clean.json"), "{keys:?}");
         let bytes = block_on(storage.get(&keys[0])).unwrap();
+        assert_ne!(bytes, original, "overwrite should replace the contents");
         let set = Run::from_json(&String::from_utf8(bytes).unwrap()).unwrap();
-        assert_eq!(
-            set.results.len(),
-            1,
-            "overwrite should replace the contents"
-        );
+        assert_eq!(set.results.len(), 1);
     }
 
     #[test]
     fn overwriting_a_clean_run_keeps_blessing_sidecars() {
         let storage = MemoryStorage::new();
-        // A first clean run establishes the commit directory.
-        drive(
-            &CollectOptions::default(),
-            &FakeRunner::succeeding(),
-            &FakeProbe::new(),
-            &FakeOutput::with_two_callgrind_summaries(),
-            &storage,
-        )
-        .unwrap();
+        _ = seed_callgrind_run(&storage, false, FROZEN_UNIX);
         let machine = probe_machine_key();
         let commit_dir = format!(
             "v1/folo/objects/callgrind/x86_64-pc-windows-msvc/{machine}/\
@@ -2141,7 +2139,7 @@ mod tests {
             &overwrite,
             &FakeRunner::succeeding(),
             &FakeProbe::new(),
-            &FakeOutput::with_two_callgrind_summaries(),
+            &FakeOutput::with_callgrind_summary(),
             &storage,
         )
         .unwrap();
@@ -2164,7 +2162,7 @@ mod tests {
             &CollectOptions::default(),
             &FakeRunner::succeeding(),
             &FakeProbe::dirty(),
-            &FakeOutput::with_two_callgrind_summaries(),
+            &FakeOutput::with_callgrind_summary(),
             &storage,
         )
         .unwrap();
@@ -2207,7 +2205,7 @@ mod tests {
             &overwrite,
             &FakeRunner::succeeding(),
             &FakeProbe::dirty(),
-            &FakeOutput::with_two_callgrind_summaries(),
+            &FakeOutput::with_callgrind_summary(),
             &storage,
         )
         .unwrap();
@@ -2227,27 +2225,20 @@ mod tests {
     #[test]
     fn two_dirty_runs_at_different_times_coexist() {
         let storage = MemoryStorage::new();
-        drive_at(
-            FROZEN_UNIX,
-            &CollectOptions::default(),
-            &FakeRunner::succeeding(),
-            &FakeProbe::dirty(),
-            &FakeOutput::with_two_callgrind_summaries(),
-            &storage,
-        )
-        .unwrap();
+        let original_key = seed_callgrind_run(&storage, true, FROZEN_UNIX);
         drive_at(
             FROZEN_UNIX + 1,
             &CollectOptions::default(),
             &FakeRunner::succeeding(),
             &FakeProbe::dirty(),
-            &FakeOutput::with_two_callgrind_summaries(),
+            &FakeOutput::with_callgrind_summary(),
             &storage,
         )
         .unwrap();
 
         let keys = storage.keys();
         assert_eq!(keys.len(), 2, "{keys:?}");
+        assert!(keys.contains(&original_key), "{keys:?}");
     }
 
     #[test]
@@ -2255,30 +2246,31 @@ mod tests {
         // Two dirty snapshots taken at the same effective second map to the same
         // key, so the second is refused as a duplicate just like a clean re-run.
         let storage = MemoryStorage::new();
-        drive_at(
-            FROZEN_UNIX,
-            &CollectOptions::default(),
-            &FakeRunner::succeeding(),
-            &FakeProbe::dirty(),
-            &FakeOutput::with_two_callgrind_summaries(),
-            &storage,
-        )
-        .unwrap();
+        let key = seed_callgrind_run(&storage, true, FROZEN_UNIX);
+        let original = block_on(storage.get(&key)).unwrap();
 
         let error = drive_at(
             FROZEN_UNIX,
             &CollectOptions::default(),
             &FakeRunner::succeeding(),
             &FakeProbe::dirty(),
-            &FakeOutput::with_two_callgrind_summaries(),
+            &FakeOutput::with_callgrind_summary(),
             &storage,
         )
         .unwrap_err();
 
         assert!(error.find_source::<DuplicateResultError>().is_some());
         assert_eq!(storage.keys().len(), 1);
+        assert_eq!(block_on(storage.get(&key)).unwrap(), original);
+    }
 
-        // With --overwrite the clash is resolved by replacing the object in place.
+    #[test]
+    fn overwrite_replaces_a_dirty_snapshot_in_place() {
+        let storage = MemoryStorage::new();
+        let key = seed_callgrind_run(&storage, true, FROZEN_UNIX);
+        let original = block_on(storage.get(&key)).unwrap();
+
+        // The new run differs from the seed, proving it was not merely skipped.
         let overwrite = CollectOptions {
             overwrite: true,
             ..CollectOptions::default()
@@ -2288,11 +2280,13 @@ mod tests {
             &overwrite,
             &FakeRunner::succeeding(),
             &FakeProbe::dirty(),
-            &FakeOutput::with_two_callgrind_summaries(),
+            &FakeOutput::with_callgrind_summary(),
             &storage,
         )
         .unwrap();
         assert_eq!(storage.keys().len(), 1);
+        assert_ne!(block_on(storage.get(&key)).unwrap(), original);
+        assert_eq!(only_stored_run(&storage).results.len(), 1);
     }
 
     #[test]
@@ -2307,7 +2301,7 @@ mod tests {
             &options,
             &FakeRunner::succeeding(),
             &FakeProbe::new(),
-            &FakeOutput::with_two_callgrind_summaries(),
+            &FakeOutput::with_callgrind_summary(),
             &storage,
         )
         .unwrap();
@@ -2379,7 +2373,7 @@ mod tests {
             &CollectOptions::default(),
             &FakeRunner::failing(101),
             &FakeProbe::new(),
-            &FakeOutput::with_two_callgrind_summaries(),
+            &FakeOutput::with_callgrind_summary(),
             &storage,
         )
         .unwrap_err();
@@ -2399,7 +2393,7 @@ mod tests {
             &CollectOptions::default(),
             &FakeRunner::terminated(),
             &FakeProbe::new(),
-            &FakeOutput::with_two_callgrind_summaries(),
+            &FakeOutput::with_callgrind_summary(),
             &storage,
         )
         .unwrap_err();
@@ -3143,7 +3137,7 @@ mod tests {
             all_the_time_output(20.0),
         ]);
         let storage = MemoryStorage::new();
-        let reporter = StderrReporter::new(false);
+        let reporter = RecordingReporter::quiet();
         let options = CollectOptions {
             best_of: best_of(3),
             ..CollectOptions::default()
@@ -3194,7 +3188,7 @@ mod tests {
         let probe = FakeProbe::new();
         let output = SequencedOutput::new(vec![two_ops(30.0, 7.0), two_ops(5.0, 40.0)]);
         let storage = MemoryStorage::new();
-        let reporter = StderrReporter::new(false);
+        let reporter = RecordingReporter::quiet();
         let options = CollectOptions {
             best_of: best_of(2),
             ..CollectOptions::default()
@@ -3303,7 +3297,7 @@ mod tests {
             all_the_time_output(20.0),
         ]);
         let storage = MemoryStorage::new();
-        let reporter = StderrReporter::new(false);
+        let reporter = RecordingReporter::quiet();
         let options = CollectOptions {
             best_of: best_of(3),
             ..CollectOptions::default()
@@ -3331,7 +3325,7 @@ mod tests {
         let probe = FakeProbe::new();
         let output = SequencedOutput::new(vec![all_the_time_output(10.0), FakeOutput::default()]);
         let storage = MemoryStorage::new();
-        let reporter = StderrReporter::new(false);
+        let reporter = RecordingReporter::quiet();
         let options = CollectOptions {
             best_of: best_of(2),
             ..CollectOptions::default()
@@ -3353,7 +3347,7 @@ mod tests {
         let output =
             SequencedOutput::new(vec![all_the_time_output(30.0), all_the_time_output(10.0)]);
         let storage = MemoryStorage::new();
-        let reporter = StderrReporter::new(false);
+        let reporter = RecordingReporter::quiet();
         let options = CollectOptions {
             best_of: best_of(2),
             no_store: true,
@@ -3379,7 +3373,7 @@ mod tests {
         let probe = FakeProbe::new();
         let output = all_the_time_output(20.0);
         let storage = MemoryStorage::new();
-        let reporter = StderrReporter::new(false);
+        let reporter = RecordingReporter::quiet();
         let options = CollectOptions {
             best_of: best_of(1),
             ..CollectOptions::default()
@@ -3393,38 +3387,37 @@ mod tests {
     }
 
     #[test]
-    fn the_stored_run_records_the_repetition_count_it_was_reduced_from() {
+    fn the_stored_run_records_a_single_repetition() {
+        assert_stored_repetition_count(1);
+    }
+
+    #[test]
+    fn the_stored_run_records_multiple_repetitions() {
+        // More than one repetition distinguishes the measured protocol from
+        // a hardcoded single-run default.
+        assert_stored_repetition_count(2);
+    }
+
+    fn assert_stored_repetition_count(count: usize) {
         // The stored value is the minimum of the repetitions, and that minimum falls
         // as the count rises, so the count is part of the measurement protocol and
         // must travel with the run. Recorded from the repetitions that actually
         // produced the harvests, so it can never claim a run that did not happen.
-        for count in [1_usize, 3] {
-            let runner = FakeRunner::succeeding();
-            let probe = FakeProbe::new();
-            let output = SequencedOutput::new(
-                [30.0, 10.0, 20.0]
-                    .into_iter()
-                    .take(count)
-                    .map(all_the_time_output)
-                    .collect(),
-            );
-            let storage = MemoryStorage::new();
-            let reporter = StderrReporter::new(false);
-            let options = CollectOptions {
-                best_of: best_of(count),
-                ..CollectOptions::default()
-            };
+        let runner = FakeRunner::succeeding();
+        let probe = FakeProbe::new();
+        let output = SequencedOutput::new(vec![all_the_time_output(10.0); count]);
+        let storage = MemoryStorage::new();
+        let reporter = RecordingReporter::quiet();
+        let options = CollectOptions {
+            best_of: best_of(count),
+            ..CollectOptions::default()
+        };
 
-            drive_best_of(&options, &runner, &probe, &output, &storage, &reporter).unwrap();
+        drive_best_of(&options, &runner, &probe, &output, &storage, &reporter).unwrap();
 
-            let run = only_stored_run(&storage);
-            assert_eq!(run.context.best_of, NonZero::new(count));
-
-            // The count survives the stored representation, which is what a later
-            // reader actually parses.
-            let restored = Run::from_json(&run.to_json().unwrap()).unwrap();
-            assert_eq!(restored.context.best_of, NonZero::new(count));
-        }
+        // This reads the persisted JSON, including the protocol recorded by collect.
+        let run = only_stored_run(&storage);
+        assert_eq!(run.context.best_of, NonZero::new(count));
     }
 
     #[test]

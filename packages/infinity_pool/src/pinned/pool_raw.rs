@@ -362,6 +362,7 @@ mod tests {
     use std::mem::MaybeUninit;
     use std::panic::{RefUnwindSafe, UnwindSafe};
 
+    use new_zealand::nz;
     use static_assertions::{assert_impl_all, assert_not_impl_any};
 
     use super::*;
@@ -428,6 +429,8 @@ mod tests {
     #[test]
     fn capacity_grows_when_needed() {
         let mut pool = RawPinnedPool::<u64>::new();
+        // Keep multiple live slots before crossing the slab boundary.
+        pool.inner.set_slab_capacity(nz!(2));
 
         assert_eq!(pool.capacity(), 0);
 
@@ -450,7 +453,7 @@ mod tests {
         // One more insert should expand capacity
         let _handle = pool.insert(999_u64);
 
-        assert!(pool.capacity() >= initial_capacity * 2);
+        assert!(pool.capacity() >= initial_capacity.checked_mul(2).unwrap());
     }
 
     #[test]

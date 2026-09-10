@@ -1188,21 +1188,34 @@ mod tests {
     #[test]
     fn every_gate_appears_in_the_order_table_under_the_stage_that_applies_it() {
         let table = order_table();
-
-        for stage in STAGES {
-            assert!(
-                table.contains(stage.label()),
-                "{} is missing",
-                stage.label()
-            );
-            for gate in stage_gates(stage) {
-                assert!(
-                    table.contains(&format!("| `{}` |", gate.label())),
-                    "{} is missing",
-                    gate.label()
-                );
-            }
-        }
+        // Parse once rather than scanning the whole table for every gate. Retaining
+        // section boundaries also verifies that each gate belongs to the right stage.
+        let actual: Vec<_> = table
+            .split("\n**`")
+            .skip(1)
+            .map(|section| {
+                let (stage, rows) = section.split_once("`**").unwrap();
+                let gates: Vec<_> = rows
+                    .lines()
+                    .filter_map(|row| row.strip_prefix("| `"))
+                    .map(|row| row.split_once("` |").unwrap().0)
+                    .collect();
+                (stage, gates)
+            })
+            .collect();
+        let expected: Vec<_> = STAGES
+            .into_iter()
+            .map(|stage| {
+                (
+                    stage.label(),
+                    stage_gates(stage)
+                        .iter()
+                        .map(|gate| gate.label())
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect();
+        assert_eq!(actual, expected);
     }
 
     /// The floors table is the other half of the lockstep guard: the numbers it prints are

@@ -2040,10 +2040,11 @@ mod tests {
 
     #[test]
     fn equality_with_either_observed_range_edge_is_quiet() {
+        // Range-edge equality needs a judged base, not a regime-selection search.
         let base = [100.0, 200.0]
             .into_iter()
             .cycle()
-            .take(20)
+            .take(noise_gates::MIN_SERIES_POINTS)
             .collect::<Vec<_>>();
         for tip in [100.0, 200.0] {
             let one = series("edge", "m1", &base, tip);
@@ -2394,7 +2395,8 @@ mod tests {
 
     #[test]
     fn comparisons_are_partitioned_by_discriminant_set() {
-        let base = vec![100.0; 20];
+        // Partitioning is independent of base-window scale.
+        let base = vec![100.0; noise_gates::MIN_SERIES_POINTS];
         let series = [
             series("linux", "m1", &base, 130.0),
             series("mac", "m2", &base, 140.0),
@@ -2431,8 +2433,8 @@ mod tests {
 
     #[test]
     fn nonconsecutive_shared_candidates_form_one_larger_family() {
-        let mut left = series("left", "m1", &[100.0; 14], 130.0);
-        let mut right = series("right", "m1", &[100.0; 14], 130.0);
+        let mut left = series("left", "m1", &[], 130.0);
+        let mut right = series("right", "m1", &[], 130.0);
         replace_reference_commits(&mut left, &[11, 31, 51, 91, 111, 131, 171], 200);
         replace_reference_commits(&mut right, &[11, 51, 71, 91, 131, 151, 171], 200);
 
@@ -2445,21 +2447,27 @@ mod tests {
 
     #[test]
     fn family_members_must_contain_every_seed_commit() {
-        let mut first = series("first", "m1", &[100.0; 10], 130.0);
-        let mut second = series("second", "m1", &[100.0; 10], 130.0);
+        let mut first = series("first", "m1", &[], 130.0);
+        let mut second = series("second", "m1", &[], 130.0);
         replace_reference_commits(&mut first, &[1, 3, 5, 7, 9], 20);
         replace_reference_commits(&mut second, &[1, 3, 5, 7, 11], 20);
         let batch = [first, second];
-        let entries: Vec<PreparedEntry> = batch
-            .iter()
-            .enumerate()
-            .map(|(index, one)| prepare_series(index, one, &context(20), &mut GateLog::disabled()))
-            .collect();
-        let family = select_family(&batch, &entries, &[0, 1])
-            .expect("each series independently provides a complete candidate family");
+        let family = selected_test_family(&batch, &context(20));
 
         assert_eq!(family.member_indices, vec![1]);
         assert_eq!(family.candidate_commits, vec![1, 3, 5, 7, 11]);
+    }
+
+    /// Exercises rectangular-family selection without scoring unrelated historical turns.
+    fn selected_test_family(batch: &[Series], context: &AnalysisContext) -> HistoricalFamily {
+        let entries: Vec<PreparedEntry> = batch
+            .iter()
+            .enumerate()
+            .map(|(index, one)| prepare_series(index, one, context, &mut GateLog::disabled()))
+            .collect();
+        let indices: Vec<_> = (0..batch.len()).collect();
+        select_family(batch, &entries, &indices)
+            .expect("each series independently provides a complete candidate family")
     }
 
     #[test]
@@ -2469,34 +2477,33 @@ mod tests {
 
     #[test]
     fn three_way_shared_candidates_form_a_larger_family() {
-        let mut first = series("first", "m1", &[100.0; 20], 100.0);
-        let mut second = series("second", "m1", &[100.0; 20], 100.0);
-        let mut third = series("third", "m1", &[100.0; 20], 100.0);
+        // The reference helper builds the complete base window; do not build one to discard.
+        let mut first = series("first", "m1", &[], 100.0);
+        let mut second = series("second", "m1", &[], 100.0);
+        let mut third = series("third", "m1", &[], 100.0);
         replace_reference_commits(&mut first, &[10, 15, 20, 30, 35, 40, 50], 200);
         replace_reference_commits(&mut second, &[10, 15, 20, 30, 40, 45, 50], 200);
         replace_reference_commits(&mut third, &[10, 20, 30, 35, 40, 45, 50], 200);
 
-        let detection = find_changes(&[first, second, third], &context(200));
-        let comparison = &detection.branch_comparisons[0];
+        let family = selected_test_family(&[first, second, third], &context(200));
 
-        assert_eq!(comparison.series, 3);
-        assert_eq!(comparison.evaluated_base_commits, 5);
+        assert_eq!(family.member_indices, vec![0, 1, 2]);
+        assert_eq!(family.candidate_commits, vec![10, 20, 30, 40, 50]);
     }
 
     #[test]
     fn three_way_shared_candidates_can_exceed_the_minimum_family() {
-        let mut first = series("first-wide", "m1", &[100.0; 20], 100.0);
-        let mut second = series("second-wide", "m1", &[100.0; 20], 100.0);
-        let mut third = series("third-wide", "m1", &[100.0; 20], 100.0);
+        let mut first = series("first-wide", "m1", &[], 100.0);
+        let mut second = series("second-wide", "m1", &[], 100.0);
+        let mut third = series("third-wide", "m1", &[], 100.0);
         replace_reference_commits(&mut first, &[10, 15, 20, 30, 35, 40, 50, 60], 200);
         replace_reference_commits(&mut second, &[10, 15, 20, 30, 40, 45, 50, 60], 200);
         replace_reference_commits(&mut third, &[10, 20, 30, 35, 40, 45, 50, 60], 200);
 
-        let detection = find_changes(&[first, second, third], &context(200));
-        let comparison = &detection.branch_comparisons[0];
+        let family = selected_test_family(&[first, second, third], &context(200));
 
-        assert_eq!(comparison.series, 3);
-        assert_eq!(comparison.evaluated_base_commits, 6);
+        assert_eq!(family.member_indices, vec![0, 1, 2]);
+        assert_eq!(family.candidate_commits, vec![10, 20, 30, 40, 50, 60]);
     }
 
     #[test]

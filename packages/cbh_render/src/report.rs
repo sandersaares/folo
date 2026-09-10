@@ -2222,30 +2222,37 @@ mod tests {
     }
 
     #[test]
-    fn every_silent_surface_reports_the_same_coverage() {
+    fn silent_text_reports_coverage() {
+        assert_silent_surface_coverage(|input| render(input, ReportFormat::Text, false));
+    }
+
+    #[test]
+    fn silent_markdown_reports_coverage() {
+        assert_silent_surface_coverage(|input| render(input, ReportFormat::Markdown, false));
+    }
+
+    #[test]
+    fn silent_summary_reports_coverage() {
+        assert_silent_surface_coverage(|input| {
+            render_markdown_summary(input, DEFAULT_SUMMARY_LIMIT)
+        });
+    }
+
+    fn assert_silent_surface_coverage(render: impl Fn(&ReportInput<'_>) -> String) {
         for (name, census, expected, forbidden) in silent_surface_cases() {
             let input = ReportInput {
                 census,
                 ..flat_input(&[])
             };
-            let renderings = [
-                ("text", render(&input, ReportFormat::Text, false)),
-                ("markdown", render(&input, ReportFormat::Markdown, false)),
-                (
-                    "summary",
-                    render_markdown_summary(&input, DEFAULT_SUMMARY_LIMIT),
-                ),
-            ];
-            for (surface, rendering) in renderings {
-                assert!(
-                    rendering.contains(expected),
-                    "{name} on {surface} states its coverage: {rendering}"
-                );
-                assert!(
-                    !rendering.contains(forbidden),
-                    "{name} on {surface} overstates its coverage: {rendering}"
-                );
-            }
+            let rendering = render(&input);
+            assert!(
+                rendering.contains(expected),
+                "{name} states its coverage: {rendering}"
+            );
+            assert!(
+                !rendering.contains(forbidden),
+                "{name} overstates its coverage: {rendering}"
+            );
         }
     }
 

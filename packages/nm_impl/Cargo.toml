@@ -2,7 +2,7 @@
 name = "nm_impl"
 description = "Implementation crate for nm; do not depend on it directly"
 publish = true
-version = "0.1.49"
+version = "0.1.50"
 
 authors.workspace = true
 edition.workspace = true

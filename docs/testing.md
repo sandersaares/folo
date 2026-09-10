@@ -140,6 +140,17 @@ smaller fixtures for every runner when they preserve the same assertions.
 Otherwise, select smaller test-only parameters with `cfg!(miri)` while keeping
 the native coverage.
 
+Include successful tests reported as slow when reviewing CI logs, not just
+timeouts. Group them by shared fixtures and helpers so one unnecessarily large
+input is not repeated throughout a suite. Match CI's `RUST_BACKTRACE=1` setting
+when measuring error and panic scenarios, and rerun the affected suites after
+focused reductions to catch other users of the same helpers.
+
+Keep full producer documents in parser/schema compatibility tests. Higher-level
+orchestration tests generally need only small representative documents passed
+through the real parser. Likewise, separate independent scenarios instead of
+rebuilding an end-to-end fixture for each branch inside one test.
+
 Production constants that only tune performance, such as cache capacities or
 inline-storage sizes, may use smaller values under `cfg(miri)` when exposing them
 as test parameters is impractical. Document why the smaller value preserves

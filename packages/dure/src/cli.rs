@@ -187,6 +187,8 @@ fn app_command(argv: Vec<String>) -> Result<AppCommand, EarlyExit> {
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
+    use clap::CommandFactory;
+
     use super::*;
 
     fn parse(args: &[&str]) -> Invocation {
@@ -198,6 +200,22 @@ mod tests {
 
     fn command(argv: &[&str]) -> AppCommand {
         AppCommand::from_argv(argv.iter().map(|arg| (*arg).to_string()).collect()).unwrap()
+    }
+
+    fn subcommand_help(name: &str) -> EarlyExit {
+        if cfg!(miri) {
+            // These assertions concern one command's help. Interpret its real schema without
+            // parsing through the root; native tests retain the full root-to-command path.
+            let mut root = Cli::command();
+            let error = root
+                .find_subcommand_mut(name)
+                .unwrap()
+                .try_get_matches_from_mut([name, "--help"])
+                .unwrap_err();
+            EarlyExit::from_clap(&error)
+        } else {
+            Cli::from_args(&["dure"], &[name, "--help"]).unwrap_err()
+        }
     }
 
     #[test]
@@ -235,10 +253,11 @@ mod tests {
 
     #[test]
     fn resume_help_shows_positional_id() {
-        let err = Cli::from_args(&["dure"], &["resume", "--help"]).unwrap_err();
+        let err = subcommand_help("resume");
         assert!(err.status.is_ok());
         assert!(err.output.contains("[ID]"));
         assert!(!err.output.contains("--id"));
+        assert!(err.output.contains("launched from the current directory"));
     }
 
     #[test]
@@ -249,6 +268,10 @@ mod tests {
     #[test]
     fn parse_kill_requires_id() {
         Cli::from_args(&["dure"], &["kill"]).unwrap_err();
+    }
+
+    #[test]
+    fn parse_kill_with_positional_id() {
         let input = parse(&["kill", "2"]);
         assert_eq!(
             input.command,
@@ -265,7 +288,7 @@ mod tests {
 
     #[test]
     fn kill_help_shows_positional_id() {
-        let err = Cli::from_args(&["dure"], &["kill", "--help"]).unwrap_err();
+        let err = subcommand_help("kill");
         assert!(err.status.is_ok());
         assert!(err.output.contains("<ID>"));
         assert!(!err.output.contains("--id"));
@@ -311,17 +334,20 @@ mod tests {
     }
 
     #[test]
-    fn run_accepts_a_command_with_or_without_the_separator() {
-        let with = parse(&["run", "--", "copilot.exe", "--foo"]);
-        let without = parse(&["run", "copilot.exe", "--foo"]);
-        assert_eq!(with.command, without.command);
+    fn parse_run_without_double_dash() {
+        let input = parse(&["run", "copilot.exe", "--foo"]);
+        assert_eq!(
+            input.command,
+            Command::Run {
+                command: command(&["copilot.exe", "--foo"]),
+            }
+        );
     }
 
     #[test]
-    fn subcommand_help_explains_how_a_session_is_chosen() {
-        let err = Cli::from_args(&["dure"], &["resume", "--help"]).unwrap_err();
-        assert!(err.output.contains("launched from the current directory"));
-        let err = Cli::from_args(&["dure"], &["run", "--help"]).unwrap_err();
+    fn run_help_explains_that_it_always_creates_a_session() {
+        let err = subcommand_help("run");
+        assert!(err.status.is_ok());
         assert!(err.output.contains("Always creates a new session"));
     }
 }

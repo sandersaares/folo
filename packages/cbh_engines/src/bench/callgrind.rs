@@ -369,8 +369,10 @@ mod tests {
 
     #[test]
     fn rejects_unsupported_version() {
-        let altered = SINGLE_FIXTURE.replace("\"version\": \"6\"", "\"version\": \"7\"");
-        let error = parse_callgrind_summary(&altered).unwrap_err();
+        // Version validation needs a well-formed summary, not the producer's
+        // unrelated profiling metadata.
+        let altered = r#"{"version":"7","module_path":"m","function_name":"f","profiles":[]}"#;
+        let error = parse_callgrind_summary(altered).unwrap_err();
         let unsupported = error
             .find_source::<UnsupportedCallgrindVersionError>()
             .unwrap();

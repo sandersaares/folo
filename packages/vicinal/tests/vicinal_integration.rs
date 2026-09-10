@@ -2,8 +2,8 @@
 //!
 //! These tests verify full pool functionality with real threads.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Barrier};
 use std::thread;
 
 use events_once::EventPool;
@@ -104,11 +104,17 @@ fn drop_pool_after_awaiting_task() {
 
 #[test]
 fn spawn_many_tasks_await_all() {
+    // Repeated submissions exercise task/result slot reuse; native runs retain the larger batch.
+    const TASK_COUNT: usize = if cfg!(miri) { 4 } else { 100 };
+
     with_watchdog(|| {
         let pool = Pool::new();
         let scheduler = pool.scheduler();
 
-        for (i, handle) in (0..100).map(|i| scheduler.spawn(move || i * 2)).enumerate() {
+        for (i, handle) in (0..TASK_COUNT)
+            .map(|i| scheduler.spawn(move || i * 2))
+            .enumerate()
+        {
             assert_eq!(block_on(handle), i * 2);
         }
     });
@@ -132,17 +138,29 @@ fn scheduler_sent_to_another_thread() {
 
 #[test]
 fn concurrent_spawns_from_multiple_threads() {
+    // Keep multiple submissions from every producer under Miri, with native stress coverage.
+    const TASKS_PER_PRODUCER: usize = if cfg!(miri) { 2 } else { 25 };
+    // Retain competing producers even when interpreting only a small batch from each.
+    const PRODUCER_COUNT: usize = 4;
+
     with_watchdog(|| {
         let pool = Pool::new();
         let scheduler = pool.scheduler();
         let completed = Arc::new(AtomicUsize::new(0));
+        let start = Arc::new(Barrier::new(PRODUCER_COUNT));
 
         let thread_handles: Vec<_> = std::iter::repeat_with(|| {
             let scheduler = scheduler.clone();
             let completed = Arc::clone(&completed);
+            let start = Arc::clone(&start);
 
             thread::spawn(move || {
-                let handles: Vec<_> = (0..25)
+                start.wait();
+                #[expect(
+                    clippy::needless_collect,
+                    reason = "submit the whole batch before awaiting any task to exercise queue contention"
+                )]
+                let handles: Vec<_> = (0..TASKS_PER_PRODUCER)
                     .map(|i| {
                         let completed = Arc::clone(&completed);
                         scheduler.spawn(move || {
@@ -152,19 +170,22 @@ fn concurrent_spawns_from_multiple_threads() {
                     })
                     .collect();
 
-                for handle in handles {
-                    block_on(handle);
+                for (i, handle) in handles.into_iter().enumerate() {
+                    assert_eq!(block_on(handle), i);
                 }
             })
         })
-        .take(4)
+        .take(PRODUCER_COUNT)
         .collect();
 
         for handle in thread_handles {
             handle.join().unwrap();
         }
 
-        assert_eq!(completed.load(Ordering::Relaxed), 100);
+        assert_eq!(
+            completed.load(Ordering::Relaxed),
+            PRODUCER_COUNT * TASKS_PER_PRODUCER
+        );
     });
 }
 
@@ -206,6 +227,9 @@ fn spawn_urgent_and_forget_completes() {
 
 #[test]
 fn spawn_and_forget_multiple_tasks() {
+    // A small batch still checks independent completion signals; native runs retain the burst.
+    const TASK_COUNT: usize = if cfg!(miri) { 4 } else { 50 };
+
     with_watchdog(|| {
         let pool = Pool::new();
         let scheduler = pool.scheduler();
@@ -214,7 +238,7 @@ fn spawn_and_forget_multiple_tasks() {
 
         let mut receivers = Vec::new();
 
-        for _ in 0..50 {
+        for _ in 0..TASK_COUNT {
             let (tx, rx) = event_pool.rent();
             let completed = Arc::clone(&completed);
             receivers.push(rx);
@@ -230,7 +254,7 @@ fn spawn_and_forget_multiple_tasks() {
             block_on(rx).unwrap();
         }
 
-        assert_eq!(completed.load(Ordering::Relaxed), 50);
+        assert_eq!(completed.load(Ordering::Relaxed), TASK_COUNT);
     });
 }
 
@@ -249,13 +273,19 @@ fn spawn_and_await_with_fake_hardware() {
 
 #[test]
 fn spawn_many_tasks_with_single_processor_hardware() {
+    // Repeated submissions reuse a single processor's state without a large interpreted batch.
+    const TASK_COUNT: usize = if cfg!(miri) { 4 } else { 50 };
+
     with_watchdog(|| {
         let hardware =
             SystemHardware::fake(HardwareBuilder::from_counts(nz!(1_usize), nz!(1_usize)));
         let pool = Pool::builder().hardware(hardware).build();
         let scheduler = pool.scheduler();
 
-        for (i, handle) in (0..50).map(|i| scheduler.spawn(move || i)).enumerate() {
+        for (i, handle) in (0..TASK_COUNT)
+            .map(|i| scheduler.spawn(move || i))
+            .enumerate()
+        {
             assert_eq!(block_on(handle), i);
         }
     });
@@ -281,19 +311,31 @@ fn fire_and_forget_with_fake_hardware() {
 
 #[test]
 fn concurrent_spawns_with_fake_hardware() {
+    // Keep multiple submissions from every producer under Miri, with native stress coverage.
+    const TASKS_PER_PRODUCER: usize = if cfg!(miri) { 2 } else { 10 };
+    // Exercise the same competing producers and hardware topology at either batch size.
+    const PRODUCER_COUNT: usize = 4;
+
     with_watchdog(|| {
         let hardware =
             SystemHardware::fake(HardwareBuilder::from_counts(nz!(4_usize), nz!(2_usize)));
         let pool = Pool::builder().hardware(hardware).build();
         let scheduler = pool.scheduler();
         let completed = Arc::new(AtomicUsize::new(0));
+        let start = Arc::new(Barrier::new(PRODUCER_COUNT));
 
         let thread_handles: Vec<_> = std::iter::repeat_with(|| {
             let scheduler = scheduler.clone();
             let completed = Arc::clone(&completed);
+            let start = Arc::clone(&start);
 
             thread::spawn(move || {
-                let handles: Vec<_> = (0..10)
+                start.wait();
+                #[expect(
+                    clippy::needless_collect,
+                    reason = "submit the whole batch before awaiting any task to exercise queue contention"
+                )]
+                let handles: Vec<_> = (0..TASKS_PER_PRODUCER)
                     .map(|i| {
                         let completed = Arc::clone(&completed);
                         scheduler.spawn(move || {
@@ -303,19 +345,22 @@ fn concurrent_spawns_with_fake_hardware() {
                     })
                     .collect();
 
-                for handle in handles {
-                    block_on(handle);
+                for (i, handle) in handles.into_iter().enumerate() {
+                    assert_eq!(block_on(handle), i);
                 }
             })
         })
-        .take(4)
+        .take(PRODUCER_COUNT)
         .collect();
 
         for handle in thread_handles {
             handle.join().unwrap();
         }
 
-        assert_eq!(completed.load(Ordering::Relaxed), 40);
+        assert_eq!(
+            completed.load(Ordering::Relaxed),
+            PRODUCER_COUNT * TASKS_PER_PRODUCER
+        );
     });
 }
 

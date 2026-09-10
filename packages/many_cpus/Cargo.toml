@@ -2,7 +2,7 @@
 name = "many_cpus"
 description = "Efficiently schedule work and inspect the hardware environment on many-processor systems"
 publish = true
-version = "2.4.20"
+version = "2.4.21"
 
 authors.workspace = true
 edition.workspace = true

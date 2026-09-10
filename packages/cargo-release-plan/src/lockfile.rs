@@ -410,18 +410,15 @@ dependencies = [\"direct\"]
 [[package]]
 name = \"direct\"
 version = \"1.0.0\"
-source = \"registry+https://example.invalid\"
 dependencies = [\"indirect\"]
 
 [[package]]
 name = \"indirect\"
 version = \"2.0.0\"
-source = \"registry+https://example.invalid\"
 
 [[package]]
 name = \"unrelated\"
 version = \"9.0.0\"
-source = \"registry+https://example.invalid\"
 ";
         let closure = closure_of(text, "tool", "0.1.0");
         assert_eq!(
@@ -536,6 +533,8 @@ source = \"registry+https://example.invalid\"
 
     #[test]
     fn a_sourceless_reference_selects_a_path_package_on_an_identity_collision() {
+        // The identity in the closure distinguishes the colliding entries without extra
+        // descendants; transitive traversal has its own focused test.
         let text = "\
 [[package]]
 name = \"tool\"
@@ -545,25 +544,14 @@ dependencies = [\"dup 1.0.0\"]
 [[package]]
 name = \"dup\"
 version = \"1.0.0\"
-dependencies = [\"from-path\"]
 
 [[package]]
 name = \"dup\"
 version = \"1.0.0\"
-source = \"registry+https://example.invalid\"
-dependencies = [\"from-registry\"]
-
-[[package]]
-name = \"from-path\"
-version = \"1.0.0\"
-
-[[package]]
-name = \"from-registry\"
-version = \"1.0.0\"
-source = \"registry+https://example.invalid\"
+source = \"registry+r\"
 ";
         let closure = closure_of(text, "tool", "0.1.0");
-        assert_eq!(closure.keys().collect::<Vec<_>>(), vec!["dup", "from-path"]);
+        assert_eq!(closure.keys().collect::<Vec<_>>(), vec!["dup"]);
         assert_eq!(
             closure.get("dup").unwrap().iter().collect::<Vec<_>>(),
             vec!["1.0.0"]
@@ -646,45 +634,28 @@ dependencies = [\"tool\"]
     /// identify one entry, so ignoring it would walk into the wrong package.
     #[test]
     fn a_dependency_naming_a_source_selects_that_source() {
+        // Source identities are opaque here; the identity in the closure identifies exactly
+        // which colliding entry was selected without needing descendants of each candidate.
         let text = "\
 [[package]]
 name = \"tool\"
 version = \"0.1.0\"
-dependencies = [\"dup 1.0.0 (git+https://example.invalid/dup)\"]
+dependencies = [\"dup 1.0.0 (git+g)\"]
 
 [[package]]
 name = \"dup\"
 version = \"1.0.0\"
-source = \"registry+https://example.invalid\"
-dependencies = [\"from-registry\"]
+source = \"registry+r\"
 
 [[package]]
 name = \"dup\"
 version = \"1.0.0\"
-source = \"git+https://example.invalid/dup\"
-dependencies = [\"from-git\"]
-
-[[package]]
-name = \"from-registry\"
-version = \"1.0.0\"
-source = \"registry+https://example.invalid\"
-
-[[package]]
-name = \"from-git\"
-version = \"1.0.0\"
-source = \"registry+https://example.invalid\"
+source = \"git+g\"
 ";
         let closure = closure_of(text, "tool", "0.1.0");
-        assert_eq!(
-            closure.keys().collect::<Vec<_>>(),
-            vec!["dup", "from-git"],
-            "{closure:?}"
-        );
+        assert_eq!(closure.keys().collect::<Vec<_>>(), vec!["dup"]);
         let dup = closure.get("dup").unwrap();
-        assert_eq!(
-            dup.iter().collect::<Vec<_>>(),
-            vec!["1.0.0 (git+https://example.invalid/dup)"]
-        );
+        assert_eq!(dup.iter().collect::<Vec<_>>(), vec!["1.0.0 (git+g)"]);
     }
 
     #[test]
@@ -700,13 +671,24 @@ dependencies = [\"dep\"]
 [[package]]
 name = \"dep\"
 version = \"1.0.0\"
-source = \"registry+https://example.invalid\"
+source = \"registry+a\"
 ";
-        let patched = plain.replace("example.invalid", "elsewhere.invalid");
-        let changes = closure_changes(
-            &closure_of(plain, "tool", "0.1.0"),
-            &closure_of(&patched, "tool", "0.1.0"),
-        );
+        let mut lockfile = Lockfile::parse(plain, LABEL).unwrap();
+        let before = lockfile.closure("tool", "0.1.0").unwrap();
+        // Only the dependency source changes; reusing the parsed graph isolates identity
+        // comparison from repeated TOML parsing.
+        let dependency = lockfile
+            .entries
+            .iter_mut()
+            .find(|entry| {
+                entry.name == "dep"
+                    && entry.version == "1.0.0"
+                    && entry.source.as_deref() == Some("registry+a")
+            })
+            .unwrap();
+        dependency.source = Some("registry+b".to_owned());
+        let after = lockfile.closure("tool", "0.1.0").unwrap();
+        let changes = closure_changes(&before, &after);
         assert_eq!(changes, vec![("dep".to_owned(), ClosureChange::Modified)]);
     }
 
@@ -745,21 +727,53 @@ source = \"registry+https://example.invalid\"
         assert_eq!(ClosureChange::Modified.as_str(), "modified");
     }
 
+    fn assert_malformed(text: &str) {
+        let error = Lockfile::parse(text, LABEL).unwrap_err();
+        assert!(error.find_source::<MalformedLockfileError>().is_some());
+    }
+
     #[test]
-    fn a_malformed_lockfile_is_rejected() {
-        for text in [
-            "not = = toml",
-            "[[package]]\nversion = \"1.0.0\"\n",
-            "[[package]]\nname = \"a\"\n",
-            "[[package]]\nname = \"a\"\nversion = \"1.0.0\"\ndependencies = \"b\"\n",
-            "[[package]]\nname = \"a\"\nversion = \"1.0.0\"\ndependencies = [1]\n",
-            "[[package]]\nname = \"a\"\nversion = \"1.0.0\"\ndependencies = [\"\"]\n",
+    fn malformed_toml_is_rejected() {
+        assert_malformed("not = = toml");
+    }
+
+    #[test]
+    fn a_package_without_a_name_is_rejected() {
+        assert_malformed("[[package]]\nversion = \"1.0.0\"\n");
+    }
+
+    #[test]
+    fn a_package_without_a_version_is_rejected() {
+        assert_malformed("[[package]]\nname = \"a\"\n");
+    }
+
+    #[test]
+    fn a_non_array_dependency_list_is_rejected() {
+        assert_malformed("[[package]]\nname = \"a\"\nversion = \"1.0.0\"\ndependencies = \"b\"\n");
+    }
+
+    #[test]
+    fn a_non_string_dependency_is_rejected() {
+        assert_malformed("[[package]]\nname = \"a\"\nversion = \"1.0.0\"\ndependencies = [1]\n");
+    }
+
+    #[test]
+    fn an_empty_dependency_is_rejected() {
+        assert_malformed("[[package]]\nname = \"a\"\nversion = \"1.0.0\"\ndependencies = [\"\"]\n");
+    }
+
+    #[test]
+    fn an_unparenthesized_source_is_rejected() {
+        assert_malformed(
             "[[package]]\nname = \"a\"\nversion = \"1.0.0\"\ndependencies = [\"b 1.0.0 source\"]\n",
+        );
+    }
+
+    #[test]
+    fn trailing_dependency_fields_are_rejected() {
+        assert_malformed(
             "[[package]]\nname = \"a\"\nversion = \"1.0.0\"\n\
 dependencies = [\"b 1.0.0 (source) extra\"]\n",
-        ] {
-            let error = Lockfile::parse(text, LABEL).unwrap_err();
-            assert!(error.find_source::<MalformedLockfileError>().is_some());
-        }
+        );
     }
 }

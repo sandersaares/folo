@@ -99,6 +99,15 @@ impl SlabLayout {
     pub(crate) fn slot_array_layout(&self) -> Layout {
         self.slot_array_layout
     }
+
+    /// Configures a small fixture without changing slot layout or the production capacity policy.
+    #[cfg(test)]
+    #[cfg_attr(coverage_nightly, coverage(off))]
+    pub(crate) fn with_capacity(mut self, capacity: NonZero<usize>) -> Self {
+        self.capacity = capacity;
+        self.slot_array_layout = self.slot_layout.repeat(capacity.get()).unwrap().0;
+        self
+    }
 }
 
 /// At the moment, we use a built-in algorithm to determine a reasonable capacity for each slab.
