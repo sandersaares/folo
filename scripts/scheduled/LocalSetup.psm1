@@ -1,6 +1,7 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
+Import-Module (Join-Path $PSScriptRoot 'LocalSetupState.psm1')
 
 # Reconciles the desired native App automation profile (host, executor, repository) against the
 # App's own registered automations, for the one-time/occasional operator setup flow (not the
@@ -127,6 +128,9 @@ function Get-ScheduledRoleSetupDecision {
     # markers prevent either role from adopting the other's existing entry.
     # Ref: ../../docs/scheduled-triage.md#independent-configuration.
     $markers = @{ triage = 'folo-scheduled-triage:v1'; repair = 'folo-scheduled-remediation:v1' }
+    if ($null -ne $SetupJournal) {
+        Assert-ScheduledSetupJournal $SetupJournal $SetupJournal.repository_id
+    }
     if ($Desired.marker -cne $markers[$Role]) {
         throw 'Desired automation marker does not identify its role.'
     }

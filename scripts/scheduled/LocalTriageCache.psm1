@@ -64,7 +64,14 @@ function Complete-ScheduledTriageSnapshotFile {
         $name -cnotmatch "^$prefix[0-9a-f]{32}\.tmp$") {
         throw 'Snapshot installation must use its prepared owner-tagged cache file.'
     }
-    [IO.File]::Move($TemporaryPath, $destination, $true)
+    Invoke-TriageSnapshotMove $TemporaryPath $destination
+}
+
+function Invoke-TriageSnapshotMove {
+    # Keep the atomic filesystem boundary distinct from pin validation so interruption
+    # between payload installation and the state commit can be exercised deterministically.
+    param([string] $Source, [string] $Destination)
+    [IO.File]::Move($Source, $Destination, $true)
 }
 
 function Invoke-ScheduledTriageCacheCleanup {

@@ -86,6 +86,29 @@ Describe 'Evidence-bound publication operations' {
         $fixture.store.issues[20L].state | Should -Be open
     }
 
+    It 'preserves a human state transition after problem preparation and reconciles an actual lost reopening response' {
+        $fixture.store.issues[31L] = @{
+            number = 31; body = '[Copilot speaking] Original'; state = 'open'
+            user = @{ login = 'worker' }; labels = @(@{ name = 'scheduled-finding' })
+        }
+        $spec.kind = 'update-issue'; $spec.target_id = 31; $spec.issue_number = 31
+        $spec.purpose = 'problem-root:download'; $spec.block_kind = 'problem'; $spec.preimage = ''
+        $spec.expected_state = 'open'
+        $spec.payload = @{ state = 'open'
+            body = '<!-- scheduled-problem-content:start -->Recurrence<!-- scheduled-problem-content:end -->' }
+        $null = Invoke-TriageTransaction $fixture.context triage-prepare-operation @{ operation = $spec }
+        $fixture.store.issues[31L].state = 'closed'
+        { Invoke-ScheduledTriageOperation $fixture.context $spec $fixture.api } | Should -Throw
+        $fixture.store.issues[31L].state | Should -Be closed
+        $fixture.store.writes.Count | Should -Be 0
+        $spec.key = '1/reconsidered-state'; $spec.expected_state = 'closed'
+        $fixture.store.lose_update = $true
+        { Invoke-ScheduledTriageOperation $fixture.context $spec $fixture.api } | Should -Throw
+        $fixture.store.issues[31L].state | Should -Be open
+        (Invoke-ScheduledTriageOperation $fixture.context $spec $fixture.api).action | Should -Be confirmed
+        $fixture.store.writes.Count | Should -Be 1
+    }
+
     It 'preserves non-owned text and prefixes an existing unprefixed publication body' {
         $fixture.store.issues[20L].body = 'Human description'
         $spec.kind = 'update-issue'; $spec.target_id = 20; $spec.purpose = 'problem-root:download'

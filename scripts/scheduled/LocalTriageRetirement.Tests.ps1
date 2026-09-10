@@ -8,6 +8,7 @@ BeforeAll {
     Import-Module (Join-Path $PSScriptRoot 'LocalTriageCompletion.psm1')
     Import-Module (Join-Path $PSScriptRoot 'LocalTriageInbox.psm1')
     Import-Module (Join-Path $PSScriptRoot 'LocalTriageCache.psm1')
+    Import-Module (Join-Path $PSScriptRoot 'LocalTriageState.psm1')
     Import-Module (Join-Path $PSScriptRoot 'ScheduledContracts.psm1')
 }
 
@@ -55,6 +56,9 @@ Describe 'Quiescent analysis compaction' {
         $state = Invoke-TriageTransaction $fixture.context read
         (Get-ScheduledTriageInbox $fixture.context.policy $state $fixture.api).backlog_count | Should -Be 0
         (Get-ScheduledTriageRecovery $fixture.context.policy $state $fixture.api).active | Should -BeNullOrEmpty
+        $corrupt = Copy-TriageFixtureValue $state.triage
+        $corrupt.analyses[$fixture.context.analysis_id].checkpoint = @{}
+        { Assert-ScheduledTriageState $corrupt } | Should -Throw
         $null = Invoke-TriageTransaction $fixture.context triage-release-scan @{ scan_token = $fixture.context.scan_token }
         $state = Invoke-TriageTransaction $fixture.context triage-acquire-scan @{ session_id = 'next-poll' }
         { Invoke-TriageTransaction $fixture.context triage-claim @{

@@ -100,6 +100,8 @@ Append-only detail pages precede their bounded root/index checkpoint. A single
 owned triage root comment on each run issue identifies its committed analysis.
 Problem bodies contain their separately owned canonical record and detail links.
 Preserve human text, reporter records and repair-session records.
+Problem state changes also retain the prepared issue state as a preimage; an
+intervening external transition requires reconsideration before sending an update.
 
 An analysis completes only after all required problem updates are confirmed.
 Partial publication, stale source/index, changed generation or ambiguous ownership
@@ -131,6 +133,9 @@ coverage/health issue. Report last successful scan, backlog and oldest pending
 evidence, registered work, blockers and profile drift. Setup is not a scan.
 An unenrolled inactive role is disabled/not expected; its absence neither fails
 hosted operation nor conceals missing coverage or failed reporting.
+Setup restores stage-specific, integrity-checked role records before deciding that
+a native entry is absent. Native automation identifiers remain opaque strings;
+they are not GitHub issue numbers.
 
 Deterministic tests establish serialization, discovery and transition behavior.
 Actual model diagnosis quality, personal billing, unattended consent, native

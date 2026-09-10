@@ -26,6 +26,20 @@ Describe 'Complete reporter and problem inventory' {
         Should -Invoke Invoke-ScheduledApi -ModuleName LocalTriageInbox -ParameterFilter { $Paginate }
     }
 
+    It 'does not reinterpret an already restored run carrying the historical finding label as a problem' {
+        $fixture.store.issues[20L].labels += @{ name = 'scheduled-finding' }
+        $script:reads = @{ comments = 0 }
+        $api = {
+            param($Endpoint, [switch] $Collection, [switch] $Pages)
+            if ($Endpoint.Contains('/issues/20/comments')) { $reads.comments++ }
+            & $fixture.api -Endpoint $Endpoint -Collection:$Collection -Pages:$Pages
+        }
+        $snapshot = Get-ScheduledTriageInbox $fixture.context.policy $state $api
+        $snapshot.backlog_count | Should -Be 1
+        $snapshot.index.entries.Count | Should -Be 0
+        $reads.comments | Should -Be 1
+    }
+
     It 'rejects <Case> from the complete inventory' -ForEach @(
         @{ Case = 'foreign run ownership'; Change = { $fixture.store.issues[20L].user.login = 'unrelated' } }
         @{ Case = 'uncommitted reporter index'; Change = { $fixture.store.comments[20L].Clear() } }
@@ -136,6 +150,7 @@ Describe 'Complete reporter and problem inventory' {
         @{ Case = 'foreign canonical problem'; Damage = 'identity' }
         @{ Case = 'incomplete publication'; Damage = 'publication' }
         @{ Case = 'unconfirmed problem link'; Damage = 'link' }
+        @{ Case = 'run used as a problem link'; Damage = 'run-link' }
     ) {
         $published = Publish-TriageFixtureProblem $fixture download
         $null = Complete-ScheduledTriageAnalysis $fixture.context $fixture.api
@@ -147,7 +162,9 @@ Describe 'Complete reporter and problem inventory' {
         } else {
             $record = Copy-TriageFixtureValue $snapshot.runs['20'].details.revisions[0].document
             $record.analysis.checkpoint = 2
-            if ($Damage -ceq 'publication') { $record.publication_complete = $false } else {
+            if ($Damage -ceq 'publication') { $record.publication_complete = $false } elseif ($Damage -ceq 'run-link') {
+                $record.problem_links.download.issue_number = 20
+            } else {
                 $record.problem_links.download.problem_digest = 'c' * 64
             }
             Invoke-TriageFixtureDocument $fixture 20 triage $record

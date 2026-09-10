@@ -202,6 +202,10 @@ function Invoke-ScheduledTriageOperation {
                 Where-Object { $_ -ine 'scheduled-triaged' })
             if ($operation.triaged) { $payload.labels += 'scheduled-triaged' }
         } else {
+            if ($operation.kind -ceq 'update-issue' -and $payload.ContainsKey('state') -and (
+                -not $operation.ContainsKey('expected_state') -or $target.state -cne $operation.expected_state)) {
+                throw [FormatException]::new('Problem state changed after preparation; reconsider the external transition.')
+            }
             $block = Get-TriageOwnedBlock -Text $target.body -Kind $operation.block_kind
             $current = if ($null -eq $block) { '' } else { $block.Value }
             if ($current -cne $operation.preimage) {

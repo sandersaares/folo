@@ -28,6 +28,9 @@ Describe 'Durable cache ownership' {
         $unclaimed = Initialize-TriageFixture -Root (Join-Path $TestDrive 'unclaimed') -Unclaimed
         $scanOwner = @{ analysis_id = $null; session_id = 'session'; scan_token = $unclaimed.context.scan_token }
         $id = Save-ScheduledTriageSnapshot $unclaimed.context $unclaimed.snapshot $scanOwner
+        $pending = Write-ScheduledTriageSnapshotFile $unclaimed.context.state_root $unclaimed.snapshot scan $unclaimed.context.scan_token
+        $null = Invoke-TriageTransaction $unclaimed.context triage-clean-cache $scanOwner
+        Test-Path -LiteralPath $pending.temporary_path | Should -BeTrue
         $state = Invoke-TriageTransaction $unclaimed.context triage-claim @{
             scan_token = $unclaimed.context.scan_token; session_id = 'session'
             native_verified = $true; revision = $unclaimed.revision
@@ -35,7 +38,17 @@ Describe 'Durable cache ownership' {
         $analysis = $state.triage.analyses[$state.triage.active_analysis_id]
         $analysis.working_snapshot_id | Should -BeExactly $id
         $null = Invoke-TriageTransaction $unclaimed.context triage-release-scan @{ scan_token = $unclaimed.context.scan_token }
+        Test-Path -LiteralPath $pending.temporary_path | Should -BeFalse
         Test-Path (Get-ScheduledTriageSnapshotPath $unclaimed.context.state_root $id) | Should -BeTrue
+    }
+
+    It 'collects an orphaned analysis temporary file when no analysis owns the role' {
+        $unclaimed = Initialize-TriageFixture -Root (Join-Path $TestDrive 'empty-role') -Unclaimed
+        $pending = Write-ScheduledTriageSnapshotFile $unclaimed.context.state_root $unclaimed.snapshot analysis ([guid]::NewGuid().ToString())
+        $null = Invoke-TriageTransaction $unclaimed.context triage-clean-cache @{
+            analysis_id = $null; session_id = 'session'; scan_token = $unclaimed.context.scan_token
+        }
+        Test-Path -LiteralPath $pending.temporary_path | Should -BeFalse
     }
 
     It 'preserves a worker uncheckpointed view while another poll owns and releases a different snapshot' {
@@ -134,9 +147,8 @@ Describe 'Durable cache ownership' {
         $prior = Save-ScheduledTriageSnapshot $fixture.context $fixture.snapshot $owner
         $next = Get-CacheFixtureSnapshot $fixture next
         $nextId = Get-ScheduledDigest $next
-        $script:install = (Get-Command Complete-ScheduledTriageSnapshotFile).ScriptBlock
-        Mock Complete-ScheduledTriageSnapshotFile -ModuleName LocalState {
-            & $install $StateRoot $Id $TemporaryPath $OwnerKind $OwnerToken
+        Mock Invoke-TriageSnapshotMove -ModuleName LocalTriageCache {
+            [IO.File]::Move($Source, $Destination, $true)
             throw [IO.IOException]::new('Interrupted before state commit.')
         }
         { Save-ScheduledTriageSnapshot $fixture.context $next $owner } | Should -Throw

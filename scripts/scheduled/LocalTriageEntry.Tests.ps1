@@ -47,6 +47,8 @@ Describe 'Local triage JSON entry point' {
         $decoded = $text | ConvertFrom-Json -AsHashtable
         $decoded.evidence.run_id | Should -Be 789
         $decoded.basis.api_evidence.run_attempt | Should -Be 1
+        $unowned = $identity.Clone(); $unowned.snapshot_id = 'f' * 64
+        { Invoke-EntryFixtureRequest evidence $unowned } | Should -Throw
     }
 
     It 'records an empty complete index and validates a changed analysis checkpoint' {
@@ -92,6 +94,7 @@ Describe 'Local triage JSON entry point' {
 
     It 'does not initialize absent state or accept a changed account' {
         Mock Get-ScheduledStateRoot -ModuleName LocalTriage { Join-Path $TestDrive 'not-enrolled' }
+        { Invoke-EntryFixtureRequest scan @{} } | Should -Throw
         $scan = Invoke-EntryFixtureRequest scan @{} -ObserveOnly
         $scan.registered | Should -BeFalse
         $scan.snapshot_id | Should -BeNullOrEmpty
@@ -196,6 +199,19 @@ Describe 'Local triage JSON entry point' {
             relation = 'repeat'; reason = 'The confirmed publication describes the same diagnosed access failure.'
         }
         (Invoke-EntryFixtureRequest checkpoint $data).checkpoint.analysis.checkpoint | Should -Be 3
+        (Invoke-EntryFixtureRequest prepare-problem $data).action | Should -Be prepared
+        (Invoke-EntryFixtureRequest publish-problem $data).action | Should -Be published
+        (Invoke-EntryFixtureRequest finish $data).analysis_status | Should -Be complete
+        $null = Invoke-EntryFixtureRequest state @{
+            action = 'triage-complete-dispatch'; fields = $identity + @{ reason = 'Completed' }
+        }
+        $retired = Invoke-EntryFixtureRequest state @{
+            action = 'triage-retire'; fields = @{
+                analysis_id = $identity.analysis_id; session_id = $identity.session_id
+                scan_token = $fixture.context.scan_token; native_idle_verified = $true
+            }
+        }
+        $retired.triage.analyses[$identity.analysis_id].phase | Should -Be retired
     }
 
     It 'does not use a snapshot lacking its exact claimed revision for evidence or checkpointing' {

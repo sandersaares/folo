@@ -6,6 +6,7 @@ BeforeAll {
     Import-Module (Join-Path $PSScriptRoot 'LocalTriagePublication.psm1') -Force
     Import-Module (Join-Path $PSScriptRoot 'LocalState.psm1') -Force
     Import-Module (Join-Path $PSScriptRoot 'LocalTriageState.psm1') -Force
+    Import-Module (Join-Path $PSScriptRoot 'ScheduledContracts.psm1')
 }
 
 Describe 'Durable triage ownership and budgets' {
@@ -107,7 +108,9 @@ Describe 'Durable triage ownership and budgets' {
                 missing-owner { $corrupt.active_analysis_id = 'missing' }
                 competing-owner {
                     $other = Copy-TriageFixtureValue $corrupt.analyses[$corrupt.active_analysis_id]
-                    $other.id = 'other'; $corrupt.analyses.other = $other
+                    $other.id = 'other'; $other.checkpoint.analysis.analysis_id = 'other'
+                    $other.checkpoint_digest = Get-ScheduledDigest $other.checkpoint
+                    $corrupt.analyses.other = $other
                 }
             }
             { Assert-ScheduledTriageState $corrupt } | Should -Throw

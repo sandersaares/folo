@@ -239,6 +239,9 @@ function Get-ScheduledTriageInbox {
     $problems = @{}
     $entries = @(
         foreach ($issue in $problemIssues) {
+            # Labels are discovery aids, not semantic identities. A canonical run can retain
+            # the historical finding label without becoming an independently diagnosed problem.
+            if ($runs.ContainsKey([string]$issue.number)) { continue }
             $comments = Get-TriageCommentCollection $Policy $issue.number $Api
             $problem = $null
             $legacy = $null

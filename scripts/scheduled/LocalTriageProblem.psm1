@@ -275,6 +275,7 @@ function Publish-ScheduledTriageProblem {
         checkpoint = $analysis.checkpoint.analysis.checkpoint; purpose = "problem-root:$ProblemKey"
         block_kind = 'problem'; preimage = $plan.original_block; payload = $payload
     }
+    if ($plan.reopen) { $specification.expected_state = $plan.original_state }
     $null = Invoke-ScheduledTriageOperation -Context $Context -Specification $specification -Api $Api
     if ($plan.owned_repair -and ($disposition -cne 'actionable' -or $plan.document.scope_revision -gt 1)) {
         $null = Invoke-TriageTransaction $Context triage-record-repair-hold @{

@@ -4,6 +4,7 @@
 BeforeAll {
     Import-Module (Join-Path $PSScriptRoot 'LocalSetupState.psm1') -Force
     Import-Module (Join-Path $PSScriptRoot 'LocalSetup.psm1') -Force
+    Import-Module (Join-Path $PSScriptRoot 'ScheduledContracts.psm1')
 }
 
 Describe 'Durable disabled setup intent' {
@@ -83,5 +84,54 @@ Describe 'Durable disabled setup intent' {
         { Invoke-ScheduledSetupJournal -Path $path -RepositoryId 123 -Action begin-create `
             -Data @{ operator_approved = $true; desired = $desired } } | Should -Throw
         Test-Path -LiteralPath $path | Should -BeFalse
+    }
+
+    It 'rejects corrupted role payloads instead of authorizing a replacement native creation' -ForEach @(
+        @{ Damage = 'stage' }, @{ Damage = 'stage-flip' }, @{ Damage = 'role' }, @{ Damage = 'missing-desired' }
+        @{ Damage = 'invalid-desired' }, @{ Damage = 'missing-host' }, @{ Damage = 'missing-model' }
+        @{ Damage = 'wrong-marker' }, @{ Damage = 'invalid-id' }
+    ) {
+        $journal = Invoke-ScheduledSetupJournal $path 123 begin-create triage @{ operator_approved = $true; desired = $desired }
+        $record = $journal.roles.triage
+        switch ($Damage) {
+            stage { $record.stage = 'unknown' }
+            stage-flip { $record.stage = 'complete'; $record.automation_id = 'another-entry' }
+            role { $journal.roles['unknown'] = $record; $journal.roles.Remove('triage') }
+            missing-desired { $record.Remove('desired') }
+            invalid-desired { $record.desired = 'invalid' }
+            missing-host { $record.desired.Remove('host_id') }
+            missing-model { $record.desired.Remove('model') }
+            wrong-marker { $record.desired.marker = 'folo-scheduled-remediation:v1' }
+            invalid-id { $record.stage = 'complete'; $record.automation_id = 123 }
+        }
+        if ($Damage -notin @('stage-flip', 'missing-desired')) {
+            $record.digest = Get-ScheduledDigest @{ stage = $record.stage; desired = $record.desired; automation_id = $record.automation_id }
+        }
+        $journal | ConvertTo-Json -Depth 100 | Set-Content -LiteralPath $path
+        $before = Get-Content -LiteralPath $path -Raw
+        { Invoke-ScheduledSetupJournal $path 123 read } | Should -Throw
+        { Get-ScheduledRoleSetupDecision -Role triage -Desired $desired -Workflows @() `
+            -MetadataComplete $true -SetupJournal $journal } | Should -Throw
+        (Get-Content -LiteralPath $path -Raw) | Should -BeExactly $before
+    }
+
+    It 'retains actual opaque native automation identifiers rather than imposing GitHub issue numbering' {
+        $id = [guid]::NewGuid().ToString()
+        $record = Invoke-ScheduledSetupJournal $path 123 confirm triage @{
+            operator_approved = $true; ownership_verified = $true; automation_id = $id
+        }
+        $record.roles.triage.automation_id | Should -BeExactly $id
+        (Invoke-ScheduledSetupJournal $path 123 read).roles.triage.automation_id | Should -BeExactly $id
+    }
+
+    It 'validates the separate repair creation model without enrolling or activating it' {
+        $desired.marker = 'folo-scheduled-remediation:v1'
+        $desired.prompt = 'folo-scheduled-remediation:v1 Run scheduled-intake'
+        $desired.coordinator_model = 'existing-choice'
+        $record = Invoke-ScheduledSetupJournal $path 123 begin-create repair @{
+            operator_approved = $true; desired = $desired
+        }
+        $record.roles.repair.stage | Should -Be creating
+        $record.roles.repair.desired.coordinator_model | Should -Be existing-choice
     }
 }
