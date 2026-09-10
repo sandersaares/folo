@@ -184,7 +184,7 @@ runs:
 
     - name: Cache actionlint and ShellCheck
       # just install-tools fetches pinned actionlint and ShellCheck as standalone binaries
-      # (scripts/install-actionlint.ps1, scripts/install-shellcheck.ps1) into ~/.cargo/bin on
+      # (scripts/setup/install-actionlint.ps1, scripts/setup/install-shellcheck.ps1) into ~/.cargo/bin on
       # every job and every platform. Unlike the cargo-installed tools that also live there,
       # these are plain downloaded files with no cargo install-metadata, so Swatinem/rust-cache's
       # bin caching never tracks them and they are otherwise re-downloaded and re-extracted every
@@ -202,7 +202,7 @@ runs:
         path: |
           ~/.cargo/bin/actionlint*
           ~/.cargo/bin/shellcheck*
-        key: lint-tools-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/install-actionlint.ps1', 'scripts/install-shellcheck.ps1') }}
+        key: lint-tools-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/setup/install-actionlint.ps1', 'scripts/setup/install-shellcheck.ps1') }}
 
     - name: Install just
       shell: bash

@@ -41,6 +41,31 @@ permissions:
   contents: read
 
 jobs:
+  # Git and preinstalled PowerShell are sufficient to scope non-Cargo checks before setup.
+  # Complete history supports the whole PR and the queue's immutable combined candidate.
+  # Ref: .github/workflows/implementation.md#non-cargo-change-planning.
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      plan: ${{ steps.plan.outputs.plan }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Plan non-Cargo validation
+        id: plan
+        shell: pwsh
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          Import-Module ./scripts/build/ValidationPlan.psm1 -Force
+          $eventData = Get-Content -LiteralPath $env:GITHUB_EVENT_PATH -Raw | ConvertFrom-Json -AsHashtable
+          $plan = Get-ValidationWorkflowPlan -EventName $env:GITHUB_EVENT_NAME -EventData $eventData -Verbose
+          "plan=$(ConvertTo-Json -InputObject $plan -Compress)" |
+            Add-Content -LiteralPath $env:GITHUB_OUTPUT -Encoding utf8
+
   # Ordinary validation is shallow; only registered managed repairs need relevant deep scope.
   # Default-branch policy, not candidate edits, controls managed repair authorization.
   # Ref: .github/workflows/implementation.md#managed-repair-gate.
@@ -217,11 +242,13 @@ jobs:
   # commit the queue rebased onto) so scoping cannot drift from validate-versions.
   # On push to main (backstop), all packages are validated.
   delta:
+    needs: changes
     runs-on: ubuntu-latest
     outputs:
       packages: ${{ steps.compute.outputs.packages }}
       packages_json: ${{ steps.compute.outputs.packages_json }}
       skip_all: ${{ steps.compute.outputs.skip_all }}
+      script_domains: ${{ steps.scripts.outputs.domains }}
 
     steps:
       - name: Checkout repository
@@ -264,13 +291,29 @@ jobs:
             -BaselineRevision $env:DELTA_BASELINE |
             Add-Content -Path $env:GITHUB_OUTPUT -Encoding utf8
 
-  # PowerShell test suite for the standalone scripts under scripts/ (the release-automation and
-  # binstall-validation modules), plus PSScriptAnalyzer static analysis of those scripts and the
-  # binstall-metadata check on the real workspace. Runs unconditionally - independent of the
-  # `delta` package analysis - because the scripts are not Cargo packages, so a change touching
-  # only scripts/ would otherwise be validated by nothing; the static-analysis and binstall checks
-  # ride along here because they reuse the same environment and are seconds long.
+      - name: Include affected native helpers in script scope
+        # Pester integration tests exercise real Rust helpers. Consume Cargo's dependency impact
+        # instead of making every lockfile edit trigger the full script suite.
+        # Ref: .github/workflows/implementation.md#non-cargo-change-planning.
+        id: scripts
+        shell: pwsh
+        env:
+          CHANGE_PLAN: ${{ needs.changes.outputs.plan }}
+          AFFECTED_PACKAGES: ${{ steps.compute.outputs.packages_json }}
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          Import-Module ./scripts/build/ValidationPlan.psm1 -Force
+          $domains = @(Get-ValidationScriptDomain -PlanJson $env:CHANGE_PLAN -AffectedPackageJson $env:AFFECTED_PACKAGES -Verbose)
+          "domains=$(ConvertTo-Json -InputObject $domains -Compress)" |
+            Add-Content -LiteralPath $env:GITHUB_OUTPUT -Encoding utf8
+
+  # Run the union of selected domains once. An empty Cargo delta cannot discard script inputs.
+  # Ref: .github/workflows/implementation.md#non-cargo-change-planning.
   test-scripts:
+    needs: delta
+    if: needs.delta.outputs.script_domains != '[]'
     runs-on: ubuntu-latest
 
     steps:
@@ -281,19 +324,33 @@ jobs:
         uses: ./.github/actions/setup-environment
 
       - name: Run script test suites
-        run: just test-scripts
+        shell: pwsh
+        env:
+          SCRIPT_DOMAINS: ${{ needs.delta.outputs.script_domains }}
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $domains = @(ConvertFrom-Json -InputObject $env:SCRIPT_DOMAINS)
+          just test-scripts ($domains -join ' ')
 
+  # Static analysis has script/configuration inputs, not Cargo-package inputs.
+  # Ref: .github/workflows/implementation.md#non-cargo-change-planning.
+  validate-scripts:
+    needs: changes
+    if: fromJSON(needs.changes.outputs.plan).script_analysis
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-environment
       - name: Validate scripts (PSScriptAnalyzer)
         run: just validate-scripts
 
-      - name: Validate binstall metadata
-        run: just validate-binstall
-
-  # Validates the GitHub Actions workflow files with actionlint. Runs unconditionally - independent
-  # of the `delta` package analysis - because the workflow files are not Cargo packages, so a
-  # change touching only .github/workflows/ would otherwise be validated by nothing. actionlint
-  # is a fast static check, so running it on every PR is cheap.
+  # Reuse the pinned standalone installers without restoring the Rust development environment.
+  # Ref: .github/workflows/implementation.md#workflow-lint-environment.
   validate-workflows:
+    needs: changes
+    if: fromJSON(needs.changes.outputs.plan).workflows
     runs-on: ubuntu-latest
 
     steps:
@@ -301,10 +358,15 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Setup environment
-        uses: ./.github/actions/setup-environment
+        uses: ./.github/actions/setup-workflow-lint
 
       - name: Validate workflows
-        run: just validate-workflows
+        shell: pwsh
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          actionlint -color
 
   # Workspace-wide release-plan generation: every publishable package's released content
   # versus its version anchor. Delta cannot narrow that set, so this job is not gated on
@@ -326,7 +388,14 @@ jobs:
       - name: Setup environment
         uses: ./.github/actions/setup-environment
 
+      # Live Cargo metadata belongs with unconditional release validation: target autodiscovery
+      # can change the binary set without a manifest edit.
+      # Ref: .github/workflows/implementation.md#release-validation.
+      - name: Validate binstall metadata
+        run: just validate-binstall
+
       - name: Check package versions
+        if: ${{ !cancelled() }}
         id: check
         env:
           # The release baseline is the tip of the branch releases are made from, which is
@@ -1038,8 +1107,10 @@ jobs:
     needs:
       - scheduled-context
       - scheduled-repair-gate
+      - changes
       - delta
       - test-scripts
+      - validate-scripts
       - validate-workflows
       - validate-versions
       - semver-checks
@@ -1072,7 +1143,7 @@ jobs:
         shell: pwsh
         env:
           NEEDS_JSON: ${{ toJSON(needs) }}
-          MUST_SUCCEED_JOBS: delta test-scripts validate-workflows validate-versions semver-checks scheduled-context scheduled-repair-gate
+          MUST_SUCCEED_JOBS: changes delta validate-versions semver-checks scheduled-context scheduled-repair-gate
         run: |
           Set-StrictMode -Version Latest
           $ErrorActionPreference = "Stop"
@@ -1103,8 +1174,10 @@ jobs:
     needs:
       - scheduled-context
       - scheduled-repair-gate
+      - changes
       - delta
       - test-scripts
+      - validate-scripts
       - validate-workflows
       - validate-versions
       - semver-checks

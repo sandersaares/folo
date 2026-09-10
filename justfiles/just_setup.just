@@ -133,12 +133,12 @@ install-tools:
     # azcopy drives the bulk upload in the cargo-bench-history Azure stress harness
     # (`just bench-history-stress-azure`), which is on-demand only - no CI job needs it, so CI
     # sets skip_azcopy=true. It is not a cargo crate and has no installer, so a helper script
-    # fetches the pinned official binary; see scripts/install-azcopy.ps1 (including its rationale
+    # fetches the pinned official binary; see scripts/setup/install-azcopy.ps1 (including its rationale
     # for the destination). No-op when azcopy is already present.
     if ("{{skip_azcopy}}" -eq "true") {
         Write-Host "Skipping azcopy install (skip_azcopy=true)."
     } else {
-        & "{{justfile_directory()}}/scripts/install-azcopy.ps1"
+        & "{{justfile_directory()}}/scripts/setup/install-azcopy.ps1"
     }
 
     # Azurite is the Azure Blob storage emulator that backs the cargo-bench-history
@@ -205,14 +205,14 @@ install-tools:
     # Linux runners ship it, so the CI validate-workflows job shellchecks every bash step; installing
     # it here keeps local `just validate-workflows` faithful to CI instead of silently skipping those
     # checks. Like actionlint it is a pinned, checksum-verified standalone binary; see
-    # scripts/install-shellcheck.ps1. Installed on every platform with no CI skip. No-op when the
+    # scripts/setup/install-shellcheck.ps1. Installed on every platform with no CI skip. No-op when the
     # pinned ShellCheck is already present.
-    & "{{justfile_directory()}}/scripts/install-shellcheck.ps1"
+    & "{{justfile_directory()}}/scripts/setup/install-shellcheck.ps1"
 
     # actionlint validates the GitHub Actions workflow files (`just validate-workflows`, run both
     # locally and by the CI validate-workflows job). It is not a cargo crate and has no installer, so a
     # helper script fetches the pinned official binary and verifies its checksum; see
-    # scripts/install-actionlint.ps1. Unlike azcopy/Azurite this IS needed in CI (the workflow
+    # scripts/setup/install-actionlint.ps1. Unlike azcopy/Azurite this IS needed in CI (the workflow
     # validation job runs it), so it is installed on every platform with no CI skip. No-op when the
     # pinned actionlint is already present.
-    & "{{justfile_directory()}}/scripts/install-actionlint.ps1"
+    & "{{justfile_directory()}}/scripts/setup/install-actionlint.ps1"

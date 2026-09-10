@@ -127,15 +127,27 @@ Clippy already guarantees.
 
 ## Selective validation
 
-Most jobs are package-scoped and skip packages a change does not touch: a `delta` job
-computes the affected set and downstream jobs consult it, so a one-package PR does not
-rebuild the workspace. The complement of this pattern is the rule that a job whose inputs
-are **not** Cargo packages — the workflow files themselves, or the standalone PowerShell
-under `scripts/` — must run unconditionally. Delta analysis reports "nothing affected" for
-such a change, so gating those jobs on it would leave the change validated by nothing.
-Release-plan generation (`validate-versions`) is in that class: it compares every
-publishable package's released content to that package's version anchor. Gating it on
-delta's changed-package set would skip a package that already needed an increment.
+Package-scoped jobs consume Cargo dependency impact, so a one-package PR does not rebuild
+the workspace. Non-Cargo checks have independent change domains: workflow lint consumes
+workflow and lint-tooling inputs, script analysis consumes scripts and analyzer inputs, and
+script tests consume their owning automation domains and shared dependencies. A change that
+touches only tooling must still receive the relevant checks even when Cargo selects nothing.
+
+Script tests run the union of selected domains, including integration tests for affected
+native helpers. Domain selection includes fixtures, configuration and shared consumers, not
+just the file containing a test. Shared validation machinery changes exercise every tooling
+check. Ordinary Rust source changes do not by themselves select unrelated tooling checks.
+
+Selection covers the complete pull request or merge-queue candidate, including deleted and
+renamed inputs. An unavailable change set is an error, not an empty selection. Pushes to
+`main` run the full set as a backstop. The workflow itself always starts, so required-check
+reporting does not depend on GitHub's workflow-level path filters.
+
+Release-plan generation (`validate-versions`) remains unconditional: it compares every
+publishable package's released content to that package's version anchor, not just to the PR
+base. Live binstall metadata validation accompanies it because Cargo target discovery can
+change release obligations without a manifest edit. Managed-repair context and its gate also
+remain unconditional because their inputs include registered state and PR metadata.
 
 ## Platform strategy
 
@@ -309,7 +321,9 @@ A ruleset that requires merge-blocking Standard validation therefore lists only 
 job is `if: always()`, `needs:` every merge-blocking job in Standard validation (including
 `validate-versions` and `semver-checks`), succeeds when every dependency reports `success` or an
 allowed `skipped`, and fails on `failure`, `cancelled`, or any other result.
-Unconditional gates may not skip. Advisory jobs stay off that list. `alert` stays off it
+Unconditional gates may not skip. Change-selected tooling jobs must succeed when selected;
+only an explicit no-work plan permits them to skip. Missing plans or dependencies fail the
+fan-in. Advisory jobs stay off that list. `alert` stays off it
 — it files issues on a failed push to `main`, it is not a merge gate.
 
 When a new merge-blocking job is added to Standard validation it is added to this `needs:` list; it
