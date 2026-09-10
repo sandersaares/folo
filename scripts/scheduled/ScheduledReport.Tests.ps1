@@ -317,6 +317,27 @@ Describe 'Deterministic health' {
         $health.components.local_scan.status | Should -Be unavailable
         $health.healthy | Should -BeFalse
     }
+    It 'does not require disabled Local scans but still requires genuine hosted coverage and scheduling' {
+        $arguments = @{
+            Scheduler = @{ state = 'active' }; Coverage = $coverage; Manifest = $manifest
+            Planning = $fresh; Reporting = $fresh; Now = $now; LocalDisabled = $true
+        }
+        $health = Get-ScheduledHealth @arguments
+        $health.healthy | Should -BeTrue
+        $health.components.local_scan.status | Should -Be disabled
+        $arguments.Coverage = $null
+        $health = Get-ScheduledHealth @arguments
+        $health.healthy | Should -BeFalse
+        $health.components.coverage.status | Should -Be unavailable
+        $arguments.Coverage = $coverage
+        $arguments.Planning = @{ outcome = 'passed'; completed_at = '2026-09-01T00:00:00Z' }
+        (Get-ScheduledHealth @arguments).healthy | Should -BeFalse
+        $arguments.Planning = $fresh
+        $arguments.Scheduler.state = 'disabled_inactivity'
+        $health = Get-ScheduledHealth @arguments
+        $health.components.scheduler.status | Should -Be failed
+        $health.healthy | Should -BeFalse
+    }
     It 'uses independent freshness thresholds for hosted planning and local scans' {
         $observation = @{ outcome = 'passed'; completed_at = '2026-09-08T02:00:00Z' }
         $health = Get-ScheduledHealth -Planning $observation -Reporting $observation -LocalScan $observation `

@@ -44,6 +44,27 @@ for mutation quality and reviewed skip criteria. The shared versioned contracts 
 reviewed defaults live under `scripts/scheduled/`; policy is not inferred from App UI
 state.
 
+## Nightly operation
+
+The reviewed policy enables hosted execution and issue reporting. Once merged into
+`main`, **Full deep validation** plans the complete Miri, many-seed Miri, mutation-testing
+and careful-checking suite daily at **02:41 UTC**. Compatible complete successes for
+unchanged source can be reused for up to seven days; skipped checks never renew
+that evidence's age. Missing baseline coverage remains explicitly unavailable until
+an automatic full run supplies complete successful evidence.
+
+Failures produce **Deep validation failed** issues with durable run evidence.
+Until AI triage is implemented, the operator reads these issues, diagnoses failures
+and handles any corrections manually. No Local installation or per-checker manual
+pilot is required for hosted operation. Local mode remains `observe`, with no enrolled
+executor or active new-repair admission; the App's saved automation is not enabled.
+The recorded pilot assertions remain separate from hosted authorization and do not
+claim execution, reporting or native-App capabilities have been proved.
+
+Required reporting labels are created automatically when an authorized reporter
+first needs them. Existing label metadata is preserved. There is no manual label
+setup step, additional permission, or dependency on the Local App.
+
 ## Running checks manually
 
 The workflow names describe their scope. **Standard validation** handles ordinary
@@ -91,15 +112,15 @@ To run the entire deep suite on main, select **Full deep validation**, keep
 additional permission checkbox or cache override.
 
 Manual runs do not update shared main coverage or confirm or close repair issues.
-With the checked-in defaults, **Scheduled reporting** retains `report.json` and
-downloaded evidence in its report artifact without reading or writing issues.
+With the checked-in reporting authorization, **Scheduled reporting** can create
+run-level intake issues for manual failures as well as automatic failures.
+It also retains `report.json` and downloaded evidence in its report artifact.
 Failed checks remain failed in the originating run; missing or invalid evidence
-also fails the report. When an operator separately enables
-`rollout.reporting_enabled` in `scripts/scheduled/policy.json`, the reporter's
-existing `-Apply` invocation also permits run-level failure intake for manual
-results. This supports on-demand reporting without waiting for the timer, but
-still cannot change repair issues or shared coverage. Neither running a check nor
-reporting its failure authorizes AI repairs.
+remains explicit. If reporting authorization is disabled, or the reporter is
+invoked without `-Apply`, manual diagnostics retain artifacts without reading or
+writing issues or labels. Authorized manual publication bootstraps only its
+run-intake label, not shared coverage or Local health records. Neither running a
+check nor reporting its failure authorizes AI repairs.
 
 ## Problems and triage
 
@@ -323,10 +344,10 @@ Managed repair PRs additionally run the relevant deep checks needed to prove the
 
 Hosted execution, issue reporting, Local triage and repair admission are independently
 authorized. Hosted checks and reporting can run with both Local roles disabled.
-Safe installation defaults disable hosted execution/reporting, leave both Local
-roles disabled and repair allowlists unconfigured. Disabled scheduled execution
+The reviewed defaults enable hosted execution/reporting, leave Local roles
+inactive and repair allowlists unconfigured. Explicitly disabled scheduled execution
 means no automatic recurring deep coverage; it does not move deep checks into PR
-validation. Installation or profile reconciliation does not activate anything. The
+validation. Local installation or profile reconciliation does not change authorization. The
 [operating policy](../.github/workflows/implementation.md#operating-policy)
 defines the exact configuration mapping and readiness requirements.
 
@@ -733,12 +754,19 @@ The local executor's separate health record identifies triage and repair compone
 by role as well as repository name, numeric ID and executor ID. An absent/duplicate issue or
 ambiguous comment ownership blocks registration rather than creating a replacement.
 That issue's reporter-owned `coverage` record exposes
-`last_plan.planned_at` separately from `receipt.completed_at`. Successful skips may
-advance planning history but never renew full-success age.
+`last_plan.planned_at` separately from `receipt.completed_at`. Only automatic
+**Full deep validation** plans advance this planning history. Successful full-scope
+reuse may advance planning history but never renew full-success age; selected
+confirmation plans on main pushes and manual diagnostics cannot conceal a stopped
+nightly schedule.
 Hosted planning freshness uses `coverage.expected_plan_gap_hours`, not the local
 polling cadence. Deliberately disabled hosted operation is reported separately from
 an enabled scheduler that has stopped producing plans. Disabled operation does not
 establish recent coverage.
+An unenrolled Local executor in `observe` or `paused` mode is shown as **disabled**,
+not as a hosted failure. An enrolled executor still owes a current successful
+heartbeat, including while admissions are paused. Disabled Local operation never
+makes absent baseline coverage, stale hosted planning or failed reporting healthy.
 
 | Condition | Recovery |
 |---|---|
@@ -790,6 +818,11 @@ is not a retry mechanism.
 An incomplete report can have partial side effects: `writes_authorized` records
 whether writes were permitted, while `applied` becomes true only when reconciliation
 finishes. The journal and actual GitHub state determine recovery, not `applied: false`.
+Label creation has its own `label-<name>.json` intent journal in the report artifact.
+A lost or raced create response is reconciled by reading the unique label name;
+the reporter never overwrites existing metadata or assumes a failed API call succeeded.
+Label names are unique on GitHub, so retries can look up that identity without
+requiring a Local registration or repeating an uncertain issue creation.
 
 Confirm that the new attempt completes successfully and that its expected
 run-intake/coverage updates and reporting health are reconciled. Until then, retain

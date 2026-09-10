@@ -6,9 +6,8 @@
   "worker_login": "sandersaares",
   "managed_branch_prefix": "sandersaares-scheduled-repair-",
   "rollout": {
-    "phase": "staged",
-    "hosted_execution_enabled": false,
-    "reporting_enabled": false,
+    "hosted_execution_enabled": true,
+    "reporting_enabled": true,
     "prerequisites": {
       "execution_canary": false,
       "reporting_canary": false,

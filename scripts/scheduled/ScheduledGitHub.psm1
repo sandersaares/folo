@@ -376,6 +376,7 @@ function Sync-ScheduledIssue {
         [AllowNull()][hashtable] $Issue,
         [Parameter(Mandatory)][hashtable] $Record,
         [Parameter(Mandatory)][ValidateSet('reporter', 'coverage')][string] $Kind,
+        [string] $OutputDirectory,
         [switch] $Apply
     )
 
@@ -418,6 +419,16 @@ function Sync-ScheduledIssue {
     # dry run regardless of `-Apply`, and the same rule gates the other reporting_enabled checks
     # below in this module.
     if ($Apply -and $Policy.rollout.reporting_enabled) {
+        if ($null -eq $Issue) {
+            $api = {
+                param($Endpoint, $Method = 'GET', $Body, [switch] $Paginate)
+                Invoke-ScheduledGitHubApi -Endpoint $Endpoint -Method $Method -Body $Body -Paginate:$Paginate
+            }
+            foreach ($label in $labels) {
+                Initialize-ScheduledReportingLabel -Policy $Policy -Name $label `
+                    -OutputDirectory $OutputDirectory -Api $api -Apply
+            }
+        }
         $updated = Invoke-ScheduledGitHubApi -Endpoint $endpoint -Method $method -Body $payload
         return @{ action = $method; number = $updated.number }
     }
@@ -710,7 +721,13 @@ function Invoke-ScheduledReporting {
         $nextCoverage = Merge-ScheduledCoverage -Coverage $coverage -Manifest $manifest -Results $results `
             -Context $context -IsAncestor $isAncestor -Skipped:$skipped
         $nextCoverage.repository_id = $policy.repository_id
-        if ($null -ne $validatedPlan -and (-not $nextCoverage.ContainsKey('last_plan') -or
+        # Only the recurring full workflow can renew scheduler freshness. Selected no-work
+        # plans on main pushes and manual diagnostics do not prove that the nightly timer runs.
+        # Ref: ../../.github/workflows/implementation.md#independent-health.
+        if ($scope -ceq 'full' -and $null -ne $validatedPlan -and
+            (-not $nextCoverage.ContainsKey('last_plan') -or
+            $null -eq $nextCoverage.last_plan -or
+            $nextCoverage.last_plan['workflow_path'] -cne '.github/workflows/full-deep-validation.yml' -or
             (Compare-ScheduledObservation $context $nextCoverage.last_plan) -gt 0)) {
             $nextCoverage.last_plan = $context.Clone()
             $nextCoverage.last_plan.planned_at = ([datetimeoffset]$validatedPlan.planned_at).ToString('o')
@@ -732,7 +749,8 @@ function Invoke-ScheduledReporting {
                 completed_at = $context.completed_at; run_id = $context.run_id; run_attempt = $context.run_attempt
             }
         }
-        $report.actions += Sync-ScheduledIssue -Policy $policy -Issue $coverageIssue -Record $nextCoverage -Kind coverage -Apply:$applyWrites
+        $report.actions += Sync-ScheduledIssue -Policy $policy -Issue $coverageIssue -Record $nextCoverage `
+            -Kind coverage -OutputDirectory $OutputDirectory -Apply:$applyWrites
         $report.status = if ($intake.requires_triage) { 'reported' }
             elseif ($skipped) { 'not-run' } else { 'passed' }
         $report.applied = [bool]$applyWrites
@@ -757,6 +775,11 @@ function Get-ScheduledGitHubHealth {
     if ($Repository -cne $policy.repository) { throw 'Repository differs from trusted policy.' }
     $staged = $policy.ContainsKey('rollout') -and
         $policy.rollout.hosted_execution_enabled -eq $false -and $policy.rollout.reporting_enabled -eq $false
+    # Enrollment means the executor owes a heartbeat even in observe/paused mode. Unenrolled
+    # inactive Local operation is not an expected service and must not fail hosted health.
+    # Ref: ../../.github/workflows/implementation.md#independent-health.
+    $localDisabled = [string]::IsNullOrWhiteSpace($policy.local.enrolled_machine_id) -and
+        $policy.local.mode -cin @('observe', 'paused')
     $scheduler = $null
     $coverage = $null
     $planning = $null
@@ -772,17 +795,24 @@ function Get-ScheduledGitHubHealth {
             -ContractDigest (Get-ScheduledContractDigest -Root $root)
         $issues = @(Get-ScheduledOwnedIssue -Policy $policy -Label scheduled-coverage)
         if ($issues.Count -eq 0 -and $staged) {
-            $health = Get-ScheduledHealth -Scheduler $scheduler -Manifest $manifest -Now $Now -Staged
+            $health = Get-ScheduledHealth -Scheduler $scheduler -Manifest $manifest -Now $Now `
+                -Staged -LocalDisabled:$localDisabled
             $health.rollout = $policy.rollout
             $health.problems = @()
             return $health
         }
-        if ($issues.Count -ne 1) { throw [FormatException]::new('Coverage index is absent or ambiguous.') }
-        $coverage = Read-ScheduledRecord -Text $issues[0].body -Kind coverage
-        if ($coverage.repository -cne $Repository -or $coverage.repository_id -ne $policy.repository_id) {
-            throw [FormatException]::new('Coverage index repository differs from trusted policy.')
+        if ($issues.Count -gt 1) { throw [FormatException]::new('Coverage index is ambiguous.') }
+        if ($issues.Count -eq 1) {
+            $coverage = Read-ScheduledRecord -Text $issues[0].body -Kind coverage
+            if ($coverage.repository -cne $Repository -or $coverage.repository_id -ne $policy.repository_id) {
+                throw [FormatException]::new('Coverage index repository differs from trusted policy.')
+            }
+            if ($coverage.ContainsKey('planning') -and $coverage.ContainsKey('last_plan') -and
+                $null -ne $coverage.last_plan -and
+                $coverage.last_plan['workflow_path'] -ceq '.github/workflows/full-deep-validation.yml') {
+                $planning = $coverage.planning
+            }
         }
-        if ($coverage.ContainsKey('planning')) { $planning = $coverage.planning }
         # A reporter unable to write its durable state cannot record its own failure there.
         # Actions run metadata makes that failure visible without waiting for the receipt to age.
         $reportRuns = Invoke-ScheduledGitHubApi "repos/$Repository/actions/workflows/scheduled-report.yml/runs?branch=main&status=completed&per_page=1"
@@ -819,37 +849,40 @@ function Get-ScheduledGitHubHealth {
                 unresolved_runs = $unresolvedReports; latest_run = $reporting
             }
         }
-        $healthIssues = @(Get-ScheduledOwnedIssue -Policy $policy -Label scheduled-health)
-        if ($healthIssues.Count -ne 1 -or $healthIssues[0].state -cne 'open') {
-            throw [FormatException]::new('The open reporter-owned health issue is absent or ambiguous.')
-        }
-        if ($healthIssues[0].number -ne $issues[0].number) {
-            throw [FormatException]::new('Coverage and executor health must share the registered issue.')
-        }
-        $pages = Invoke-ScheduledGitHubApi "repos/$Repository/issues/$($healthIssues[0].number)/comments?per_page=100" -Paginate
-        $healthComments = @($pages | ForEach-Object { $_ } | Where-Object {
-                $_.user.login -ceq $policy.worker_login -and ([string]$_.body).Contains('<!-- scheduled-health:')
-            })
-        if ($healthComments.Count -gt 1) { throw [FormatException]::new('Local health comment ownership is ambiguous.') }
-        if ($healthComments.Count -eq 1) {
-            $localRecord = Read-ScheduledRecord -Text $healthComments[0].body -Kind health
-            if ($localRecord.repository -ceq $Repository -and $localRecord.repository_id -eq $policy.repository_id -and
-                -not [string]::IsNullOrWhiteSpace($policy.local.enrolled_machine_id) -and
-                $localRecord.executor_id -ceq $policy.local.enrolled_machine_id) {
-                if ($localRecord.ContainsKey('last_successful_scan')) {
-                    $localScan = @{
-                        completed_at = $localRecord.last_successful_scan
-                        outcome = if ($localRecord.blocked_conditions.Count -gt 0) { 'failed' } else { 'passed' }
-                        details = $localRecord
-                    }
-                } else { $localScan = $localRecord }
+        if (-not $localDisabled) {
+            $healthIssues = @(Get-ScheduledOwnedIssue -Policy $policy -Label scheduled-health)
+            if ($healthIssues.Count -ne 1 -or $healthIssues[0].state -cne 'open') {
+                throw [FormatException]::new('The open reporter-owned health issue is absent or ambiguous.')
+            }
+            if ($issues.Count -ne 1 -or $healthIssues[0].number -ne $issues[0].number) {
+                throw [FormatException]::new('Coverage and executor health must share the registered issue.')
+            }
+            $pages = Invoke-ScheduledGitHubApi "repos/$Repository/issues/$($healthIssues[0].number)/comments?per_page=100" -Paginate
+            $healthComments = @($pages | ForEach-Object { $_ } | Where-Object {
+                    $_.user.login -ceq $policy.worker_login -and ([string]$_.body).Contains('<!-- scheduled-health:')
+                })
+            if ($healthComments.Count -gt 1) { throw [FormatException]::new('Local health comment ownership is ambiguous.') }
+            if ($healthComments.Count -eq 1) {
+                $localRecord = Read-ScheduledRecord -Text $healthComments[0].body -Kind health
+                if ($localRecord.repository -ceq $Repository -and $localRecord.repository_id -eq $policy.repository_id -and
+                    -not [string]::IsNullOrWhiteSpace($policy.local.enrolled_machine_id) -and
+                    $localRecord.executor_id -ceq $policy.local.enrolled_machine_id) {
+                    if ($localRecord.ContainsKey('last_successful_scan')) {
+                        $localScan = @{
+                            completed_at = $localRecord.last_successful_scan
+                            outcome = if ($localRecord.blocked_conditions.Count -gt 0) { 'failed' } else { 'passed' }
+                            details = $localRecord
+                        }
+                    } else { $localScan = $localRecord }
+                }
             }
         }
     } catch [FormatException], [ArgumentException], [IO.IOException] { $problems += $_.Exception.Message }
     $health = Get-ScheduledHealth -Scheduler $scheduler -Coverage $coverage -Manifest $manifest `
         -Planning $planning -Reporting $reporting -LocalScan $localScan -Now $Now `
         -ExpectedPlanGapHours $policy.coverage.expected_plan_gap_hours `
-        -ExpectedLocalGapMinutes $policy.local.expected_poll_gap_minutes -MaxAgeDays $policy.coverage.max_age_days -Staged:$staged
+        -ExpectedLocalGapMinutes $policy.local.expected_poll_gap_minutes -MaxAgeDays $policy.coverage.max_age_days `
+        -Staged:$staged -LocalDisabled:$localDisabled
     $health.problems = $problems
     if ($problems.Count -gt 0) { $health.status = 'failed'; $health.healthy = $false }
     if ($policy.ContainsKey('rollout')) { $health.rollout = $policy.rollout }

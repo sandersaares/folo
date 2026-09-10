@@ -205,7 +205,8 @@ Describe 'GitHub pagination and validated intake' {
             $result.deferred.issue_number | Should -Be 1
             $result.eligible.Count | Should -Be 0
             $result.blocked_conditions | Should -Contain ai-triage-unavailable
-            $result.blocked_conditions | Should -Contain hosted-staged
+            $result.blocked_conditions | Should -Contain github-schedule-disabled
+            $result.blocked_conditions | Should -Contain hosted-planning-evidence-missing
             $result.blocked_conditions | Should -Contain missing-or-invalid-evidence
             Should -Invoke Invoke-ScheduledApi -Exactly 1 -ParameterFilter {
                 $Endpoint -eq 'repos/folo-rs/folo/actions/runs/17/attempts/1'
@@ -221,14 +222,20 @@ Describe 'GitHub pagination and validated intake' {
                 -StateRoot $script:fixtureRoot } | Should -Throw
         }
     }
-    It 'preserves hosted coverage health independently of unavailable repair admission' {
+    It 'accepts only full hosted planning independently of unavailable repair admission' -TestCases @(
+        @{ Workflow = 'full-deep-validation.yml'; Accepted = $true }
+        @{ Workflow = 'selected-deep-validation.yml'; Accepted = $false }
+    ) {
+        param($Workflow, $Accepted)
         $policyPath = Join-Path $TestDrive 'coverage-policy.json'
         $policy = Get-ScheduledPolicy
         $policy.rollout.hosted_execution_enabled = $true
         $policy | ConvertTo-Json -Depth 40 | Set-Content -LiteralPath $policyPath
         InModuleScope LocalInbox -Parameters @{
             FixtureRoot = (Join-Path $TestDrive 'state'); PolicyPath = $policyPath
+            Workflow = $Workflow; Accepted = $Accepted
         } {
+            $script:planningWorkflow = $Workflow
             Mock Invoke-ScheduledLocalAction {
                 return @{ attempts = @{}; mode = 'observe'; executor_id = 'machine'; profile = $null }
             }
@@ -238,7 +245,10 @@ Describe 'GitHub pagination and validated intake' {
                     return ,@(@{ number = 5; user = @{ login = 'github-actions[bot]' }; body = (
                         Write-ScheduledRecord -Kind coverage -Record @{
                             schema_version = 1; repository = 'folo-rs/folo'; repository_id = 850321188
-                            last_plan = @{ planned_at = '2026-09-08T11:00:00Z'; source_sha = ('a' * 40) }
+                            last_plan = @{
+                                planned_at = '2026-09-08T11:00:00Z'; source_sha = ('a' * 40)
+                                workflow_path = ".github/workflows/$script:planningWorkflow"
+                            }
                         }) })
                 }
                 return ,@()
@@ -256,9 +266,14 @@ Describe 'GitHub pagination and validated intake' {
                 -StateRoot $FixtureRoot -PolicyPath $PolicyPath
             $result.successful_scan | Should -BeTrue
             $result.hosted_schedule_enabled | Should -BeTrue
-            [DateTimeOffset]$result.last_hosted_plan.planned_at | Should -Be ([DateTimeOffset]'2026-09-08T11:00:00Z')
+            if ($Accepted) {
+                [DateTimeOffset]$result.last_hosted_plan.planned_at | Should -Be ([DateTimeOffset]'2026-09-08T11:00:00Z')
+                @($result.blocked_conditions | Where-Object { $_.StartsWith('hosted-') }).Count | Should -Be 0
+            } else {
+                $result.last_hosted_plan | Should -BeNullOrEmpty
+                $result.blocked_conditions | Should -Contain hosted-planning-evidence-invalid
+            }
             $result.blocked_conditions | Should -Contain ai-triage-unavailable
-            @($result.blocked_conditions | Where-Object { $_.StartsWith('hosted-') }).Count | Should -Be 0
         }
     }
     It 'fails explicitly on authentication and never records successful scan output' {

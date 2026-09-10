@@ -276,6 +276,7 @@ function Get-ScheduledHealth {
         [double] $ExpectedPlanGapHours = 30,
         [double] $ExpectedLocalGapMinutes = 420,
         [int] $MaxAgeDays = 7,
+        [switch] $LocalDisabled,
         [switch] $Staged
     )
 
@@ -284,7 +285,8 @@ function Get-ScheduledHealth {
         coverage = @{ status = 'unavailable'; reason = 'missing-coverage' }
         planning = Get-ScheduledComponentHealth $Planning $Now $ExpectedPlanGapHours
         reporting = Get-ScheduledComponentHealth $Reporting $Now $ExpectedPlanGapHours
-        local_scan = Get-ScheduledComponentHealth $LocalScan $Now ($ExpectedLocalGapMinutes / 60)
+        local_scan = if ($LocalDisabled) { @{ status = 'disabled'; reason = 'local-executor-not-expected' } }
+            else { Get-ScheduledComponentHealth $LocalScan $Now ($ExpectedLocalGapMinutes / 60) }
     }
     if ($null -ne $Scheduler -and $Scheduler.ContainsKey('state')) {
         $components.scheduler = @{
@@ -304,7 +306,7 @@ function Get-ScheduledHealth {
         }
     }
     $states = @($components.Values | ForEach-Object { $_.status })
-    $healthy = @($states | Where-Object { $_ -cnotin @('fresh', 'reused') }).Count -eq 0
+    $healthy = @($states | Where-Object { $_ -cnotin @('fresh', 'reused', 'disabled') }).Count -eq 0
     return @{
         schema_version = 1; checked_at = $Now.ToString('o'); components = $components
         healthy = $healthy

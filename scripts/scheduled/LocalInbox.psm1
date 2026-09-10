@@ -143,7 +143,8 @@ function Invoke-ScheduledInbox {
             $coverage = Read-ScheduledRecord -Text $coverageOwners[0].body -Kind coverage
             if ($coverage.repository -cne $policy.repository -or
                 $coverage.repository_id -ne $policy.repository_id -or
-                -not $coverage.Contains('last_plan') -or $null -eq $coverage.last_plan) {
+                -not $coverage.Contains('last_plan') -or $null -eq $coverage.last_plan -or
+                $coverage.last_plan['workflow_path'] -cne '.github/workflows/full-deep-validation.yml') {
                 throw [FormatException]::new('Missing authoritative hosted planning identity.')
             }
             $null = [DateTimeOffset]$coverage.last_plan.planned_at

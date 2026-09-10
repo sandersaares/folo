@@ -159,14 +159,35 @@ Describe 'Hosted planning authorization' {
         }
     }
 
-    It 'keeps recurring execution disabled with the checked-in policy' {
+    It 'keeps recurring execution disabled when explicitly configured' {
+        $script:disabledPolicy = Get-ScheduledPolicy
+        $disabledPolicy.rollout.hosted_execution_enabled = $false
+        $disabledPolicy.rollout.reporting_enabled = $false
+        Mock Get-ScheduledPolicy -ModuleName ScheduledWorkflow { $disabledPolicy }
         $plan = Invoke-ScheduledPlanning -Mode full -EventPath $eventPath `
             -OutputDirectory (Join-Path $TestDrive 'plan') -Now '2026-09-08T12:00:00Z'
         $plan.decision.run | Should -BeFalse
         Should -Invoke Get-ScheduledCoverageIndex -ModuleName ScheduledWorkflow -Times 0 -Exactly
     }
 
-    It 'runs fresh full manual checks without any rollout or cache prerequisite' {
+    It 'plans the full nightly suite with enabled defaults and no baseline or Local enrollment' {
+        $plan = Invoke-ScheduledPlanning -Mode full -EventPath $eventPath `
+            -OutputDirectory (Join-Path $TestDrive 'first-nightly') -Now '2026-09-08T12:00:00Z'
+        $plan.decision.run | Should -BeTrue
+        $plan.manifest.scope | Should -Be full
+        $plan.manifest.checks.Count | Should -Be 32
+        @($plan.manifest.checks.kind | Sort-Object -Unique) | Should -Be @('careful', 'miri', 'miri-many', 'mutants')
+        Should -Invoke Get-ScheduledCoverageIndex -ModuleName ScheduledWorkflow -Times 1
+        Should -Invoke Get-ScheduledConfirmationScope -ModuleName ScheduledWorkflow -Times 0
+    }
+
+    It 'runs fresh full manual checks with recurring execution=<Execution> and no cache prerequisite' -TestCases @(
+        @{ Execution = $false }, @{ Execution = $true }
+    ) {
+        param($Execution)
+        $script:manualPolicy = Get-ScheduledPolicy
+        $manualPolicy.rollout.hosted_execution_enabled = $Execution
+        Mock Get-ScheduledPolicy -ModuleName ScheduledWorkflow { $manualPolicy }
         $env:GITHUB_EVENT_NAME = 'workflow_dispatch'
         Mock Get-ScheduledCoverageIndex -ModuleName ScheduledWorkflow { throw 'Unrelated broken coverage index.' }
         $plan = Invoke-ScheduledPlanning -Mode full -EventPath $eventPath `
@@ -228,8 +249,8 @@ Describe 'Hosted planning authorization' {
             $policy.repair.allowed_packages | Should -BeNullOrEmpty
             $policy.local.allowed_packages | Should -BeNullOrEmpty
             $policy.local.enrolled_machine_id | Should -BeNullOrEmpty
-            $policy.rollout.hosted_execution_enabled | Should -BeFalse
-            $policy.rollout.reporting_enabled | Should -BeFalse
+            $policy.rollout.hosted_execution_enabled | Should -BeTrue
+            $policy.rollout.reporting_enabled | Should -BeTrue
             @($policy.rollout.prerequisites.Values | Where-Object { $_ }).Count | Should -Be 0
         }
 
