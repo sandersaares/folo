@@ -40,7 +40,7 @@ fn prepares_restores_and_renders_a_setup_failure() {
         "op":"prepare",
         "evidence":{
             "repository":{"id":123,"name":"owner/repository"},
-            "workflow":{"id":456,"name":"Scheduled validation","path":".github/workflows/scheduled.yml"},
+            "workflow":{"id":456,"name":"Full deep validation","path":".github/workflows/full-deep-validation.yml"},
             "run_id":789,
             "attempt":{
                 "run_attempt":1,"run_number":42,"workflow_conclusion":"failure",
@@ -70,7 +70,7 @@ fn prepares_restores_and_renders_a_setup_failure() {
     assert_eq!(revisions.len(), 1);
     assert_eq!(revisions.first().unwrap()["digest"], prepared["digest"]);
     let rendered = request(&json!({"op":"render","record":restored["record"]}));
-    assert_eq!(rendered["title"], "Scheduled validation failed");
+    assert_eq!(rendered["title"], "Deep validation failed");
     assert!(
         rendered["body"]
             .as_str()

@@ -1,7 +1,7 @@
 #Requires -Modules @{ ModuleName = 'Pester'; ModuleVersion = '5.0' }
 
 # Pester suite for RequiredChecks.psm1. The allowed-result policy (must-succeed vs may-skip)
-# is the contract the Validation `required-checks` fan-in publishes to GitHub, so it is
+# is the contract the Standard validation `required-checks` fan-in publishes to GitHub, so it is
 # exercised against realistic `toJSON(needs)` payloads here rather than only in CI.
 
 BeforeAll {

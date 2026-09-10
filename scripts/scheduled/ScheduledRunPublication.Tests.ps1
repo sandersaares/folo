@@ -96,7 +96,7 @@ Describe 'Durable run publication' {
                 rollout = @{ reporting_enabled = $true }
             }
             $script:run = @{
-                id = 789; workflow_id = 456; name = 'Scheduled validation'; path = '.github/workflows/scheduled-validation.yml'
+                id = 789; workflow_id = 456; name = 'Full deep validation'; path = '.github/workflows/full-deep-validation.yml'
                 run_attempt = 1; run_number = 42; head_sha = 'a' * 40; conclusion = 'failure'
                 created_at = '2026-09-09T01:00:00Z'; run_started_at = '2026-09-09T01:00:01Z'; updated_at = '2026-09-09T01:00:02Z'
             }
@@ -121,7 +121,7 @@ Describe 'Durable run publication' {
             $result = Invoke-TestRunPublication
             $result.requires_triage | Should -BeTrue
             $issues.Count | Should -Be 1
-            $issues[41].title | Should -BeExactly 'Scheduled validation failed'
+            $issues[41].title | Should -BeExactly 'Deep validation failed'
             $issues[41].labels.name | Should -Be @('scheduled-run-failure')
             $writes[0].body.body | Should -Match 'publication is pending'
             $writes[1].endpoint | Should -BeExactly 'repos/owner/repo/issues/41/comments'

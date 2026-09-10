@@ -4,10 +4,10 @@
 Builds the check plan (the deep-checks matrix and the managed/confirmation decision) for one
 triggering event, shared across three workflows.
 .DESCRIPTION
-`-Mode` selects the triggering context: `validation` for ordinary validation.yml PR/merge-group
+`-Mode` selects the triggering context: `validation` for Standard validation's PR/merge-group
 events (deciding whether the candidate is a managed repair and, if so, which packages/checks it
-must confirm), `verify` for scheduled-verify.yml's targeted checks, and `scheduled` for
-scheduled-validation.yml's full run. A workflow_dispatch event requests fresh read-only checks
+must confirm), `selected` for Selected deep validation, and `full` for Full deep validation.
+A workflow_dispatch event requests fresh read-only checks
 independently of automatic execution, issue reporting and Local repair settings.
 All three delegate to `Invoke-ScheduledPlanning` in ScheduledWorkflow.psm1, which is the
 actual decision logic; this wrapper only resolves the triggering event from `-EventPath` and writes
@@ -19,7 +19,7 @@ later steps and matrix job read. See
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('scheduled', 'validation', 'verify')][string] $Mode = 'scheduled',
+    [ValidateSet('full', 'validation', 'selected')][string] $Mode = 'full',
     [string] $EventPath = $env:GITHUB_EVENT_PATH,
     [string] $OutputDirectory = '.scheduled-plan'
 )

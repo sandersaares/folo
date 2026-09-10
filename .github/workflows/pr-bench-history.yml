@@ -85,7 +85,7 @@ jobs:
           $PSNativeCommandUseErrorActionPreference = $true
 
           # The cargo-delta pipeline lives in the Pester-tested Delta module (shared with the local
-          # `just delta` recipe and validation.yml so they cannot drift); Select-BenchmarkablePackage
+          # `just delta` recipe and standard-validation.yml so they cannot drift); Select-BenchmarkablePackage
           # lives in the collection module so the same "drop benchmarks" rule the collect step uses
           # also decides here whether anything is left to bench. See scripts/build/Delta.psm1 and
           # scripts/bench-history/BenchHistoryCollect.psm1.
@@ -214,7 +214,7 @@ jobs:
       fail-fast: false
       matrix:
         # x86_64 Linux and Windows only, matching bench-history.yml: ARM and macOS are only
-        # nominally supported (test-pass parity, see validation.yml) and are kept out of
+        # nominally supported (test-pass parity, see standard-validation.yml) and are kept out of
         # benchmarking so we do not spend runner minutes on platforms we do not track.
         platform: [ubuntu-latest, windows-latest]
 

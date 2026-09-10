@@ -7,7 +7,7 @@ BeforeAll {
     $root = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
     $script:recipes = (just --justfile (Join-Path $root 'justfile') --dump --dump-format json |
         ConvertFrom-Json -AsHashtable).recipes
-    $workflow = Get-Content -LiteralPath (Join-Path $root '.github\workflows\validation.yml') -Raw
+    $workflow = Get-Content -LiteralPath (Join-Path $root '.github\workflows\standard-validation.yml') -Raw
     $jobDefinitions = ($workflow -split '(?m)^jobs:\r?$', 2)[1]
     $jobs = @{}
     foreach ($match in [regex]::Matches($jobDefinitions, '(?ms)^  ([\w-]+):\r?\n(.*?)(?=^  [\w-]+:|\z)')) {
@@ -48,6 +48,53 @@ Describe 'Policy-independent local validation recipes' {
 }
 
 Describe 'Shallow hosted validation with managed deep evidence' {
+    It 'uses the approved workflow names and matching file paths' {
+        $expectedNames = @{
+            'standard-validation.yml' = 'Standard validation'
+            'full-deep-validation.yml' = 'Full deep validation'
+            'selected-deep-validation.yml' = 'Selected deep validation'
+            'deep-checks.yml' = 'Deep checks'
+        }
+        foreach ($file in $expectedNames.Keys) {
+            $text = Get-Content -LiteralPath (Join-Path $root ".github\workflows\$file") -Raw
+            $text | Should -MatchExactly "(?m)^name: $([regex]::Escape($expectedNames[$file]))\r?$"
+        }
+    }
+
+    It 'receives only full and selected deep workflow completions' {
+        $text = Get-Content -LiteralPath (Join-Path $root '.github\workflows\scheduled-report.yml') -Raw
+        $names = [regex]::Match($text, '(?m)^    workflows: \[([^\]]+)\]\r?$').Groups[1].Value -split ', '
+        $names | Should -Be @('Full deep validation', 'Selected deep validation')
+        $text | Should -Match '(?m)^    branches: \[main\]\r?$'
+        $text | Should -Match '(?m)^    types: \[completed\]\r?$'
+    }
+
+    It 'routes <File> to its explicit <Mode> planner mode' -TestCases @(
+        @{ File = 'standard-validation.yml'; Mode = 'validation' }
+        @{ File = 'full-deep-validation.yml'; Mode = 'full' }
+        @{ File = 'selected-deep-validation.yml'; Mode = 'selected' }
+    ) {
+        param($File, $Mode)
+        $text = Get-Content -LiteralPath (Join-Path $root ".github\workflows\$File") -Raw
+        $text | Should -MatchExactly "(?m)^          ./scripts/scheduled/Invoke-ScheduledPlan.ps1 -Mode $Mode\r?$"
+    }
+
+    It 'shares a concurrency key with the standard validation close companion' {
+        $cancel = Get-Content -LiteralPath (Join-Path $root '.github\workflows\cancel-standard-validation.yml') -Raw
+        $expected = '  group: standard-validation-${{ github.head_ref || github.ref }}'
+        foreach ($text in @($workflow, $cancel)) {
+            [regex]::Match($text, '(?m)^  group: .+\r?$').Value.TrimEnd("`r") | Should -BeExactly $expected
+        }
+        $cancel | Should -Match '(?m)^    types: \[closed\]\r?$'
+    }
+
+    It 'keeps Deep checks as a reusable execution helper, not a manual entry point' {
+        $text = Get-Content -LiteralPath (Join-Path $root '.github\workflows\deep-checks.yml') -Raw
+        $events = ($text -split '(?m)^on:\r?$', 2)[1] -split '(?m)^[a-z]', 2
+        @([regex]::Matches($events[0], '(?m)^  ([\w_]+):\r?$') |
+            ForEach-Object { $_.Groups[1].Value }) | Should -Be @('workflow_call')
+    }
+
     It 'retains every shallow job while removing ordinary deep jobs' {
         $expected = @('scheduled-context', 'scheduled-repair-checks', 'scheduled-repair-gate',
             'scheduled-version-check', 'delta', 'test-scripts', 'validate-workflows',
@@ -93,11 +140,13 @@ Describe 'Hosted planning authorization' {
         $env:GITHUB_REF = 'refs/heads/main'
         $env:GITHUB_EVENT_NAME = 'schedule'
         $env:GITHUB_STEP_SUMMARY = Join-Path $TestDrive 'summary.md'
+        Set-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Value '' -NoNewline
         $env:GITHUB_OUTPUT = Join-Path $TestDrive 'outputs'
         Set-Content -LiteralPath $env:GITHUB_OUTPUT -Value '' -NoNewline
         $eventPath = Join-Path $TestDrive 'event.json'
         @{ repository = @{ id = 850321188 } } | ConvertTo-Json | Set-Content $eventPath
         Mock git -ModuleName ScheduledWorkflow { 'a' * 40 }
+        Mock Write-Verbose -ModuleName ScheduledWorkflow {}
         Mock Get-ScheduledContractDigest -ModuleName ScheduledWorkflow { 'c' * 64 }
         Mock Invoke-ScheduledReadApi -ModuleName ScheduledWorkflow { throw 'Unexpected GitHub request.' }
         Mock Get-ScheduledCoverageIndex -ModuleName ScheduledWorkflow { $null }
@@ -111,7 +160,7 @@ Describe 'Hosted planning authorization' {
     }
 
     It 'keeps recurring execution disabled with the checked-in policy' {
-        $plan = Invoke-ScheduledPlanning -Mode scheduled -EventPath $eventPath `
+        $plan = Invoke-ScheduledPlanning -Mode full -EventPath $eventPath `
             -OutputDirectory (Join-Path $TestDrive 'plan') -Now '2026-09-08T12:00:00Z'
         $plan.decision.run | Should -BeFalse
         Should -Invoke Get-ScheduledCoverageIndex -ModuleName ScheduledWorkflow -Times 0 -Exactly
@@ -120,13 +169,17 @@ Describe 'Hosted planning authorization' {
     It 'runs fresh full manual checks without any rollout or cache prerequisite' {
         $env:GITHUB_EVENT_NAME = 'workflow_dispatch'
         Mock Get-ScheduledCoverageIndex -ModuleName ScheduledWorkflow { throw 'Unrelated broken coverage index.' }
-        $plan = Invoke-ScheduledPlanning -Mode scheduled -EventPath $eventPath `
+        $plan = Invoke-ScheduledPlanning -Mode full -EventPath $eventPath `
             -OutputDirectory (Join-Path $TestDrive 'plan') -Now '2026-09-08T12:00:00Z'
         $plan.decision.run | Should -BeTrue
         $plan.manifest.scope | Should -Be full
         $plan.manifest.checks.Count | Should -Be 32
         $plan.confirmations | Should -BeNullOrEmpty
         $plan.repairs | Should -BeNullOrEmpty
+        Get-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Raw | Should -Match '^## Full deep validation'
+        Should -Invoke Write-Verbose -ModuleName ScheduledWorkflow -Times 1 -ParameterFilter {
+            $Message -cmatch '^Planning Full deep validation '
+        }
         Should -Invoke Get-ScheduledCoverageIndex -ModuleName ScheduledWorkflow -Times 0 -Exactly
     }
 
@@ -145,7 +198,7 @@ Describe 'Hosted planning authorization' {
         }
         Mock Get-ScheduledCoverageIndex -ModuleName ScheduledWorkflow { $automaticCoverage }
         Mock Invoke-ScheduledReadApi -ModuleName ScheduledWorkflow { @(@{ workflow_runs = @() }) }
-        $plan = Invoke-ScheduledPlanning -Mode scheduled -EventPath $eventPath `
+        $plan = Invoke-ScheduledPlanning -Mode full -EventPath $eventPath `
             -OutputDirectory (Join-Path $TestDrive 'plan') -Now '2026-09-08T12:00:00Z'
         $plan.decision.run | Should -BeFalse
         $plan.decision.reason | Should -Be not-run-unchanged
@@ -153,7 +206,7 @@ Describe 'Hosted planning authorization' {
     }
 
     It 'fails a non-main workflow selection instead of silently skipping <Mode>' -TestCases @(
-        @{ Mode = 'scheduled' }, @{ Mode = 'verify' }
+        @{ Mode = 'full' }, @{ Mode = 'selected' }
     ) {
         param($Mode)
         $env:GITHUB_EVENT_NAME = 'workflow_dispatch'
@@ -192,7 +245,7 @@ Describe 'Hosted planning authorization' {
                 param($Endpoint)
                 @{ sha = ($Endpoint -split '/')[-1] }
             }
-            $plan = Invoke-ScheduledPlanning -Mode verify -EventPath $eventPath `
+            $plan = Invoke-ScheduledPlanning -Mode selected -EventPath $eventPath `
                 -OutputDirectory (Join-Path $TestDrive 'plan')
             $plan.decision.run | Should -BeTrue
             $plan.manifest.source_sha | Should -BeExactly $Expected
@@ -205,6 +258,10 @@ Describe 'Hosted planning authorization' {
             $plan.repairs | Should -BeNullOrEmpty
             Get-Content -LiteralPath $env:GITHUB_OUTPUT | Should -Contain 'run=true'
             Get-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Raw | Should -Match $Expected
+            Get-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Raw | Should -Match '^## Selected deep validation'
+            Should -Invoke Write-Verbose -ModuleName ScheduledWorkflow -Times 1 -ParameterFilter {
+                $Message -cmatch '^Planning Selected deep validation ' -and $Message -cmatch 'manual-checks'
+            }
             Should -Invoke Get-ScheduledConfirmationScope -ModuleName ScheduledWorkflow -Times 0
             Should -Invoke Get-ScheduledCoverageIndex -ModuleName ScheduledWorkflow -Times 0
         }
@@ -213,7 +270,7 @@ Describe 'Hosted planning authorization' {
             $manualEvent.inputs.packages = ' cpulist , events '
             $manualEvent.inputs.check_ids = ' miri-ubuntu-latest , careful-windows-latest '
             $manualEvent | ConvertTo-Json -Depth 10 | Set-Content $eventPath
-            $plan = Invoke-ScheduledPlanning -Mode verify -EventPath $eventPath `
+            $plan = Invoke-ScheduledPlanning -Mode selected -EventPath $eventPath `
                 -OutputDirectory (Join-Path $TestDrive 'plan')
             $plan.manifest.checks.Count | Should -Be 2
             $plan.manifest.checks[0].packages | Should -Be @('cpulist', 'events')
@@ -222,7 +279,7 @@ Describe 'Hosted planning authorization' {
         It 'uses the captured main commit when an API dispatch omits the optional source field' {
             $manualEvent.inputs.Remove('source_sha')
             $manualEvent | ConvertTo-Json -Depth 10 | Set-Content $eventPath
-            $plan = Invoke-ScheduledPlanning -Mode verify -EventPath $eventPath `
+            $plan = Invoke-ScheduledPlanning -Mode selected -EventPath $eventPath `
                 -OutputDirectory (Join-Path $TestDrive 'plan')
             $plan.decision.run | Should -BeTrue
             $plan.manifest.source_sha | Should -BeExactly ('a' * 40)
@@ -244,7 +301,7 @@ Describe 'Hosted planning authorization' {
             $manualEvent.inputs.packages = $Packages
             $manualEvent.inputs.check_ids = $Checks
             $manualEvent | ConvertTo-Json -Depth 10 | Set-Content $eventPath
-            { Invoke-ScheduledPlanning -Mode verify -EventPath $eventPath `
+            { Invoke-ScheduledPlanning -Mode selected -EventPath $eventPath `
                     -OutputDirectory (Join-Path $TestDrive 'plan') } | Should -Throw
             Get-Content -LiteralPath $env:GITHUB_OUTPUT | Should -Not -Contain 'run=true'
         }
@@ -256,13 +313,13 @@ Describe 'Hosted planning authorization' {
             $manualEvent.inputs.source_sha = $Source
             $manualEvent | ConvertTo-Json -Depth 10 | Set-Content $eventPath
             Mock Invoke-ScheduledReadApi -ModuleName ScheduledWorkflow { @{ sha = 'e' * 40 } }
-            { Invoke-ScheduledPlanning -Mode verify -EventPath $eventPath `
+            { Invoke-ScheduledPlanning -Mode selected -EventPath $eventPath `
                     -OutputDirectory (Join-Path $TestDrive 'plan') } | Should -Throw
         }
     }
 
     It 'keeps automatic merged repair confirmation disabled' {
-        $plan = Invoke-ScheduledPlanning -Mode verify -EventPath $eventPath `
+        $plan = Invoke-ScheduledPlanning -Mode selected -EventPath $eventPath `
             -OutputDirectory (Join-Path $TestDrive 'plan') -Now '2026-09-08T12:00:00Z'
         $plan.decision.run | Should -BeFalse
         Should -Invoke Get-ScheduledConfirmationScope -ModuleName ScheduledWorkflow -Times 0 -Exactly
@@ -280,6 +337,9 @@ Describe 'Hosted planning authorization' {
         $plan.decision.run | Should -BeFalse
         $plan.managed | Should -BeFalse
         $plan.manifest.source_sha | Should -BeExactly ('b' * 40)
+        Should -Invoke Write-Verbose -ModuleName ScheduledWorkflow -Times 1 -ParameterFilter {
+            $Message -cmatch '^Planning Standard validation '
+        }
         $outputNames = @(Get-Content -LiteralPath $env:GITHUB_OUTPUT |
             ForEach-Object { ($_ -split '=', 2)[0] })
         @($outputNames | Sort-Object) |

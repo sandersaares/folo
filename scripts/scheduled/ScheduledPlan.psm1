@@ -208,7 +208,7 @@ function Get-ScheduledRunDecision {
                 (Get-ScheduledDigest $Manifest.checks)
             # The serialized reporter owns execution ordering across workflow families.
             # A retained invalidation is unresolved; per-workflow run numbers cannot order
-            # a verification run against a full scheduled run.
+            # a selected deep validation run against a full deep validation run.
             $applicableInvalidation = $null -ne $Coverage.invalidation -and
                 $Coverage.invalidation.source_sha -ceq $Manifest.source_sha -and
                 $Coverage.invalidation.check_contract_digest -ceq $Manifest.check_contract_digest

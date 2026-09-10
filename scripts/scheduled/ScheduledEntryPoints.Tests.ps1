@@ -72,7 +72,7 @@ Export-ModuleMember -Function Invoke-ScheduledPlanning
 
 Describe 'Hosted entrypoint exit contracts' {
     It 'invokes the planner without extra permission switches for <Mode>' -TestCases @(
-        @{ Mode = 'verify' }, @{ Mode = 'scheduled' }, @{ Mode = 'validation' }
+        @{ Mode = 'selected' }, @{ Mode = 'full' }, @{ Mode = 'validation' }
     ) {
         param($Mode)
         $result = Invoke-EntryPointFixture -Name 'Invoke-ScheduledPlan.ps1' -Outcome $Mode `

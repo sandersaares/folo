@@ -4,7 +4,7 @@
 Enforces `scheduled-repair-gate`, the single unconditional required check that a managed repair PR
 must clear before the ordinary `required-checks` fan-in can pass.
 .DESCRIPTION
-Called from validation.yml's gate step after the context and (conditionally run) deep-checks jobs
+Called from standard-validation.yml's gate step after the context and (conditionally run) deep-checks jobs
 complete. Delegates to `Invoke-ScheduledGate` in ScheduledWorkflow.psm1, which reads the plan
 written by Invoke-ScheduledPlan.ps1 to decide whether this PR/merge-group candidate is a managed
 repair at all; ordinary PRs pass with no deep evidence required. For a managed candidate it demands

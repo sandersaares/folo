@@ -57,7 +57,7 @@ repository admin and are prerequisites of the process above:
 * `main` is protected.
 * The merge queue is enabled on `main`.
 * The ruleset requires only the status check named `required-checks`.
-* Individual Validation matrix job names are not required — a skipped leg never
+* Individual Standard validation matrix job names are not required — a skipped leg never
   posts a check and would block the queue forever.
 
 `cargo-release-plan` also needs a one-time first `cargo publish` (and Trusted

@@ -1,9 +1,9 @@
-# Scheduled validation and local remediation
+# Deep validation and local remediation
 
 ## Purpose and responsibility
 
 GitHub Actions runs deterministic deep validation at an immutable `main` SHA and
-files a run-level **Scheduled validation failed** issue with execution evidence.
+files a run-level **Deep validation failed** issue with execution evidence.
 That issue requests analysis; it is not itself a diagnosed problem or a repair task.
 Evidence remains available while the local executor is unavailable.
 
@@ -23,7 +23,7 @@ worktree, branch and AI agent. Final approval and merge remain human actions.
 ```text
 Actions: fixed source -> complete job inventory + available checker evidence
                                                     |
-                     "Scheduled validation failed" issue + durable evidence pages
+                     "Deep validation failed" issue + durable evidence pages
                                                     |
                             end of hosted intake; no automatic repair admission
 
@@ -46,6 +46,12 @@ state.
 
 ## Running checks manually
 
+The workflow names describe their scope. **Standard validation** handles ordinary
+PR, push and merge-queue checks. **Full deep validation** runs the entire deep suite
+on main. **Selected deep validation** runs the requested checks and crates, with
+an optional source commit. **Deep checks** is a reusable execution helper called
+by these workflows, not another workflow to start manually.
+
 Manual checks require only permission to run GitHub Actions in this repository.
 They do not require changes to `scripts/scheduled/policy.json`, repair package
 allowlists, Local App enrollment, Copilot models or billing, or enabled timers.
@@ -54,7 +60,7 @@ already passed automatic validation.
 
 To run Miri on `cpulist`:
 
-1. Open the repository's **Actions** tab and select **Scheduled verification**.
+1. Open the repository's **Actions** tab and select **Selected deep validation**.
 2. Click **Run workflow** and keep **Use workflow from** set to **main**.
 3. Leave **source_sha** blank to test the immutable main commit selected for this
    run. Alternatively, enter a full commit SHA available in this repository,
@@ -80,7 +86,7 @@ Crate membership is checked by Cargo at the tested source, not by a repair allow
 | Careful checking | `careful-ubuntu-latest`, `careful-windows-latest` |
 | Many-seed Miri | `miri-many-events_once-1` through `miri-many-events_once-4`; `miri-many-events-1` through `miri-many-events-2`; `miri-many-awaiter_set-1` through `miri-many-awaiter_set-2`; `miri-many-nm_impl-1` through `miri-many-nm_impl-2`; each ID runs only its named crate |
 
-To run the entire deep suite on main, select **Scheduled validation**, keep
+To run the entire deep suite on main, select **Full deep validation**, keep
 **Use workflow from** set to **main**, and click **Run workflow**. There is no
 additional permission checkbox or cache override.
 
@@ -307,8 +313,9 @@ remain separate from each problem's lifecycle.
 
 Ordinary tests, compilation, Clippy, docs, feature/dependency, external-type,
 version/SemVer and integration checks remain on the normal validation path.
-PR/push validation is shallow. Scheduled workflows own mutation testing, ordinary
-and many-seed Miri, and careful checking through recurring complete manifests.
+Standard validation is shallow. Full deep validation and Selected deep validation
+own mutation testing, ordinary and many-seed Miri, and careful checking through
+declared manifests.
 Locally, `just validate-local` always runs shallow validation;
 `just package="foo bar" validate-deep-local` always runs deep validation.
 Neither recipe reads scheduling policy or changes meaning with activation.
@@ -341,7 +348,7 @@ range, and shard. Target-level and seed-range failures are valid findings even w
 the failing test or seed is unknown. Shared output from parallel seeds and
 post-suite leak diagnostics does not establish narrower attribution. Narrow only
 from independently known input scope, preserve the recorded replay for repair
-verification, and do not classify missing test/seed attribution alone as missing
+confirmation, and do not classify missing test/seed attribution alone as missing
 evidence.
 
 `release.yml` continues publishing on merge. Scheduled deep checking accepts delayed

@@ -23,8 +23,8 @@ pub(crate) fn fixture() -> Value {
         "repository": {"id": 123, "name": "owner/repository"},
         "workflow": {
             "id": 456,
-            "name": "Scheduled validation",
-            "path": ".github/workflows/scheduled.yml"
+            "name": "Full deep validation",
+            "path": ".github/workflows/full-deep-validation.yml"
         },
         "run_id": 789,
         "attempt": {
@@ -681,7 +681,7 @@ fn operation_protocol_roundtrips_record_and_bounded_root_body() {
     let merged = call(json!({"op": "merge", "record": validated, "incoming": restored["record"]}));
     assert_eq!(merged, restored["record"]);
     let rendered = call(json!({"op": "render", "record": merged}));
-    assert_eq!(rendered["title"], "Scheduled validation failed");
+    assert_eq!(rendered["title"], "Deep validation failed");
     assert_eq!(rendered["issue_marker"], prepared["issue_marker"]);
     assert!(rendered["body"].as_str().unwrap().len() < BODY_LIMIT);
 }
@@ -693,7 +693,7 @@ fn empty_record_renders_bounded_pending_root() {
         revisions: Vec::new(),
     };
     let rendered = serde_json::to_value(render(record).unwrap()).unwrap();
-    assert_eq!(rendered["title"], "Scheduled validation failed");
+    assert_eq!(rendered["title"], "Deep validation failed");
     assert_eq!(
         rendered["issue_marker"],
         "<!-- scheduled-run:v1 {\"repository_id\":123,\"run_id\":789,\"schema_version\":1,\"workflow_id\":456} -->"

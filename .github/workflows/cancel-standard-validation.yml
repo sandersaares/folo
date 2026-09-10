@@ -1,0 +1,35 @@
+name: Cancel standard validation
+
+# When a pull request closes (merged or abandoned), any Standard validation run still in flight for its
+# branch is wasted work. The concurrency in standard-validation.yml only supersedes a run when a *new*
+# commit lands on the same branch; a close pushes no such commit, so nothing cancels the run and it
+# burns runner minutes to completion. This workflow fires on the close event and joins the *same*
+# concurrency group as that Standard validation run, so cancel-in-progress tears the stale run down. See
+# design.md (Concurrency).
+on:
+  pull_request:
+    types: [closed]
+
+# This group must match standard-validation.yml so closing a PR supersedes its pending checks.
+# Ref: .github/workflows/design.md#concurrency.
+concurrency:
+  group: standard-validation-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cancel:
+    runs-on: ubuntu-latest
+    steps:
+      # Entering the shared concurrency group above is what cancels the stale Standard validation run; this
+      # step only records that it happened. It is intentionally the whole job - there is no package
+      # work to do on a PR close.
+      - name: Report supersession
+        shell: pwsh
+        env:
+          HEAD_REF: ${{ github.head_ref || github.ref }}
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+
+          Write-Host "Joined concurrency group standard-validation-$env:HEAD_REF; any in-progress Standard validation run for this branch is now cancelled."

@@ -16,7 +16,7 @@ BeforeAll {
             source_sha = ('a' * 40); controller_sha = ('a' * 40); check_contract_digest = ('c' * 64)
             issue_number = $Number; created_at = $Created; held = $false; validated_worker = $null
             observation = @{ run_id = 17; run_attempt = 1; run_number = 9
-                workflow_path = '.github/workflows/scheduled-validation.yml'
+                workflow_path = '.github/workflows/full-deep-validation.yml'
                 completed_at = '2026-09-01T00:00:00Z'; outcome = 'missed' }
             evidence = @{ manifest = 'run-artifact'; replay = @{ mutant = 'fingerprint' }; summary = 'Missed mutant' }
             confirmation = $null
@@ -191,10 +191,10 @@ Describe 'GitHub pagination and validated intake' {
                     '*/actions/runs/17/attempts/1' {
                         return @{ repository = @{ id = 850321188; full_name = 'folo-rs/folo' }
                             id = 17; run_attempt = 1; run_number = 9
-                            path = '.github/workflows/scheduled-validation.yml'; status = 'completed'
+                            path = '.github/workflows/full-deep-validation.yml'; status = 'completed'
                             head_branch = 'main'; head_sha = ('a' * 40) }
                     }
-                    '*/workflows/scheduled-validation.yml' { return @{ state = 'disabled_inactivity' } }
+                    '*/workflows/full-deep-validation.yml' { return @{ state = 'disabled_inactivity' } }
                     default { throw "Unexpected endpoint: $Endpoint" }
                 }
             }
@@ -248,7 +248,7 @@ Describe 'GitHub pagination and validated intake' {
                 switch -Wildcard ($Endpoint) {
                     'user' { return @{ login = 'sandersaares' } }
                     'repos/folo-rs/folo' { return @{ id = 850321188; full_name = 'folo-rs/folo' } }
-                    '*/workflows/scheduled-validation.yml' { return @{ state = 'active' } }
+                    '*/workflows/full-deep-validation.yml' { return @{ state = 'active' } }
                     default { throw "Unexpected endpoint: $Endpoint" }
                 }
             }

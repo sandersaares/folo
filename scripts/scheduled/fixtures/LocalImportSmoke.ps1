@@ -13,7 +13,7 @@ $module = Get-Module LocalInbox
         switch -Wildcard ($Endpoint) {
             'user' { return @{ login = 'sandersaares' } }
             'repos/folo-rs/folo' { return @{ id = 850321188; full_name = 'folo-rs/folo' } }
-            '*/workflows/scheduled-validation.yml' { return @{ state = 'active' } }
+            '*/workflows/full-deep-validation.yml' { return @{ state = 'active' } }
             default { throw "Unexpected smoke-test transport request: $Endpoint" }
         }
     }

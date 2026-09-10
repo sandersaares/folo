@@ -33,7 +33,7 @@ Describe 'Authoritative GitHub metadata' {
             function Get-GitHubTestRun {
                 @{
                     id = 10; run_attempt = 2; run_number = 5; workflow_id = 100; status = 'completed'
-                    name = 'Scheduled validation'; path = '.github/workflows/scheduled-validation.yml'
+                    name = 'Full deep validation'; path = '.github/workflows/full-deep-validation.yml'
                     head_branch = 'main'; head_sha = 'a' * 40; event = 'schedule'; conclusion = 'success'
                     repository = @{ id = 850321188; full_name = 'folo-rs/folo' }
                     head_repository = @{ id = 850321188 }
@@ -56,6 +56,65 @@ Describe 'Authoritative GitHub metadata' {
         It 'accepts a metadata-verified approved workflow' {
             { Assert-ScheduledReportingRun -WorkflowEvent $workflowEvent -Run $run -Workflow $workflow -Policy $policy } |
                 Should -Not -Throw
+        }
+        It 'accepts approved <Name> workflow identity for automatic and manual runs' -TestCases @(
+            @{ Name = 'Full deep validation'; File = 'full-deep-validation.yml'; Trigger = 'schedule' }
+            @{ Name = 'Selected deep validation'; File = 'selected-deep-validation.yml'; Trigger = 'push' }
+        ) {
+            param($Name, $File, $Trigger)
+            $workflow.name = $Name
+            $workflow.path = ".github/workflows/$File"
+            foreach ($candidate in @($run, $workflowEvent.workflow_run)) {
+                $candidate.name = $Name
+                $candidate.path = $workflow.path
+            }
+            foreach ($eventName in @($Trigger, 'workflow_dispatch')) {
+                $run.event = $eventName
+                $workflowEvent.workflow_run.event = $eventName
+                { Assert-ScheduledReportingRun $workflowEvent $run $workflow $policy } | Should -Not -Throw
+            }
+        }
+        It 'rejects an unrecognized or wrong-family name in <Target> metadata' -TestCases @(
+            @{ Target = 'event' }, @{ Target = 'run' }, @{ Target = 'workflow' }
+        ) {
+            param($Target)
+            $candidate = switch ($Target) {
+                event { $workflowEvent.workflow_run }
+                run { $run }
+                workflow { $workflow }
+            }
+            foreach ($name in @('Unrelated workflow', 'full deep validation', 'Selected deep validation')) {
+                $candidate.name = $name
+                { Assert-ScheduledReportingRun $workflowEvent $run $workflow $policy } | Should -Throw
+            }
+        }
+        It 'rejects a foreign or case-mismatched path even when every name and ID agrees' {
+            foreach ($path in @('.github/workflows/foreign.yml', '.github/workflows/Full-deep-validation.yml')) {
+                $workflow.path = $path
+                $run.path = $path
+                $workflowEvent.workflow_run.path = $path
+                { Assert-ScheduledReportingRun $workflowEvent $run $workflow $policy } | Should -Throw
+            }
+        }
+        It 'rejects mismatched and invalid current workflow API IDs' {
+            foreach ($id in @(0, 999)) {
+                $workflow.id = $id
+                { Assert-ScheduledReportingRun $workflowEvent $run $workflow $policy } | Should -Throw
+            }
+        }
+        It 'uses the approved path to reject the wrong automatic event for <Name>' -TestCases @(
+            @{ Name = 'Full deep validation'; File = 'full-deep-validation.yml'; Trigger = 'push' }
+            @{ Name = 'Selected deep validation'; File = 'selected-deep-validation.yml'; Trigger = 'schedule' }
+        ) {
+            param($Name, $File, $Trigger)
+            $workflow.name = $Name
+            $workflow.path = ".github/workflows/$File"
+            foreach ($candidate in @($run, $workflowEvent.workflow_run)) {
+                $candidate.name = $Name
+                $candidate.path = $workflow.path
+                $candidate.event = $Trigger
+            }
+            { Assert-ScheduledReportingRun $workflowEvent $run $workflow $policy } | Should -Throw
         }
         It 'rejects fork branch workflow-ID path attempt and source mismatches' {
             foreach ($field in @('head_sha', 'run_attempt', 'workflow_id', 'path', 'head_branch')) {
@@ -205,7 +264,7 @@ Describe 'Reporter rerun publication recovery' {
             } | Should -Not -Throw
         }
         It 'rejects recovery artifacts from an untrusted workflow' {
-            $previousRun.path = '.github/workflows/validation.yml'
+            $previousRun.path = '.github/workflows/standard-validation.yml'
             {
                 Restore-ScheduledRunPublicationState -Policy $recoveryPolicy -Run $sourceRun -OutputDirectory $currentDirectory
             } | Should -Throw '*not the trusted reporter workflow*'
@@ -276,7 +335,7 @@ Describe 'Archive extraction boundaries' {
                 $null = New-Item -ItemType Directory -Path $planRoot -Force
                 $script:apiRun = @{
                     id = 10; run_attempt = 2; run_number = 5; workflow_id = 100; status = 'completed'
-                    name = 'Scheduled validation'; path = '.github/workflows/scheduled-validation.yml'
+                    name = 'Full deep validation'; path = '.github/workflows/full-deep-validation.yml'
                     head_branch = 'main'; head_sha = 'a' * 40; event = 'schedule'; conclusion = 'success'
                     repository = @{ id = 850321188; full_name = 'folo-rs/folo' }; head_repository = @{ id = 850321188 }
                     created_at = '2026-09-08T09:00:00Z'
@@ -332,7 +391,11 @@ Describe 'Archive extraction boundaries' {
                     if ($Method -in @('POST', 'PATCH')) { throw 'Unexpected write.' }
                     if ($Endpoint -like '*/attempts/2') { return $apiRun }
                     if ($Endpoint -like '*/actions/workflows/100') {
-                        return @{ id = 100; name = $apiRun.name; path = $apiRun.path }
+                        # Workflow metadata comes from its own API lookup, not the run's name.
+                        $name = if ($apiRun.path -ceq '.github/workflows/full-deep-validation.yml') {
+                            'Full deep validation'
+                        } else { 'Selected deep validation' }
+                        return @{ id = 100; name = $name; path = $apiRun.path }
                     }
                     if ($Endpoint -like '*/git/ref/heads/main') { return @{ object = @{ sha = 'a' * 40 } } }
                     if ($Endpoint -like '*/artifacts?*') { return @{ artifacts = @() } }
@@ -386,8 +449,8 @@ Describe 'Archive extraction boundaries' {
                 BeforeEach {
                     $script:apiPolicy = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'policy.json') -Raw |
                         ConvertFrom-Json -AsHashtable
-                    $apiRun.name = 'Scheduled verification'
-                    $apiRun.path = '.github/workflows/scheduled-verify.yml'
+                    $apiRun.name = 'Selected deep validation'
+                    $apiRun.path = '.github/workflows/selected-deep-validation.yml'
                     $apiRun.event = 'workflow_dispatch'
                     @{
                         action = 'completed'; workflow_run = $apiRun
@@ -427,7 +490,7 @@ Describe 'Archive extraction boundaries' {
                 }
 
                 It 'retains full manual evidence without creating or invalidating a main coverage receipt' {
-                    $apiRun.name = 'Scheduled validation'; $apiRun.path = '.github/workflows/scheduled-validation.yml'
+                    $apiRun.name = 'Full deep validation'; $apiRun.path = '.github/workflows/full-deep-validation.yml'
                     @{
                         action = 'completed'; workflow_run = $apiRun
                         repository = @{ id = 850321188; full_name = 'folo-rs/folo'; default_branch = 'main' }
@@ -619,7 +682,7 @@ Describe 'Archive extraction boundaries' {
                 $report.coverage.receipt | Should -BeNullOrEmpty
                 Should -Invoke Get-ScheduledCheckResult -Times 0
             }
-            It 'preserves coverage for unselected no-work verification without package admission' {
+            It 'preserves coverage for no-work selected deep validation without package admission' {
                 $initial = Invoke-ScheduledReporting 'folo-rs/folo' $eventFile (Join-Path $caseRoot 'initial')
                 $script:existingCoverage = @{
                     number = 99; state = 'open'; user = @{ login = 'github-actions[bot]' }
@@ -627,7 +690,7 @@ Describe 'Archive extraction boundaries' {
                 }
                 Mock Get-ScheduledOwnedIssue { @($existingCoverage) } -ParameterFilter { $Label -ceq 'scheduled-coverage' }
                 Mock Invoke-ScheduledGitHubApi { $existingCoverage } -ParameterFilter { $Endpoint -ceq 'repos/folo-rs/folo/issues/99' }
-                $apiRun.name = 'Scheduled verification'; $apiRun.path = '.github/workflows/scheduled-verify.yml'
+                $apiRun.name = 'Selected deep validation'; $apiRun.path = '.github/workflows/selected-deep-validation.yml'
                 $apiRun.event = 'push'; $apiPolicy.repair.allowed_packages = @()
                 @{
                     action = 'completed'; workflow_run = $apiRun
@@ -748,8 +811,8 @@ Describe 'Archive extraction boundaries' {
                 $report.run_intake.requires_triage | Should -BeTrue
             }
             It 'consumes declared confirmations and persists confirmed needs-human and retry merge dispositions' {
-                $apiRun.name = 'Scheduled verification'
-                $apiRun.path = '.github/workflows/scheduled-verify.yml'
+                $apiRun.name = 'Selected deep validation'
+                $apiRun.path = '.github/workflows/selected-deep-validation.yml'
                 $apiRun.event = 'push'
                 @{
                     action = 'completed'; workflow_run = $apiRun
@@ -775,22 +838,22 @@ Describe 'Archive extraction boundaries' {
                     }
                     evidence = @{ replay = @{ test_filter = 'example' }; summary = 'Original defect'; manifest = @{} }
                 }
-                $script:verificationIssue = @{
+                $script:confirmationIssue = @{
                     number = 42; state = 'open'; body = Write-ScheduledRecord $record reporter
                     user = @{ login = 'github-actions[bot]' }
                 }
-                Mock Get-ScheduledOwnedIssue { @($verificationIssue) } -ParameterFilter { $Label -ceq 'scheduled-finding' }
-                Mock Invoke-ScheduledGitHubApi { $verificationIssue } -ParameterFilter { $Endpoint -ceq 'repos/folo-rs/folo/issues/42' }
+                Mock Get-ScheduledOwnedIssue { @($confirmationIssue) } -ParameterFilter { $Label -ceq 'scheduled-finding' }
+                Mock Invoke-ScheduledGitHubApi { $confirmationIssue } -ParameterFilter { $Endpoint -ceq 'repos/folo-rs/folo/issues/42' }
                 Mock Get-ScheduledTrustedConfirmation { $trustedDisposition.Clone() }
                 Mock Get-ScheduledCheckResult {
                     param($Check, $RunContext)
                     $result = $RunContext.Clone()
                     $result.schema_version = 1; $result.check_id = $Check.id; $result.actual_scope = $Check
-                    $result.outcome = $verificationOutcome; $result.findings = @()
+                    $result.outcome = $confirmationOutcome; $result.findings = @()
                     return $result
                 }
                 foreach ($disposition in @('confirmed', 'needs-human', 'failed', 'retry')) {
-                    $script:verificationOutcome = switch ($disposition) {
+                    $script:confirmationOutcome = switch ($disposition) {
                         failed { 'findings' }
                         retry { 'incomplete' }
                         default { 'passed' }
@@ -816,13 +879,13 @@ Describe 'Archive extraction boundaries' {
                     $updated.confirmation.scope_complete | Should -Be ($disposition -cne 'retry')
                 }
                 Should -Invoke Get-ScheduledTrustedConfirmation -Times 4 -ParameterFilter { $Declaration.issue_number -eq 42 }
-                $script:verificationOutcome = 'passed'
+                $script:confirmationOutcome = 'passed'
                 $script:trustedDisposition.status = 'confirmed'
                 $script:trustedDisposition.scope_complete = $true
                 $script:trustedDisposition.successful = $true
                 $script:trustedDisposition.explained = $true
-                $script:apiRun.name = 'Scheduled validation'
-                $script:apiRun.path = '.github/workflows/scheduled-validation.yml'
+                $script:apiRun.name = 'Full deep validation'
+                $script:apiRun.path = '.github/workflows/full-deep-validation.yml'
                 $script:apiRun.event = 'schedule'
                 $script:apiRun.conclusion = 'failure'
                 Mock Get-ScheduledCheckResult {
@@ -841,7 +904,7 @@ Describe 'Archive extraction boundaries' {
                 $script:apiPlan.confirmations = @()
                 $apiPlan | ConvertTo-Json -Depth 50 | Set-Content -LiteralPath (Join-Path $planRoot 'plan.json')
                 $record.status = 'needs-human'
-                $script:verificationIssue.body = Write-ScheduledRecord $record reporter
+                $script:confirmationIssue.body = Write-ScheduledRecord $record reporter
                 $fullReport = Invoke-ScheduledReporting 'folo-rs/folo' $eventFile (Join-Path $caseRoot 'full-main')
                 $fullReport.problems | Should -BeNullOrEmpty
                 $fullReport.status | Should -BeExactly 'reported'
@@ -1113,7 +1176,7 @@ Describe 'Read-only health adapter' {
             $manifest = Get-ScheduledCheckManifest -SourceSha ('a' * 40) -ControllerSha ('a' * 40) -ContractDigest ('c' * 64)
             $context = @{
                 workflow_id = 100; run_id = 10; run_number = 10; run_attempt = 1
-                workflow_path = '.github/workflows/scheduled-validation.yml'
+                workflow_path = '.github/workflows/full-deep-validation.yml'
                 created_at = '2026-09-08T09:00:00Z'; completed_at = '2026-09-08T10:00:00Z'
             }
             $results = @($manifest.checks | ForEach-Object {
@@ -1142,7 +1205,7 @@ Describe 'Read-only health adapter' {
             } -ParameterFilter { $Label -ceq 'scheduled-health' }
             Mock Invoke-ScheduledGitHubApi {
                 param($Endpoint)
-                if ($Endpoint -like '*/scheduled-validation.yml') { return @{ state = 'active' } }
+                if ($Endpoint -like '*/full-deep-validation.yml') { return @{ state = 'active' } }
                 if ($Endpoint -like '*/git/ref/heads/main') { return @{ object = @{ sha = 'a' * 40 } } }
                 if ($Endpoint -like '*/scheduled-report.yml/runs?*per_page=100') {
                     return @(@{ total_count = 0; workflow_runs = @() })

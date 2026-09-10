@@ -7,9 +7,9 @@ Ownership of the release-validation pipeline is in [implementation.md](implement
 
 ## Scheduled correctness and personal remediation
 
-The [scheduled validation contract](../../docs/scheduled-validation.md) separates deterministic
+The [deep validation contract](../../docs/scheduled-validation.md) separates deterministic
 hosted evidence collection from personally authorized Local Copilot App AI. Hosted reporting
-files run-level **Scheduled validation failed** intake issues without depending on App availability.
+files run-level **Deep validation failed** intake issues without depending on App availability.
 Hosted workflows stop at that durable intake. AI diagnosis, causal deduplication
 and new source repairs are downstream responsibilities, not deterministic reporter
 decisions. The Local boundary rejects new repair admissions; configuration alone
@@ -49,11 +49,16 @@ health remain requirements for that handoff; a timer is not an implementation.
 
 ### Shallow and deep validation
 
-PR/push workflows run shallow validation; scheduled workflows run ordinary Miri,
-many-seed Miri, mutation testing and careful checks through complete manifests.
+**Standard validation** runs the ordinary shallow PR, push and merge-queue checks.
+**Full deep validation** runs the full deep suite on immutable main; **Selected deep
+validation** runs selected checks and crates, either requested manually or needed
+to confirm registered merged repairs. Deep validation covers ordinary Miri,
+many-seed Miri, mutation testing and careful checks through declared manifests.
+**Deep checks** is their reusable execution helper, not a separate user-started
+validation workflow. Standard validation also calls it for a managed repair's deep scope.
 The local entry points have fixed meanings: `validate-local` is shallow and
 `validate-deep-local` is deep. Neither reads operating policy. Managed repair PRs
-add the relevant deep checks as proof of their proposed fix, not the full scheduled suite.
+add the relevant deep checks as proof of their proposed fix, not the full deep suite.
 
 Hosted execution, run reporting, Local AI triage and repair admission have independent authorization.
 Hosted checks and reporting can operate without Local automation. Disabling scheduled
@@ -107,7 +112,7 @@ credential exclusions. Excluding credentials does not establish that a local wor
 
 ## Job granularity and gating
 
-Validation runs each `just` command as its own parallel job rather than one combined
+Standard validation runs each `just` command as its own parallel job rather than one combined
 `validate-local` step. Parallelism gives faster feedback and pinpoints failures by check
 name instead of burying them in a monolithic log. The local recipes define which
 commands are shallow or deep, while workflow jobs own platform selection,
@@ -196,10 +201,10 @@ layer with an identical public facade, and nothing public is `target_arch`-gated
 Commit-driven and PR-driven workflows cancel superseded runs, keyed on the ref, so pushing
 a new commit abandons the outdated run. That supersession only fires when a *new commit*
 arrives on the branch, so closing or merging a PR — which pushes nothing to the PR branch —
-would otherwise leave its in-flight Validation run to burn to completion. A dedicated
+would otherwise leave its in-flight Standard validation run to burn to completion. A dedicated
 companion workflow closes that gap: it triggers on the PR-close event and joins the target
-workflow's concurrency group so cancel-in-progress reclaims the stale run. Both the Validation
-workflow and the PR benchmark-history workflow pair with such a close companion. Validation's
+workflow's concurrency group so cancel-in-progress reclaims the stale run. Both the Standard validation
+workflow and the PR benchmark-history workflow pair with such a close companion. Standard validation's
 group (`github.head_ref || github.ref`) already distinguishes merge-queue entries: `head_ref`
 is empty there and `github.ref` is the unique queue ref. The close companion stays
 pull-request-only. The exception
@@ -288,21 +293,21 @@ corrected by editing the requirement.
 
 ## Required checks fan-in
 
-Validation posts a fan-in job whose GitHub check name is the ruleset string. GitHub's
+Standard validation posts a fan-in job whose GitHub check name is the ruleset string. GitHub's
 required-checks field is a string match on that name: it cannot express "this matrix
 job, but only the legs that actually ran", and it cannot see a check that was skipped
 rather than posted. A job with both `strategy.matrix` and a job-level `if:` that evaluates
 false never expands the matrix, so contexts such as `test-x64 (ubuntu-latest)` stay on
 Expected — Waiting for status to be reported forever if they are listed as required.
 
-A ruleset that requires merge-blocking Validation therefore lists only this fan-in. The
-job is `if: always()`, `needs:` every merge-blocking job in Validation (including
+A ruleset that requires merge-blocking Standard validation therefore lists only this fan-in. The
+job is `if: always()`, `needs:` every merge-blocking job in Standard validation (including
 `validate-versions` and `semver-checks`), succeeds when every dependency reports `success` or an
 allowed `skipped`, and fails on `failure`, `cancelled`, or any other result.
 Unconditional gates may not skip. Advisory jobs stay off that list. `alert` stays off it
 — it files issues on a failed push to `main`, it is not a merge gate.
 
-When a new merge-blocking job is added to Validation it is added to this `needs:` list; it
+When a new merge-blocking job is added to Standard validation it is added to this `needs:` list; it
 is never added to the GitHub ruleset. Unconditional gates are also named in the fan-in's
 must-succeed list. Matrix jobs that can skip via a job-level `if:` can only be made
 required through this fan-in.
@@ -616,7 +621,7 @@ intervention. The nightly backfill is deliberately outside this scheme and files
 Nightly history backfill). A release failure is a discrete event tied to one publish attempt, so it
 opens a *per-run* issue (identified by the failing run) that stays open until a human
 investigates; each failed release is tracked individually rather than folded into a
-rolling issue. A push-to-`main` Validation failure follows the same per-run shape as the
+rolling issue. A push-to-`main` Standard validation failure follows the same per-run shape as the
 release alert — a fresh `ci-failure` issue per failing run, no dedup and no auto-close —
 because it now backstops the checks pruned from PR validation, so each such failure warrants
 individual triage. It fires *only* on push to `main`: a PR failure is already self-evident as

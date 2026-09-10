@@ -82,27 +82,32 @@ function Assert-ScheduledReportingRun {
         [Parameter(Mandatory)][hashtable] $Policy
     )
 
+    # Verify workflow path, API ID and display name before interpreting execution scope.
+    # Ref: ../../.github/workflows/implementation.md#workflow-identity.
     $allowed = @{
-        'Scheduled validation' = '.github/workflows/scheduled-validation.yml'
-        'Scheduled verification' = '.github/workflows/scheduled-verify.yml'
+        '.github/workflows/full-deep-validation.yml' = 'Full deep validation'
+        '.github/workflows/selected-deep-validation.yml' = 'Selected deep validation'
     }
     if ($WorkflowEvent.action -cne 'completed' -or
         $WorkflowEvent.repository.full_name -cne $Policy.repository -or $WorkflowEvent.repository.id -ne $Policy.repository_id -or
         $WorkflowEvent.repository.default_branch -cne 'main') { throw [FormatException]::new('Unexpected reporting event repository.') }
+    if ($Workflow.id -le 0 -or $Workflow.path -cnotin @($allowed.Keys) -or
+        $Workflow.name -cne $allowed[$Workflow.path]) {
+        throw [FormatException]::new('Workflow API identity is not approved for reporting.')
+    }
+    $events = if ($Workflow.path -ceq '.github/workflows/full-deep-validation.yml') { @('schedule', 'workflow_dispatch') }
+        else { @('push', 'workflow_dispatch') }
     foreach ($candidate in @($WorkflowEvent.workflow_run, $Run)) {
         if ($candidate.repository.id -ne $Policy.repository_id -or
             $candidate.repository.full_name -cne $Policy.repository -or
             $candidate.head_repository.id -ne $Policy.repository_id -or
             $candidate.status -cne 'completed' -or $candidate.head_branch -cne 'main' -or
-            -not $allowed.ContainsKey($candidate.name) -or $candidate.path -cne $allowed[$candidate.name] -or
             $candidate.workflow_id -ne $Workflow.id -or $candidate.path -cne $Workflow.path -or
             $candidate.name -cne $Workflow.name) { throw [FormatException]::new('Run is not from an approved default-branch workflow.') }
         Assert-ScheduledSha $candidate.head_sha
         if ($candidate.id -le 0 -or $candidate.run_attempt -le 0 -or $candidate.run_number -le 0) {
             throw [FormatException]::new('Run identity is incomplete.')
         }
-        $events = if ($candidate.name -ceq 'Scheduled validation') { @('schedule', 'workflow_dispatch') }
-            else { @('push', 'workflow_dispatch') }
         if ($candidate.event -cnotin $events) { throw [FormatException]::new('Unsupported triggering workflow event.') }
     }
     foreach ($key in @('id', 'run_attempt', 'run_number', 'workflow_id', 'head_sha', 'event', 'conclusion')) {
@@ -514,7 +519,9 @@ function Invoke-ScheduledReporting {
         $isAncestor = { param($ancestor, $descendant)
             & $apiCommand $Repository $ancestor $descendant
         }.GetNewClosure()
-        $scope = if ($run.name -ceq 'Scheduled validation') { 'full' } else { 'confirmation' }
+        # Scope follows the workflow identity already verified above, never its display name.
+        # Ref: ../../.github/workflows/implementation.md#workflow-identity.
+        $scope = if ($workflow.path -ceq '.github/workflows/full-deep-validation.yml') { 'full' } else { 'confirmation' }
         $manifest = Get-ScheduledCheckManifest -SourceSha $run.head_sha -ControllerSha $run.head_sha `
             -ContractDigest $contractDigest -Scope $scope
         $results = @()
@@ -551,7 +558,7 @@ function Invoke-ScheduledReporting {
             if ($diagnostic -and -not $plan.decision.run) {
                 throw [FormatException]::new('A manual request must run fresh checks, not skip execution.')
             }
-            # No-work verification retains the unselected catalog. Package-specific many-seed
+            # No-work selected deep validation retains the unselected catalog. Package-specific many-seed
             # entries are not a global package selection when no confirmation was admitted.
             if ($scope -ceq 'confirmation' -and $plan.decision.run) {
                 $packages = @($plan.manifest.checks | ForEach-Object { $_.packages } | Sort-Object -Unique)
@@ -644,13 +651,13 @@ function Invoke-ScheduledReporting {
                     $confirmedScope[$entry.record.finding_id]
                 } else { $null }
                 if ($null -eq $confirmation) {
-                    # Undeclared diagnostic verification cannot resolve registered problems.
+                    # Undeclared selected deep checks cannot resolve registered problems.
                     if ($scope -cne 'full' -or -not $executionEvidenceComplete) { continue }
                     $matching = @($results | Where-Object { $_.check_id -ceq $entry.record.check_id -and $_.outcome -ceq 'passed' })
                     if ($matching.Count -ne 1) { continue }
                     if ($matching[0].actual_scope.packages.Count -gt 0 -and
                         $entry.record.package -cnotin $matching[0].actual_scope.packages) { continue }
-                    # Complete full-main evidence can arrive before the dedicated verification
+                    # Complete full-main evidence can arrive before the selected deep validation
                     # report. Use the same live merged-registration checks in either order.
                     try {
                         $confirmation = Get-ScheduledTrustedConfirmation -Issue $entry.issue -Record $entry.record `
@@ -758,7 +765,7 @@ function Get-ScheduledGitHubHealth {
     $manifest = $null
     $problems = @()
     try {
-        $scheduler = Invoke-ScheduledGitHubApi "repos/$Repository/actions/workflows/scheduled-validation.yml"
+        $scheduler = Invoke-ScheduledGitHubApi "repos/$Repository/actions/workflows/full-deep-validation.yml"
         $reference = Invoke-ScheduledGitHubApi "repos/$Repository/git/ref/heads/main"
         $root = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
         $manifest = Get-ScheduledCheckManifest -SourceSha $reference.object.sha -ControllerSha $reference.object.sha `

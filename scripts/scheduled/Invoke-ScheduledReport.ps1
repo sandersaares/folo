@@ -1,7 +1,7 @@
 #requires -Version 7
 <#
 .SYNOPSIS
-Converts one completed `scheduled-validation.yml`/`scheduled-verify.yml` run into durable
+Converts one completed `full-deep-validation.yml`/`selected-deep-validation.yml` run into durable
 GitHub-persisted run-level intake, coverage and existing repair-confirmation records.
 .DESCRIPTION
 Runs as the privileged `scheduled-report.yml` `workflow_run` handler, always checked out at

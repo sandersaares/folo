@@ -83,7 +83,7 @@ function Get-OpenIssueByTitle {
     # `gh` returns them newest-first: the rolling issue is updated in place rather than refiled, so
     # it only ages relative to its label-mates, and anything past the limit is invisible here - a
     # miss would silently file a duplicate. The standing labels these callers use (`ci-failure`,
-    # `regression`) are shared with the per-run failure issues that validation.yml and release.yml
+    # `regression`) are shared with the per-run failure issues that standard-validation.yml and release.yml
     # file and never auto-close, so a backlog is possible even though a healthy repository keeps
     # only a handful open. `gh` pages internally to satisfy the limit and stops once the results
     # are exhausted, so a generous ceiling costs a single request in the healthy case.

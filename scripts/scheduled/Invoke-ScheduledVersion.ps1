@@ -4,7 +4,7 @@
 Independently regenerates and byte-compares a managed repair PR's version plan against its
 recorded pre-versioning checkpoint.
 .DESCRIPTION
-Called from validation.yml alongside the deep-checks matrix for any PR/merge-group candidate the
+Called from standard-validation.yml alongside the deep-checks matrix for any PR/merge-group candidate the
 plan (Invoke-ScheduledPlan.ps1's output) marked `managed`. Delegates to
 `Invoke-ScheduledVersionVerification` in ScheduledVersion.psm1, which builds a trusted controller
 copy of `cargo-release-plan`, checks out each repair's `version_evidence.pre_version_sha` into a

@@ -130,7 +130,7 @@ function Invoke-ScheduledInbox {
         }
     }
     $result = Get-ScheduledInboxDecision -Policy $policy -State $state -Incidents $incidents.ToArray() -Now $Now
-    $workflow = Invoke-ScheduledApi -Endpoint "repos/$($policy.repository)/actions/workflows/scheduled-validation.yml"
+    $workflow = Invoke-ScheduledApi -Endpoint "repos/$($policy.repository)/actions/workflows/full-deep-validation.yml"
     $result.hosted_schedule_enabled = $workflow.state -ceq 'active'
     $coverageIssues = Get-ScheduledApiCollection `
         -Endpoint "repos/$($policy.repository)/issues?state=open&labels=scheduled-coverage&per_page=100"

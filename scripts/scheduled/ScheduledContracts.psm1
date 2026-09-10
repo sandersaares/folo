@@ -152,7 +152,7 @@ function ConvertTo-ScheduledIncident {
         throw [FormatException]::new('Finding lacks authoritative execution identity.')
     }
     if ($record.observation.workflow_path -cnotin @(
-            '.github/workflows/scheduled-validation.yml', '.github/workflows/scheduled-verify.yml')) {
+            '.github/workflows/full-deep-validation.yml', '.github/workflows/selected-deep-validation.yml')) {
         throw [FormatException]::new('Finding does not originate in an approved workflow.')
     }
     if ($Run.repository.id -ne $RepositoryId -or $Run.repository.full_name -cne $Repository -or
@@ -162,7 +162,7 @@ function ConvertTo-ScheduledIncident {
         $Run.status -cne 'completed' -or $Run.head_branch -cne 'main') {
         throw [FormatException]::new('Originating API run does not validate the reporter record.')
     }
-    # Verification runs execute a separately declared source SHA. The trusted reporter records
+    # Selected deep validation runs execute a declared source SHA. The trusted reporter records
     # both identities so workflow_dispatch's controller head is not confused with that source.
     $controllerSha = if ($record.ContainsKey('controller_sha')) { $record.controller_sha } else { $record.source_sha }
     if ($Run.head_sha -cne $controllerSha) { throw [FormatException]::new('Originating controller SHA mismatch.') }

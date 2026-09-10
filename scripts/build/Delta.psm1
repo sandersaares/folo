@@ -80,7 +80,7 @@ function Get-DeltaOutput {
 }
 
 function Get-DeltaWorkflowOutput {
-    # Shapes the Validation `delta` job output lines while keeping workflow-only branching under
+    # Shapes the Standard validation `delta` job output lines while keeping workflow-only branching under
     # Pester coverage. Push-to-main runs must keep the full workspace as the validation backstop;
     # pull requests and merge-queue runs use cargo-delta with the checkout's already-complete
     # history.

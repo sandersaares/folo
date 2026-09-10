@@ -1,6 +1,6 @@
 #requires -Version 7
 
-# Fan-in classification for the Validation `required-checks` job.
+# Fan-in classification for the Standard validation `required-checks` job.
 #
 # GitHub's required-checks field matches a check-name string and cannot express that only the
 # matrix legs selected for a run are required. The ruleset therefore requires only this job.

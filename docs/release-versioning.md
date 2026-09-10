@@ -462,19 +462,19 @@ skipping the lockfile fails `--locked` builds.
 
 ## The GitHub check
 
-Validation includes a `merge_group` trigger so the queue actually runs the workflow. A required
+Standard validation includes a `merge_group` trigger so the queue actually runs the workflow. A required
 check that never fires as `merge_group` is a failed check, and the queue never merges. Merge-queue
 runs use the same pruned job set as pull requests; `push` to `main` remains the full backstop.
 Delta analysis on a queue run uses `merge_group.base_sha` (the commit the queue rebased onto),
 not a freshly fetched `origin/main`, so scoping cannot drift from the version check's base.
 
-The Validation concurrency group (`github.head_ref || github.ref`) distinguishes
+The Standard validation concurrency group (`github.head_ref || github.ref`) distinguishes
 queue entries: `head_ref` is empty there and `github.ref` is the unique queue ref. The
 close-companion stays pull-request-only.
 
 ### `validate-versions`
 
-The `validate-versions` job in `validation.yml`. Its inputs are git history and manifests, not
+The `validate-versions` job in `standard-validation.yml`. Its inputs are git history and manifests, not
 Cargo packages, so
 per the workflow conventions it runs **unconditionally**. `cargo-delta`'s changed-package scoping
 must not be applied to it — the whole point is to catch packages the current pull request did not
@@ -528,14 +528,14 @@ on `Expected — Waiting for status to be reported` forever if they are listed a
 Dynamically generated names have the same problem.
 
 The ruleset therefore requires **only** `required-checks`. That job is a fan-in: `if: always()`,
-`needs:` every merge-blocking job in Validation (including `validate-versions` and
+`needs:` every merge-blocking job in Standard validation (including `validate-versions` and
 `semver-checks`), succeeds when every dependency reports `success` or an allowed `skipped`, and
 fails on `failure`, `cancelled`, or any other result. Unconditional gates may not skip. Advisory
 jobs stay off that list. `alert` stays off it — it files issues on a failed push to `main`, it is
 not a merge gate.
 
 The job's GitHub check name is the literal `required-checks`, so the ruleset string is stable.
-When a new merge-blocking job is added to Validation it is added to this `needs:` list; it is
+When a new merge-blocking job is added to Standard validation it is added to this `needs:` list; it is
 never added to the GitHub ruleset. Matrix jobs that can skip via a job-level `if:` can only be
 made required through this fan-in.
 
