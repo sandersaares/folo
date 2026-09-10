@@ -48,14 +48,14 @@ param(
     [switch] $Force
 )
 
+Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
-Set-StrictMode -Version Latest
 $VerbosePreference = 'Continue'
 
 # The archive download can hit a transient network/disk fault; Invoke-WithRetry re-fetches (and
 # re-verifies the checksum) rather than failing `just install-tools` on a single blip.
-Import-Module (Join-Path $PSScriptRoot 'utility' 'Retry.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot '..' 'utility' 'Retry.psm1') -Force
 
 # The pinned ShellCheck release. Keep $ShellcheckVersion and the per-platform digests in
 # $ShellcheckBuilds in sync - both come from one GitHub release of koalaman/shellcheck.

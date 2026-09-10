@@ -78,11 +78,54 @@ name and ruleset target are exactly `required-checks`.
 
 `standard-validation.yml` assigns each independently useful check to a separate job so GitHub reports the
 outcomes in parallel. Cargo-package jobs consume the affected-package set from the `delta`
-job. Repository-wide checks run without that gate.
+job. Non-Cargo checks use the independent path plan, supplemented by native-helper package
+impact for script integration tests. Release and managed-repair gates remain unconditional.
 
 Pull requests and merge-queue entries use the pruned validation set. Pushes to `main` use the
 full set. Queue delta analysis takes the event's base commit so its comparison cannot drift
 from the queued merge candidate.
+
+### Non-Cargo change planning
+
+The `changes` job runs `scripts/build/ValidationPlan.psm1` with Git and preinstalled
+PowerShell, before preparing a development environment. Rust is impractical at this boundary:
+installing its toolchains and build prerequisites merely to decide whether standalone lint
+should run would impose the setup cost this planner is intended to avoid.
+
+The planner reads immutable event SHAs from a full-history checkout. Pull requests compare
+their head with its merge base against the event's base SHA, covering all PR commits without
+including unrelated base-branch changes. Merge groups compare their exact base and combined
+head directly. Git emits NUL-delimited paths with rename detection disabled, so a move
+contributes both its removed path and its added path without filename quoting ambiguity.
+Unavailable revisions fail. Main pushes explicitly select the full suite.
+
+Script directories are coarse test domains. The module declares recipe ownership and
+cross-domain consumers, and defaults unfamiliar script/recipe locations to the full suite.
+Setup, shared utility, planner and fan-in changes select every tooling check. Fixtures select
+their owning tests; workflow changes also select the Pester workflow-contract tests. Analyzer
+configuration and script files select static analysis independently of the Pester scope.
+
+The `delta` job combines the path-selected domains with affected native helpers used by
+scheduled integration tests. Dependency impact comes from Cargo delta rather than treating
+every lockfile change as a full-script-suite trip wire. Live manifest changes also select the
+scheduled tests that read workspace metadata. The resulting domain array is explicit even
+when empty. `test-scripts` runs that union once; `just test-scripts "book release"` is the local
+equivalent, while an omitted argument retains full discovery. Unknown domains or explicit
+directories containing no tests fail rather than producing a successful empty run.
+
+Recipe files follow their automation responsibility: benchmark history and release commands
+have separate imports, while setup installers live beside the setup module. Workflow
+entrypoints stay in GitHub's required location. Co-location reduces selection coupling but
+does not replace declared dependencies.
+
+### Workflow lint environment
+
+`setup-workflow-lint` restores the same portable actionlint/ShellCheck cache as
+`setup-environment` and invokes the same pinned, checksum-verifying installers under
+`scripts/setup`. It needs neither Rust toolchain setup nor system package installation.
+The workflow invokes `actionlint -color` directly, matching `just validate-workflows` without
+installing Just solely to dispatch that command. Local full setup continues to install these
+same binaries, and the workflow-contract tests keep the command and cache keys aligned.
 
 ## Release validation
 
@@ -120,6 +163,11 @@ read-only, with no hidden preparation or dependency refresh.
 There is no separate version-approval prompt. The complete pull request and its
 Version/release plan section carry the human review of release impact.
 
+The unconditional `validate-versions` job also runs `validate-binstall` against the live
+workspace. Release-target and archive-shape obligations follow Cargo's discovered binary
+targets, including source additions that do not edit a manifest. The version report still runs
+after a binstall failure so semantic-version analysis can consume its output in the same run.
+
 Plan generation is verified by asserting properties of the generated plan over a matrix of report
 states, not only by testing individual guards. The properties are that every entry is well formed
 and names a known target, that no target receives two decision kinds, that no version moves
@@ -143,6 +191,12 @@ The `required-checks` job is the intended single ruleset target. Its `needs` gra
 every merge-blocking Standard validation job. `scripts/build/RequiredChecks.psm1` rejects failed,
 cancelled, missing, and unknown dependency results. It permits `skipped` only for jobs whose
 event, platform, or package scope legitimately excludes them.
+
+For tooling checks it reads the explicit `changes` plan and reconstructs script selection
+using `delta`'s affected-package output. The execution-domain output must agree with that
+selection. Every selected tooling job must succeed; every tooling dependency must be present,
+even when not selected. Both planners remain must-succeed dependencies, so a failed planner
+cannot turn downstream skips into merge approval.
 
 The classifier only observes what `needs` supplies, so it also rejects an unconditional gate
 that its must-succeed list names but the payload omits. A name that drifts out of the `needs:`

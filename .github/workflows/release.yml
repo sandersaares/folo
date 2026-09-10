@@ -11,7 +11,7 @@ name: Release
 # (rather than a separate tag-triggered workflow) is what lets the ambient
 # GITHUB_TOKEN suffice - no PAT or GitHub App token needed.
 #
-# The non-trivial logic lives in PowerShell `just` recipes (justfiles/just_automation.just)
+# The non-trivial logic lives in PowerShell `just` recipes (justfiles/just_release.just)
 # so it can be run and tested locally; the steps here are thin `just` calls.
 on:
   push:

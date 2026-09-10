@@ -1,0 +1,25 @@
+name: Setup workflow lint
+description: Install the pinned workflow linters without a Rust development environment
+
+runs:
+  using: composite
+  steps:
+    # Share portable binaries and their installer-owned pins with the complete setup action.
+    # Ref: .github/workflows/implementation.md#workflow-lint-environment.
+    - uses: actions/cache@v6
+      with:
+        path: |
+          ~/.cargo/bin/actionlint*
+          ~/.cargo/bin/shellcheck*
+        key: lint-tools-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/setup/install-actionlint.ps1', 'scripts/setup/install-shellcheck.ps1') }}
+    - name: Install workflow linters
+      shell: pwsh
+      run: |
+        Set-StrictMode -Version Latest
+        $ErrorActionPreference = 'Stop'
+        $PSNativeCommandUseErrorActionPreference = $true
+        $bin = Join-Path $HOME '.cargo/bin'
+        $env:PATH = "$bin$([IO.Path]::PathSeparator)$env:PATH"
+        $bin | Add-Content -LiteralPath $env:GITHUB_PATH -Encoding utf8
+        ./scripts/setup/install-shellcheck.ps1 -Destination $bin
+        ./scripts/setup/install-actionlint.ps1 -Destination $bin

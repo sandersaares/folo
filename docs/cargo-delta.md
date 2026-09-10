@@ -71,3 +71,7 @@ Pull request and merge-queue builds use delta to validate only impacted packages
 builds act as a backstop and always validate the full workspace. If the backstop catches something
 that the delta build missed, the `delta.toml` configuration should be updated to prevent
 recurrence.
+
+Non-Cargo checks use independent change domains rather than `skip_all`. Script integration
+tests also consume the affected-package set for the native helpers they exercise. See
+[non-Cargo change planning](../.github/workflows/implementation.md#non-cargo-change-planning).

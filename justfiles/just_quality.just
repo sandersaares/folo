@@ -85,7 +85,7 @@ validate-workflows:
 # Validates that every publishable binary crate declares the `[package.metadata.binstall]` block
 # the release workflow relies on, so a binary crate can never ship without installable prebuilt
 # binaries (see scripts/release/BinstallValidation.psm1 and docs/release-automation.md). Fast and
-# repo-wide (not package-scoped); folded into the same CI job as the other script checks.
+# repo-wide (not package-scoped); runs with unconditional CI release validation.
 [group('quality')]
 [script]
 validate-binstall:
