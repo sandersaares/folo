@@ -994,6 +994,29 @@ Describe 'Safe durable writes' {
                 $Method -ceq 'PATCH' -and $Body.body.Contains('Human before') -and $Body.body.EndsWith('Human after')
             }
         }
+        It 'does not require <ValueKind> bootstrap context when updating an existing issue' -TestCases @(
+            @{ ValueKind = 'omitted' }, @{ ValueKind = 'empty' }, @{ ValueKind = 'whitespace' },
+            @{ ValueKind = 'missing-path' }
+        ) {
+            param($ValueKind)
+            $policy.rollout.reporting_enabled = $true
+            $record.extra = 'update'
+            $arguments = @{ Policy = $policy; Issue = $issue; Record = $record; Kind = 'coverage'; Apply = $true }
+            if ($ValueKind -ne 'omitted') {
+                $value = switch ($ValueKind) {
+                    empty { '' }
+                    whitespace { ' ' }
+                    missing-path { Join-Path $TestDrive 'not-needed' }
+                }
+                $arguments.OutputDirectory = $value
+                $arguments.PublicationJournalPath = $value
+            }
+            (Sync-ScheduledIssue @arguments).action | Should -Be PATCH
+            Should -Invoke Invoke-ScheduledGitHubApi -Times 1 -Exactly -ParameterFilter {
+                $Method -ceq 'PATCH' -and $Endpoint -ceq 'repos/folo-rs/folo/issues/1'
+            }
+            Should -Invoke Invoke-ScheduledGitHubApi -Times 0 -ParameterFilter { $Endpoint -like '*/labels*' }
+        }
         It 'refuses concurrent record changes without losing a human body edit' {
             $live = $issue.Clone()
             $live.body = Write-ScheduledRecord @{ schema_version = 1; different = $true } coverage

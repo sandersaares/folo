@@ -421,6 +421,15 @@ function Sync-ScheduledIssue {
     # below in this module.
     if ($Apply -and $Policy.rollout.reporting_enabled) {
         if ($null -eq $Issue) {
+            if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
+                throw [ArgumentException]::new('Authorized new coverage publication requires OutputDirectory.', 'OutputDirectory')
+            }
+            if ([string]::IsNullOrWhiteSpace($PublicationJournalPath)) {
+                throw [ArgumentException]::new('Authorized new coverage publication requires PublicationJournalPath.', 'PublicationJournalPath')
+            }
+            if (-not (Test-Path -LiteralPath $PublicationJournalPath -PathType Leaf)) {
+                throw [IO.IOException]::new("Coverage publication journal is not an existing file: $PublicationJournalPath")
+            }
             $journal = Get-Content -LiteralPath $PublicationJournalPath -Raw | ConvertFrom-Json -AsHashtable
             if ($journal.schema_version -ne 1 -or $journal.identity.repository_id -ne $Policy.repository_id) {
                 throw [FormatException]::new('Coverage publication journal identity is invalid.')

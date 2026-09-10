@@ -191,6 +191,58 @@ Describe 'Coverage bootstrap at the actual issue-write boundary' {
             $journal.coverage_creation.stage | Should -Be complete
             $journal.coverage_creation.issue_number | Should -Be 42
         }
+        It 'rejects <ValueKind> <Name> before accessing GitHub for new authorized coverage' -TestCases @(
+            @{ Name = 'OutputDirectory'; ValueKind = 'omitted' }
+            @{ Name = 'OutputDirectory'; ValueKind = 'empty' }
+            @{ Name = 'OutputDirectory'; ValueKind = 'whitespace' }
+            @{ Name = 'PublicationJournalPath'; ValueKind = 'omitted' }
+            @{ Name = 'PublicationJournalPath'; ValueKind = 'empty' }
+            @{ Name = 'PublicationJournalPath'; ValueKind = 'whitespace' }
+        ) {
+            param($Name, $ValueKind)
+            $arguments = @{
+                Policy = $bootstrapPolicy; Issue = $null; Record = $record; Kind = 'coverage'
+                OutputDirectory = $TestDrive; PublicationJournalPath = $publicationPath; Apply = $true
+            }
+            switch ($ValueKind) {
+                omitted { $arguments.Remove($Name) }
+                empty { $arguments[$Name] = '' }
+                whitespace { $arguments[$Name] = ' ' }
+            }
+            $failure = { Sync-ScheduledIssue @arguments } |
+                Should -Throw -ExceptionType ([ArgumentException]) -PassThru
+            $failure.Exception.ParamName | Should -Be $Name
+            Should -Invoke Invoke-ScheduledGitHubApi -Times 0
+            $bootstrapWrites.Count | Should -Be 0
+        }
+        It 'does not require write context for new coverage with Apply=<Apply> and Reporting=<Reporting>' -TestCases @(
+            @{ Apply = $false; Reporting = $false }
+            @{ Apply = $false; Reporting = $true }
+            @{ Apply = $true; Reporting = $false }
+        ) {
+            param($Apply, $Reporting)
+            $bootstrapPolicy.rollout.reporting_enabled = $Reporting
+            $result = Sync-ScheduledIssue -Policy $bootstrapPolicy -Issue $null -Record $record `
+                -Kind coverage -Apply:$Apply
+            $result.action | Should -Be dry-run
+            $unusedPath = Join-Path $TestDrive 'not-needed'
+            (Sync-ScheduledIssue -Policy $bootstrapPolicy -Issue $null -Record $record -Kind coverage `
+                -OutputDirectory $unusedPath -PublicationJournalPath $unusedPath -Apply:$Apply).action |
+                Should -Be dry-run
+            Should -Invoke Invoke-ScheduledGitHubApi -Times 0
+        }
+        It 'rejects a <Kind> journal path with an IO error before reading it or accessing GitHub' -TestCases @(
+            @{ Kind = 'missing' }, @{ Kind = 'directory' }
+        ) {
+            param($Kind)
+            $path = if ($Kind -eq 'missing') { Join-Path $TestDrive 'missing-publication.json' } else { $TestDrive }
+            Mock Get-Content { throw 'Journal must not be read.' }
+            { Sync-ScheduledIssue -Policy $bootstrapPolicy -Issue $null -Record $record -Kind coverage `
+                -OutputDirectory $TestDrive -PublicationJournalPath $path -Apply } |
+                Should -Throw -ExceptionType ([IO.IOException])
+            Should -Invoke Get-Content -Times 0
+            Should -Invoke Invoke-ScheduledGitHubApi -Times 0
+        }
         It 'never attempts issue creation after label bootstrap fails' {
             $script:failLabelWrite = $true
             { Sync-ScheduledIssue -Policy $bootstrapPolicy -Issue $null -Record $record `
