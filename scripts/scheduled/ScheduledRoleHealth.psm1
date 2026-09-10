@@ -7,6 +7,7 @@ $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
 Import-Module (Join-Path $PSScriptRoot 'ScheduledContracts.psm1')
 Import-Module (Join-Path $PSScriptRoot 'LocalTriagePolicy.psm1')
+Import-Module (Join-Path $PSScriptRoot 'LocalTriageProfile.psm1')
 
 function Get-ScheduledRoleScan {
     [CmdletBinding()]
@@ -42,9 +43,12 @@ function Get-ScheduledRoleScan {
     $conditions = @($blockers)
     if ($Role -ceq 'triage') {
         $installed = $record['profile']
+        $scan = $record['profile_scan']
+        $observed = Test-ScheduledTriageHealthObservation $installed $record['profile_observation'] $scan
         if ($null -eq $installed -or
-            $installed.policy_digest -cne (Get-ScheduledTriagePolicyDigest $Policy $TriagePolicy) -or
-            $installed.cadence_cron -cne $TriagePolicy.cadence_cron -or
+            $installed['policy_digest'] -cne (Get-ScheduledTriagePolicyDigest $Policy $TriagePolicy) -or
+            $installed['controller_digest'] -cne (Get-ScheduledTriageControllerDigest) -or
+            $installed['cadence_cron'] -cne $TriagePolicy.cadence_cron -or -not $observed -or
             ($TriagePolicy.mode -ceq 'triage' -and (
                 $installed.model -cne $TriagePolicy.model -or
                 $installed.reasoning_effort -cne $TriagePolicy.reasoning_effort -or -not $installed.enabled))) {

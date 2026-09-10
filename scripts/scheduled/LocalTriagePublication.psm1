@@ -29,6 +29,12 @@ function Invoke-TriageTransaction {
         claim_token = $Context.claim_token; dispatch_token = $Context.dispatch_token
     }
     foreach ($key in $Data.Keys) { $request[$key] = $Data[$key] }
+    if ($Action -cin @('triage-acquire-scan', 'triage-accept-dispatch') -and
+        -not $Data.ContainsKey('profile_observation') -and $Context.ContainsKey('profile_observation')) {
+        # In-process callers may carry the native facts observed for this invocation.
+        # Never substitute the approved/stored profile for a missing live observation.
+        $request.profile_observation = $Context.profile_observation
+    }
     if ($Action -ceq 'triage-authorize-publication') { $request.checkpoint_digest = $validatedDigest }
     return Invoke-ScheduledLocalAction -StateRoot $Context.state_root -Policy $Context.policy `
         -TriagePolicy $Context.triage_policy -ExecutorId $Context.executor_id -Login $Context.login `

@@ -5,6 +5,7 @@ BeforeAll {
     Import-Module (Join-Path $PSScriptRoot 'ScheduledRoleHealth.psm1')
     Import-Module (Join-Path $PSScriptRoot 'ScheduledContracts.psm1')
     Import-Module (Join-Path $PSScriptRoot 'LocalTriagePolicy.psm1')
+    Import-Module (Join-Path $PSScriptRoot 'LocalTriageProfile.psm1')
 
     function Invoke-HealthProjection {
         param($Record, [string] $Role)
@@ -24,8 +25,14 @@ Describe 'Complete <Role> health observations' -ForEach @(@{ Role = 'repair' }, 
             schema_version = 1; role = $Role; repository = $policy.repository; repository_id = $policy.repository_id
             executor_id = 'executor'; last_successful_scan = '2026-09-10T12:00:00Z'; blocked_conditions = @()
             profile = @{ policy_digest = Get-ScheduledTriagePolicyDigest $policy $triagePolicy
-                cadence_cron = $triagePolicy.cadence_cron }
+                cadence_cron = $triagePolicy.cadence_cron; controller_digest = Get-ScheduledTriageControllerDigest
+                automation_id = 'entry'; prompt_digest = Get-ScheduledTriagePromptDigest 'Native prompt' }
+            profile_scan = @{ binding_digest = Get-ScheduledTriageProfileBindingDigest scan 'scan-token' 'session'; session_id = 'session' }
         }
+        $observation = Get-ScheduledTriageProfileObservation @{
+            automation_id = 'entry'; prompt_digest = $record.profile.prompt_digest
+        } scan 'scan-token' 'session'
+        $record.profile_observation = Get-ScheduledTriageHealthObservation $observation
     }
 
     It 'distinguishes valid empty and nonempty blocker inventories' {

@@ -27,6 +27,25 @@ actual Local environment and personally funded model. Model/effort, timezone,
 account, enrollment and consent are installation decisions, not portable defaults.
 An active role requires a matching approved profile.
 
+The saved App prompt and the executable skill are distinct inputs. Registration's
+`prompt_digest` identifies the actual approved native prompt using
+`Get-ScheduledTriagePromptDigest`. Each poll and accepting continuation supplies
+concrete `profile_observation` facts (`automation_id` and the digest of the prompt
+just read through supported native metadata). The helper binds those facts to its
+scan or dispatch token and native session. A new dispatch cannot reuse the previous
+dispatch's proof. Missing or changed observations block admission and appear as
+role-specific health drift; they do not initialize or update registration.
+
+Controller identity includes the executable skill, shared write/validation modules,
+native helper sources and applicable repository normalization contracts. Batched
+Git hashing reads current working files with their declared text normalization.
+CRLF/LF checkout differences do not create drift, while dirty script/skill edits
+and normalization-contract changes remain visible. Hosted health compares that
+identity and the Local scan's owned prompt observation with the approved profile;
+it does not query or invent App metadata.
+Published health uses a fingerprint of the owning scan binding, not the local
+authorization token itself.
+
 The default three-hour schedule has a distinct offset from repair. This separates
 the entries, not their correctness: publication is the handoff, never timer order.
 One analysis start claims exactly one run/attempt/evidence digest. Multiple problems
@@ -153,7 +172,7 @@ No request initializes enrollment or permits a repair action.
 | Action | Data and result |
 |---|---|
 | `scan` | Empty data observes without caching. A current poll supplies `scan_token` and its native `session_id`; an accepted analysis supplies worker identity instead, without taking the sender's scan. An owned read returns a durably pinned content-addressed `snapshot_id` along with complete-read status, pending revisions and backlog/oldest evidence. No source is inspected and no analysis start is charged. |
-| `state` | `action` naming a `triage-*` transition and `fields` containing its arguments. Returns the persisted state. |
+| `state` | `action` naming a `triage-*` transition and `fields` containing its arguments. `triage-acquire-scan` and `triage-accept-dispatch` include the current concrete `profile_observation`, or explicit null when native observation is unavailable. Returns the persisted state. |
 | `recovery` | Empty data. Reads retained analysis and pending operation visibility even when partial publication prevents a clean inbox. Returns native ownership and a stable continuation evidence key; performs no writes. |
 | `evidence` | Worker identity, `snapshot_id`, optional zero-based text `offset`. Streams JSON containing the exact primary evidence and its completion `basis`; continue until `next_offset` is null. |
 | `index` | Worker identity, `snapshot_id`, nonnegative `offset`. Returns summaries and `next_offset`; read every batch, including an empty index. |
@@ -221,3 +240,6 @@ worker scans update only that worker's working-view pin; checkpoints retain thei
 own pin. Publication and cache helpers own their operation/document/pin transitions.
 `triage-register-profile`, `triage-set-mode` and release of repair-scope holds
 require explicit operator approval.
+Profile observations are bound when a scan is acquired or a dispatch accepted;
+an initial claim transfers its same-session scan observation to the new dispatch.
+Registration changes neither create a successful observation nor refresh health.

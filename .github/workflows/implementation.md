@@ -527,6 +527,14 @@ creating executor enrollment. `LocalHealth.psm1` publishes separate role observa
 `ScheduledRoleHealth.psm1` reads them without conflating successful scans.
 Health intent digests preserve original targets and body/record correspondence
 separately from observed comment IDs and completion receipts.
+Native profile observations carry concrete automation/prompt identities and are
+integrity-bound to the scan or dispatch that obtained them. Admission cannot reuse
+another owner's observation; hosted health consumes the owned Local scan record
+rather than claiming access to App metadata. The actual native prompt digest is
+separate from the executable skill, which participates in controller identity.
+Batched `git hash-object` reads current working files with repository-declared
+normalization and includes the applicable attribute/configuration contracts,
+preserving dirty-edit detection without checkout-line-ending drift.
 
 `LocalTriageCache.psm1` prepares owner-tagged temporary payloads outside the state
 lock. Atomic installation, durable scan/working-view/checkpoint pins and cleanup

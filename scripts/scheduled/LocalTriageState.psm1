@@ -10,6 +10,7 @@ Import-Module (Join-Path $PSScriptRoot 'ScheduledContracts.psm1')
 Import-Module (Join-Path $PSScriptRoot 'LocalTriagePolicy.psm1')
 Import-Module (Join-Path $PSScriptRoot 'ScheduledRecordTool.psm1')
 Import-Module (Join-Path $PSScriptRoot 'LocalTriageCache.psm1')
+Import-Module (Join-Path $PSScriptRoot 'LocalTriageProfile.psm1')
 
 function Assert-TriageField {
     param([System.Collections.IDictionary] $Value, [string[]] $Fields)
@@ -30,13 +31,14 @@ function Assert-ScheduledTriageState {
     foreach ($entry in $Triage.analyses.GetEnumerator()) {
         $analysis = $entry.Value
         $identityFields = @('id', 'revision', 'session_id', 'claim_token', 'started_at',
-            'phase', 'dispatch', 'continuations', 'completion', 'completion_digest')
+            'phase', 'dispatch', 'continuations', 'completion', 'completion_digest', 'profile_observation')
         Assert-TriageField $analysis $identityFields
         if ($analysis.id -cne $entry.Key -or $analysis.phase -cnotin @(
                 'analyzing', 'publishing', 'blocked', 'complete', 'retired')) {
             throw 'Corrupt registered triage analysis.'
         }
         $null = [DateTimeOffset]$analysis.started_at
+        Assert-ScheduledTriageProfileObservation $analysis.profile_observation dispatch $analysis.dispatch.token $analysis.session_id
         foreach ($continuation in $analysis.continuations) {
             Assert-TriageField $continuation @('token', 'key', 'admitted_at')
             $null = [DateTimeOffset]$continuation.admitted_at
@@ -82,7 +84,10 @@ function Assert-ScheduledTriageState {
         ($retained.Count -eq 0 -and $null -ne $Triage.active_analysis_id)) {
         throw 'Triage ownership does not identify exactly its retained native analysis.'
     }
-    if ($null -ne $Triage.scan) { Assert-TriageField $Triage.scan @('snapshot_id') }
+    if ($null -ne $Triage.scan) {
+        Assert-TriageField $Triage.scan @('snapshot_id', 'profile_observation')
+        Assert-ScheduledTriageProfileObservation $Triage.scan.profile_observation scan $Triage.scan.token $Triage.scan.session_id
+    }
     $projection = Get-ScheduledTriageCacheProjection $Triage
     foreach ($id in @(
         if ($null -ne $projection.scan) { $projection.scan.snapshot_id }
@@ -161,7 +166,7 @@ function Assert-TriageScan {
 }
 
 function Assert-TriageAdmission {
-    param($State, $Policy, $TriagePolicy)
+    param($State, $Policy, $TriagePolicy, $Data, [switch] $Scan)
     $triage = $State.triage
     $installed = $triage.profile
     if ($triage.mode -cne 'triage' -or $TriagePolicy.mode -cne 'triage' -or
@@ -174,6 +179,16 @@ function Assert-TriageAdmission {
         $installed.controller_digest -cne (Get-ScheduledTriageControllerDigest)) {
         throw 'Triage is inactive, unenrolled, or differs from its approved profile.'
     }
+    # The transition chooses its proof scope; an extra caller-supplied scan token must
+    # not let a worker borrow the coordinator's native observation.
+    if ($Scan) {
+        $scope = $triage.scan
+        $observedProfileMatches = Test-ScheduledTriageProfileObservation $installed $scope.profile_observation scan $Data.scan_token $scope.session_id
+    } else {
+        $scope = $triage.analyses[$Data.analysis_id]
+        $observedProfileMatches = Test-ScheduledTriageProfileObservation $installed $scope.profile_observation dispatch $Data.dispatch_token $scope.session_id
+    }
+    if (-not $observedProfileMatches) { throw 'Current native prompt/profile observation is missing or differs from approval.' }
 }
 
 function Get-TriageOwnedAnalysis {
@@ -191,7 +206,7 @@ function Get-TriageOwnedAnalysis {
 function Get-TriageSnapshotOwner {
     param($State, $Policy, $TriagePolicy, $Data, [DateTimeOffset] $Now)
     if ($Data.ContainsKey('analysis_id') -and $null -ne $Data.analysis_id) {
-        Assert-TriageAdmission $State $Policy $TriagePolicy
+        Assert-TriageAdmission $State $Policy $TriagePolicy $Data
         $analysis = Get-TriageOwnedAnalysis $State.triage $Data
         return @{ kind = 'analysis'; token = $analysis.dispatch.token }
     }
@@ -237,7 +252,7 @@ function Invoke-ScheduledTriageStateChange {
     switch -CaseSensitive ($Action) {
         'triage-read' { return }
         'triage-authorize-publication' {
-            Assert-TriageAdmission $State $Policy $TriagePolicy
+            Assert-TriageAdmission $State $Policy $TriagePolicy $Data
             $analysis = Get-TriageOwnedAnalysis $triage $Data
             Assert-TriageField $Data @('checkpoint_digest')
             if ($analysis.checkpoint_digest -cne $Data.checkpoint_digest) {
@@ -288,7 +303,8 @@ function Invoke-ScheduledTriageStateChange {
             if ($Data.operator_approved -ne $true -or $Data.profile.executor_id -cne $State.executor_id -or
                 $Data.profile.login -cne $State.login -or $Data.profile.user_id -le 0 -or
                 [string]::IsNullOrWhiteSpace($Data.profile.host_id) -or
-                [string]::IsNullOrWhiteSpace($Data.profile.model)) {
+                [string]::IsNullOrWhiteSpace($Data.profile.model) -or
+                $Data.profile.prompt_digest -cnotmatch '^[0-9a-f]{64}$') {
                 throw 'An operator-selected native triage profile must match enrollment.'
             }
             if ($null -ne $triage.profile -and
@@ -313,7 +329,10 @@ function Invoke-ScheduledTriageStateChange {
                 expires_at = $Now.AddMinutes($TriagePolicy.scan_lease_minutes).ToString('o')
                 started_analysis_id = $null
                 snapshot_id = $null
+                profile_observation = $null
             }
+            $triage.scan.profile_observation = Get-ScheduledTriageProfileObservation `
+                $Data['profile_observation'] scan $triage.scan.token $Data.session_id
         }
         'triage-release-scan' {
             Assert-TriageScan $triage $Data $Now
@@ -335,7 +354,7 @@ function Invoke-ScheduledTriageStateChange {
         }
         'triage-claim' {
             Assert-TriageScan $triage $Data $Now
-            Assert-TriageAdmission $State $Policy $TriagePolicy
+            Assert-TriageAdmission $State $Policy $TriagePolicy $Data -Scan
             Assert-TriageField $Data @('revision', 'session_id', 'native_verified')
             Assert-TriageField $Data.revision @('repository_id', 'workflow_id', 'run_id',
                 'run_attempt', 'digest', 'issue_number')
@@ -365,13 +384,18 @@ function Invoke-ScheduledTriageStateChange {
                 publication_digest = Get-ScheduledDigest @{}
                 working_snapshot_id = $triage.scan.snapshot_id
                 completion = $null; completion_digest = $null
+                profile_observation = $null
                 reads = @{}; read_progress = @{}; index_reads = @{}; reason = $null
             }
+            $observation = $triage.scan.profile_observation
+            $triage.analyses[$id].profile_observation = Get-ScheduledTriageProfileObservation @{
+                automation_id = $observation.automation_id; prompt_digest = $observation.prompt_digest
+            } dispatch $triage.analyses[$id].dispatch.token $Data.session_id
             $triage.active_analysis_id = $id
             $triage.scan.started_analysis_id = $id
         }
         'triage-checkpoint' {
-            Assert-TriageAdmission $State $Policy $TriagePolicy
+            Assert-TriageAdmission $State $Policy $TriagePolicy $Data
             $analysis = Get-TriageOwnedAnalysis $triage $Data
             Assert-TriageField $Data @('checkpoint')
             Assert-TriageField $Data.checkpoint @('analysis', 'index', 'evidence', 'basis')
@@ -465,7 +489,7 @@ function Invoke-ScheduledTriageStateChange {
             } else { $analysis.read_progress[$key] = $Data.end_offset }
         }
         'triage-prepare-document' {
-            Assert-TriageAdmission $State $Policy $TriagePolicy
+            Assert-TriageAdmission $State $Policy $TriagePolicy $Data
             $analysis = Get-TriageOwnedAnalysis $triage $Data
             Assert-TriageField $Data @('key', 'document')
             if ($null -eq $analysis.checkpoint) { throw 'Analysis must be validated before publication preparation.' }
@@ -498,7 +522,7 @@ function Invoke-ScheduledTriageStateChange {
             $triage.repair_holds.Remove([string]$Data.issue_number)
         }
         'triage-prepare-operation' {
-            Assert-TriageAdmission $State $Policy $TriagePolicy
+            Assert-TriageAdmission $State $Policy $TriagePolicy $Data
             $analysis = Get-TriageOwnedAnalysis $triage $Data
             Assert-TriageField $Data @('operation')
             $operation = $Data.operation | ConvertTo-Json -Depth 100 | ConvertFrom-Json -AsHashtable
@@ -531,7 +555,7 @@ function Invoke-ScheduledTriageStateChange {
             $analysis.phase = 'publishing'
         }
         'triage-begin-operation' {
-            Assert-TriageAdmission $State $Policy $TriagePolicy
+            Assert-TriageAdmission $State $Policy $TriagePolicy $Data
             $analysis = Get-TriageOwnedAnalysis $triage $Data
             if (-not $analysis.operations.Contains($Data['operation_key'])) { throw 'Unknown publication intent.' }
             $operation = $analysis.operations[$Data.operation_key]
@@ -624,7 +648,7 @@ function Invoke-ScheduledTriageStateChange {
         }
         'triage-reserve-continuation' {
             Assert-TriageScan $triage $Data $Now
-            Assert-TriageAdmission $State $Policy $TriagePolicy
+            Assert-TriageAdmission $State $Policy $TriagePolicy $Data -Scan
             Assert-TriageField $Data @('analysis_id', 'session_id', 'native_idle_verified', 'evidence_key')
             if ($triage.active_analysis_id -cne $Data.analysis_id) { throw 'Unknown registered analysis.' }
             $analysis = $triage.analyses[$Data.analysis_id]
@@ -644,6 +668,7 @@ function Invoke-ScheduledTriageStateChange {
             $token = [guid]::NewGuid().ToString()
             $analysis.continuations += @{ token = $token; key = $Data.evidence_key; admitted_at = $stamp }
             $analysis.dispatch = @{ token = $token; status = 'reserved' }
+            $analysis.profile_observation = $null
         }
         'triage-reconcile-dispatch' {
             Assert-TriageScan $triage $Data $Now
@@ -659,14 +684,13 @@ function Invoke-ScheduledTriageStateChange {
         }
         'triage-begin-dispatch' {
             Assert-TriageScan $triage $Data $Now
-            Assert-TriageAdmission $State $Policy $TriagePolicy
+            Assert-TriageAdmission $State $Policy $TriagePolicy $Data -Scan
             if ($triage.active_analysis_id -cne $Data['analysis_id']) { throw 'Unknown analysis dispatch.' }
             $analysis = $triage.analyses[$Data.analysis_id]
             if ($analysis.dispatch.status -cne 'reserved') { throw 'Unknown delivery must be reconciled, not repeated.' }
             $analysis.dispatch.status = 'sending'
         }
         'triage-accept-dispatch' {
-            Assert-TriageAdmission $State $Policy $TriagePolicy
             Assert-TriageField $Data @('analysis_id', 'session_id', 'claim_token', 'dispatch_token')
             if ($triage.active_analysis_id -cne $Data.analysis_id) { throw 'Stale analysis acceptance.' }
             $analysis = $triage.analyses[$Data.analysis_id]
@@ -675,6 +699,9 @@ function Invoke-ScheduledTriageStateChange {
                 $analysis.dispatch.status -cnotin @('sending', 'accepted')) {
                 throw 'Stale triage dispatch acceptance.'
             }
+            $analysis.profile_observation = Get-ScheduledTriageProfileObservation `
+                $Data['profile_observation'] dispatch $Data.dispatch_token $Data.session_id
+            Assert-TriageAdmission $State $Policy $TriagePolicy $Data
             $analysis.dispatch.status = 'accepted'
         }
         'triage-block' {
@@ -688,7 +715,7 @@ function Invoke-ScheduledTriageStateChange {
             $analysis = $triage.analyses[$Data.analysis_id]
             $tombstone = @{}
             foreach ($field in @('id', 'revision', 'session_id', 'claim_token', 'started_at',
-                    'dispatch', 'continuations', 'completion', 'completion_digest')) {
+                    'dispatch', 'continuations', 'completion', 'completion_digest', 'profile_observation')) {
                 $tombstone[$field] = $analysis[$field]
             }
             $tombstone.phase = 'retired'

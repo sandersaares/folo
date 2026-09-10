@@ -186,6 +186,13 @@ prompt digests. Use the shared digest helpers. Do not store credentials or infer
 billing fields. If enrollment is intentionally absent, report profile registration
 as deferred instead of initializing it implicitly.
 
+Compute triage's registered `prompt_digest` with
+`Get-ScheduledTriagePromptDigest` over the actual approved saved App prompt, not
+over the skill file. `Get-ScheduledTriageControllerDigest` independently includes
+the executable skill and normalized current controller content. Later executions
+must supply fresh native prompt/identity facts bound to their scan or accepted
+dispatch; installing or registering the profile does not supply those observations.
+
 Report each role's unchanged/created-disabled/updated/blocked outcome separately.
 Identify remaining operator enrollment, model/billing/consent, timezone,
 machine/restart and semantic-quality exercises. Do not call those facts proved by

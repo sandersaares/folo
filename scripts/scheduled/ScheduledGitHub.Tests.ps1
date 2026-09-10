@@ -1340,7 +1340,16 @@ Describe 'Read-only health adapter' {
             $healthTriage.profile = @{
                 policy_digest = Get-ScheduledTriagePolicyDigest $healthPolicy $healthTriagePolicy
                 cadence_cron = $healthTriagePolicy.cadence_cron; model = 'chosen'; reasoning_effort = 'medium'; enabled = $true
+                controller_digest = Get-ScheduledTriageControllerDigest
+                automation_id = 'entry'; prompt_digest = Get-ScheduledTriagePromptDigest 'Native prompt'
             }
+            $binding = Get-ScheduledDigest @{ kind = 'scan'; token = 'private-scan'; session_id = 'session' }
+            $healthTriage.profile_scan = @{ binding_digest = $binding; session_id = 'session' }
+            $healthTriage.profile_observation = @{
+                schema_version = 1; kind = 'scan'; binding_digest = $binding; session_id = 'session'
+                automation_id = 'entry'; prompt_digest = $healthTriage.profile.prompt_digest
+            }
+            $healthTriage.profile_observation.digest = Get-ScheduledDigest $healthTriage.profile_observation
             Mock Invoke-ScheduledGitHubApi {
                 @($healthLocal, $healthTriage) | ForEach-Object {
                     @{ user = @{ login = 'sandersaares' }; body = Write-ScheduledRecord $_ health }
@@ -1351,6 +1360,9 @@ Describe 'Read-only health adapter' {
             $health.components.triage_scan.status | Should -Be unavailable
             $health.healthy | Should -BeFalse
             $healthTriage.last_successful_scan = '2026-09-08T11:00:00Z'
+            $health = Get-ScheduledGitHubHealth 'folo-rs/folo' ([datetimeoffset]'2026-09-08T12:00:00Z')
+            $health.components.triage_scan.status | Should -Be fresh
+            $health.components.repair_scan.status | Should -Be fresh
             $healthTriage.Remove('blocked_conditions')
             $health = Get-ScheduledGitHubHealth 'folo-rs/folo' ([datetimeoffset]'2026-09-08T12:00:00Z')
             $health.components.triage_scan.status | Should -Be unavailable

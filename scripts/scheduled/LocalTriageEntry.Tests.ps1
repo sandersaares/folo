@@ -10,6 +10,11 @@ BeforeAll {
 
     function Invoke-EntryFixtureRequest($Action, $Data, [switch] $ObserveOnly) {
         if ($Action -ceq 'scan' -and $Data.Count -eq 0 -and -not $ObserveOnly) { $Data = $identity.Clone() }
+        if ($Action -ceq 'state' -and $Data.action -cin @('triage-acquire-scan', 'triage-accept-dispatch') -and
+            -not $Data.fields.ContainsKey('profile_observation')) {
+            $Data = $Data.Clone(); $Data.fields = $Data.fields.Clone()
+            $Data.fields.profile_observation = $fixture.context.profile_observation
+        }
         $path = Join-Path $TestDrive 'request.json'
         @{ action = $Action; executor_id = 'executor'; data = $Data } |
             ConvertTo-Json -Depth 100 | Set-Content -LiteralPath $path

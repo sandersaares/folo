@@ -7,6 +7,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
 Import-Module (Join-Path $PSScriptRoot 'ScheduledContracts.psm1')
+Import-Module (Join-Path $PSScriptRoot 'ScheduledTransport.psm1')
 
 function Get-ScheduledTriagePolicy {
     [CmdletBinding()]
@@ -71,17 +72,55 @@ function Get-ScheduledTriageControllerDigest {
             Get-ChildItem -LiteralPath (Join-Path $root "packages\$package\src") -Recurse -File
             Get-Item -LiteralPath (Join-Path $root "packages\$package\Cargo.toml")
         }
-        foreach ($name in @('Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'constants.env')) {
+        foreach ($name in @('Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'constants.env',
+                '.github\skills\scheduled-triage\SKILL.md')) {
             Get-Item -LiteralPath (Join-Path $root $name)
         }
     )
-    $identity = @{}
+    $paths = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
     foreach ($file in $files) {
-        $identity[[IO.Path]::GetRelativePath($root, $file.FullName).Replace('\', '/')] =
-            (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+        $null = $paths.Add([IO.Path]::GetRelativePath($root, $file.FullName).Replace('\', '/'))
+        $directory = $file.Directory.FullName
+        while ($directory.StartsWith($root, [StringComparison]::Ordinal)) {
+            $attributes = Join-Path $directory .gitattributes
+            if (Test-Path -LiteralPath $attributes) {
+                $null = $paths.Add([IO.Path]::GetRelativePath($root, $attributes).Replace('\', '/'))
+            }
+            if ($directory -ceq $root) { break }
+            $directory = [IO.Path]::GetDirectoryName($directory)
+        }
+    }
+    if (Test-Path -LiteralPath (Join-Path $root .gitconfig)) { $null = $paths.Add('.gitconfig') }
+    $ordered = [string[]]@($paths)
+    [Array]::Sort($ordered, [StringComparer]::Ordinal)
+    $hashes = @(Get-TriageWorkingFileHash $root $ordered)
+    $identity = @{}
+    for ($index = 0; $index -lt $ordered.Count; $index++) {
+        $identity[$ordered[$index]] = $hashes[$index]
     }
     return Get-ScheduledDigest $identity
 }
 
+function Get-TriageWorkingFileHash {
+    param([string] $Root, [string[]] $Paths)
+    # Git applies the repository's declared text/clean normalization to current working
+    # files. This is not a HEAD/tree lookup: dirty script and skill edits still change identity.
+    $inputText = (@($Paths | ForEach-Object { ConvertTo-Json -InputObject $_ -Compress }) -join "`n") + "`n"
+    $git = (Get-Command git -CommandType Application | Select-Object -First 1).Source
+    $output = Invoke-ScheduledJsonExecutable -Executable $git `
+        -Arguments @('hash-object', '--stdin-paths') -Directory $Root -InputText $inputText `
+        -Environment @{ GIT_OPTIONAL_LOCKS = '0' }
+    $hashes = @($output -split '\r?\n' | Where-Object { $_ -ne '' })
+    if ($hashes.Count -ne $Paths.Count -or @($hashes | Where-Object { $_ -cnotmatch '^(?:[0-9a-f]{40}|[0-9a-f]{64})$' }).Count -gt 0) {
+        throw 'Git did not return complete normalized working-file identities.'
+    }
+    return $hashes
+}
+
+function Get-ScheduledTriagePromptDigest {
+    param([Parameter(Mandatory)][AllowEmptyString()][string] $Prompt)
+    return Get-ScheduledDigest ($Prompt.Replace("`r`n", "`n"))
+}
+
 Export-ModuleMember -Function Get-ScheduledTriagePolicy, Get-ScheduledTriagePolicyDigest,
-Get-ScheduledTriageControllerDigest
+Get-ScheduledTriageControllerDigest, Get-ScheduledTriagePromptDigest

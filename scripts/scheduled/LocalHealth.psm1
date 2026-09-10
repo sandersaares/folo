@@ -9,6 +9,7 @@ $PSNativeCommandUseErrorActionPreference = $true
 Import-Module (Join-Path $PSScriptRoot 'ScheduledContracts.psm1')
 Import-Module (Join-Path $PSScriptRoot 'LocalState.psm1')
 Import-Module (Join-Path $PSScriptRoot 'ScheduledGitHub.psm1')
+Import-Module (Join-Path $PSScriptRoot 'LocalTriageProfile.psm1')
 
 function Get-ScheduledRoleHealthRecord {
     [CmdletBinding()]
@@ -39,13 +40,25 @@ function Get-ScheduledRoleHealthRecord {
         $oldest = $health.oldest_eligible_at
         $mode = $State.mode
     }
-    return @{
+    $record = @{
         schema_version = 1; role = $Role; repository = $State.repository; repository_id = $State.repository_id
         executor_id = $State.executor_id; mode = $mode; profile = $installed
         last_scan_at = $health.last_scan_at; last_successful_scan = $health.last_successful_scan
         backlog_count = $health.backlog_count; oldest_pending_at = $oldest
         blocked_conditions = @($health.blocked_conditions); active = $active
     }
+    if ($Role -ceq 'triage') {
+        $scan = $State.triage.scan
+        $record.profile_scan = if ($null -ne $scan) {
+            @{ binding_digest = Get-ScheduledTriageProfileBindingDigest scan $scan.token $scan.session_id; session_id = $scan.session_id }
+        } else { $null }
+        $record.profile_observation = $null
+        if ($null -ne $scan) {
+            Assert-ScheduledTriageProfileObservation $scan.profile_observation scan $scan.token $scan.session_id
+            $record.profile_observation = Get-ScheduledTriageHealthObservation $scan.profile_observation
+        }
+    }
+    return $record
 }
 
 function Invoke-RoleHealthTransaction {

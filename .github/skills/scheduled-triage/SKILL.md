@@ -72,9 +72,37 @@ consent are blockers. Do not scrape private App storage or invent native fields.
 Personal billing and machine capabilities require the operator's actual setup
 proof, not a GitHub login match or a successful mock.
 
+Read the actual saved native entry's ID and prompt. Do not copy the approved digest
+from local state as if it were a live observation. Prepare the concrete observation:
+
+```powershell
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+$PSNativeCommandUseErrorActionPreference = $true
+Import-Module .\scripts\scheduled\LocalTriagePolicy.psm1 -Force
+$native = Get-Content -LiteralPath "{{NATIVE_PROFILE_PATH}}" -Raw | ConvertFrom-Json -AsHashtable
+@{
+    automation_id = $native.automation_id
+    prompt_digest = Get-ScheduledTriagePromptDigest $native.prompt
+} | ConvertTo-Json
+```
+
+| Placeholder | Source |
+|---|---|
+| `NATIVE_PROFILE_PATH` | Absolute non-secret artifact containing the actual `automation_id` and `prompt` obtained from supported native metadata/UI for this execution. |
+
+Use this output as `profile_observation` when acquiring the scan or accepting a
+continuation. The helper compares it to approved registration and binds it to the
+new owner token. The native prompt is not SKILL.md; skill/controller changes are
+checked separately through the portable controller fingerprint. If native metadata
+cannot be verified, supply explicit null, retain the blocker and do not claim,
+continue or publish analysis. An expected role can still report unavailable
+observation through its owned health scan.
+
 **Continuation entry:** when a native message supplies an already registered
 analysis/session/claim and new dispatch token, first verify this is that exact
-native owner, then call `triage-accept-dispatch`. Do not acquire a fresh scan:
+native owner and obtain its fresh native profile observation, then call
+`triage-accept-dispatch` with that `profile_observation`. Do not acquire a fresh scan:
 the sender still owns the short polling scan while it delivers this message.
 After acceptance, call the read-only `scan` action with the accepted
 analysis/session/claim/dispatch identity in `data` to obtain a usable fresh
@@ -97,7 +125,8 @@ inactive roles as disabled/not expected. An enrolled observer may publish its
 authorized health observation through the health helper.
 
 For registered operation, acquire a short role scan using `state` with
-`triage-acquire-scan` and this actual native `session_id`. Save its returned
+`triage-acquire-scan`, this actual native `session_id` and the current
+`profile_observation`. Save its returned
 `triage.scan.token`. A competing poll exits. Expiry of a scan token never transfers
 ownership of the registered analysis.
 

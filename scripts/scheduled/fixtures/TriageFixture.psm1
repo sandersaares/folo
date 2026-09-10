@@ -40,7 +40,8 @@ function Initialize-TriageFixture {
         automation_id = 'triage-entry'; project_id = 'project'; host_id = 'local'
         executor_id = 'executor'; login = 'worker'; user_id = 10; cadence_cron = $triagePolicy.cadence_cron
         timezone = 'UTC'; enabled = $true; policy_digest = Get-ScheduledTriagePolicyDigest $policy $triagePolicy
-        controller_digest = Get-ScheduledTriageControllerDigest; prompt_digest = 'prompt'
+        controller_digest = Get-ScheduledTriageControllerDigest
+        prompt_digest = Get-ScheduledTriagePromptDigest 'Native triage prompt'
         model = $triagePolicy.model; reasoning_effort = $triagePolicy.reasoning_effort
     }
     $null = Invoke-ScheduledLocalAction -StateRoot $Root -Policy $policy -TriagePolicy $triagePolicy `
@@ -50,7 +51,9 @@ function Initialize-TriageFixture {
         -ExecutorId executor -Login worker -Now $now -Action triage-set-mode `
         -Data @{ operator_approved = $true; mode = 'triage' }
     $state = Invoke-ScheduledLocalAction -StateRoot $Root -Policy $policy -TriagePolicy $triagePolicy `
-        -ExecutorId executor -Login worker -Now $now -Action triage-acquire-scan -Data @{ session_id = 'session' }
+        -ExecutorId executor -Login worker -Now $now -Action triage-acquire-scan -Data @{
+            session_id = 'session'; profile_observation = @{ automation_id = $installed.automation_id; prompt_digest = $installed.prompt_digest }
+        }
     $evidence = @{
         repository = @{ id = 123; name = 'owner/repository' }
         workflow = @{ id = 456; name = 'Full deep validation'; path = '.github/workflows/full-deep-validation.yml' }
@@ -235,6 +238,7 @@ function Initialize-TriageFixture {
         executor_id = 'executor'; login = 'worker'; now = $now
         analysis_id = $null; session_id = 'session'; claim_token = $null; dispatch_token = $null
         scan_token = $state.triage.scan.token
+        profile_observation = @{ automation_id = $installed.automation_id; prompt_digest = $installed.prompt_digest }
     }
     if ($Unclaimed) {
         return @{
