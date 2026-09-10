@@ -172,7 +172,7 @@ No request initializes enrollment or permits a repair action.
 | Action | Data and result |
 |---|---|
 | `scan` | Empty data observes without caching. A current poll supplies `scan_token` and its native `session_id`; an accepted analysis supplies worker identity instead, without taking the sender's scan. An owned read returns a durably pinned content-addressed `snapshot_id` along with complete-read status, pending revisions and backlog/oldest evidence. No source is inspected and no analysis start is charged. |
-| `state` | `action` naming a `triage-*` transition and `fields` containing its arguments. `triage-acquire-scan` and `triage-accept-dispatch` include the current concrete `profile_observation`, or explicit null when native observation is unavailable. Returns the persisted state. |
+| `state` | `action` naming an allowed polling/analysis lifecycle transition below and `fields` containing its arguments. `triage-acquire-scan` and `triage-accept-dispatch` include the current concrete `profile_observation`, or explicit null when native observation is unavailable. Returns the persisted state. |
 | `recovery` | Empty data. Reads retained analysis and pending operation visibility even when partial publication prevents a clean inbox. Returns native ownership and a stable continuation evidence key; performs no writes. |
 | `evidence` | Worker identity, `snapshot_id`, optional zero-based text `offset`. Streams JSON containing the exact primary evidence and its completion `basis`; continue until `next_offset` is null. |
 | `index` | Worker identity, `snapshot_id`, nonnegative `offset`. Returns summaries and `next_offset`; read every batch, including an empty index. |
@@ -228,18 +228,29 @@ candidate comparisons. Relations are `repeat`, `recurrence` and `historical`.
 A candidate comparison includes issue number, full-read digest and reasoning.
 Ambiguous matches cannot complete or create competing canonical problems.
 
-State transitions are role-specific. Scans use `triage-acquire-scan`,
+The role's state entry allows `triage-read` and explicit lifecycle transitions.
+Scans use `triage-acquire-scan`,
 `triage-record-scan` and `triage-release-scan`; new ownership uses `triage-claim`.
 Resume uses `triage-reconcile-dispatch` when accepted work is proven quiescent,
 then `triage-reserve-continuation`, `triage-begin-dispatch` and
-`triage-accept-dispatch`. `triage-complete-dispatch` records turn completion;
+`triage-accept-dispatch`. `triage-block` retains a specific blocker even before a
+typed checkpoint exists. `triage-complete-dispatch` records turn completion;
 `triage-retire` separately requires complete publication and verified native
 quiescence; the request entry point verifies current committed proof before
 compacting the retired record. Claims inherit their scan's snapshot pin. Accepted
 worker scans update only that worker's working-view pin; checkpoints retain their
 own pin. Publication and cache helpers own their operation/document/pin transitions.
-`triage-register-profile`, `triage-set-mode` and release of repair-scope holds
-require explicit operator approval.
+Internal read receipts, typed checkpoint acceptance and publication confirmation
+are available only through their validating high-level actions, not raw role state
+requests. Operator and internal transitions are rejected before shared-state or
+GitHub access.
+
+`triage-register-profile`, `triage-set-mode` and release of repair-scope holds use
+the existing `scheduled-local` / `Invoke-ScheduledLocalAction` operator surface
+with explicit approval outside the triage role. An approval field records that
+decision; it is not a credential the role can supply to authorize itself.
+These entry-point rules do not provide OS isolation from the user's trusted process.
+
 Profile observations are bound when a scan is acquired or a dispatch accepted;
 an initial claim transfers its same-session scan observation to the new dispatch.
 Registration changes neither create a successful observation nor refresh health.

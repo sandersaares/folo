@@ -177,6 +177,10 @@ Do not delete arbitrary entries, run an automation or create a per-PR timer.
 
 For an already verified enrollment, register only that role's observed profile.
 Repair uses the existing `register-profile`; triage uses `triage-register-profile`.
+These are operator setup operations through the existing `scheduled-local` /
+`Invoke-ScheduledLocalAction` surface, not the AI-facing `scheduled-triage` entry.
+The approval field records an actual operator decision; it is not a credential
+that the triage role may supply to grant itself authority.
 Both preserve claims, counters and owned sessions. Do not call `record-scan`:
 setup is not a successful queue scan.
 

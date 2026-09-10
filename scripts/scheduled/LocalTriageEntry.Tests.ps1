@@ -75,6 +75,64 @@ Describe 'Local triage JSON entry point' {
         { Invoke-EntryFixtureRequest unknown $identity } | Should -Throw
     }
 
+    It 'rejects <Transition> before shared state or API access despite a claimed operator approval' -ForEach @(
+        @{ Transition = 'triage-authorize-publication' }, @{ Transition = 'triage-verify-checkpoint' }
+        @{ Transition = 'triage-authorize-snapshot' }, @{ Transition = 'triage-authorize-retirement' }
+        @{ Transition = 'triage-pin-snapshot' }, @{ Transition = 'triage-clean-cache' }
+        @{ Transition = 'triage-register-profile' }, @{ Transition = 'triage-set-mode' }
+        @{ Transition = 'triage-checkpoint' }, @{ Transition = 'triage-accept-own-index' }
+        @{ Transition = 'triage-require-reanalysis' }, @{ Transition = 'triage-record-index-read' }
+        @{ Transition = 'triage-record-problem-page' }, @{ Transition = 'triage-prepare-document' }
+        @{ Transition = 'triage-record-repair-hold' }, @{ Transition = 'triage-release-repair-hold' }
+        @{ Transition = 'triage-prepare-operation' }, @{ Transition = 'triage-begin-operation' }
+        @{ Transition = 'triage-observe-operation' }, @{ Transition = 'triage-confirm-operation' }
+        @{ Transition = 'triage-complete-analysis' }, @{ Transition = 'triage-supersede-presentation' }
+        @{ Transition = 'triage-unreviewed-action' }, @{ Transition = 'TRIAGE-read' }
+        @{ Transition = 'initialize' }, @{ Transition = 'reserve-attempt' }
+    ) {
+        $state = Invoke-TriageTransaction $fixture.context read
+        $path = Join-Path $fixture.context.state_root state.json
+        $before = Get-Content -LiteralPath $path -Raw
+        Mock Get-ScheduledTriageValidatedState -ModuleName LocalTriage { $state }
+        Mock Invoke-ScheduledLocalAction -ModuleName LocalTriage { $state }
+        { Invoke-EntryFixtureRequest state @{
+            action = $Transition; fields = $identity + @{
+                operator_approved = $true; profile = $state.triage.profile; mode = 'triage'
+                issue_number = 30; reason = 'Claimed operator approval'
+            }
+        } } | Should -Throw
+        Should -Invoke Get-ScheduledStateRoot -ModuleName LocalTriage -Times 0
+        Should -Invoke Get-ScheduledTriageValidatedState -ModuleName LocalTriage -Times 0
+        Should -Invoke Invoke-ScheduledTriageRead -ModuleName LocalTriage -Times 0
+        Should -Invoke Invoke-ScheduledLocalAction -ModuleName LocalTriage -Times 0
+        (Get-Content -LiteralPath $path -Raw) | Should -BeExactly $before
+        $fixture.store.writes.Count | Should -Be 0
+    }
+
+    It 'records a scan and retains a claimed analysis blocker before a typed checkpoint exists' {
+        $script:fixture = Initialize-TriageFixture -Root (Join-Path $TestDrive 'first-claim') -Unclaimed
+        $state = Invoke-EntryFixtureRequest state @{ action = 'triage-record-scan'; fields = @{
+            scan_token = $fixture.context.scan_token; successful = $true; backlog_count = 1
+            oldest_pending_at = $fixture.evidence.attempt.started_at; blocked_conditions = @()
+            run_issues = @(20); problem_issues = @()
+        } }
+        $state.triage.health.backlog_count | Should -Be 1
+        $state = Invoke-EntryFixtureRequest state @{ action = 'triage-claim'; fields = @{
+            scan_token = $fixture.context.scan_token; session_id = $fixture.context.session_id
+            native_verified = $true; revision = $fixture.revision
+        } }
+        $analysis = $state.triage.analyses[$state.triage.active_analysis_id]
+        $owner = @{ analysis_id = $analysis.id; session_id = $analysis.session_id
+            claim_token = $analysis.claim_token; dispatch_token = $analysis.dispatch.token }
+        $state = Invoke-EntryFixtureRequest state @{ action = 'triage-block'
+            fields = $owner + @{ reason = 'Required diagnostic collection is incomplete' } }
+        $state.triage.analyses[$analysis.id].phase | Should -Be blocked
+        $state.triage.analyses[$analysis.id].checkpoint | Should -BeNullOrEmpty
+        $state = Invoke-EntryFixtureRequest state @{ action = 'triage-complete-dispatch'
+            fields = $owner + @{ reason = 'Collection remains blocked' } }
+        $state.triage.analyses[$analysis.id].dispatch.status | Should -Be completed
+    }
+
     It 'exposes health and recovery without impersonating the registered analysis owner' {
         Mock Sync-ScheduledRoleHealth -ModuleName LocalTriage { @{ action = 'published'; comment_id = 7 } }
         Mock Get-ScheduledTriageRecovery -ModuleName LocalTriage { @{ active = $null; evidence_key = $null } }
@@ -118,16 +176,22 @@ Describe 'Local triage JSON entry point' {
         $requestPath = Join-Path $TestDrive 'missing-fields.json'
         '{}' | Set-Content -LiteralPath $requestPath
         { Invoke-ScheduledTriageRequest -RequestPath $requestPath -Now $fixture.context.now } | Should -Throw
+        @{ action = 'state'; executor_id = 'executor'; data = 'not-an-object' } |
+            ConvertTo-Json | Set-Content -LiteralPath $requestPath
+        { Invoke-ScheduledTriageRequest -RequestPath $requestPath -Now $fixture.context.now } | Should -Throw
     }
 
     It 'accepts a retained continuation then obtains a usable snapshot without taking the sender scan' {
-        $null = Invoke-EntryFixtureRequest state @{ action = 'triage-complete-dispatch'
+        $null = Invoke-EntryFixtureRequest state @{ action = 'triage-block'
             fields = $identity + @{ reason = 'Resume retained analysis' } }
         $null = Invoke-EntryFixtureRequest state @{ action = 'triage-release-scan'
             fields = @{ scan_token = $fixture.context.scan_token } }
         $state = Invoke-EntryFixtureRequest state @{ action = 'triage-acquire-scan'
             fields = @{ session_id = 'sender' } }
         $senderScan = $state.triage.scan.token
+        $state = Invoke-EntryFixtureRequest state @{ action = 'triage-reconcile-dispatch'
+            fields = $identity + @{ scan_token = $senderScan; native_idle_verified = $true } }
+        $state.triage.analyses[$identity.analysis_id].dispatch.status | Should -Be completed
         $state = Invoke-EntryFixtureRequest state @{ action = 'triage-reserve-continuation'
             fields = $identity + @{ scan_token = $senderScan; native_idle_verified = $true; evidence_key = 'recovered-input' } }
         $identity.dispatch_token = $state.triage.analyses[$identity.analysis_id].dispatch.token
@@ -210,6 +274,7 @@ Describe 'Local triage JSON entry point' {
         $null = Invoke-EntryFixtureRequest state @{
             action = 'triage-complete-dispatch'; fields = $identity + @{ reason = 'Completed' }
         }
+        Mock Invoke-ScheduledLocalAction -ModuleName LocalTriage { throw 'Raw retirement must not be dispatched.' }
         $retired = Invoke-EntryFixtureRequest state @{
             action = 'triage-retire'; fields = @{
                 analysis_id = $identity.analysis_id; session_id = $identity.session_id
@@ -217,6 +282,7 @@ Describe 'Local triage JSON entry point' {
             }
         }
         $retired.triage.analyses[$identity.analysis_id].phase | Should -Be retired
+        Should -Invoke Invoke-ScheduledLocalAction -ModuleName LocalTriage -Times 0
     }
 
     It 'does not use a snapshot lacking its exact claimed revision for evidence or checkpointing' {

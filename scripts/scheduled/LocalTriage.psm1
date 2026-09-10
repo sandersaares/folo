@@ -55,6 +55,23 @@ function Invoke-ScheduledTriageRequest {
     foreach ($field in @('action', 'executor_id', 'data')) {
         if (-not $request.ContainsKey($field)) { throw "Missing triage request field: $field" }
     }
+    if ($request.action -cnotin @('scan', 'state', 'health', 'recovery', 'evidence', 'index', 'problem',
+            'checkpoint', 'native-issue-result', 'prepare-problem', 'publish-problem', 'finish')) {
+        throw "Unsupported triage request action: $($request.action)"
+    }
+    if ($request.data -isnot [hashtable]) { throw [FormatException]::new('Triage request data must be an object.') }
+    if ($request.action -ceq 'state') {
+        # The AI-facing entry accepts lifecycle decisions, not operator configuration or
+        # helper-internal receipts. Reject these before reading shared state or using GitHub.
+        # Ref: ../../docs/scheduled-triage.md#helper-interface.
+        $transitions = @('triage-read', 'triage-acquire-scan', 'triage-record-scan', 'triage-release-scan',
+            'triage-claim', 'triage-reconcile-dispatch', 'triage-reserve-continuation',
+            'triage-begin-dispatch', 'triage-accept-dispatch', 'triage-complete-dispatch',
+            'triage-block', 'triage-retire')
+        if ($request.data['action'] -cnotin $transitions) {
+            throw 'The triage role cannot request operator or helper-internal state transitions.'
+        }
+    }
     $policy = Get-ScheduledPolicy
     $triagePolicy = Get-ScheduledTriagePolicy
     $root = Get-ScheduledStateRoot -RepositoryId $policy.repository_id
@@ -89,9 +106,6 @@ function Invoke-ScheduledTriageRequest {
     }
     if ($null -eq $state) { throw 'Explicit enrollment or state recovery is required; triage did not initialize state.' }
     if ($request.action -ceq 'state') {
-        if (-not ([string]$request.data.action).StartsWith('triage-', [StringComparison]::Ordinal)) {
-            throw 'The triage entry point cannot perform repair actions.'
-        }
         if ($request.data.action -ceq 'triage-retire') {
             $retirementContext = $readContext.Clone()
             $retirementContext.analysis_id = $request.data.fields.analysis_id
@@ -208,7 +222,6 @@ function Invoke-ScheduledTriageRequest {
         'finish' {
             return (Complete-ScheduledTriageAnalysis $context $api) | ConvertTo-Json -Depth 100
         }
-        default { throw "Unsupported triage request action: $($request.action)" }
     }
 }
 

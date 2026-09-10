@@ -49,6 +49,10 @@ actions and required fields. Consume the returned identities/tokens, never a
 cached token from a prior transition. Any exception stops that operation; it does
 not authorize repeating the next native write. Report the specific blocker.
 Do not hand-edit `state.json` or use a per-session database as the shared ledger.
+Use this role entry point for durable changes, not `scheduled-local` or raw
+`LocalState` transitions. Do not submit self-asserted operator approval or create
+internal read, checkpoint or publication receipts. Configuration and repair-hold
+release require a separate operator decision outside this role.
 
 Example observation request:
 
