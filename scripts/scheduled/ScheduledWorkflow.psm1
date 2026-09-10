@@ -190,7 +190,8 @@ function Invoke-ScheduledPlanning {
     } elseif ($Mode -eq 'verify') {
         $scope = 'confirmation'
         if ($diagnostic) {
-            if (-not [string]::IsNullOrWhiteSpace($workflowEvent.inputs.source_sha)) {
+            if ($workflowEvent.inputs.ContainsKey('source_sha') -and
+                -not [string]::IsNullOrWhiteSpace($workflowEvent.inputs.source_sha)) {
                 $sourceSha = $workflowEvent.inputs.source_sha.Trim()
                 Assert-ScheduledSha $sourceSha
                 # Only tested bytes may come from a branch/PR; controller code remains on main.

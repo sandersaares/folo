@@ -219,6 +219,16 @@ Describe 'Hosted planning authorization' {
             $plan.manifest.checks[0].packages | Should -Be @('cpulist', 'events')
         }
 
+        It 'uses the captured main commit when an API dispatch omits the optional source field' {
+            $manualEvent.inputs.Remove('source_sha')
+            $manualEvent | ConvertTo-Json -Depth 10 | Set-Content $eventPath
+            $plan = Invoke-ScheduledPlanning -Mode verify -EventPath $eventPath `
+                -OutputDirectory (Join-Path $TestDrive 'plan')
+            $plan.decision.run | Should -BeTrue
+            $plan.manifest.source_sha | Should -BeExactly ('a' * 40)
+            Should -Invoke Invoke-ScheduledReadApi -ModuleName ScheduledWorkflow -Times 0
+        }
+
         It 'rejects invalid or incompatible requested names <Packages> / <Checks>' -TestCases @(
             @{ Packages = ''; Checks = 'miri-ubuntu-latest' },
             @{ Packages = 'cpulist'; Checks = '' },
