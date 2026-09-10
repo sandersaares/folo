@@ -308,7 +308,7 @@ pub(crate) fn update_problem(
                         problem.status != ProblemStatus::Resolved,
                         "resolved problems require recurrence or historical disposition",
                     )?;
-                    if incoming.observation.compare(&problem.observation)? == Ordering::Greater {
+                    if incoming.observation.compare(&problem.observation)? != Ordering::Less {
                         problem.diagnosis = duplicate_diagnosis;
                         if matches!(
                             incoming.source_relation,

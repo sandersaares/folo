@@ -19,7 +19,12 @@ function Copy-TriageFixtureValue {
 
 function Initialize-TriageFixture {
     [CmdletBinding()]
-    param([Parameter(Mandatory)][string] $Root)
+    param(
+        [Parameter(Mandatory)][string] $Root,
+        [ValidateRange(1, 2)][int] $ProblemCount = 1,
+        [ValidateSet('', 'cancelled', 'failure')][string] $EmptyWorkflowConclusion = '',
+        [switch] $PartialWithSupport
+    )
     $policy = Get-ScheduledPolicy
     $policy.repository = 'owner/repository'; $policy.repository_id = 123
     $policy.worker_login = 'worker'; $policy.reporter_login = 'reporter'
@@ -62,6 +67,22 @@ function Initialize-TriageFixture {
             })
         }
     }
+    if ($ProblemCount -eq 2) {
+        $evidence.attempt.jobs[0].log.excerpt = 'Dependency source rejected access. A separate archive was corrupt.'
+        $evidence.attempt.jobs[0].log.bytes = $evidence.attempt.jobs[0].log.excerpt.Length
+    }
+    if ($EmptyWorkflowConclusion -ne '') {
+        $evidence.attempt.jobs = @(); $evidence.attempt.results = @()
+        $evidence.attempt.manifest = $null; $evidence.attempt.plan = $null
+        $evidence.attempt.workflow_conclusion = $EmptyWorkflowConclusion
+    }
+    $support = $null
+    if ($PartialWithSupport) {
+        $support = Invoke-ScheduledRecordTool -Package scheduled-run-record -Request @{ op = 'prepare'; evidence = $evidence }
+        $evidence = Copy-TriageFixtureValue $evidence
+        $evidence.attempt.jobs = @()
+        $evidence.attempt.evidence_gaps = @('The collector could not retrieve the entire job inventory')
+    }
     $prepared = Invoke-ScheduledRecordTool -Package scheduled-run-record -Request @{ op = 'prepare'; evidence = $evidence }
     $store = @{
         issues = @{}; comments = @{}; labels = @{}; next_issue = 30; next_comment = 1000; next_label = 2000
@@ -70,11 +91,15 @@ function Initialize-TriageFixture {
         hide_create = $false; hidden_issue = $null
         fail_job_read = $false
     }
-    $apiJobs = @(Copy-TriageFixtureValue $evidence.attempt.jobs)
+    $apiJobs = @(if ($null -ne $support) {
+        $support.evidence.attempt.jobs | ForEach-Object { Copy-TriageFixtureValue $_ }
+    } else { $evidence.attempt.jobs | ForEach-Object { Copy-TriageFixtureValue $_ } })
     foreach ($job in $apiJobs) { $job.run_id = 789; $job.run_attempt = 1; $job.head_sha = 'a' * 40 }
     $store.api_pages = @(@{ total_count = $apiJobs.Count; jobs = $apiJobs })
     $runComments = @(
-        foreach ($page in $prepared.pages) {
+        $allPages = @($prepared.pages)
+        if ($null -ne $support) { $allPages += @($support.pages) }
+        foreach ($page in $allPages) {
             $store.next_comment++
             @{ id = $store.next_comment; body = $page.body; user = @{ login = 'reporter' }
                 issue_url = 'https://api.github.com/repos/owner/repository/issues/20' }
@@ -113,6 +138,7 @@ function Initialize-TriageFixture {
                 id = 789; run_attempt = [int]$Matches[1]; run_number = 42; workflow_id = 456
                 path = '.github/workflows/full-deep-validation.yml'; name = 'Full deep validation'
                 head_sha = 'a' * 40; head_branch = 'main'; status = 'completed'
+                conclusion = $evidence.attempt.workflow_conclusion
                 created_at = '2026-09-09T01:00:00Z'; run_started_at = '2026-09-09T01:00:01Z'
             }
         }
@@ -228,13 +254,50 @@ function Initialize-TriageFixture {
         problems = @(@{ key = 'download'; diagnosis = $diagnosis
                 matching = @{ kind = 'new'; reason = 'The complete index has no matching problem'; closest_candidates = @() } })
     }
+    if ($ProblemCount -eq 2) {
+        $other = Copy-TriageFixtureValue $diagnosis
+        $other.title = 'Corrupt dependency archive'; $other.summary = 'A separate downloaded archive was corrupt'
+        $other.cause = 'The archive contents failed integrity validation'; $other.repair_reason = 'Restore the archive'
+        $proposal.problems += @{ key = 'archive'; diagnosis = $other
+            matching = @{ kind = 'new'; reason = 'The archive defect is independent of source access'; closest_candidates = @() } }
+        $disposition.problem_keys = @('download', 'archive')
+    }
+    if ($EmptyWorkflowConclusion -ne '') {
+        $workflowDisposition = @{
+            kind = if ($EmptyWorkflowConclusion -ceq 'cancelled') { 'cancelled' } else { 'blocked' }
+            explanation = 'The workflow ended before creating jobs; no checker or source defect is inferred.'
+            citations = @('/api_evidence/workflow_conclusion', '/api_evidence/jobs'); problem_keys = @()
+        }
+        $proposal.jobs = @(); $proposal.results = @(); $proposal.problems = @()
+        $proposal.workflow = $workflowDisposition
+        $proposal.gaps = @($prepared.evidence.attempt.evidence_gaps | ForEach-Object {
+            @{ gap = $_; disposition = $workflowDisposition }
+        })
+    }
+    if ($PartialWithSupport) {
+        $citation = '/supporting_revisions/0/evidence/attempt/jobs/0/log/excerpt'
+        $disposition.citations = @($citation)
+        $diagnosis.citations = @($citation)
+        $diagnosis.scope[0].citations = @($citation)
+        $proposal.results += @{ index = 0; source_digest = $support.digest; disposition = $disposition }
+        $explained = Copy-TriageFixtureValue $disposition
+        $explained.explanation = 'The complete exact-attempt API inventory and fuller committed revision account for the original collection gap.'
+        $proposal.gaps = @($prepared.evidence.attempt.evidence_gaps | ForEach-Object {
+            @{ gap = $_; disposition = $explained }
+        })
+        $proposal.support_dispositions = @{ $support.digest = $explained }
+    }
+    $claimed = @($snapshot.pending | Where-Object { $_.digest -ceq $prepared.digest })[0]
     $null = Invoke-TriageTransaction $context triage-checkpoint @{
         checkpoint = @{
             analysis = $proposal; index = $snapshot.index; evidence = $prepared.evidence
-            basis = $snapshot.pending[0].basis
+            basis = $claimed.basis
         }
     }
-    return @{ context = $context; api = $api; store = $store; snapshot = $snapshot; proposal = $proposal; evidence = $prepared.evidence }
+    return @{
+        context = $context; api = $api; store = $store; snapshot = $snapshot
+        proposal = $proposal; evidence = $prepared.evidence; support = $support
+    }
 }
 
 Export-ModuleMember -Function Initialize-TriageFixture, Copy-TriageFixtureValue

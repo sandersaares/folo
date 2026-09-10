@@ -31,13 +31,13 @@ function Get-ScheduledTriageIndexPage {
             @{ summary = $full.legacy.evidence.summary; cause = ''; category = 'reporter-observation'
                 repair_disposition = 'unexamined'; scope = @() }
         }
-        $scopes = if ($null -ne $full.problem) {
-            @($full.problem.evidence | Where-Object { $_.generation -eq $full.problem.generation } |
-                ForEach-Object { $_.diagnosis.scope })
-        } else { @(@{ package = $full.legacy.package; check_id = $full.legacy.check_id; platform = $full.legacy.platform }) }
-        $symptoms = if ($null -ne $full.problem) {
-            @($full.problem.evidence | ForEach-Object { $_.diagnosis.summary } | Sort-Object -Unique)
-        } else { @($full.legacy.evidence.summary) }
+        $scopes = @(if ($null -ne $full.problem) {
+            $full.problem.evidence | Where-Object { $_.generation -eq $full.problem.generation } |
+                ForEach-Object { $_.diagnosis.scope }
+        } else { @{ package = $full.legacy.package; check_id = $full.legacy.check_id; platform = $full.legacy.platform } })
+        $symptoms = @(if ($null -ne $full.problem) {
+            $full.problem.evidence | ForEach-Object { $_.diagnosis.summary } | Sort-Object -Unique
+        } else { $full.legacy.evidence.summary })
         $summary = @{
             issue_number = $entry.issue_number; generation = $entry.generation; scope_revision = $entry.scope_revision
             record_digest = $entry.record_digest; title = Get-TriageBriefText $full.issue.title

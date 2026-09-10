@@ -10,6 +10,7 @@ Import-Module (Join-Path $PSScriptRoot 'ScheduledContracts.psm1')
 Import-Module (Join-Path $PSScriptRoot 'ScheduledRecordTool.psm1')
 Import-Module (Join-Path $PSScriptRoot 'LocalState.psm1')
 Import-Module (Join-Path $PSScriptRoot 'ScheduledGitHub.psm1')
+Import-Module (Join-Path $PSScriptRoot 'LocalTriageInbox.psm1')
 
 function Invoke-TriageTransaction {
     param($Context, [string] $Action, [hashtable] $Data = @{})
@@ -106,7 +107,7 @@ function Complete-TriageOperationReceipt {
     $null = Invoke-TriageTransaction $Context triage-confirm-operation @{
         operation_key = $Operation.key
         receipt = @{ operation_id = $Operation.id; target_id = $id
-            payload_digest = Get-ScheduledDigest $Operation.payload }
+            payload_digest = Get-ScheduledDigest $Operation.payload; target = $Target }
     }
     return @{ action = 'confirmed'; target_id = $id; operation_key = $Operation.key }
 }
@@ -285,11 +286,29 @@ function Get-ScheduledTriageRecovery {
             }
         }
     )
+    $externalInput = @{ complete = $false }
+    $inputError = $null
+    try {
+        $snapshot = Get-ScheduledTriageInbox -Policy $Policy -State $State -Api (Get-TriageReadAdapter $Api)
+        $run = $snapshot.runs[[string]$analysis.revision.issue_number]
+        $pending = @($snapshot.pending | Where-Object {
+            $_.digest -ceq $analysis.revision.digest -and $_.run_id -eq $analysis.revision.run_id -and
+            $_.run_attempt -eq $analysis.revision.run_attempt
+        })
+        $externalInput = @{
+            complete = $true; reporter_index = $run.index_digest; problem_index = $snapshot.index.digest
+            claimed_basis = if ($pending.Count -eq 1) { Get-ScheduledDigest $pending[0].basis } else { $null }
+        }
+    } catch [FormatException], [IO.IOException], [ArgumentException] {
+        # An incomplete scan cannot replace publication recovery or manufacture a heartbeat.
+        # Error text is diagnostic only: changing transport messages must not create retry keys.
+        $inputError = $_.Exception.Message
+    }
     # This read is available when an unfinished owned publication prevents a complete inbox
     # scan. It does not accept dispatch, change ownership or repeat a write.
     $key = Get-ScheduledDigest @{
         analysis_id = $analysis.id; phase = $analysis.phase; checkpoint = $analysis.checkpoint
-        operations = $observations
+        operations = $observations; external_input = $externalInput
     }
     return @{
         active = @{
@@ -297,6 +316,7 @@ function Get-ScheduledTriageRecovery {
             phase = $analysis.phase; dispatch = $analysis.dispatch; claim_token = $analysis.claim_token
         }
         evidence_key = $key; operations = $observations
+        complete_input = $externalInput.complete; input_error = $inputError
     }
 }
 

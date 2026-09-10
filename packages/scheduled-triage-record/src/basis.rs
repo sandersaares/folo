@@ -74,7 +74,7 @@ impl EvidenceBasis {
             "API completion evidence digest",
         )?;
         require(
-            !api.jobs.is_empty() && api.total_count == api.jobs.len(),
+            api.total_count == api.jobs.len(),
             "complete API job pagination",
         )?;
         let mut ids = BTreeSet::new();
@@ -167,6 +167,15 @@ impl EvidenceBasis {
     }
 
     fn compare_jobs(&self, evidence: &Value) -> Result<(), AppError> {
+        if let Some(conclusion) = evidence
+            .pointer("/attempt/workflow_conclusion")
+            .and_then(Value::as_str)
+        {
+            require(
+                self.api_evidence.workflow_conclusion.as_deref() == Some(conclusion),
+                "conflicting workflow conclusions require reconciliation",
+            )?;
+        }
         let jobs = evidence
             .pointer("/attempt/jobs")
             .and_then(Value::as_array)
@@ -216,6 +225,7 @@ struct ApiEvidence {
     controller_sha: String,
     started_at: String,
     created_at: String,
+    workflow_conclusion: Option<String>,
     /// Planning can fail before any candidate source is selected.
     source_sha: Option<String>,
     total_count: usize,

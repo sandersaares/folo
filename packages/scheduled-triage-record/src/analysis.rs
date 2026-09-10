@@ -28,6 +28,8 @@ pub(crate) struct AnalysisRecord {
     pub(crate) reason: String,
     #[serde(default)]
     support_dispositions: BTreeMap<String, Disposition>,
+    /// Required when the complete attempt has no jobs; optional for explained job-level failures.
+    workflow: Option<Disposition>,
 }
 
 impl AnalysisRecord {
@@ -70,6 +72,7 @@ impl AnalysisRecord {
             )?;
         }
         let mut problems = BTreeMap::new();
+        let mut canonical_issues = BTreeSet::new();
         for problem in &self.problems {
             require(!problem.key.trim().is_empty(), "problem proposal key")?;
             require(
@@ -78,6 +81,12 @@ impl AnalysisRecord {
             )?;
             problem.diagnosis.validate(&view)?;
             problem.matching.validate(index)?;
+            if let MatchDecision::Existing { issue_number, .. } = &problem.matching {
+                require(
+                    canonical_issues.insert(issue_number),
+                    "combine contributions to the same canonical problem",
+                )?;
+            }
             require(
                 !complete
                     || (!matches!(problem.matching, MatchDecision::Ambiguous { .. })
@@ -139,7 +148,40 @@ impl AnalysisRecord {
             }
         }
         if complete {
-            require(!jobs.is_empty(), "missing jobs remain unresolved")?;
+            if jobs.is_empty() {
+                let workflow = self
+                    .workflow
+                    .as_ref()
+                    .ok_or_else(|| InvalidAnalysis::new("workflow disposition"))?;
+                require(
+                    matches!(
+                        workflow.kind,
+                        DispositionKind::Cancelled
+                            | DispositionKind::Infrastructure
+                            | DispositionKind::Blocked
+                    ) && matches!(
+                        view.pointer("/api_evidence/workflow_conclusion")
+                            .and_then(Value::as_str),
+                        Some(
+                            "cancelled"
+                                | "failure"
+                                | "timed_out"
+                                | "startup_failure"
+                                | "action_required"
+                        )
+                    ) && workflow
+                        .citations
+                        .iter()
+                        .any(|citation| citation == "/api_evidence/workflow_conclusion"),
+                    "empty execution needs explicit workflow-level failure or cancellation evidence",
+                )?;
+                require(
+                    self.problems.iter().all(|problem| {
+                        problem.diagnosis.repair_disposition != RepairDisposition::Actionable
+                    }),
+                    "unexecuted jobs cannot establish a source repair",
+                )?;
+            }
             for job in jobs.iter().filter(|job| {
                 unsuccessful(job)
                     || job.get("conclusion").and_then(Value::as_str) == Some("skipped")
@@ -237,6 +279,9 @@ impl AnalysisRecord {
             )?;
             disposition.validate(&view, &problems, complete)?;
         }
+        if let Some(workflow) = &self.workflow {
+            workflow.validate(&view, &problems, complete)?;
+        }
         if complete {
             require(
                 basis
@@ -257,6 +302,7 @@ impl AnalysisRecord {
                     .chain(self.results.iter().map(|result| &result.disposition))
                     .chain(self.gaps.iter().map(|gap| &gap.disposition))
                     .chain(self.support_dispositions.values())
+                    .chain(self.workflow.iter())
                     .any(|disposition| disposition.problem_keys.contains(key)),
                 "problem is not linked to an analyzed failure",
             )?;

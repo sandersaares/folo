@@ -24,6 +24,24 @@ function Invoke-ScheduledTriageRead {
     return Invoke-ScheduledApi -Endpoint $Endpoint
 }
 
+function Get-TriageReadAdapter {
+    param([scriptblock] $Api)
+    $transport = $Api
+    return {
+        param($Endpoint, [switch] $Collection, [switch] $Pages)
+        if ($Collection) {
+            $responsePages = & $transport -Endpoint $Endpoint -Paginate
+            return ,@($responsePages | ForEach-Object { $_ })
+        }
+        if ($Pages) {
+            $result = & $transport -Endpoint $Endpoint -Paginate
+            foreach ($page in $result) { $page }
+            return
+        }
+        return & $transport -Endpoint $Endpoint
+    }.GetNewClosure()
+}
+
 function Get-TriageIssueCollection {
     param($Policy, [string] $Label, [object[]] $KnownIssues, [scriptblock] $Api)
     $issues = & $Api -Endpoint "repos/$($Policy.repository)/issues?state=all&labels=$Label&per_page=100" -Collection
@@ -302,4 +320,4 @@ function Get-ScheduledTriageProblem {
 }
 
 Export-ModuleMember -Function Invoke-ScheduledTriageRead, Get-ScheduledTriageInbox,
-Get-ScheduledTriageProblem, Get-ScheduledTriageDocumentCatalog
+Get-ScheduledTriageProblem, Get-ScheduledTriageDocumentCatalog, Get-TriageReadAdapter

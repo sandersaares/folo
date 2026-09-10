@@ -19,10 +19,17 @@ function Complete-ScheduledTriageAnalysis {
     $state = Invoke-TriageTransaction $Context read
     $analysis = $state.triage.analyses[$Context.analysis_id]
     if ($null -eq $analysis.checkpoint) { throw 'Checkpoint validated analysis before publishing its disposition.' }
+    if ($analysis.comparison.requires_reanalysis) {
+        return @{ action = 'reanalysis-required'; reason = $analysis.comparison.reason }
+    }
     $checkpoint = $analysis.checkpoint.analysis.checkpoint
     $key = "$checkpoint/completion"
     if (-not $analysis.publication.ContainsKey($key)) {
         $snapshot = Get-ScheduledTriageInbox -Policy $Context.policy -State $state -Api (Get-TriageReadAdapter $Api)
+        if ($snapshot.index.digest -cne $analysis.comparison.index.digest) {
+            $null = Invoke-TriageTransaction $Context triage-require-reanalysis @{ reason = 'external-index-change' }
+            return @{ action = 'reanalysis-required'; reason = 'external-index-change' }
+        }
         $run = $snapshot.runs[[string]$analysis.revision.issue_number]
         $links = @{}
         foreach ($problem in $analysis.checkpoint.analysis.problems) {

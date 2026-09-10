@@ -72,6 +72,14 @@ consent are blockers. Do not scrape private App storage or invent native fields.
 Personal billing and machine capabilities require the operator's actual setup
 proof, not a GitHub login match or a successful mock.
 
+**Continuation entry:** when a native message supplies an already registered
+analysis/session/claim and new dispatch token, first verify this is that exact
+native owner, then call `triage-accept-dispatch`. Do not acquire a fresh scan:
+the sender still owns the short polling scan while it delivers this message.
+Continue at Stage 4 using the retained primary revision and supplied recovery or
+fresh-snapshot evidence. Complete only your accepted dispatch; the sender or a
+later poll owns scan/health recording and scan release.
+
 Observe/paused or unenrolled execution performs observation only. It cannot claim,
 send a continuation or publish problem/triage changes. Report deliberately
 inactive roles as disabled/not expected. An enrolled observer may publish its
@@ -87,7 +95,11 @@ ownership of the registered analysis.
 Call `recovery`. An unfinished owned issue/page write can prevent a complete
 inbox scan; this is not a reason to abandon that analysis or open another session.
 The recovery result supplies the retained native session, exact revision, dispatch
-and a stable new-evidence key. It performs no writes.
+and a stable new-evidence key. It includes a successful provenance-validated fresh
+input snapshot when available, so recovered collection/support or changed candidate
+evidence can resume a previously blocked analysis. Unchanged blocked reads do not
+mint repeated keys. The separate uncertain-publication path remains available
+when partial publication itself prevents a clean inbox. Recovery performs no writes.
 
 If another native session owns analysis, inspect that exact session with native
 tools. Verify repository/project, Local execution, ownership and quiescence.
@@ -192,12 +204,13 @@ number immediately with `native-issue-result`, then repeat preparation to verify
 and bind that issue. A lost response is reconciled by the helper, not another
 create call. Preserve `[Copilot speaking]` first.
 
-If preparation returns `reanalysis-required`, rescan and reconsider the changed
+If a preparation/publication/completion helper returns `reanalysis-required`, rescan and reconsider the changed
 complete index in this SAME analysis/session. Read the new index and plausible
 candidates, preserve already published evidence, and checkpoint the updated
-decisions. Already attached identical evidence is not republished. This can occur
-after publishing one problem in a multi-problem analysis; it does not consume a
-new analysis start or justify ignoring newly visible candidates.
+decisions. Already attached identical evidence is not republished. The helper
+reconciles verified writes from this same analysis into its comparison baseline;
+those writes alone do not require another model pass. External changes still
+require reconsideration and never justify ignoring newly visible candidates.
 
 Do not consolidate or retarget an owned repair. Scope-invalidating diagnosis
 requires a recorded hold/operator reconciliation. A fully described human repair

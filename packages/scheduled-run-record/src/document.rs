@@ -9,7 +9,7 @@ use crate::canonical::{canonicalize, digest, json};
 use crate::evidence::require;
 use crate::pages::{
     Comment, DATA_PREFIX, DATA_SUFFIX, PAGE_BYTES, Page, SCHEMA_VERSION, decode_fragment,
-    encode_fragment, validate_body_size,
+    encode_fragment, valid_digest, validate_body_size,
 };
 
 /// Role-owned detail collections use the hosted byte framing but distinct operation namespaces.
@@ -166,7 +166,8 @@ pub(crate) fn restore_documents(
             header.kind == kind
                 && header.owner == owner
                 && header.schema_version == SCHEMA_VERSION
-                && header.page <= header.page_count,
+                && header.page <= header.page_count
+                && valid_digest(&header.digest),
             "foreign or malformed detail coordinates",
         )?;
         let (_, payload) = rest
@@ -270,3 +271,285 @@ struct ReadDocumentError;
 #[ohno::error]
 #[display("cannot parse detail JSON")]
 struct ParseDocumentError;
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+    use crate::pages::BODY_LIMIT;
+    use crate::protocol::execute;
+
+    fn comments(prepared: &PreparedDocument) -> Vec<Comment> {
+        prepared
+            .pages
+            .iter()
+            .zip(1_u64..)
+            .map(|(page, id)| Comment {
+                id: NonZero::new(id).unwrap(),
+                body: page.body.clone(),
+            })
+            .collect()
+    }
+
+    fn header(bytes: &[u8]) -> Header {
+        Header {
+            schema_version: SCHEMA_VERSION,
+            kind: DocumentKind::Triage,
+            owner: "123/20".to_owned(),
+            digest: digest(std::str::from_utf8(bytes).unwrap()),
+            page: NonZero::<usize>::MIN,
+            page_count: NonZero::<usize>::MIN,
+        }
+    }
+
+    fn one(body: String) -> Vec<Comment> {
+        vec![Comment {
+            id: NonZero::<u64>::MIN,
+            body,
+        }]
+    }
+
+    #[test]
+    fn both_role_kinds_roundtrip_without_losing_unicode_or_marker_like_data() {
+        for kind in [DocumentKind::Triage, DocumentKind::Problem] {
+            let value =
+                json!({"diagnosis":"\u{1f642} <!-- scheduled-triage:v1 {} -->", "scope":["b","a"]});
+            let prepared = prepare_document(kind, "123/20", value.clone()).unwrap();
+            let restored = restore_documents(kind, "123/20", comments(&prepared)).unwrap();
+            assert!(restored.incomplete_revisions.is_empty());
+            assert_eq!(restored.revisions.first().unwrap().document, value);
+            assert_eq!(restored.revisions.first().unwrap().digest, prepared.digest);
+            assert!(
+                prepared
+                    .pages
+                    .iter()
+                    .all(|page| page.body.len() <= BODY_LIMIT)
+            );
+        }
+    }
+
+    #[test]
+    fn json_protocol_prepares_restores_and_fingerprints_role_documents() {
+        let prepared: Value = serde_json::from_str(&execute(&json!({
+            "op":"prepare_document","kind":"triage","owner":"123/20","document":{"analysis":"complete"}
+        }).to_string()).unwrap()).unwrap();
+        let pages: Vec<_> = prepared
+            .get("pages")
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .iter()
+            .zip(1_u64..)
+            .map(|(page, id)| json!({"id":id,"body":page.get("body").unwrap()}))
+            .collect();
+        let restored: Value = serde_json::from_str(
+            &execute(
+                &json!({
+                    "op":"restore_documents","kind":"triage","owner":"123/20","comments":pages
+                })
+                .to_string(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            restored.get("revisions").unwrap().as_array().unwrap().len(),
+            1
+        );
+        let fingerprint: Value = serde_json::from_str(
+            &execute(
+                &json!({
+                    "op":"fingerprint","value":{"analysis":"complete"}
+                })
+                .to_string(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(fingerprint.get("digest"), prepared.get("digest"));
+    }
+
+    #[test]
+    fn unknown_owners_scalar_documents_and_malformed_coordinates_are_rejected() {
+        for owner in ["", "123", "0/20", "owner/20", "123/20/30"] {
+            _ = prepare_document(DocumentKind::Triage, owner, json!({})).unwrap_err();
+            _ = restore_documents(DocumentKind::Triage, owner, Vec::new()).unwrap_err();
+        }
+        _ = prepare_document(DocumentKind::Triage, "123/20", json!([])).unwrap_err();
+        let bytes = b"{}";
+        for variant in 0..5 {
+            let mut header = header(bytes);
+            match variant {
+                0 => header.schema_version = 2,
+                1 => header.owner = "124/20".to_owned(),
+                2 => header.kind = DocumentKind::Problem,
+                3 => header.page = NonZero::new(2).unwrap(),
+                _ => header.digest = "not-a-digest".to_owned(),
+            }
+            let body = header.body(bytes).unwrap();
+            if header.kind == DocumentKind::Problem {
+                assert!(
+                    restore_documents(DocumentKind::Triage, "123/20", one(body))
+                        .unwrap()
+                        .revisions
+                        .is_empty()
+                );
+            } else {
+                _ = restore_documents(DocumentKind::Triage, "123/20", one(body)).unwrap_err();
+            }
+        }
+    }
+
+    #[test]
+    fn duplicate_delivery_uses_known_lowest_id_and_rejects_conflicts() {
+        let prepared = prepare_document(DocumentKind::Triage, "123/20", json!({"a":1})).unwrap();
+        let mut input = comments(&prepared);
+        let mut duplicate = input.first().unwrap().clone();
+        duplicate.id = NonZero::new(9).unwrap();
+        input.push(duplicate);
+        input.push(input.first().unwrap().clone());
+        let restored = restore_documents(DocumentKind::Triage, "123/20", input.clone()).unwrap();
+        assert_eq!(
+            restored
+                .revisions
+                .first()
+                .unwrap()
+                .pages
+                .first()
+                .unwrap()
+                .id
+                .get(),
+            1
+        );
+        input.last_mut().unwrap().body.push(' ');
+        _ = restore_documents(DocumentKind::Triage, "123/20", input).unwrap_err();
+
+        let first = header(b"{\"a\":1}");
+        let conflicting = vec![
+            Comment {
+                id: NonZero::new(1).unwrap(),
+                body: first.body(b"{\"a\":1}").unwrap(),
+            },
+            Comment {
+                id: NonZero::new(2).unwrap(),
+                body: first.body(b"{\"a\":2}").unwrap(),
+            },
+        ];
+        _ = restore_documents(DocumentKind::Triage, "123/20", conflicting).unwrap_err();
+    }
+
+    #[test]
+    fn partial_pages_are_not_committed_and_page_count_conflicts_fail() {
+        let mut first = header(b"{}");
+        first.page_count = NonZero::new(2).unwrap();
+        let body = first.body(b"{}").unwrap();
+        let restored =
+            restore_documents(DocumentKind::Triage, "123/20", one(body.clone())).unwrap();
+        assert!(restored.revisions.is_empty());
+        assert_eq!(restored.incomplete_revisions, vec![first.digest.clone()]);
+        first.page = NonZero::new(2).unwrap();
+        first.page_count = NonZero::new(3).unwrap();
+        _ = restore_documents(
+            DocumentKind::Triage,
+            "123/20",
+            vec![
+                Comment {
+                    id: NonZero::new(1).unwrap(),
+                    body,
+                },
+                Comment {
+                    id: NonZero::new(2).unwrap(),
+                    body: first.body(b"{}").unwrap(),
+                },
+            ],
+        )
+        .unwrap_err();
+    }
+
+    #[test]
+    fn complete_fragments_must_use_the_declared_canonical_page_boundaries() {
+        let mut first = header(b"{}");
+        first.page_count = NonZero::new(2).unwrap();
+        let mut second = first.clone();
+        second.page = NonZero::new(2).unwrap();
+        _ = restore_documents(
+            DocumentKind::Triage,
+            "123/20",
+            vec![
+                Comment {
+                    id: NonZero::new(1).unwrap(),
+                    body: first.body(b"{").unwrap(),
+                },
+                Comment {
+                    id: NonZero::new(2).unwrap(),
+                    body: second.body(b"}").unwrap(),
+                },
+            ],
+        )
+        .unwrap_err();
+    }
+
+    #[test]
+    fn malformed_framing_encoding_and_noncanonical_payloads_fail() {
+        let valid = header(b"{}").body(b"{}").unwrap();
+        for body in [
+            valid.replace(" -->\n", " -->"),
+            valid.replacen("{\"schema_version\"", "{broken", 1),
+            valid.replace(DATA_PREFIX, "\n"),
+            valid.trim_end().to_owned(),
+            valid.replace("Owned analysis detail.", "different prose"),
+            format!(
+                "{}{DATA_PREFIX}%{DATA_SUFFIX}",
+                valid.split_once(DATA_PREFIX).unwrap().0
+            ),
+        ] {
+            _ = restore_documents(DocumentKind::Triage, "123/20", one(body)).unwrap_err();
+        }
+        for bytes in [
+            b"{".as_slice(),
+            b"[]".as_slice(),
+            b"{ \"a\": 1 }".as_slice(),
+        ] {
+            _ = restore_documents(
+                DocumentKind::Triage,
+                "123/20",
+                one(header(bytes).body(bytes).unwrap()),
+            )
+            .unwrap_err();
+        }
+        _ = restore_documents(
+            DocumentKind::Triage,
+            "123/20",
+            one(header(b"{}").body(&[0xff]).unwrap()),
+        )
+        .unwrap_err();
+    }
+
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "uses the production payload-size boundary; small framing cases remain interpreted"
+    )]
+    fn production_boundaries_remain_lossless_and_size_limited() {
+        let value = json!({"text":"x".repeat(PAGE_BYTES)});
+        let prepared = prepare_document(DocumentKind::Triage, "123/20", value.clone()).unwrap();
+        assert_eq!(prepared.pages.len(), 2);
+        let restored =
+            restore_documents(DocumentKind::Triage, "123/20", comments(&prepared)).unwrap();
+        assert_eq!(restored.revisions.first().unwrap().document, value);
+        let mut oversized = header(b"{}");
+        oversized.owner = "x".repeat(BODY_LIMIT);
+        _ = oversized.body(b"{}").unwrap_err();
+        _ = restore_documents(
+            DocumentKind::Triage,
+            "123/20",
+            one(format!(
+                "[Copilot speaking]\n<!-- scheduled-triage-detail:v1 {}",
+                "x".repeat(BODY_LIMIT)
+            )),
+        )
+        .unwrap_err();
+    }
+}

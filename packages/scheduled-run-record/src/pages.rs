@@ -156,11 +156,7 @@ pub(crate) fn decode(body: &str) -> Result<Option<DecodedPage>, AppError> {
     require(
         header.schema_version == SCHEMA_VERSION
             && header.page <= header.page_count
-            && header.digest.len() == DIGEST_HEX_LENGTH
-            && header
-                .digest
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
+            && valid_digest(&header.digest),
         "invalid page coordinates or digest",
     )?;
     let (_, payload) = rest
@@ -180,6 +176,13 @@ pub(crate) fn decode(body: &str) -> Result<Option<DecodedPage>, AppError> {
 
 pub(crate) fn encode_fragment(bytes: &[u8]) -> String {
     STANDARD.encode(bytes)
+}
+
+pub(crate) fn valid_digest(value: &str) -> bool {
+    value.len() == DIGEST_HEX_LENGTH
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 pub(crate) fn decode_fragment(payload: &str) -> Result<Vec<u8>, AppError> {

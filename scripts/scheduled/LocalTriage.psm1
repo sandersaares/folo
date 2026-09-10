@@ -49,7 +49,10 @@ function Get-TriageSummary {
 
 function Invoke-ScheduledTriageRequest {
     [CmdletBinding()]
-    param([Parameter(Mandatory)][string] $RequestPath)
+    param(
+        [Parameter(Mandatory)][string] $RequestPath,
+        [DateTimeOffset] $Now = [DateTimeOffset]::UtcNow
+    )
     $request = Get-Content -LiteralPath $RequestPath -Raw | ConvertFrom-Json -AsHashtable
     foreach ($field in @('action', 'executor_id', 'data')) {
         if (-not $request.ContainsKey($field)) { throw "Missing triage request field: $field" }
@@ -61,7 +64,7 @@ function Invoke-ScheduledTriageRequest {
     if ($user.login -cne $policy.worker_login) { throw 'Selected account does not match reviewed triage identity.' }
     $state = if (Test-Path -LiteralPath $root) {
         Invoke-ScheduledLocalAction -StateRoot $root -Policy $policy -TriagePolicy $triagePolicy `
-            -ExecutorId $request.executor_id -Login $user.login -Now ([DateTimeOffset]::UtcNow) -Action read
+            -ExecutorId $request.executor_id -Login $user.login -Now $Now -Action read
     } else { $null }
     if ($request.action -ceq 'scan') {
         $snapshot = Get-ScheduledTriageInbox -Policy $policy -State $state
@@ -84,14 +87,14 @@ function Invoke-ScheduledTriageRequest {
             throw 'The triage entry point cannot perform repair actions.'
         }
         $result = Invoke-ScheduledLocalAction -StateRoot $root -Policy $policy -TriagePolicy $triagePolicy `
-            -ExecutorId $request.executor_id -Login $user.login -Now ([DateTimeOffset]::UtcNow) `
+            -ExecutorId $request.executor_id -Login $user.login -Now $Now `
             -Action $request.data.action -Data $request.data.fields
         return $result | ConvertTo-Json -Depth 100
     }
     if ($request.action -ceq 'health') {
         return (Sync-ScheduledRoleHealth -Context @{
             state_root = $root; policy = $policy; role = 'triage'; executor_id = $request.executor_id
-            login = $user.login; now = [DateTimeOffset]::UtcNow; scan_token = $request.data.scan_token
+            login = $user.login; now = $Now; scan_token = $request.data.scan_token
         }) | ConvertTo-Json -Depth 100
     }
     if ($request.action -ceq 'recovery') {
@@ -105,7 +108,7 @@ function Invoke-ScheduledTriageRequest {
     }
     $context = @{
         state_root = $root; policy = $policy; triage_policy = $triagePolicy
-        executor_id = $request.executor_id; login = $user.login; now = [DateTimeOffset]::UtcNow
+        executor_id = $request.executor_id; login = $user.login; now = $Now
         analysis_id = $request.data.analysis_id; session_id = $request.data.session_id
         claim_token = $request.data.claim_token; dispatch_token = $request.data.dispatch_token
     }

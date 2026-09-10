@@ -10,24 +10,7 @@ Import-Module (Join-Path $PSScriptRoot 'ScheduledContracts.psm1')
 Import-Module (Join-Path $PSScriptRoot 'LocalTriageInbox.psm1')
 Import-Module (Join-Path $PSScriptRoot 'LocalTriagePublication.psm1')
 Import-Module (Join-Path $PSScriptRoot 'ScheduledRecordTool.psm1')
-
-function Get-TriageReadAdapter {
-    param([scriptblock] $Api)
-    $transport = $Api
-    return {
-        param($Endpoint, [switch] $Collection, [switch] $Pages)
-        if ($Collection) {
-            $responsePages = & $transport -Endpoint $Endpoint -Paginate
-            return ,@($responsePages | ForEach-Object { $_ })
-        }
-        if ($Pages) {
-            $result = & $transport -Endpoint $Endpoint -Paginate
-            foreach ($page in $result) { $page }
-            return
-        }
-        return & $transport -Endpoint $Endpoint
-    }.GetNewClosure()
-}
+Import-Module (Join-Path $PSScriptRoot 'LocalTriageIndex.psm1')
 
 function Get-TriageProblemKey {
     param($Analysis, [string] $Key)
@@ -142,7 +125,8 @@ function Invoke-ScheduledTriageProblemPreparation {
     $hasCreate = $analysis.operations.ContainsKey($createKey)
     if (-not $hasCreate) {
         $fresh = Get-ScheduledTriageInbox -Policy $Context.policy -State $state -Api (Get-TriageReadAdapter $Api)
-        if ($fresh.index.digest -cne $analysis.checkpoint.index.digest) {
+        if ($analysis.comparison.requires_reanalysis -or $fresh.index.digest -cne $analysis.comparison.index.digest) {
+            $null = Invoke-TriageTransaction $Context triage-require-reanalysis @{ reason = 'problem-index-changed' }
             return @{ action = 'reanalysis-required'; reason = 'problem-index-changed'; key = $ProblemKey }
         }
         $Snapshot = $fresh
@@ -150,6 +134,8 @@ function Invoke-ScheduledTriageProblemPreparation {
     $existing = $null
     $originalBlock = ''
     $legacy = $null
+    $originalComments = @()
+    $creationPayload = $null
     if ($choice.matching.kind -ceq 'new') {
         if (-not $hasCreate) { Initialize-ScheduledTriageLabel $Context scheduled-finding $Api }
         $creationMarker = Write-ScheduledRecord -Kind triage-operation -Record @{
@@ -169,6 +155,7 @@ function Invoke-ScheduledTriageProblemPreparation {
         $result = Invoke-ScheduledTriageOperation -Context $Context -Specification $create -Api $Api
         if ($result.action -ceq 'native-create-issue') { return $result }
         $number = $result.target_id
+        $creationPayload = $create.payload
         $issue = & $Api -Endpoint "repos/$($Context.policy.repository)/issues/$number"
         $relation = 'repeat'
         $targetGeneration = 1
@@ -176,6 +163,7 @@ function Invoke-ScheduledTriageProblemPreparation {
         $number = $choice.matching.issue_number
         $record = $Snapshot.problems[[string]$number].record
         $issue = $record.issue
+        $originalComments = $record.comments
         $existing = $record.problem
         $legacy = $record.legacy
         if ($null -eq $existing) {
@@ -238,6 +226,7 @@ function Invoke-ScheduledTriageProblemPreparation {
         expected_index = $expectedIndex; operation_id = $contribution[0].operation_id
         original_state = $issue.state; reopen = $relation -ceq 'recurrence'
         owned_repair = $null -ne $legacy -and $null -ne $legacy.validated_worker
+        original_issue = $issue; original_comments = $originalComments; creation_payload = $creationPayload
     }
     $null = Invoke-TriageTransaction $Context triage-prepare-document @{ key = "problem:$ProblemKey"; document = $plan }
     return @{ action = 'prepared'; key = $ProblemKey; issue_number = $number }
@@ -298,8 +287,13 @@ function Publish-ScheduledTriageProblem {
     $null = Invoke-TriageTransaction $Context triage-prepare-document @{
         key = "problem-result:$ProblemKey"; document = $link
     }
+    $state = Invoke-TriageTransaction $Context read
+    $snapshot = Get-ScheduledTriageInbox -Policy $Context.policy -State $state -Api (Get-TriageReadAdapter $Api)
+    if (-not (Sync-ScheduledTriageComparison $Context $plan $specification.key $snapshot)) {
+        return @{ action = 'reanalysis-required'; reason = 'external-index-change'; key = $ProblemKey; link = $link }
+    }
     return @{ action = 'published'; key = $ProblemKey; link = $link }
 }
 
 Export-ModuleMember -Function Invoke-ScheduledTriageProblemPreparation, Publish-ScheduledTriageProblem,
-Initialize-ScheduledTriageLabel, Get-TriageReadAdapter
+Initialize-ScheduledTriageLabel

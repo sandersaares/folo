@@ -29,7 +29,7 @@ function Assert-ScheduledTriageState {
     foreach ($entry in $Triage.analyses.GetEnumerator()) {
         $analysis = $entry.Value
         Assert-TriageField $analysis @('id', 'revision', 'session_id', 'claim_token', 'started_at',
-            'phase', 'dispatch', 'continuations', 'checkpoint', 'operations', 'publication', 'reads', 'read_progress', 'index_reads', 'reason')
+            'phase', 'dispatch', 'continuations', 'checkpoint', 'comparison', 'operations', 'publication', 'reads', 'read_progress', 'index_reads', 'reason')
         if ($analysis.id -cne $entry.Key -or $analysis.phase -cnotin @(
                 'analyzing', 'publishing', 'blocked', 'complete', 'retired') -or
             $analysis.operations -isnot [System.Collections.IDictionary]) {
@@ -200,7 +200,7 @@ function Invoke-ScheduledTriageStateChange {
                 id = $id; revision = $Data.revision; session_id = $Data.session_id
                 claim_token = [guid]::NewGuid().ToString(); started_at = $stamp; phase = 'analyzing'
                 dispatch = @{ token = [guid]::NewGuid().ToString(); status = 'accepted' }
-                continuations = @(); checkpoint = $null; operations = @{}; publication = @{}
+                continuations = @(); checkpoint = $null; comparison = $null; operations = @{}; publication = @{}
                 reads = @{}; read_progress = @{}; index_reads = @{}; reason = $null
             }
             $triage.active_analysis_id = $id
@@ -242,6 +242,29 @@ function Invoke-ScheduledTriageStateChange {
             }
             $analysis.checkpoint = $Data.checkpoint
             $analysis.checkpoint.analysis = $validated
+            $comparisonIndex = $Data.checkpoint.index | ConvertTo-Json -Depth 100 | ConvertFrom-Json -AsHashtable
+            foreach ($entry in $comparisonIndex.entries) { $entry.full_read_digest = $null }
+            $analysis.comparison = @{ index = $comparisonIndex; requires_reanalysis = $false; reason = $null }
+        }
+        'triage-accept-own-index' {
+            $analysis = Get-TriageOwnedAnalysis $triage $Data
+            Assert-TriageField $Data @('previous_digest', 'index', 'operation_key')
+            if ($null -eq $analysis.comparison -or
+                $analysis.comparison.index.digest -cne $Data.previous_digest -or
+                -not $analysis.operations.ContainsKey($Data.operation_key) -or
+                $analysis.operations[$Data.operation_key].stage -cne 'confirmed' -or
+                -not $analysis.operations[$Data.operation_key].purpose.StartsWith('problem-root:', [StringComparison]::Ordinal)) {
+                throw 'Only a confirmed problem publication can advance its comparison baseline.'
+            }
+            $analysis.comparison.index = $Data.index
+        }
+        'triage-require-reanalysis' {
+            $analysis = Get-TriageOwnedAnalysis $triage $Data
+            if ($null -eq $analysis.comparison -or [string]::IsNullOrWhiteSpace($Data['reason'])) {
+                throw 'Index reconsideration needs an existing checkpoint and a reason.'
+            }
+            $analysis.comparison.requires_reanalysis = $true
+            $analysis.comparison.reason = $Data.reason
         }
         'triage-record-index-read' {
             $analysis = Get-TriageOwnedAnalysis $triage $Data
@@ -369,6 +392,7 @@ function Invoke-ScheduledTriageStateChange {
         }
         'triage-complete-analysis' {
             $analysis = Get-TriageOwnedAnalysis $triage $Data
+            if ($analysis.comparison.requires_reanalysis) { throw 'External index changes require AI reconsideration.' }
             if ($null -eq $analysis.checkpoint -or $analysis.checkpoint.analysis.status -cne 'complete') {
                 throw 'Unfinished diagnosis cannot complete analysis.'
             }

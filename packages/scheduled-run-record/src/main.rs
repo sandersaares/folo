@@ -3,8 +3,6 @@
 //! The reviewed reporter invokes this utility with API observations on stdin. Only JSON is
 //! emitted; GitHub calls, candidate-artifact validation and publication remain with the caller.
 
-#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
-
 use std::io;
 use std::process::ExitCode;
 

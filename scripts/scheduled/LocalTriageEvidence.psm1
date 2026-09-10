@@ -22,7 +22,7 @@ function Get-ScheduledTriageEvidenceBasis {
     $total = $null
     foreach ($page in $pages) {
         if (-not $page.ContainsKey('total_count') -or -not $page.ContainsKey('jobs') -or
-            $page.jobs -isnot [System.Collections.IList] -or $page.total_count -le 0) {
+            $page.jobs -isnot [System.Collections.IList] -or [string]$page.total_count -cnotmatch '^(0|[1-9][0-9]*)$') {
             throw [FormatException]::new('Exact-attempt job page is incomplete.')
         }
         if ($null -eq $total) { $total = $page.total_count }
@@ -69,6 +69,7 @@ function Get-ScheduledTriageEvidenceBasis {
         run_id = $Record.identity.run_id; run_attempt = $attempt
         controller_sha = $evidence.attempt.controller_sha; source_sha = $sourceSha
         started_at = $Run.run_started_at; created_at = $Run.created_at
+        workflow_conclusion = $Run.conclusion
         total_count = $total; jobs = @($jobs.ToArray() | Sort-Object id)
     }
     $fingerprint = Invoke-ScheduledRecordTool -Package scheduled-run-record `
@@ -99,6 +100,7 @@ function Assert-ScheduledTriageEvidenceBasis {
             run_id = $Evidence.run_id; run_attempt = $Evidence.run_attempt
             controller_sha = $Evidence.controller_sha; total_count = $Evidence.total_count
             started_at = $Evidence.started_at; created_at = $Evidence.created_at
+            workflow_conclusion = $Evidence.workflow_conclusion
             jobs = @($Evidence.jobs | ForEach-Object {
                 @{ id = $_.id; status = $_.status; conclusion = $_.conclusion
                     steps = @($_.steps | ForEach-Object { @{ number = $_.number; status = $_.status; conclusion = $_.conclusion } }) }
