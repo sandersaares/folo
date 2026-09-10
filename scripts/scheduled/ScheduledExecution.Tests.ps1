@@ -1033,6 +1033,29 @@ Describe 'Miri and careful evidence' {
 }
 
 Describe 'Cargo test target scope' {
+    It 'validates cpulist and rejects unknown crate names using the tested workspace metadata' {
+        $path = New-Output
+        & cargo metadata --manifest-path (Join-Path $script:root 'Cargo.toml') --format-version=1 --no-deps --locked |
+            Set-Content -LiteralPath (Join-Path $path 'metadata.stdout')
+        $LASTEXITCODE | Should -Be 0
+        $check = New-Check 'miri'
+        $check.packages = @('cpulist')
+        $scopes = @(& (Get-Module ScheduledExecution) {
+                param($Check, $Path)
+                Get-ScheduledTestScope -Check $Check -OutputDirectory $Path
+            } $check $path)
+        $scopes.Count | Should -BeGreaterThan 0
+        @($scopes.package | Sort-Object -Unique) | Should -Be @('cpulist')
+        foreach ($kind in @('miri', 'careful')) {
+            $check.kind = $kind
+            $check.packages = @('not-a-workspace-crate')
+            { & (Get-Module ScheduledExecution) {
+                    param($Check, $Path)
+                    Get-ScheduledTestScope -Check $Check -OutputDirectory $Path
+                } $check $path } | Should -Throw -ExceptionType ([FormatException])
+        }
+    }
+
     It 'enumerates ordinary lib/bin/integration targets and skips disabled and non-test targets' {
         $check = New-Check 'miri'
         $check.packages = @()

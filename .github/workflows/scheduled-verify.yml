@@ -8,15 +8,15 @@ on:
   workflow_dispatch:
     inputs:
       source_sha:
-        description: Immutable main commit to confirm (not the original pre-squash PR head)
-        required: true
+        description: Full commit SHA to test (main, branch or PR); leave blank for current main. Keep Use workflow from set to main.
+        required: false
         type: string
       check_ids:
-        description: Comma-separated catalog check IDs
+        description: Check IDs, separated by commas (for example miri-ubuntu-latest); see docs/scheduled-validation.md
         required: true
         type: string
       packages:
-        description: Comma-separated approved packages
+        description: Crate names, separated by commas (for example cpulist)
         required: true
         type: string
 
@@ -25,9 +25,10 @@ permissions:
 
 jobs:
   plan:
-    # Confirmation scope comes from live merged registrations or explicit approved diagnostics.
+    # Automatic confirmation uses live registrations; manual requests need no repair permission.
+    # A non-main workflow selection fails in the planner instead of silently skipping.
     # Ref: .github/workflows/implementation.md#managed-repair-gate.
-    if: github.repository == 'folo-rs/folo' && github.ref == 'refs/heads/main'
+    if: github.repository == 'folo-rs/folo'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -47,9 +48,9 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - name: Validate explicit immutable confirmation scope
-        # A diagnostic selection alone cannot close an incident; live registration is authoritative.
-        # Ref: .github/workflows/implementation.md#managed-repair-gate.
+      - name: Select requested checks or pending merged repairs
+        # Manual diagnostics never update repair records or shared main coverage.
+        # Ref: .github/workflows/implementation.md#manual-checks.
         id: plan
         shell: pwsh
         env:
@@ -70,7 +71,7 @@ jobs:
           if-no-files-found: error
           retention-days: 30
   checks:
-    # Do not invent global work when confirmation has no selected incident scope.
+    # Do not run the workspace when automatic confirmation has no pending repair.
     # Ref: .github/workflows/implementation.md#serialized-reporting.
     needs: plan
     if: needs.plan.outputs.run == 'true'

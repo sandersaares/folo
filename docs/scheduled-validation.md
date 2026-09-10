@@ -44,6 +44,57 @@ for mutation quality and reviewed skip criteria. The shared versioned contracts 
 reviewed defaults live under `scripts/scheduled/`; policy is not inferred from App UI
 state.
 
+## Running checks manually
+
+Manual checks require only permission to run GitHub Actions in this repository.
+They do not require changes to `scripts/scheduled/policy.json`, repair package
+allowlists, Local App enrollment, Copilot models or billing, or enabled timers.
+Clicking **Run workflow** requests fresh execution, even if the same source has
+already passed automatic validation.
+
+To run Miri on `cpulist`:
+
+1. Open the repository's **Actions** tab and select **Scheduled verification**.
+2. Click **Run workflow** and keep **Use workflow from** set to **main**.
+3. Leave **source_sha** blank to test the immutable main commit selected for this
+   run. Alternatively, enter a full commit SHA available in this repository,
+   including a branch or PR commit.
+4. Enter **miri-ubuntu-latest** in **check_ids** and **cpulist** in **packages**.
+5. Click **Run workflow**. The run summary identifies the tested commit; the
+   **Deep checks** jobs show execution results and retain raw evidence artifacts.
+
+The optional source SHA selects code to test, not workflow or reporting code.
+The workflow and reporter use `main`. Selecting another branch under **Use workflow
+from** fails with instructions to use the source SHA instead.
+
+For other checks, use the following IDs. Enter exact crate names from the tested
+workspace, separated by commas; spaces around commas are accepted. Every requested
+crate must be covered by a selected check. Unknown checks, incompatible selections
+and unknown crates fail rather than silently becoming successful empty runs.
+Crate membership is checked by Cargo at the tested source, not by a repair allowlist.
+
+| Check | Supported IDs |
+|---|---|
+| Miri | `miri-ubuntu-latest`, `miri-windows-latest`, `miri-ubuntu-24.04-arm`, `miri-windows-11-arm` |
+| Mutation testing | `mutants-ubuntu-latest-1` through `mutants-ubuntu-latest-8`, or `mutants-windows-latest-1` through `mutants-windows-latest-8`; each ID runs one shard |
+| Careful checking | `careful-ubuntu-latest`, `careful-windows-latest` |
+| Many-seed Miri | `miri-many-events_once-1` through `miri-many-events_once-4`; `miri-many-events-1` through `miri-many-events-2`; `miri-many-awaiter_set-1` through `miri-many-awaiter_set-2`; `miri-many-nm_impl-1` through `miri-many-nm_impl-2`; each ID runs only its named crate |
+
+To run the entire deep suite on main, select **Scheduled validation**, keep
+**Use workflow from** set to **main**, and click **Run workflow**. There is no
+additional permission checkbox or cache override.
+
+Manual runs do not update shared main coverage or confirm or close repair issues.
+With the checked-in defaults, **Scheduled reporting** retains `report.json` and
+downloaded evidence in its report artifact without reading or writing issues.
+Failed checks remain failed in the originating run; missing or invalid evidence
+also fails the report. When an operator separately enables
+`rollout.reporting_enabled` in `scripts/scheduled/policy.json`, the reporter's
+existing `-Apply` invocation also permits run-level failure intake for manual
+results. This supports on-demand reporting without waiting for the timer, but
+still cannot change repair issues or shared coverage. Neither running a check nor
+reporting its failure authorizes AI repairs.
+
 ## Problems and triage
 
 These are the requirements for a downstream AI triage consumer. Hosted intake

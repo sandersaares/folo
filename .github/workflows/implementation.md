@@ -13,10 +13,10 @@ below are UTC. Local App timers are separate and use their verified installation
 
 | Workflow | What starts it | Responsibility and downstream calls |
 |---|---|---|
-| `scheduled-validation.yml` / **Scheduled validation** | Daily `schedule` at 02:41 (`41 2 * * *`), or authorized `workflow_dispatch` on `main`. | Plans immutable full-main scope and checks reusable coverage. Calls `deep-checks.yml` only when execution is authorized and needed. `force` bypasses coverage reuse, not execution authorization; `canary` permits an explicit read-only execution check. |
+| `scheduled-validation.yml` / **Scheduled validation** | Daily `schedule` at 02:41 (`41 2 * * *`), or `workflow_dispatch` on `main`. | Plans the immutable full-main suite. Automatic execution requires policy authorization and may reuse coverage. Manual execution always runs fresh checks without consulting coverage or repair settings. |
 | `deep-checks.yml` / **Deep checks** | **Only `workflow_call`**, from `scheduled-validation.yml`, `scheduled-verify.yml`, or `validation.yml`. No timer, push trigger or manual entry point. | Reusable matrix execution of the caller's declared scope. Its jobs and artifacts belong to the calling run; it does not file issues or start a separate reporting chain. |
 | `scheduled-report.yml` / **Scheduled reporting** | `workflow_run: completed` for **Scheduled validation** and **Scheduled verification** on `main`, regardless of conclusion. No timer or `workflow_dispatch`. | Validates the originating attempt, collects evidence and files/updates run-level failure intake; also maintains coverage and applicable authoritative confirmation. Does not perform AI triage or directly create diagnosed problem issues. Uses trusted default-branch code; writes require reporting authorization. Recover by rerunning the existing reporter run, not by rerunning deep checks. |
-| `scheduled-verify.yml` / **Scheduled verification** | Each `push` to `main`, or authorized `workflow_dispatch` with an explicit immutable source and scope. | The cheap planner selects pending registered merged repairs, or explicit diagnostics. Calls `deep-checks.yml` only for selected authorized work; no pending repair is a normal no-work outcome. Completion triggers `scheduled-report.yml`. |
+| `scheduled-verify.yml` / **Scheduled verification** | Each `push` to `main`, or `workflow_dispatch` on `main` with check IDs, crate names and an optional source SHA. | The cheap planner selects pending registered merged repairs for authorized automatic execution, or fresh manual diagnostics without repair prerequisites. No pending repair is a normal automatic no-work outcome. Completion triggers `scheduled-report.yml`. |
 | `scheduled-health.yml` / **Scheduled health** | `schedule` at minute 11 every third hour (`11 */3 * * *`), or `workflow_dispatch` on `main`. | Read-only observation of scheduler, reporter, coverage and separate Local triage/repair health. Writes a summary/artifact and signals failure; does not call deep checks, file a finding for every red run, or trigger the reporter. |
 | `validation.yml` / **Validation** | `push` to `main`; PRs targeting `main` on `opened`, `synchronize`, `reopened`, `edited`, or `ready_for_review`; merge-queue `merge_group` events for `main`. | Ordinary merge validation and the managed-repair gate. Calls `deep-checks.yml` for relevant registered repair scope, not the entire scheduled suite. Results feed `required-checks`; this workflow does not trigger scheduled issue reporting. |
 | `pr-bench-history.yml` / **PR Benchmark history** | PRs targeting `main` on `opened`, `synchronize`, or `reopened`. | Independent advisory benchmark workflow; excludes managed repairs from production-backed collection. It neither calls deep checks nor triggers scheduled issue reporting. |
@@ -159,6 +159,32 @@ their plan, result and raw evidence, not just a job conclusion.
 Before reuse, the planner also checks the execution API for unreported failures, active work and
 newer attempts on the same main commit. The asynchronous reporter's durable index cannot conceal
 those observations, and skipped work does not refresh the coverage timestamp.
+Manual diagnostic attempts are excluded from this reuse decision; they cannot
+invalidate automatic coverage even while their reporting is pending.
+
+### Manual checks
+
+The planner recognizes manual requests by GitHub's `workflow_dispatch` event.
+Both entry points require **Use workflow from** to select `main`; an incorrect
+selection fails explicitly rather than skipping the plan job. The checked-out event
+SHA pins the controller. In targeted verification, a blank source selects that same
+immutable commit; an explicit full SHA is resolved through GitHub before execution
+and can identify a branch or PR commit without becoming controller code.
+
+The unprepared planner validates literal crate names and catalog combinations in
+PowerShell without bootstrapping Rust or inspecting repair permission. Execution
+uses the existing Cargo workspace metadata and package selection at the candidate
+source to reject unknown crates. The reporter reconstructs the same catalog and
+validates exact-source, contract and run-attempt evidence without a repair allowlist.
+
+The reporter distinguishes diagnostics using the API-validated originating event,
+not a plan field. Manual results bypass coverage and repair record discovery,
+confirmation and mutations, including full-workspace manual runs. With no write
+authorization they also bypass run-intake issue discovery and retain artifacts only.
+When both `-Apply` and `rollout.reporting_enabled` authorize issue writes, manual
+results can use the existing run-intake publication and recovery path. This does
+not authorize coverage or repair mutations. Invalid or incomplete results remain
+visible; successful intake of failures does not turn the source check green.
 
 ### Evidence decoding
 
@@ -355,7 +381,7 @@ The selected checks execute against the actual combined candidate. Their uncondi
 Metadata-only corrections retrigger through the PR `edited` event or a rerun at the same head.
 The worker and PR records carry the same bounded causal explanation and bind the current enrolled
 executor. Main confirmation uses the merged commit rather than the original pre-squash head.
-Both full-main reporting and dedicated verification can confirm the live merged registration;
+Both automatic full-main reporting and automatic dedicated verification can confirm the live merged registration;
 arrival order does not strand a problem in `needs-human`.
 An unexplained pass does not disable the gate for an existing registered repair PR. Local intake
 still refuses fresh admission of that disposition; the current worker can finish its causal repair
@@ -405,10 +431,11 @@ Safe installation defaults disable hosted execution/reporting and both Local rol
 and leave repair allowlists unconfigured. Disabled hosted execution means automatic
 recurring deep coverage is off; it is not proof that PR validation covers it.
 Setup preserves those settings.
-Manual read-only execution uses the existing `canary` dispatch input to exercise hosted execution
-without changing recurring authorization; explicit verification similarly validates approved
-diagnostic scope, not problem resolution by itself. Neither action is part of merely installing the
-Local automations.
+Manual **Run workflow** requests run fresh checks without changing recurring
+authorization or requiring repair package approval. Their diagnostics are separate
+from main coverage and repair confirmation. Issue reporting remains independently
+authorized, including on-demand run-level intake. See [Manual checks](#manual-checks).
+Running checks is not part of installing or reconciling Local automations.
 
 The default-branch controller, workflows, policy and their helpers form one installed contract.
 When neither policy nor controller is installed there, Validation runs its shallow checks

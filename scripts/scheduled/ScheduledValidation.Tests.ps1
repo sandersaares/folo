@@ -1,6 +1,6 @@
 #Requires -Modules @{ ModuleName = 'Pester'; ModuleVersion = '5.0' }
 # Protects fixed local validation depth and the hosted validation graph without executing any
-# checker. Planner tests isolate GitHub reads so disabled execution, explicit canaries and
+# checker. Planner tests isolate GitHub reads so disabled execution, manual requests and
 # managed repair gates remain independent of ordinary shallow CI.
 # Ref: ../../.github/workflows/design.md#shallow-and-deep-validation.
 BeforeAll {
@@ -13,6 +13,8 @@ BeforeAll {
     foreach ($match in [regex]::Matches($jobDefinitions, '(?ms)^  ([\w-]+):\r?\n(.*?)(?=^  [\w-]+:|\z)')) {
         $jobs[$match.Groups[1].Value] = $match.Groups[2].Value
     }
+    Import-Module (Join-Path $PSScriptRoot 'ScheduledContracts.psm1') -Force
+    Import-Module (Join-Path $PSScriptRoot 'ScheduledPlan.psm1') -Force
     Import-Module (Join-Path $PSScriptRoot 'ScheduledWorkflow.psm1') -Force
 }
 
@@ -81,12 +83,16 @@ Describe 'Shallow hosted validation with managed deep evidence' {
 Describe 'Hosted planning authorization' {
     BeforeEach {
         $savedEnvironment = @{}
-        foreach ($name in @('GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT', 'GITHUB_RUN_NUMBER', 'GITHUB_OUTPUT')) {
+        foreach ($name in @('GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT', 'GITHUB_RUN_NUMBER', 'GITHUB_OUTPUT',
+                'GITHUB_REF', 'GITHUB_EVENT_NAME', 'GITHUB_STEP_SUMMARY')) {
             $savedEnvironment[$name] = [Environment]::GetEnvironmentVariable($name)
         }
         $env:GITHUB_RUN_ID = '10'
         $env:GITHUB_RUN_ATTEMPT = '1'
         $env:GITHUB_RUN_NUMBER = '5'
+        $env:GITHUB_REF = 'refs/heads/main'
+        $env:GITHUB_EVENT_NAME = 'schedule'
+        $env:GITHUB_STEP_SUMMARY = Join-Path $TestDrive 'summary.md'
         $env:GITHUB_OUTPUT = Join-Path $TestDrive 'outputs'
         Set-Content -LiteralPath $env:GITHUB_OUTPUT -Value '' -NoNewline
         $eventPath = Join-Path $TestDrive 'event.json'
@@ -104,21 +110,145 @@ Describe 'Hosted planning authorization' {
         }
     }
 
-    It 'does not authorize recurring execution merely because a recheck is forced' {
+    It 'keeps recurring execution disabled with the checked-in policy' {
         $plan = Invoke-ScheduledPlanning -Mode scheduled -EventPath $eventPath `
-            -OutputDirectory (Join-Path $TestDrive 'plan') -Now '2026-09-08T12:00:00Z' -Force
+            -OutputDirectory (Join-Path $TestDrive 'plan') -Now '2026-09-08T12:00:00Z'
         $plan.decision.run | Should -BeFalse
-        $plan.canary | Should -BeFalse
         Should -Invoke Get-ScheduledCoverageIndex -ModuleName ScheduledWorkflow -Times 0 -Exactly
     }
 
-    It 'retains explicit read-only canary execution while recurring execution is disabled' {
+    It 'runs fresh full manual checks without any rollout or cache prerequisite' {
+        $env:GITHUB_EVENT_NAME = 'workflow_dispatch'
+        Mock Get-ScheduledCoverageIndex -ModuleName ScheduledWorkflow { throw 'Unrelated broken coverage index.' }
         $plan = Invoke-ScheduledPlanning -Mode scheduled -EventPath $eventPath `
-            -OutputDirectory (Join-Path $TestDrive 'plan') -Now '2026-09-08T12:00:00Z' -Canary -Force
+            -OutputDirectory (Join-Path $TestDrive 'plan') -Now '2026-09-08T12:00:00Z'
         $plan.decision.run | Should -BeTrue
-        $plan.canary | Should -BeTrue
         $plan.manifest.scope | Should -Be full
-        Should -Invoke Get-ScheduledCoverageIndex -ModuleName ScheduledWorkflow -Times 1 -Exactly
+        $plan.manifest.checks.Count | Should -Be 32
+        $plan.confirmations | Should -BeNullOrEmpty
+        $plan.repairs | Should -BeNullOrEmpty
+        Should -Invoke Get-ScheduledCoverageIndex -ModuleName ScheduledWorkflow -Times 0 -Exactly
+    }
+
+    It 'retains automatic unchanged-source reuse when recurring execution is enabled' {
+        $script:enabledPolicy = Get-ScheduledPolicy
+        $enabledPolicy.rollout.hosted_execution_enabled = $true
+        Mock Get-ScheduledPolicy -ModuleName ScheduledWorkflow { $enabledPolicy }
+        $manifest = Get-ScheduledCheckManifest -SourceSha ('a' * 40) -ControllerSha ('a' * 40) -ContractDigest ('c' * 64)
+        $script:automaticCoverage = @{
+            schema_version = 1; invalidation = $null
+            receipt = @{
+                source_sha = 'a' * 40; check_contract_digest = 'c' * 64; scope = 'full'
+                complete = $true; successful = $true; manifest = $manifest
+                run_id = 9; run_attempt = 1; run_number = 4; completed_at = '2026-09-08T11:00:00Z'
+            }
+        }
+        Mock Get-ScheduledCoverageIndex -ModuleName ScheduledWorkflow { $automaticCoverage }
+        Mock Invoke-ScheduledReadApi -ModuleName ScheduledWorkflow { @(@{ workflow_runs = @() }) }
+        $plan = Invoke-ScheduledPlanning -Mode scheduled -EventPath $eventPath `
+            -OutputDirectory (Join-Path $TestDrive 'plan') -Now '2026-09-08T12:00:00Z'
+        $plan.decision.run | Should -BeFalse
+        $plan.decision.reason | Should -Be not-run-unchanged
+        Should -Invoke Get-ScheduledCoverageIndex -ModuleName ScheduledWorkflow -Times 1
+    }
+
+    It 'fails a non-main workflow selection instead of silently skipping <Mode>' -TestCases @(
+        @{ Mode = 'scheduled' }, @{ Mode = 'verify' }
+    ) {
+        param($Mode)
+        $env:GITHUB_EVENT_NAME = 'workflow_dispatch'
+        $env:GITHUB_REF = 'refs/heads/topic'
+        $rejectedPlan = Join-Path $TestDrive "rejected-$Mode"
+        { Invoke-ScheduledPlanning -Mode $Mode -EventPath $eventPath `
+                -OutputDirectory $rejectedPlan } | Should -Throw
+        Test-Path -LiteralPath $rejectedPlan | Should -BeFalse
+    }
+
+    Describe 'Manual crate checks with the actual default policy' {
+        BeforeEach {
+            $env:GITHUB_EVENT_NAME = 'workflow_dispatch'
+            $script:manualEvent = @{
+                repository = @{ id = 850321188 }
+                inputs = @{ source_sha = ''; check_ids = 'miri-ubuntu-latest'; packages = 'cpulist' }
+            }
+            $policy = Get-ScheduledPolicy
+            $policy.repair.allowed_packages | Should -BeNullOrEmpty
+            $policy.local.allowed_packages | Should -BeNullOrEmpty
+            $policy.local.enrolled_machine_id | Should -BeNullOrEmpty
+            $policy.rollout.hosted_execution_enabled | Should -BeFalse
+            $policy.rollout.reporting_enabled | Should -BeFalse
+            @($policy.rollout.prerequisites.Values | Where-Object { $_ }).Count | Should -Be 0
+        }
+
+        It 'plans cpulist Miri at <Source> independently of repair permissions' -TestCases @(
+            @{ Source = ''; Expected = 'a' * 40 },
+            @{ Source = 'a' * 40; Expected = 'a' * 40 },
+            @{ Source = 'b' * 40; Expected = 'b' * 40 }
+        ) {
+            param($Source, $Expected)
+            $manualEvent.inputs.source_sha = $Source
+            $manualEvent | ConvertTo-Json -Depth 10 | Set-Content $eventPath
+            Mock Invoke-ScheduledReadApi -ModuleName ScheduledWorkflow {
+                param($Endpoint)
+                @{ sha = ($Endpoint -split '/')[-1] }
+            }
+            $plan = Invoke-ScheduledPlanning -Mode verify -EventPath $eventPath `
+                -OutputDirectory (Join-Path $TestDrive 'plan')
+            $plan.decision.run | Should -BeTrue
+            $plan.manifest.source_sha | Should -BeExactly $Expected
+            $plan.manifest.controller_sha | Should -BeExactly ('a' * 40)
+            $plan.manifest.scope | Should -Be confirmation
+            @($plan.manifest.checks.id) | Should -Be @('miri-ubuntu-latest')
+            $plan.manifest.checks[0].packages | Should -Be @('cpulist')
+            $plan.managed | Should -BeFalse
+            $plan.confirmations | Should -BeNullOrEmpty
+            $plan.repairs | Should -BeNullOrEmpty
+            Get-Content -LiteralPath $env:GITHUB_OUTPUT | Should -Contain 'run=true'
+            Get-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Raw | Should -Match $Expected
+            Should -Invoke Get-ScheduledConfirmationScope -ModuleName ScheduledWorkflow -Times 0
+            Should -Invoke Get-ScheduledCoverageIndex -ModuleName ScheduledWorkflow -Times 0
+        }
+
+        It 'accepts spaces around comma-separated names' {
+            $manualEvent.inputs.packages = ' cpulist , events '
+            $manualEvent.inputs.check_ids = ' miri-ubuntu-latest , careful-windows-latest '
+            $manualEvent | ConvertTo-Json -Depth 10 | Set-Content $eventPath
+            $plan = Invoke-ScheduledPlanning -Mode verify -EventPath $eventPath `
+                -OutputDirectory (Join-Path $TestDrive 'plan')
+            $plan.manifest.checks.Count | Should -Be 2
+            $plan.manifest.checks[0].packages | Should -Be @('cpulist', 'events')
+        }
+
+        It 'rejects invalid or incompatible requested names <Packages> / <Checks>' -TestCases @(
+            @{ Packages = ''; Checks = 'miri-ubuntu-latest' },
+            @{ Packages = 'cpulist'; Checks = '' },
+            @{ Packages = 'cpulist,'; Checks = 'miri-ubuntu-latest' },
+            @{ Packages = 'cpulist'; Checks = 'miri-ubuntu-latest, ' },
+            @{ Packages = '*'; Checks = 'miri-ubuntu-latest' },
+            @{ Packages = '--workspace'; Checks = 'mutants-ubuntu-latest-1' },
+            @{ Packages = 'cpulist'; Checks = 'miri' },
+            @{ Packages = 'cpulist'; Checks = 'miri-many-events-1' },
+            @{ Packages = 'events,cpulist'; Checks = 'miri-many-events-1' }
+        ) {
+            param($Packages, $Checks)
+            $manualEvent.inputs.packages = $Packages
+            $manualEvent.inputs.check_ids = $Checks
+            $manualEvent | ConvertTo-Json -Depth 10 | Set-Content $eventPath
+            { Invoke-ScheduledPlanning -Mode verify -EventPath $eventPath `
+                    -OutputDirectory (Join-Path $TestDrive 'plan') } | Should -Throw
+            Get-Content -LiteralPath $env:GITHUB_OUTPUT | Should -Not -Contain 'run=true'
+        }
+
+        It 'rejects a symbolic or unresolved source before starting checks' -TestCases @(
+            @{ Source = 'main' }, @{ Source = 'd' * 40 }
+        ) {
+            param($Source)
+            $manualEvent.inputs.source_sha = $Source
+            $manualEvent | ConvertTo-Json -Depth 10 | Set-Content $eventPath
+            Mock Invoke-ScheduledReadApi -ModuleName ScheduledWorkflow { @{ sha = 'e' * 40 } }
+            { Invoke-ScheduledPlanning -Mode verify -EventPath $eventPath `
+                    -OutputDirectory (Join-Path $TestDrive 'plan') } | Should -Throw
+        }
     }
 
     It 'keeps automatic merged repair confirmation disabled' {

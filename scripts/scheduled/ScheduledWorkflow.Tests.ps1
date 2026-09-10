@@ -7,6 +7,19 @@ BeforeAll {
     Import-Module (Join-Path $PSScriptRoot 'ScheduledWorkflow.psm1') -Force
 }
 Describe 'Repair gate orchestration' {
+    It 'wires manual requests without redundant checkboxes or a silent branch skip' {
+        $root = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
+        foreach ($name in @('scheduled-validation.yml', 'scheduled-verify.yml')) {
+            $workflow = Get-Content -LiteralPath (Join-Path $root ".github\workflows\$name") -Raw
+            $workflow | Should -Match '(?m)^  workflow_dispatch:\r?$'
+            $workflow | Should -Match "(?m)^    if: github.repository == 'folo-rs/folo'\r?$"
+            $workflow | Should -Not -Match 'EXECUTION_CANARY|FORCE_RECHECK|inputs\.canary|inputs\.force'
+            $workflow | Should -Match 'ref: \$\{\{ github.sha \}\}'
+            $workflow | Should -Match '(?m)^          ./scripts/scheduled/Invoke-ScheduledPlan.ps1'
+            $workflow | Should -Match '(?m)^          include-hidden-files: true\r?$'
+        }
+    }
+
     It 'serializes reporting without replacing pending events' {
         $root = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
         $workflow = Get-Content -LiteralPath (Join-Path $root '.github\workflows\scheduled-report.yml') -Raw
@@ -49,6 +62,7 @@ Describe 'Repair gate orchestration' {
                 param($Status, $Conclusion, $Attempt, $Id, $Reason)
                 $execution = @{
                     id = $Id; run_attempt = $Attempt; head_sha = 'a' * 40; head_branch = 'main'
+                    event = 'schedule'
                     status = $Status; conclusion = $Conclusion; updated_at = '2026-09-08T11:00:00Z'
                 }
                 Mock Invoke-ScheduledReadApi { @(@{ workflow_runs = @($execution) }) }
@@ -61,6 +75,21 @@ Describe 'Repair gate orchestration' {
         It 'ignores its own planning run without refreshing or invalidating prior coverage' {
             InModuleScope ScheduledWorkflow {
                 Mock Invoke-ScheduledReadApi { @(@{ workflow_runs = @(@{ id = 30 }) }) }
+                Get-ScheduledCoverageRunRisk -Policy @{ repository = 'folo-rs/folo' } `
+                    -Receipt @{ run_id = 10; run_attempt = 1; source_sha = 'a' * 40; completed_at = '2026-09-08T10:00:00Z' } `
+                    -CurrentRunId 30 -CurrentRunAttempt 1 | Should -BeNullOrEmpty
+                Should -Invoke Invoke-ScheduledReadApi -Times 2 -Exactly
+            }
+        }
+
+        It 'ignores manual failures and unfinished diagnostics when reusing automatic coverage' {
+            InModuleScope ScheduledWorkflow {
+                Mock Invoke-ScheduledReadApi {
+                    @(@{ workflow_runs = @(
+                        @{ id = 20; event = 'workflow_dispatch'; status = 'completed'; conclusion = 'failure' },
+                        @{ id = 21; event = 'workflow_dispatch'; status = 'in_progress' }
+                    ) })
+                }
                 Get-ScheduledCoverageRunRisk -Policy @{ repository = 'folo-rs/folo' } `
                     -Receipt @{ run_id = 10; run_attempt = 1; source_sha = 'a' * 40; completed_at = '2026-09-08T10:00:00Z' } `
                     -CurrentRunId 30 -CurrentRunAttempt 1 | Should -BeNullOrEmpty

@@ -103,9 +103,8 @@ Describe 'Unchanged main decisions' {
         $decision.run | Should -BeFalse
         $decision.receipt.completed_at | Should -Be $receipt.completed_at
     }
-    It 'reruns missing forced stale future or partial evidence' {
+    It 'reruns missing stale future or partial evidence' {
         (Get-ScheduledRunDecision -Manifest $manifest -Coverage $null -Now $now).run | Should -BeTrue
-        (Get-ScheduledRunDecision -Manifest $manifest -Coverage $coverage -Now $now -Force).run | Should -BeTrue
         foreach ($completed in @('2026-09-01T12:00:00Z', '2026-09-09T12:00:00Z')) {
             $receipt.completed_at = $completed
             (Get-ScheduledRunDecision -Manifest $manifest -Coverage $coverage -Now $now).run | Should -BeTrue
