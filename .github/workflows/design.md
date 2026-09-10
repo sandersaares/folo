@@ -65,10 +65,11 @@ Hosted checks and reporting can operate without Local automation. Disabling sche
 execution does not alter the local recipes or insert deep checks into ordinary CI;
 it leaves automatic recurring deep coverage disabled.
 
-Installation is not authorization to run or publish. Safe defaults leave hosted execution and
-reporting disabled. Local triage is not dispatched and new repair admission is rejected.
-The operator approves enrollment, scope and operating settings; installing or reconciling
-either automation does not activate them.
+The reviewed policy authorizes nightly full checks and failure reporting independently of
+Local readiness. Hosted reporting creates missing reporting labels when publishing, retaining
+operator-managed metadata on existing labels. Local triage is not dispatched and new repair
+admission is rejected; operators handle failure intake manually. Installing or reconciling
+a Local automation does not activate it or change hosted authorization.
 
 Manual **Run workflow** requests authorize fresh checks independently of automatic
 execution or AI repair settings. Targeted checks accept workspace crates rather than
@@ -85,6 +86,10 @@ workflow or an empty defect list. Compatible full successes can be reused for un
 within the reviewed maximum age. A skip preserves the age of that success; a newer failed or
 incomplete attempt invalidates it. Setup failures are execution problems, not a defect in each
 package that setup prevented from running.
+Missing initial coverage remains unavailable, not a passing baseline. Nightly planning
+freshness belongs to automatic full checks; unrelated selected plans cannot refresh it.
+An intentionally inactive, unenrolled Local executor is not an expected hosted-health component,
+while enrolled executors still require fresh successful heartbeats.
 Actual Actions jobs and steps are inventoried independently of checker artifacts.
 Failed jobs retain bounded log excerpts, original-log references and explicit
 capture gaps. Run evidence is paginated into durable issue comments rather than

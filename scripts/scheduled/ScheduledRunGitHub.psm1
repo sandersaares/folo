@@ -4,6 +4,7 @@
 # artifact exists. The reporter supplies its already validated run and its GitHub API callback;
 # this module never executes candidate code or decides which symptoms share a root cause.
 # Bounded log capture remains process orchestration; structured records are built by Rust.
+# Reporting label bootstrap shares the write authorization and durable journal boundary.
 # Ref: ../../.github/workflows/implementation.md#run-level-failure-intake.
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -263,9 +264,6 @@ function Sync-ScheduledRunIntake {
     }
     $actions = [Collections.Generic.List[object]]::new()
     $issue = Get-ScheduledRunIssue -Policy $Policy -Identity $prepared.identity -Api $Api
-    if ($null -eq $issue -and -not $prepared.should_report) {
-        return @{ requires_triage = $false; actions = @(); digest = $prepared.digest }
-    }
     $applyWrites = $Apply -and $Policy.rollout.reporting_enabled
     $journalPath = Join-Path $OutputDirectory "publication-$($Policy.repository_id)-$($Run.workflow_id)-$($Run.id).json"
     $journal = @{
@@ -279,6 +277,15 @@ function Sync-ScheduledRunIntake {
             throw [FormatException]::new('Publication journal identity or schema is invalid.')
         }
         $journal.digest = $prepared.digest
+    }
+    if ($null -eq $issue -and -not $prepared.should_report) {
+        if ($journal.stage -cne 'prepared') {
+            throw [IO.IOException]::new('Prior run issue creation remains unresolved; reconcile it before retrying.')
+        }
+        # A clean execution can still fail while bootstrapping coverage labels. Retain the
+        # no-intake intent so a fresh reporter attempt can restore its publication state.
+        if ($applyWrites) { Write-ScheduledRunJournal -Path $journalPath -Record $journal }
+        return @{ requires_triage = $false; actions = @(); digest = $prepared.digest }
     }
     if ($null -eq $issue) {
         if ($journal.stage -cne 'prepared') {
@@ -295,6 +302,11 @@ function Sync-ScheduledRunIntake {
                 actions = @(@{ action = 'dry-run'; method = 'POST'; endpoint = "repos/$($Policy.repository)/issues"; payload = $payload })
             }
         }
+        # Persist recoverable pre-issue intent even if label bootstrap fails. The run issue
+        # has not been attempted yet, so a rerun can safely resume from this stage.
+        Write-ScheduledRunJournal -Path $journalPath -Record $journal
+        Initialize-ScheduledReportingLabel -Policy $Policy -Name scheduled-run-failure `
+            -OutputDirectory $OutputDirectory -Api $Api -Apply:$applyWrites
         $journal.stage = 'creating-issue'
         Write-ScheduledRunJournal -Path $journalPath -Record $journal
         try {
@@ -400,4 +412,49 @@ function Sync-ScheduledRunIntake {
     }
 }
 
-Export-ModuleMember -Function Get-ScheduledRunJobEvidence, Invoke-ScheduledRunRecord, Sync-ScheduledRunIntake
+function Initialize-ScheduledReportingLabel {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable] $Policy,
+        [Parameter(Mandatory)][ValidateSet('scheduled-run-failure', 'scheduled-coverage', 'scheduled-health')][string] $Name,
+        [Parameter(Mandatory)][string] $OutputDirectory,
+        [Parameter(Mandatory)][scriptblock] $Api,
+        [switch] $Apply
+    )
+
+    # Label reads are part of publishing, not a prerequisite for read-only diagnostics.
+    # Ref: ../../.github/workflows/implementation.md#reporting-label-bootstrap.
+    if (-not $Apply -or -not $Policy.rollout.reporting_enabled) { return }
+    $endpoint = "repos/$($Policy.repository)/labels"
+    $pages = & $Api -Endpoint "${endpoint}?per_page=100" -Paginate
+    $existing = @($pages | ForEach-Object { $_ } | Where-Object { $_.name -ieq $Name })
+    if ($existing.Count -gt 0) { return }
+
+    # Only missing labels receive defaults. Color is neutral because labels identify record
+    # roles rather than severity; an operator's existing spelling/color/description is retained.
+    $descriptions = @{
+        'scheduled-run-failure' = 'Deep validation run evidence requiring operator analysis'
+        'scheduled-coverage' = 'Authoritative deep validation coverage'
+        'scheduled-health' = 'Scheduled validation and executor health'
+    }
+    $journalPath = Join-Path $OutputDirectory "label-$Name.json"
+    $journal = @{ schema_version = 1; repository = $Policy.repository; name = $Name; stage = 'creating-label' }
+    Write-ScheduledRunJournal -Path $journalPath -Record $journal
+    try {
+        $null = & $Api -Endpoint $endpoint -Method POST `
+            -Body @{ name = $Name; color = 'ededed'; description = $descriptions[$Name] }
+    } catch [IO.IOException] {
+        # GitHub enforces unique label names. A raced or lost create response is resolved by
+        # reading that name, never by updating its metadata or interpreting the error as success.
+        Write-Verbose "Label creation response for $Name is uncertain; reading its unique name before continuing."
+    }
+    $label = & $Api -Endpoint "$endpoint/$Name"
+    if ($null -eq $label -or $label.name -ine $Name) {
+        throw [FormatException]::new("GitHub did not confirm the required reporting label: $Name")
+    }
+    $journal.stage = 'complete'
+    Write-ScheduledRunJournal -Path $journalPath -Record $journal
+}
+
+Export-ModuleMember -Function Get-ScheduledRunJobEvidence, Invoke-ScheduledRunRecord, Sync-ScheduledRunIntake,
+Initialize-ScheduledReportingLabel, Write-ScheduledRunJournal

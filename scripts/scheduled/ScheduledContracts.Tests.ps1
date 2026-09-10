@@ -59,12 +59,17 @@ Describe 'Scheduled records' {
         $canonical.Count | Should -Be $values.Count
         @($canonical | ForEach-Object { $_.z }) | Should -Be (1..4096)
     }
-    It 'keeps hosted execution reporting and Local admission disabled in staged policy' {
+    It 'enables hosted execution and reporting without claiming Local readiness' {
         $policy = Get-ScheduledPolicy
-        $policy.rollout.hosted_execution_enabled | Should -BeFalse
-        $policy.rollout.reporting_enabled | Should -BeFalse
+        $policy.rollout.hosted_execution_enabled | Should -BeTrue
+        $policy.rollout.reporting_enabled | Should -BeTrue
+        $policy.rollout.ContainsKey('phase') | Should -BeFalse
+        @($policy.rollout.prerequisites.Values | Where-Object { $_ }).Count | Should -Be 0
         $policy.local.mode | Should -Be observe
         $policy.local.enrolled_machine_id | Should -BeNullOrEmpty
+        $policy.local.allowed_packages | Should -BeNullOrEmpty
+        $policy.local.allowed_checks | Should -BeNullOrEmpty
+        $policy.repair.allowed_packages | Should -BeNullOrEmpty
     }
     It 'validates hosted authorization switches independently' -TestCases @(
         @{ Execution = $false; Reporting = $false }

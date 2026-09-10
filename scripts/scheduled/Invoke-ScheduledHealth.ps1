@@ -6,7 +6,7 @@ Publishes the executor's rolling health surface for `scheduled-health.yml`.
 Reads the reporter-owned coverage/health issue and recent workflow runs through
 `Get-ScheduledGitHubHealth` (ScheduledGitHub.psm1) and reports a single combined status so an
 operator (or the same `scheduled-intake` skill) can distinguish "healthy", "staged" (hosted
-execution/reporting deliberately disabled while local admission proceeds) and genuine failure
+execution/reporting deliberately disabled), inactive Local operation and genuine failure
 without inferring it from silence. The component table is duplicated into the job's
 `GITHUB_STEP_SUMMARY` purely for human visibility in the Actions UI; the authoritative JSON is
 `health.json` in `-OutputDirectory`. A non-healthy, non-staged status fails the job so a broken

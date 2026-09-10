@@ -16,7 +16,22 @@ Describe 'Durable run publication' {
                 if ($Method -in @('POST', 'PATCH')) {
                     $script:writes.Add(@{ endpoint = $Endpoint; method = $Method; body = (Copy-TestRunValue $Body) })
                 }
+                if ($Endpoint -eq 'repos/owner/repo/labels?per_page=100' -and $Method -eq 'GET') {
+                    if (-not $Paginate) { throw 'Label inventory must be paginated.' }
+                    return @($script:labels.Values)
+                }
+                if ($Endpoint -eq 'repos/owner/repo/labels' -and $Method -eq 'POST') {
+                    if ($script:failLabelWrite) { throw [IO.IOException]::new('Label publication failed.') }
+                    $script:labels[$Body.name] = Copy-TestRunValue $Body
+                    return $script:labels[$Body.name]
+                }
+                if ($Endpoint -eq 'repos/owner/repo/labels/scheduled-run-failure' -and $Method -eq 'GET') {
+                    return $script:labels['scheduled-run-failure']
+                }
                 if ($Endpoint -eq 'repos/owner/repo/issues' -and $Method -eq 'POST') {
+                    foreach ($label in $Body.labels) {
+                        if (-not $script:labels.ContainsKey($label)) { throw 'Required reporting label is missing.' }
+                    }
                     $script:nextIssue++
                     $number = $script:nextIssue
                     $script:issues[$number] = @{
@@ -108,10 +123,12 @@ Describe 'Durable run publication' {
                     excerpt = 'Invalid access.'; bytes = 15; truncated = $false; excerpt_truncated = $false }
             })
             $script:issues = @{}
+            $script:labels = @{}
             $script:comments = @{}
             $script:writes = [Collections.Generic.List[object]]::new()
             $script:nextIssue = 40; $script:nextComment = 100
             $script:loseIssueReply = $false; $script:losePageReply = $false
+            $script:failLabelWrite = $false
             $script:hidePageReply = $false; $script:hiddenPage = $null; $script:loseIndexReply = $false
             $script:hideIssueReply = $false; $script:hiddenIssue = $null; $script:failIndexWrite = $false
             $script:output = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
@@ -123,8 +140,10 @@ Describe 'Durable run publication' {
             $issues.Count | Should -Be 1
             $issues[41].title | Should -BeExactly 'Deep validation failed'
             $issues[41].labels.name | Should -Be @('scheduled-run-failure')
-            $writes[0].body.body | Should -Match 'publication is pending'
-            $writes[1].endpoint | Should -BeExactly 'repos/owner/repo/issues/41/comments'
+            $labels.Keys | Should -Be @('scheduled-run-failure')
+            $writes[0].endpoint | Should -BeExactly 'repos/owner/repo/labels'
+            $writes[1].body.body | Should -Match 'publication is pending'
+            $writes[2].endpoint | Should -BeExactly 'repos/owner/repo/issues/41/comments'
             $writes[-1].method | Should -BeExactly 'PATCH'
             $result.record.revisions.Count | Should -Be 1
             $issues[41].body | Should -Match 'Complete evidence revisions: 1'
@@ -147,6 +166,45 @@ Describe 'Durable run publication' {
             $jobs[0].conclusion = 'success'; $jobs[0].steps[0].conclusion = 'success'
             (Invoke-TestRunPublication).requires_triage | Should -BeFalse
             $writes.Count | Should -Be 0
+            $journal = Get-Content -LiteralPath (Join-Path $output 'publication-123-456-789.json') -Raw |
+                ConvertFrom-Json -AsHashtable
+            $journal.stage | Should -Be prepared
+            $journal.issue_number | Should -BeNullOrEmpty
+        }
+        It 'does not forget an uncertain issue write when a rerun passes' {
+            $script:hideIssueReply = $true
+            { Invoke-TestRunPublication } | Should -Throw
+            $run.conclusion = 'success'; $results[0].outcome = 'passed'
+            $jobs[0].conclusion = 'success'; $jobs[0].steps[0].conclusion = 'success'
+            $writes.Clear()
+            { Invoke-TestRunPublication } | Should -Throw
+            $writes.Count | Should -Be 0
+        }
+        It 'preserves the shared coverage-create fence when repeating clean run intake' {
+            $run.conclusion = 'success'; $results[0].outcome = 'passed'
+            $jobs[0].conclusion = 'success'; $jobs[0].steps[0].conclusion = 'success'
+            $null = Invoke-TestRunPublication
+            $journalPath = Join-Path $output 'publication-123-456-789.json'
+            $journal = Get-Content -LiteralPath $journalPath -Raw | ConvertFrom-Json -AsHashtable
+            $journal.coverage_creation = @{ stage = 'creating-issue'; issue_number = $null }
+            Write-ScheduledRunJournal -Path $journalPath -Record $journal
+            $null = Invoke-TestRunPublication
+            $saved = Get-Content -LiteralPath $journalPath -Raw | ConvertFrom-Json -AsHashtable
+            $saved.coverage_creation.stage | Should -Be creating-issue
+            $saved.coverage_creation.issue_number | Should -BeNullOrEmpty
+            $writes.Count | Should -Be 0
+        }
+        It 'retains a retryable pre-issue journal after label publication fails' {
+            $script:failLabelWrite = $true
+            { Invoke-TestRunPublication } | Should -Throw
+            $issues.Count | Should -Be 0
+            $journal = Get-Content -LiteralPath (Join-Path $output 'publication-123-456-789.json') -Raw |
+                ConvertFrom-Json -AsHashtable
+            $journal.stage | Should -Be prepared
+            $script:failLabelWrite = $false
+            $result = Invoke-TestRunPublication
+            $result.record.revisions.Count | Should -Be 1
+            $issues.Count | Should -Be 1
         }
         It 'never writes while reporting is disabled or only a dry run is requested' {
             $policy.rollout.reporting_enabled = $false
@@ -161,7 +219,7 @@ Describe 'Durable run publication' {
             $result.record.revisions.Count | Should -Be 1
             $issues.Count | Should -Be 1
             $comments[41].Count | Should -Be 1
-            @($writes | Where-Object method -EQ POST).Count | Should -Be 2
+            @($writes | Where-Object method -EQ POST).Count | Should -Be 3
         }
         It 'blocks an unresolved page write until that operation can be reconciled' {
             $script:hidePageReply = $true

@@ -369,7 +369,13 @@ Describe 'Archive extraction boundaries' {
                 Mock Get-ScheduledOwnedIssue { @() }
                 Mock Restore-ScheduledRunPublicationState {}
                 Mock Sync-ScheduledRunIntake {
-                    param($Run, $Plan, $Manifest, $Results, $Jobs, $EvidenceGaps, [switch] $Skipped)
+                    param($Policy, $Run, $Plan, $Manifest, $Results, $Jobs, $EvidenceGaps, $OutputDirectory,
+                        [switch] $Skipped, [switch] $Apply)
+                    if ($Apply) {
+                        Write-ScheduledRunJournal `
+                            -Path (Join-Path $OutputDirectory "publication-$($Policy.repository_id)-$($Run.workflow_id)-$($Run.id).json") `
+                            -Record @{ schema_version = 1; identity = @{ repository_id = $Policy.repository_id }; stage = 'prepared' }
+                    }
                     $script:capturedRunEvidence = @{
                         run = $Run; plan = $Plan; manifest = $Manifest; results = $Results
                         jobs = $Jobs; evidence_gaps = $EvidenceGaps
@@ -445,10 +451,11 @@ Describe 'Archive extraction boundaries' {
                 Should -Invoke Invoke-ScheduledGitHubApi -Times 0 -ParameterFilter { $Method -in @('POST', 'PATCH') }
                 Test-Path -LiteralPath (Join-Path $caseRoot 'report\report.json') | Should -BeTrue
             }
-            Describe 'Manual diagnostics with the checked-in policy' {
+            Describe 'Manual diagnostics with explicit disabled reporting' {
                 BeforeEach {
                     $script:apiPolicy = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'policy.json') -Raw |
                         ConvertFrom-Json -AsHashtable
+                    $apiPolicy.rollout.reporting_enabled = $false
                     $apiRun.name = 'Selected deep validation'
                     $apiRun.path = '.github/workflows/selected-deep-validation.yml'
                     $apiRun.event = 'workflow_dispatch'
@@ -521,8 +528,9 @@ Describe 'Archive extraction boundaries' {
                     Should -Invoke Sync-ScheduledRunIntake -Times 0
                 }
 
-                It 'keeps on-demand run intake available only with separately authorized writes' {
-                    $apiPolicy.rollout.reporting_enabled = $true
+                It 'allows manual run intake with checked-in hosted defaults but no repair or coverage access' {
+                    $script:apiPolicy = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'policy.json') -Raw |
+                        ConvertFrom-Json -AsHashtable
                     Mock Assert-ScheduledWriteController {}
                     Mock Get-ScheduledArtifact { throw [IO.IOException]::new('Missing check artifact.') } `
                         -ParameterFilter { $Name -like 'scheduled-result-*' }
@@ -648,7 +656,17 @@ Describe 'Archive extraction boundaries' {
             It 'routes enabled reporting without requiring hosted execution or the native App pilot' {
                 $apiPolicy.rollout.reporting_enabled = $true
                 Mock Assert-ScheduledWriteController {}
-                Mock Invoke-ScheduledGitHubApi { @{ number = 42 } } -ParameterFilter { $Method -ceq 'POST' }
+                Mock Invoke-ScheduledGitHubApi {
+                    @(@{ name = 'scheduled-coverage' }, @{ name = 'scheduled-health' })
+                } -ParameterFilter { $Endpoint -like '*/labels?*' }
+                Mock Invoke-ScheduledGitHubApi {
+                    $script:createdCoverage = @{
+                        number = 42; user = @{ login = 'github-actions[bot]' }; body = $Body.body
+                    }
+                    @{ number = 42 }
+                } -ParameterFilter { $Method -ceq 'POST' }
+                Mock Invoke-ScheduledGitHubApi { $script:createdCoverage } `
+                    -ParameterFilter { $Endpoint -ceq 'repos/folo-rs/folo/issues/42' }
                 $report = Invoke-ScheduledReporting 'folo-rs/folo' $eventFile (Join-Path $caseRoot 'report') -Apply
                 $report.problems | Should -BeNullOrEmpty
                 $report.applied | Should -BeTrue
@@ -692,6 +710,14 @@ Describe 'Archive extraction boundaries' {
                 Mock Invoke-ScheduledGitHubApi { $existingCoverage } -ParameterFilter { $Endpoint -ceq 'repos/folo-rs/folo/issues/99' }
                 $apiRun.name = 'Selected deep validation'; $apiRun.path = '.github/workflows/selected-deep-validation.yml'
                 $apiRun.event = 'push'; $apiPolicy.repair.allowed_packages = @()
+                $apiRun.workflow_id = 200
+                $apiRun.created_at = '2026-09-10T09:00:00Z'
+                $apiRun.run_started_at = '2026-09-10T10:00:00Z'
+                $apiRun.updated_at = '2026-09-10T12:00:00Z'
+                $apiPlan.planned_at = '2026-09-10T10:01:00Z'
+                Mock Invoke-ScheduledGitHubApi {
+                    @{ id = 200; name = 'Selected deep validation'; path = '.github/workflows/selected-deep-validation.yml' }
+                } -ParameterFilter { $Endpoint -like '*/actions/workflows/200' }
                 @{
                     action = 'completed'; workflow_run = $apiRun
                     repository = @{ id = 850321188; full_name = 'folo-rs/folo'; default_branch = 'main' }
@@ -706,8 +732,33 @@ Describe 'Archive extraction boundaries' {
                     $report.status | Should -Be not-run
                     $report.coverage.invalidation | Should -BeNullOrEmpty
                     (Get-ScheduledDigest $report.coverage.receipt) | Should -BeExactly (Get-ScheduledDigest $initial.coverage.receipt)
+                    $persisted = Read-ScheduledRecord $existingCoverage.body coverage
+                    (Get-ScheduledDigest $report.coverage.last_plan) | Should -BeExactly (Get-ScheduledDigest $persisted.last_plan)
+                    (Get-ScheduledDigest $report.coverage.planning) | Should -BeExactly (Get-ScheduledDigest $persisted.planning)
+                    $health = Get-ScheduledHealth -Coverage $report.coverage -Manifest $expectedManifest `
+                        -Planning $report.coverage.planning -Now ([datetimeoffset]$apiRun.updated_at) -LocalDisabled
+                    $health.components.planning.status | Should -Be unavailable
+                    $health.components.coverage.status | Should -Be fresh
                 }
                 Should -Invoke Get-ScheduledCheckResult -Times 32
+            }
+            It 'replaces a selected planning checkpoint with a full-workflow checkpoint' {
+                $initial = Invoke-ScheduledReporting 'folo-rs/folo' $eventFile (Join-Path $caseRoot 'initial-full')
+                $initial.coverage.last_plan.workflow_path = '.github/workflows/selected-deep-validation.yml'
+                $initial.coverage.last_plan.workflow_id = 200
+                $initial.coverage.last_plan.created_at = '2026-09-10T10:00:00Z'
+                $initial.coverage.last_plan.planned_at = '2026-09-10T11:00:00Z'
+                $script:existingCoverage = @{
+                    number = 99; state = 'open'; user = @{ login = 'github-actions[bot]' }
+                    body = Write-ScheduledRecord $initial.coverage coverage
+                }
+                Mock Get-ScheduledOwnedIssue { @($existingCoverage) } -ParameterFilter { $Label -ceq 'scheduled-coverage' }
+                Mock Invoke-ScheduledGitHubApi { $existingCoverage } -ParameterFilter { $Endpoint -ceq 'repos/folo-rs/folo/issues/99' }
+                $report = Invoke-ScheduledReporting 'folo-rs/folo' $eventFile (Join-Path $caseRoot 'full')
+                $report.status | Should -Be passed
+                $report.coverage.last_plan.workflow_path | Should -BeExactly '.github/workflows/full-deep-validation.yml'
+                $report.coverage.last_plan.workflow_id | Should -Be 100
+                [datetimeoffset]$report.coverage.last_plan.planned_at | Should -Be ([datetimeoffset]$apiPlan.planned_at)
             }
             It 'retains run evidence and coverage when an existing repair confirmation is stale' {
                 $script:staleIssue = @{
@@ -943,6 +994,29 @@ Describe 'Safe durable writes' {
                 $Method -ceq 'PATCH' -and $Body.body.Contains('Human before') -and $Body.body.EndsWith('Human after')
             }
         }
+        It 'does not require <ValueKind> bootstrap context when updating an existing issue' -TestCases @(
+            @{ ValueKind = 'omitted' }, @{ ValueKind = 'empty' }, @{ ValueKind = 'whitespace' },
+            @{ ValueKind = 'missing-path' }
+        ) {
+            param($ValueKind)
+            $policy.rollout.reporting_enabled = $true
+            $record.extra = 'update'
+            $arguments = @{ Policy = $policy; Issue = $issue; Record = $record; Kind = 'coverage'; Apply = $true }
+            if ($ValueKind -ne 'omitted') {
+                $value = switch ($ValueKind) {
+                    empty { '' }
+                    whitespace { ' ' }
+                    missing-path { Join-Path $TestDrive 'not-needed' }
+                }
+                $arguments.OutputDirectory = $value
+                $arguments.PublicationJournalPath = $value
+            }
+            (Sync-ScheduledIssue @arguments).action | Should -Be PATCH
+            Should -Invoke Invoke-ScheduledGitHubApi -Times 1 -Exactly -ParameterFilter {
+                $Method -ceq 'PATCH' -and $Endpoint -ceq 'repos/folo-rs/folo/issues/1'
+            }
+            Should -Invoke Invoke-ScheduledGitHubApi -Times 0 -ParameterFilter { $Endpoint -like '*/labels*' }
+        }
         It 'refuses concurrent record changes without losing a human body edit' {
             $live = $issue.Clone()
             $live.body = Write-ScheduledRecord @{ schema_version = 1; different = $true } coverage
@@ -1171,7 +1245,7 @@ Describe 'Read-only health adapter' {
                 repository = 'folo-rs/folo'; repository_id = 850321188
                 worker_login = 'sandersaares'; reporter_login = 'github-actions[bot]'
                 coverage = @{ expected_plan_gap_hours = 30; max_age_days = 7 }
-                local = @{ expected_poll_gap_minutes = 420; enrolled_machine_id = 'executor' }
+                local = @{ expected_poll_gap_minutes = 420; enrolled_machine_id = 'executor'; mode = 'observe' }
             }
             $manifest = Get-ScheduledCheckManifest -SourceSha ('a' * 40) -ControllerSha ('a' * 40) -ContractDigest ('c' * 64)
             $context = @{
@@ -1190,6 +1264,8 @@ Describe 'Read-only health adapter' {
                 -Context $context -IsAncestor { param($old, $new) $old -ceq $new }
             $healthCoverage.repository_id = 850321188
             $healthCoverage.planning = @{ outcome = 'not-run-unchanged'; completed_at = '2026-09-08T11:00:00Z' }
+            $healthCoverage.last_plan = $context.Clone()
+            $healthCoverage.last_plan.planned_at = $healthCoverage.planning.completed_at
             $healthCoverage.reporting = @{ outcome = 'passed'; completed_at = '2026-09-08T11:00:00Z' }
             $script:healthLocal = @{
                 schema_version = 1; repository = 'folo-rs/folo'; repository_id = 850321188; executor_id = 'executor'
@@ -1266,6 +1342,59 @@ Describe 'Read-only health adapter' {
             $health.components.reporting.status | Should -Be failed
             $health.healthy | Should -BeFalse
         }
+        It 'reports disabled Local health with the actual hosted-enabled defaults' {
+            $script:healthPolicy = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'policy.json') -Raw |
+                ConvertFrom-Json -AsHashtable
+            Mock Get-ScheduledOwnedIssue { throw 'Disabled Local operation must not require a health registration.' } `
+                -ParameterFilter { $Label -ceq 'scheduled-health' }
+            $health = Get-ScheduledGitHubHealth 'folo-rs/folo' ([datetimeoffset]'2026-09-08T12:00:00Z')
+            $health.healthy | Should -BeTrue
+            $health.components.local_scan.status | Should -Be disabled
+            $health.components.coverage.status | Should -Be reused
+            Should -Invoke Invoke-ScheduledGitHubApi -Times 0 -ParameterFilter { $Endpoint -like '*/comments*' }
+        }
+        It 'retains missing baseline and reporter failures while Local is deliberately off' {
+            $script:healthPolicy = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'policy.json') -Raw |
+                ConvertFrom-Json -AsHashtable
+            Mock Get-ScheduledOwnedIssue { @() } -ParameterFilter { $Label -ceq 'scheduled-coverage' }
+            Mock Invoke-ScheduledGitHubApi {
+                @{ workflow_runs = @(@{
+                    id = 13; run_attempt = 1; conclusion = 'failure'; updated_at = '2026-09-08T11:00:00Z'
+                }) }
+            } -ParameterFilter { $Endpoint -like '*/scheduled-report.yml/runs?*per_page=1' }
+            $health = Get-ScheduledGitHubHealth 'folo-rs/folo' ([datetimeoffset]'2026-09-08T12:00:00Z')
+            $health.healthy | Should -BeFalse
+            $health.components.local_scan.status | Should -Be disabled
+            $health.components.coverage.status | Should -Be unavailable
+            $health.components.planning.status | Should -Be unavailable
+            $health.components.reporting.status | Should -Be failed
+        }
+        It 'does not accept selected-workflow activity as nightly planning freshness' {
+            $healthCoverage.last_plan.workflow_path = '.github/workflows/selected-deep-validation.yml'
+            $health = Get-ScheduledGitHubHealth 'folo-rs/folo' ([datetimeoffset]'2026-09-08T12:00:00Z')
+            $health.healthy | Should -BeFalse
+            $health.components.planning.status | Should -Be unavailable
+        }
+        It 'reports a foreign coverage index rather than trusting its planning or receipt' {
+            $healthCoverage.repository_id = 123
+            $health = Get-ScheduledGitHubHealth 'folo-rs/folo' ([datetimeoffset]'2026-09-08T12:00:00Z')
+            $health.status | Should -Be failed
+            $health.problems | Should -Not -BeNullOrEmpty
+        }
+        It 'requires an enrolled executor heartbeat even in <Mode> mode' -TestCases @(
+            @{ Mode = 'observe' }, @{ Mode = 'paused' }, @{ Mode = 'repair' }
+        ) {
+            param($Mode)
+            $healthPolicy.local.mode = $Mode
+            $healthLocal.last_successful_scan = '2026-09-01T11:00:00Z'
+            $health = Get-ScheduledGitHubHealth 'folo-rs/folo' ([datetimeoffset]'2026-09-08T12:00:00Z')
+            $health.components.local_scan.status | Should -Be unavailable
+            $health.healthy | Should -BeFalse
+            $healthLocal.last_successful_scan = '2026-09-08T11:00:00Z'
+            $healthLocal.blocked_conditions = @('failed-scan')
+            $health = Get-ScheduledGitHubHealth 'folo-rs/folo' ([datetimeoffset]'2026-09-08T12:00:00Z')
+            $health.components.local_scan.status | Should -Be failed
+        }
         It 'keeps cancelled and failed reporting origins visible after a later successful run' {
             Mock Invoke-ScheduledGitHubApi {
                 @(@{ total_count = 1; workflow_runs = @(@{
@@ -1313,6 +1442,20 @@ Describe 'Read-only health adapter' {
                 $health.problems.Count | Should -Be 1
             }
             Should -Invoke Invoke-ScheduledGitHubApi -Times 0 -ParameterFilter { $Method -in @('POST', 'PATCH') }
+        }
+        It 'rejects a Local health surface that is not the coverage issue' {
+            Mock Get-ScheduledOwnedIssue { @(@{ number = 2; state = 'open' }) } `
+                -ParameterFilter { $Label -ceq 'scheduled-health' }
+            $health = Get-ScheduledGitHubHealth 'folo-rs/folo' ([datetimeoffset]'2026-09-08T12:00:00Z')
+            $health.healthy | Should -BeFalse
+            $health.problems | Should -Not -BeNullOrEmpty
+            Should -Invoke Invoke-ScheduledGitHubApi -Times 0 -ParameterFilter { $Endpoint -like '*/comments*' }
+        }
+        It 'does not confuse executor registration with a successful scan' {
+            $healthLocal.Remove('last_successful_scan')
+            $health = Get-ScheduledGitHubHealth 'folo-rs/folo' ([datetimeoffset]'2026-09-08T12:00:00Z')
+            $health.healthy | Should -BeFalse
+            $health.components.local_scan.status | Should -Be unavailable
         }
     }
 }

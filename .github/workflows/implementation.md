@@ -195,6 +195,23 @@ those observations, and skipped work does not refresh the coverage timestamp.
 Manual diagnostic attempts are excluded from this reuse decision; they cannot
 invalidate automatic coverage even while their reporting is pending.
 
+### Reporting label bootstrap
+
+The issue-write adapters establish only the labels required by the publication they are
+about to perform: `scheduled-run-failure` for new run intake, `scheduled-coverage` and
+`scheduled-health` for the shared coverage issue. Both `-Apply` and
+`rollout.reporting_enabled` must authorize writes before any label lookup or creation.
+The existing reporter `issues: write` permission covers this boundary. Manual diagnostics
+never access repair or shared coverage records merely to establish their run-intake label.
+
+Paginated lookup preserves existing label spelling, color and description. Before a
+missing-label POST, the reporter persists intent in `label-<name>.json` in its report
+artifact. A read of that unique name confirms creation even after a raced or lost POST
+response; it never overwrites operator metadata. An unsuccessful confirming read fails
+publication explicitly. GitHub's unique label names permit lookup-based recovery without
+restoring this label journal as a precondition, unlike uncertain issue/page writes.
+PowerShell owns these GitHub/process operations; structured run evidence remains in Rust.
+
 ### Manual checks
 
 The planner recognizes manual requests by GitHub's `workflow_dispatch` event.
@@ -282,6 +299,15 @@ native response capture and UTF-8 process transport, including setup failures
 before any checker result exists. Both reporting utilities are built from the
 trusted controller with its pinned toolchain and separate per-platform target
 directories, never from a candidate checkout or artifact.
+
+The per-run publication journal also fences creation of the shared coverage issue.
+Its `coverage_creation` intent is persisted after label bootstrap but before the
+issue POST, even when clean run intake itself remains in `prepared` state.
+An uncertain create is reconciled by its returned issue number when available, or
+by the unique reporter-owned coverage record. Without a confirmed matching record,
+the reporter retains the fence instead of posting a duplicate. A fresh reporter
+attempt restores this same journal; repeating run intake preserves the coverage
+intent. Unique label names remain independently retryable before this issue fence.
 
 #### Run-level failure intake
 
@@ -456,7 +482,6 @@ The serialized names are compatibility details. Their mapping to operating behav
 | `rollout.reporting_enabled` | Authorizes the reporter's issue writes independently of execution and local admission. |
 | `rollout.prerequisites.execution_canary`, `reporting_canary`, `native_app_canary` | Recorded operator verification of execution, reporting and actual native App capabilities. |
 | `rollout.prerequisites.benchmark_exclusion`, `azure_policy` | Recorded authorization and installation of managed-publication credential safeguards. |
-| `rollout.phase` | Descriptive compatibility metadata, not authorization to execute, report or admit work. |
 | `local.mode` | Repair admission selection: `observe` and `paused` do not dispatch repairs; `repair` also requires matching persisted executor mode, enrollment, approved scope, profile and budgets. It does not authorize triage. |
 | Planning reason or health status `staged` | Deliberately disabled hosted operation, not proof of coverage. |
 
@@ -466,10 +491,12 @@ profile, and distinguish disabled/observe/paused behavior from active admission.
 The new-admission capability boundary is not a policy switch: enabling any of those
 settings cannot bypass the unavailable AI-triage handoff.
 
-Safe installation defaults disable hosted execution/reporting and both Local roles,
-and leave repair allowlists unconfigured. Disabled hosted execution means automatic
-recurring deep coverage is off; it is not proof that PR validation covers it.
-Setup preserves those settings.
+The checked-in policy enables hosted execution and reporting, keeps Local in `observe`
+without enrollment, and leaves repair allowlists unconfigured. Recorded canary and
+publication-safeguard assertions remain false; they are not prerequisites for hosted
+checks or run intake. Local setup preserves these independent settings. Explicitly disabling
+hosted execution turns off automatic recurring coverage; it is not proof that ordinary
+PR validation covers it.
 Manual **Run workflow** requests run fresh checks without changing recurring
 authorization or requiring repair package approval. Their diagnostics are separate
 from main coverage and repair confirmation. Issue reporting remains independently
@@ -495,8 +522,14 @@ coverage and separate triage/repair availability. They distinguish fresh evidenc
 scan, deliberately disabled/paused operation and unavailable systems. No component claims to
 monitor its own total outage; the operator runbook is in the
 [deep validation chapter](../../docs/scheduled-validation.md#health-recovery-and-rollback).
-The reporter retains the actual validated planning timestamp rather than substituting run
-completion time. Hosted health uses read-only permissions and persists its component report as
+The reporter retains the actual validated planning timestamp for automatic Full deep validation,
+rather than substituting run completion time or advancing it from Selected deep validation.
+Only the full workflow's planning identity is accepted by hosted and Local health readers.
+An unenrolled Local executor in observe/paused mode has disabled health, with no requirement
+to discover a Local health comment. Enrollment or repair mode makes its heartbeat expected;
+stale or failed observations remain unhealthy even when admissions are paused.
+Missing baseline coverage remains unavailable and does not prevent observing reporter failures.
+Hosted health uses read-only permissions and persists its component report as
 an artifact and step summary before signaling failure. The shared coverage/health issue contains
 separate hosted coverage and role-specific personal executor health records. Triage health
 tracks unprocessed run evidence and completed analysis; repair health tracks actionable
