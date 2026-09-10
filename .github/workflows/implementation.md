@@ -300,6 +300,15 @@ before any checker result exists. Both reporting utilities are built from the
 trusted controller with its pinned toolchain and separate per-platform target
 directories, never from a candidate checkout or artifact.
 
+The per-run publication journal also fences creation of the shared coverage issue.
+Its `coverage_creation` intent is persisted after label bootstrap but before the
+issue POST, even when clean run intake itself remains in `prepared` state.
+An uncertain create is reconciled by its returned issue number when available, or
+by the unique reporter-owned coverage record. Without a confirmed matching record,
+the reporter retains the fence instead of posting a duplicate. A fresh reporter
+attempt restores this same journal; repeating run intake preserves the coverage
+intent. Unique label names remain independently retryable before this issue fence.
+
 #### Run-level failure intake
 
 Inventory actual Actions jobs and steps as well as the declared manifest: failed checkout,

@@ -457,4 +457,4 @@ function Initialize-ScheduledReportingLabel {
 }
 
 Export-ModuleMember -Function Get-ScheduledRunJobEvidence, Invoke-ScheduledRunRecord, Sync-ScheduledRunIntake,
-Initialize-ScheduledReportingLabel
+Initialize-ScheduledReportingLabel, Write-ScheduledRunJournal

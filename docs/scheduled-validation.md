@@ -815,6 +815,12 @@ publication. Pending issue/page writes are reconciled against GitHub rather than
 blindly repeated. Missing recovery artifacts or an unresolved write with no visible
 result block the rerun and require operator reconciliation; deleting the journal
 is not a retry mechanism.
+The same journal carries shared coverage-issue creation separately from run intake.
+A clean run's `prepared` intake state does not authorize repeating an uncertain
+coverage POST. Recovery reads the known issue number, or searches for the owned
+coverage record, and requires matching persisted evidence. If that outcome remains
+unknown, retain the journal and reconcile the issue before retrying; do not create
+a replacement coverage issue.
 An incomplete report can have partial side effects: `writes_authorized` records
 whether writes were permitted, while `applied` becomes true only when reconciliation
 finishes. The journal and actual GitHub state determine recovery, not `applied: false`.

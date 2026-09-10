@@ -180,6 +180,20 @@ Describe 'Durable run publication' {
             { Invoke-TestRunPublication } | Should -Throw
             $writes.Count | Should -Be 0
         }
+        It 'preserves the shared coverage-create fence when repeating clean run intake' {
+            $run.conclusion = 'success'; $results[0].outcome = 'passed'
+            $jobs[0].conclusion = 'success'; $jobs[0].steps[0].conclusion = 'success'
+            $null = Invoke-TestRunPublication
+            $journalPath = Join-Path $output 'publication-123-456-789.json'
+            $journal = Get-Content -LiteralPath $journalPath -Raw | ConvertFrom-Json -AsHashtable
+            $journal.coverage_creation = @{ stage = 'creating-issue'; issue_number = $null }
+            Write-ScheduledRunJournal -Path $journalPath -Record $journal
+            $null = Invoke-TestRunPublication
+            $saved = Get-Content -LiteralPath $journalPath -Raw | ConvertFrom-Json -AsHashtable
+            $saved.coverage_creation.stage | Should -Be creating-issue
+            $saved.coverage_creation.issue_number | Should -BeNullOrEmpty
+            $writes.Count | Should -Be 0
+        }
         It 'retains a retryable pre-issue journal after label publication fails' {
             $script:failLabelWrite = $true
             { Invoke-TestRunPublication } | Should -Throw

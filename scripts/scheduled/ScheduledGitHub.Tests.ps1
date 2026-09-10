@@ -369,7 +369,13 @@ Describe 'Archive extraction boundaries' {
                 Mock Get-ScheduledOwnedIssue { @() }
                 Mock Restore-ScheduledRunPublicationState {}
                 Mock Sync-ScheduledRunIntake {
-                    param($Run, $Plan, $Manifest, $Results, $Jobs, $EvidenceGaps, [switch] $Skipped)
+                    param($Policy, $Run, $Plan, $Manifest, $Results, $Jobs, $EvidenceGaps, $OutputDirectory,
+                        [switch] $Skipped, [switch] $Apply)
+                    if ($Apply) {
+                        Write-ScheduledRunJournal `
+                            -Path (Join-Path $OutputDirectory "publication-$($Policy.repository_id)-$($Run.workflow_id)-$($Run.id).json") `
+                            -Record @{ schema_version = 1; identity = @{ repository_id = $Policy.repository_id }; stage = 'prepared' }
+                    }
                     $script:capturedRunEvidence = @{
                         run = $Run; plan = $Plan; manifest = $Manifest; results = $Results
                         jobs = $Jobs; evidence_gaps = $EvidenceGaps
@@ -653,7 +659,14 @@ Describe 'Archive extraction boundaries' {
                 Mock Invoke-ScheduledGitHubApi {
                     @(@{ name = 'scheduled-coverage' }, @{ name = 'scheduled-health' })
                 } -ParameterFilter { $Endpoint -like '*/labels?*' }
-                Mock Invoke-ScheduledGitHubApi { @{ number = 42 } } -ParameterFilter { $Method -ceq 'POST' }
+                Mock Invoke-ScheduledGitHubApi {
+                    $script:createdCoverage = @{
+                        number = 42; user = @{ login = 'github-actions[bot]' }; body = $Body.body
+                    }
+                    @{ number = 42 }
+                } -ParameterFilter { $Method -ceq 'POST' }
+                Mock Invoke-ScheduledGitHubApi { $script:createdCoverage } `
+                    -ParameterFilter { $Endpoint -ceq 'repos/folo-rs/folo/issues/42' }
                 $report = Invoke-ScheduledReporting 'folo-rs/folo' $eventFile (Join-Path $caseRoot 'report') -Apply
                 $report.problems | Should -BeNullOrEmpty
                 $report.applied | Should -BeTrue

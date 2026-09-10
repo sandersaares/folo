@@ -377,6 +377,7 @@ function Sync-ScheduledIssue {
         [Parameter(Mandatory)][hashtable] $Record,
         [Parameter(Mandatory)][ValidateSet('reporter', 'coverage')][string] $Kind,
         [string] $OutputDirectory,
+        [string] $PublicationJournalPath,
         [switch] $Apply
     )
 
@@ -420,14 +421,55 @@ function Sync-ScheduledIssue {
     # below in this module.
     if ($Apply -and $Policy.rollout.reporting_enabled) {
         if ($null -eq $Issue) {
+            $journal = Get-Content -LiteralPath $PublicationJournalPath -Raw | ConvertFrom-Json -AsHashtable
+            if ($journal.schema_version -ne 1 -or $journal.identity.repository_id -ne $Policy.repository_id) {
+                throw [FormatException]::new('Coverage publication journal identity is invalid.')
+            }
             $api = {
                 param($Endpoint, $Method = 'GET', $Body, [switch] $Paginate)
                 Invoke-ScheduledGitHubApi -Endpoint $Endpoint -Method $Method -Body $Body -Paginate:$Paginate
             }
-            foreach ($label in $labels) {
-                Initialize-ScheduledReportingLabel -Policy $Policy -Name $label `
-                    -OutputDirectory $OutputDirectory -Api $api -Apply
+            $createdHere = -not $journal.ContainsKey('coverage_creation')
+            if ($createdHere) {
+                foreach ($label in $labels) {
+                    Initialize-ScheduledReportingLabel -Policy $Policy -Name $label `
+                        -OutputDirectory $OutputDirectory -Api $api -Apply
+                }
+                # Labels have unique names and can be retried. Issue creation does not: fence
+                # it in the same restored journal as run intake before sending its first POST.
+                # Ref: ../../.github/workflows/implementation.md#serialized-reporting.
+                $journal.coverage_creation = @{ issue_number = $null; stage = 'creating-issue' }
+                Write-ScheduledRunJournal -Path $PublicationJournalPath -Record $journal
+                try {
+                    $created = Invoke-ScheduledGitHubApi -Endpoint $endpoint -Method POST -Body $payload
+                    if ($created.number -le 0) { throw [FormatException]::new('Coverage issue response has no identity.') }
+                    $journal.coverage_creation.issue_number = $created.number
+                    Write-ScheduledRunJournal -Path $PublicationJournalPath -Record $journal
+                } catch [IO.IOException], [FormatException] {
+                    Write-Verbose 'Coverage issue creation response is uncertain; reconciling the owned issue before continuing.'
+                }
             }
+            $creation = $journal.coverage_creation
+            if ($creation.stage -cnotin @('creating-issue', 'complete')) {
+                throw [FormatException]::new('Coverage creation journal state is invalid.')
+            }
+            $coverageMatches = @(if ($null -ne $creation.issue_number) {
+                Invoke-ScheduledGitHubApi "repos/$($Policy.repository)/issues/$($creation.issue_number)"
+            } else { Get-ScheduledOwnedIssue -Policy $Policy -Label scheduled-coverage })
+            if ($coverageMatches.Count -ne 1) {
+                throw [IO.IOException]::new('Coverage issue creation remains unresolved; reconcile it before retrying. No further POST is permitted.')
+            }
+            $live = $coverageMatches[0]
+            $current = Read-ScheduledRecord -Text $live.body -Kind coverage
+            if ($live.user.login -cne $Policy.reporter_login -or
+                $current.repository -cne $Policy.repository -or $current.repository_id -ne $Policy.repository_id -or
+                (Get-ScheduledDigest $current) -cne (Get-ScheduledDigest (Read-ScheduledRecord $body coverage))) {
+                throw [FormatException]::new('Recovered coverage differs from the proposed record; replan using the current owned issue.')
+            }
+            $creation.stage = 'complete'
+            $creation.issue_number = $live.number
+            Write-ScheduledRunJournal -Path $PublicationJournalPath -Record $journal
+            return @{ action = if ($createdHere) { 'POST' } else { 'reconciled' }; number = $live.number }
         }
         $updated = Invoke-ScheduledGitHubApi -Endpoint $endpoint -Method $method -Body $payload
         return @{ action = $method; number = $updated.number }
@@ -750,7 +792,9 @@ function Invoke-ScheduledReporting {
             }
         }
         $report.actions += Sync-ScheduledIssue -Policy $policy -Issue $coverageIssue -Record $nextCoverage `
-            -Kind coverage -OutputDirectory $OutputDirectory -Apply:$applyWrites
+            -Kind coverage -OutputDirectory $OutputDirectory `
+            -PublicationJournalPath (Join-Path $OutputDirectory "publication-$($policy.repository_id)-$($run.workflow_id)-$($run.id).json") `
+            -Apply:$applyWrites
         $report.status = if ($intake.requires_triage) { 'reported' }
             elseif ($skipped) { 'not-run' } else { 'passed' }
         $report.applied = [bool]$applyWrites

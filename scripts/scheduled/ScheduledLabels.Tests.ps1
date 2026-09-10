@@ -120,13 +120,25 @@ Describe 'Coverage bootstrap at the actual issue-write boundary' {
     InModuleScope ScheduledGitHub {
         BeforeEach {
             $script:bootstrapPolicy = @{
-                repository = 'owner/repo'; reporter_login = 'github-actions[bot]'
+                repository = 'owner/repo'; repository_id = 123; reporter_login = 'github-actions[bot]'
                 rollout = @{ reporting_enabled = $true }
             }
             $script:bootstrapLabels = @{}
             $script:bootstrapWrites = [Collections.Generic.List[object]]::new()
             $script:failLabelWrite = $false
-            $script:record = @{ schema_version = 1; repository = 'owner/repo'; receipt = $null; invalidation = $null }
+            $script:loseCoverageReply = $false
+            $script:badCoverageNumber = $false
+            $script:hideCoverageIssue = $false
+            $script:coverageIssue = $null
+            $script:record = @{
+                schema_version = 1; repository = 'owner/repo'; repository_id = 123
+                receipt = $null; invalidation = $null
+            }
+            $script:publicationPath = Join-Path $TestDrive 'publication-123-456-789.json'
+            @{
+                schema_version = 1; identity = @{ repository_id = 123; workflow_id = 456; run_id = 789 }
+                stage = 'prepared'; issue_number = $null; pending_pages = @{}
+            } | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $publicationPath
             Mock Invoke-ScheduledGitHubApi {
                 if ($Endpoint -eq 'repos/owner/repo/labels?per_page=100') {
                     return @($script:bootstrapLabels.Values)
@@ -139,12 +151,25 @@ Describe 'Coverage bootstrap at the actual issue-write boundary' {
                         return $Body
                     }
                     if ($Endpoint -eq 'repos/owner/repo/issues') {
+                        $intent = Get-Content -LiteralPath $publicationPath -Raw | ConvertFrom-Json -AsHashtable
+                        $intent.coverage_creation.stage | Should -Be creating-issue
                         foreach ($label in $Body.labels) {
                             if (-not $script:bootstrapLabels.ContainsKey($label)) { throw 'Required label is missing.' }
                         }
+                        $script:coverageIssue = @{
+                            number = 42; state = 'open'; user = @{ login = 'github-actions[bot]' }
+                            body = $Body.body
+                        }
+                        if ($script:loseCoverageReply) { throw [IO.IOException]::new('Lost coverage response.') }
+                        if ($script:badCoverageNumber) { return @{ number = 0 } }
                         return @{ number = 42 }
                     }
                 }
+                if ($Endpoint -eq 'repos/owner/repo/issues?labels=scheduled-coverage&state=all&per_page=100') {
+                    if ($script:hideCoverageIssue -or $null -eq $script:coverageIssue) { return @() }
+                    return @($script:coverageIssue)
+                }
+                if ($Endpoint -eq 'repos/owner/repo/issues/42') { return $script:coverageIssue }
                 if ($Endpoint -match '^repos/owner/repo/labels/(scheduled-[a-z-]+)$') {
                     if (-not $script:bootstrapLabels.ContainsKey($Matches[1])) { throw [IO.IOException]::new('Missing label.') }
                     return $script:bootstrapLabels[$Matches[1]]
@@ -154,7 +179,7 @@ Describe 'Coverage bootstrap at the actual issue-write boundary' {
         }
         It 'creates required coverage labels before the first issue without inventing a receipt' {
             $result = Sync-ScheduledIssue -Policy $bootstrapPolicy -Issue $null -Record $record `
-                -Kind coverage -OutputDirectory $TestDrive -Apply
+                -Kind coverage -OutputDirectory $TestDrive -PublicationJournalPath $publicationPath -Apply
             $result.action | Should -Be POST
             $result.number | Should -Be 42
             @($bootstrapLabels.Keys | Sort-Object) | Should -Be @('scheduled-coverage', 'scheduled-health')
@@ -162,19 +187,138 @@ Describe 'Coverage bootstrap at the actual issue-write boundary' {
             $published = Read-ScheduledRecord -Text $bootstrapWrites[-1].body.body -Kind coverage
             $published.receipt | Should -BeNullOrEmpty
             $published.invalidation | Should -BeNullOrEmpty
+            $journal = Get-Content -LiteralPath $publicationPath -Raw | ConvertFrom-Json -AsHashtable
+            $journal.coverage_creation.stage | Should -Be complete
+            $journal.coverage_creation.issue_number | Should -Be 42
         }
         It 'never attempts issue creation after label bootstrap fails' {
             $script:failLabelWrite = $true
             { Sync-ScheduledIssue -Policy $bootstrapPolicy -Issue $null -Record $record `
-                -Kind coverage -OutputDirectory $TestDrive -Apply } | Should -Throw
+                -Kind coverage -OutputDirectory $TestDrive -PublicationJournalPath $publicationPath -Apply } | Should -Throw
             Should -Invoke Invoke-ScheduledGitHubApi -Times 0 -ParameterFilter { $Endpoint -eq 'repos/owner/repo/issues' }
+            $journal = Get-Content -LiteralPath $publicationPath -Raw | ConvertFrom-Json -AsHashtable
+            $journal.ContainsKey('coverage_creation') | Should -BeFalse
+            $script:failLabelWrite = $false
+            (Sync-ScheduledIssue -Policy $bootstrapPolicy -Issue $null -Record $record `
+                -Kind coverage -OutputDirectory $TestDrive -PublicationJournalPath $publicationPath -Apply).number |
+                Should -Be 42
         }
         It 'propagates issue publication failures after successful label bootstrap' {
             Mock Invoke-ScheduledGitHubApi { throw [IO.IOException]::new('Issue write denied.') } `
                 -ParameterFilter { $Endpoint -eq 'repos/owner/repo/issues' }
             { Sync-ScheduledIssue -Policy $bootstrapPolicy -Issue $null -Record $record `
-                -Kind coverage -OutputDirectory $TestDrive -Apply } | Should -Throw
+                -Kind coverage -OutputDirectory $TestDrive -PublicationJournalPath $publicationPath -Apply } | Should -Throw
             $bootstrapLabels.Count | Should -Be 2
+        }
+        It 'reconciles a lost coverage-create response by rereading the owned issue' {
+            $script:loseCoverageReply = $true
+            $result = Sync-ScheduledIssue -Policy $bootstrapPolicy -Issue $null -Record $record `
+                -Kind coverage -OutputDirectory $TestDrive -PublicationJournalPath $publicationPath -Apply
+            $result.number | Should -Be 42
+            Should -Invoke Invoke-ScheduledGitHubApi -Times 1 -Exactly -ParameterFilter {
+                $Endpoint -eq 'repos/owner/repo/issues' -and $Method -eq 'POST'
+            }
+            $journal = Get-Content -LiteralPath $publicationPath -Raw | ConvertFrom-Json -AsHashtable
+            $journal.coverage_creation.stage | Should -Be complete
+            $journal.coverage_creation.issue_number | Should -Be 42
+            $journal.stage | Should -Be prepared
+        }
+        It 'reconciles a create response without an issue number rather than trusting it' {
+            $script:badCoverageNumber = $true
+            (Sync-ScheduledIssue -Policy $bootstrapPolicy -Issue $null -Record $record `
+                -Kind coverage -OutputDirectory $TestDrive -PublicationJournalPath $publicationPath -Apply).number |
+                Should -Be 42
+            Should -Invoke Invoke-ScheduledGitHubApi -Times 1 -Exactly -ParameterFilter {
+                $Endpoint -eq 'repos/owner/repo/issues' -and $Method -eq 'POST'
+            }
+        }
+        It 'rejects an invalid coverage journal <Field> before any new POST' -TestCases @(
+            @{ Field = 'identity' }, @{ Field = 'stage' }
+        ) {
+            param($Field)
+            $journal = Get-Content -LiteralPath $publicationPath -Raw | ConvertFrom-Json -AsHashtable
+            if ($Field -eq 'identity') { $journal.identity.repository_id = 999 }
+            else { $journal.coverage_creation = @{ stage = 'unexpected'; issue_number = $null } }
+            $journal | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $publicationPath
+            { Sync-ScheduledIssue -Policy $bootstrapPolicy -Issue $null -Record $record `
+                -Kind coverage -OutputDirectory $TestDrive -PublicationJournalPath $publicationPath -Apply } | Should -Throw
+            Should -Invoke Invoke-ScheduledGitHubApi -Times 0
+        }
+        It 'never repeats an unresolved coverage POST and resumes only once its issue is visible' {
+            $script:loseCoverageReply = $true; $script:hideCoverageIssue = $true
+            foreach ($retry in 1..2) {
+                { Sync-ScheduledIssue -Policy $bootstrapPolicy -Issue $null -Record $record `
+                    -Kind coverage -OutputDirectory $TestDrive -PublicationJournalPath $publicationPath -Apply } | Should -Throw
+            }
+            Should -Invoke Invoke-ScheduledGitHubApi -Times 1 -Exactly -ParameterFilter {
+                $Endpoint -eq 'repos/owner/repo/issues' -and $Method -eq 'POST'
+            }
+            $script:hideCoverageIssue = $false
+            $result = Sync-ScheduledIssue -Policy $bootstrapPolicy -Issue $null -Record $record `
+                -Kind coverage -OutputDirectory $TestDrive -PublicationJournalPath $publicationPath -Apply
+            $result.action | Should -Be reconciled
+            $result.number | Should -Be 42
+            Should -Invoke Invoke-ScheduledGitHubApi -Times 1 -Exactly -ParameterFilter {
+                $Endpoint -eq 'repos/owner/repo/issues' -and $Method -eq 'POST'
+            }
+        }
+        It 'restores uncertain coverage creation on a fresh reporter attempt before allowing writes' {
+            $script:loseCoverageReply = $true; $script:hideCoverageIssue = $true
+            { Sync-ScheduledIssue -Policy $bootstrapPolicy -Issue $null -Record $record `
+                -Kind coverage -OutputDirectory $TestDrive -PublicationJournalPath $publicationPath -Apply } | Should -Throw
+            $script:previousOutput = $TestDrive
+            $freshOutput = Join-Path $TestDrive 'fresh-reporter'
+            $null = New-Item -ItemType Directory -Path $freshOutput
+            $script:publicationPath = Join-Path $freshOutput 'publication-123-456-789.json'
+            Mock Get-ScheduledArtifact { $script:previousOutput }
+            Mock Invoke-ScheduledGitHubApi {
+                @{
+                    id = 999; run_attempt = 1; repository = @{ id = 123 }; head_repository = @{ id = 123 }
+                    path = '.github/workflows/scheduled-report.yml'; head_branch = 'main'; status = 'completed'
+                }
+            } -ParameterFilter { $Endpoint -eq 'repos/owner/repo/actions/runs/999/attempts/1' }
+            Mock Invoke-ScheduledGitHubApi { @(@{ artifacts = @() }) } `
+                -ParameterFilter { $Endpoint -eq 'repos/owner/repo/actions/runs/999/artifacts?per_page=100' }
+            $savedRun = $env:GITHUB_RUN_ID; $savedAttempt = $env:GITHUB_RUN_ATTEMPT
+            try {
+                $env:GITHUB_RUN_ID = '999'; $env:GITHUB_RUN_ATTEMPT = '2'
+                Restore-ScheduledRunPublicationState -Policy $bootstrapPolicy `
+                    -Run @{ workflow_id = 456; id = 789 } -OutputDirectory $freshOutput
+            } finally {
+                $env:GITHUB_RUN_ID = $savedRun; $env:GITHUB_RUN_ATTEMPT = $savedAttempt
+            }
+            $restored = Get-Content -LiteralPath $publicationPath -Raw | ConvertFrom-Json -AsHashtable
+            $restored.stage | Should -Be prepared
+            $restored.coverage_creation.stage | Should -Be creating-issue
+            { Sync-ScheduledIssue -Policy $bootstrapPolicy -Issue $null -Record $record `
+                -Kind coverage -OutputDirectory $freshOutput -PublicationJournalPath $publicationPath -Apply } | Should -Throw
+            Should -Invoke Invoke-ScheduledGitHubApi -Times 1 -Exactly -ParameterFilter {
+                $Endpoint -eq 'repos/owner/repo/issues' -and $Method -eq 'POST'
+            }
+        }
+        It 'uses a known issue number after its create response but failed readback' {
+            Mock Invoke-ScheduledGitHubApi { throw [IO.IOException]::new('Readback failed.') } `
+                -ParameterFilter { $Endpoint -eq 'repos/owner/repo/issues/42' }
+            { Sync-ScheduledIssue -Policy $bootstrapPolicy -Issue $null -Record $record `
+                -Kind coverage -OutputDirectory $TestDrive -PublicationJournalPath $publicationPath -Apply } | Should -Throw
+            Mock Invoke-ScheduledGitHubApi { $script:coverageIssue } `
+                -ParameterFilter { $Endpoint -eq 'repos/owner/repo/issues/42' }
+            (Sync-ScheduledIssue -Policy $bootstrapPolicy -Issue $null -Record $record `
+                -Kind coverage -OutputDirectory $TestDrive -PublicationJournalPath $publicationPath -Apply).number |
+                Should -Be 42
+            Should -Invoke Invoke-ScheduledGitHubApi -Times 1 -Exactly -ParameterFilter {
+                $Endpoint -eq 'repos/owner/repo/issues' -and $Method -eq 'POST'
+            }
+        }
+        It 'does not accept recovered coverage whose owned record changed' {
+            $null = Sync-ScheduledIssue -Policy $bootstrapPolicy -Issue $null -Record $record `
+                -Kind coverage -OutputDirectory $TestDrive -PublicationJournalPath $publicationPath -Apply
+            $record.extra = 'newer-evidence'
+            { Sync-ScheduledIssue -Policy $bootstrapPolicy -Issue $null -Record $record `
+                -Kind coverage -OutputDirectory $TestDrive -PublicationJournalPath $publicationPath -Apply } | Should -Throw
+            Should -Invoke Invoke-ScheduledGitHubApi -Times 1 -Exactly -ParameterFilter {
+                $Endpoint -eq 'repos/owner/repo/issues' -and $Method -eq 'POST'
+            }
         }
     }
 }
