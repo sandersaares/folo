@@ -5,8 +5,12 @@
 # against realistic `cargo delta run` JSON (including the "nothing affected" and
 # malformed-but-tolerated shapes that must not throw under strict mode), Get-DeltaOutput against
 # the three CI step outputs it produces, and Get-DeltaWorkflowOutput against workflow branching.
-# Invoke-CargoDelta drives real cargo/git, so the full path is covered by the recipes running in CI
-# rather than unit-tested here.
+# Invoke-CargoDelta error paths use simulated cargo/git failures to cover worktree lifetime and
+# error preservation without relying on filesystem locks or timing.
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+$PSNativeCommandUseErrorActionPreference = $true
 
 BeforeAll {
     Import-Module (Join-Path $PSScriptRoot 'Delta.psm1') -Force
@@ -93,6 +97,97 @@ Describe 'Invoke-CargoDelta baseline revision validation' {
     }
 }
 
+
+Describe 'Invoke-CargoDelta worktree cleanup' {
+    It 'handles <Scenario>' -TestCases @(
+        @{ Scenario = 'success'; FailureStage = ''; CleanupFails = $false }
+        @{ Scenario = 'current analysis failure'; FailureStage = 'current'; CleanupFails = $false }
+        @{ Scenario = 'creation failure'; FailureStage = 'creation'; CleanupFails = $false }
+        @{ Scenario = 'baseline analysis failure'; FailureStage = 'baseline'; CleanupFails = $false }
+        @{ Scenario = 'analysis and cleanup failure'; FailureStage = 'baseline'; CleanupFails = $true }
+        @{ Scenario = 'cleanup-only failure'; FailureStage = ''; CleanupFails = $true }
+    ) {
+        param($FailureStage, $CleanupFails)
+
+        InModuleScope Delta -Parameters @{ FailureStage = $FailureStage; CleanupFails = $CleanupFails } {
+            param($FailureStage, $CleanupFails)
+
+            $state = @{ AnalysisCount = 0; Worktree = $null }
+            $operationException = [InvalidOperationException]::new('Operation canary')
+            $cleanupException = [IO.IOException]::new('Cleanup canary')
+            Mock git {
+                if ($args[0] -eq 'rev-parse') { return 'resolved-baseline' }
+                if ($args[0] -eq 'worktree' -and $args[1] -eq 'add') {
+                    $state.Worktree = $args[3]
+                    if ($FailureStage -eq 'creation') { throw $operationException }
+                    New-Item -ItemType Directory -Path $state.Worktree | Out-Null
+                    return
+                }
+                if ($args[0] -eq 'worktree' -and $args[1] -eq 'remove') {
+                    $args[2] | Should -Be $state.Worktree
+                    $args[3] | Should -Be '--force'
+                    if ($CleanupFails) { throw $cleanupException }
+                    Remove-Item -LiteralPath $state.Worktree -Recurse -Force
+                    return
+                }
+                throw "Unexpected git call: $($args -join ' ')"
+            }
+            Mock cargo {
+                if ($args[0] -eq 'delta' -and $args[3] -eq 'analyze') {
+                    $state.AnalysisCount++
+                    if (($state.AnalysisCount -eq 1 -and $FailureStage -eq 'current') -or
+                        ($state.AnalysisCount -eq 2 -and $FailureStage -eq 'baseline')) {
+                        throw $operationException
+                    }
+                    return '{}'
+                }
+                if ($args[0] -eq 'delta' -and $args[3] -eq 'run') {
+                    return '{"Affected":["present","removed"]}'
+                }
+                throw "Unexpected cargo call: $($args -join ' ')"
+            }
+            Mock Get-WorkspacePackage { return @('present') }
+
+            $originalLocation = (Get-Location).Path
+            $failure = $null
+            $result = @()
+            try {
+                $result = @(Invoke-CargoDelta -ConfigPath 'test-config' -SkipFetch)
+            } catch {
+                $failure = $_
+            }
+
+            if ($FailureStage -eq 'baseline' -and $CleanupFails) {
+                $failure.Exception | Should -BeOfType ([AggregateException])
+                $failure.Exception.InnerExceptions.Count | Should -Be 2
+                [object]::ReferenceEquals($failure.Exception.InnerExceptions[0], $operationException) |
+                    Should -BeTrue
+                [object]::ReferenceEquals($failure.Exception.InnerExceptions[1], $cleanupException) |
+                    Should -BeTrue
+            } elseif ($FailureStage -ne '') {
+                [object]::ReferenceEquals($failure.Exception, $operationException) | Should -BeTrue
+            } elseif ($CleanupFails) {
+                [object]::ReferenceEquals($failure.Exception, $cleanupException) | Should -BeTrue
+            } else {
+                $failure | Should -BeNullOrEmpty
+                $result | Should -Be @('present')
+            }
+
+            (Get-Location).Path | Should -Be $originalLocation
+            $created = $FailureStage -notin @('current', 'creation')
+            Should -Invoke git -Times ([int] $created) -Exactly -ParameterFilter {
+                $args[0] -eq 'worktree' -and $args[1] -eq 'remove'
+            }
+            $succeeded = $FailureStage -eq '' -and -not $CleanupFails
+            Should -Invoke cargo -Times ([int] $succeeded) -Exactly -ParameterFilter {
+                $args[0] -eq 'delta' -and $args[3] -eq 'run'
+            }
+            if ($null -ne $state.Worktree) {
+                Test-Path -LiteralPath (Split-Path $state.Worktree -Parent) | Should -BeFalse
+            }
+        }
+    }
+}
 
 Describe 'Select-ExistingPackage' {
     It 'drops packages that no longer exist in the workspace' {
