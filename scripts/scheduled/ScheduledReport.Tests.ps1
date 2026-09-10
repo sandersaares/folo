@@ -306,7 +306,7 @@ Describe 'Deterministic health' {
     }
     It 'reports independent fresh components' {
         $health = Get-ScheduledHealth -Scheduler @{ state = 'active' } -Coverage $coverage -Manifest $manifest `
-            -Planning $fresh -Reporting $fresh -LocalScan $fresh -Now $now
+            -Planning $fresh -Reporting $fresh -RepairScan $fresh -TriageScan $fresh -Now $now
         $health.healthy | Should -BeTrue
         $health.components.coverage.status | Should -Be fresh
     }
@@ -314,17 +314,17 @@ Describe 'Deterministic health' {
         $planning = @{ outcome = 'not-run-unchanged'; completed_at = $fresh.completed_at }
         $health = Get-ScheduledHealth -Coverage $coverage -Manifest $manifest -Planning $planning -Now $now
         $health.components.coverage.status | Should -Be reused
-        $health.components.local_scan.status | Should -Be unavailable
+        $health.components.repair_scan.status | Should -Be unavailable
         $health.healthy | Should -BeFalse
     }
     It 'does not require disabled Local scans but still requires genuine hosted coverage and scheduling' {
         $arguments = @{
             Scheduler = @{ state = 'active' }; Coverage = $coverage; Manifest = $manifest
-            Planning = $fresh; Reporting = $fresh; Now = $now; LocalDisabled = $true
+            Planning = $fresh; Reporting = $fresh; Now = $now; RepairDisabled = $true; TriageDisabled = $true
         }
         $health = Get-ScheduledHealth @arguments
         $health.healthy | Should -BeTrue
-        $health.components.local_scan.status | Should -Be disabled
+        $health.components.repair_scan.status | Should -Be disabled
         $arguments.Coverage = $null
         $health = Get-ScheduledHealth @arguments
         $health.healthy | Should -BeFalse
@@ -340,15 +340,15 @@ Describe 'Deterministic health' {
     }
     It 'uses independent freshness thresholds for hosted planning and local scans' {
         $observation = @{ outcome = 'passed'; completed_at = '2026-09-08T02:00:00Z' }
-        $health = Get-ScheduledHealth -Planning $observation -Reporting $observation -LocalScan $observation `
+        $health = Get-ScheduledHealth -Planning $observation -Reporting $observation -RepairScan $observation `
             -Now $now -ExpectedPlanGapHours 30 -ExpectedLocalGapMinutes 420
         $health.components.planning.status | Should -Be fresh
         $health.components.reporting.status | Should -Be fresh
-        $health.components.local_scan.status | Should -Be unavailable
-        $health = Get-ScheduledHealth -Planning $observation -LocalScan $observation `
+        $health.components.repair_scan.status | Should -Be unavailable
+        $health = Get-ScheduledHealth -Planning $observation -RepairScan $observation `
             -Now $now -ExpectedPlanGapHours 8 -ExpectedLocalGapMinutes 720
         $health.components.planning.status | Should -Be unavailable
-        $health.components.local_scan.status | Should -Be fresh
+        $health.components.repair_scan.status | Should -Be fresh
     }
     It 'does not treat unavailable malformed stale or failed observations as healthy' {
         foreach ($observation in @(@{}, @{ outcome = 'passed'; completed_at = 'invalid' },
@@ -373,8 +373,8 @@ Describe 'Deterministic health' {
     }
     It 'accepts JSON-deserialized DateTime observations without culture-sensitive string conversion' {
         $observation = '{"outcome":"passed","completed_at":"2026-09-08T10:00:00Z"}' | ConvertFrom-Json -AsHashtable
-        $health = Get-ScheduledHealth -Planning $observation -LocalScan $observation -Now $now
+        $health = Get-ScheduledHealth -Planning $observation -RepairScan $observation -Now $now
         $health.components.planning.status | Should -Be fresh
-        $health.components.local_scan.status | Should -Be fresh
+        $health.components.repair_scan.status | Should -Be fresh
     }
 }

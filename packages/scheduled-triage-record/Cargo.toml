@@ -1,6 +1,6 @@
 [package]
-name = "scheduled-run-record"
-description = "Normalizes and paginates hosted scheduled-run evidence without external side effects"
+name = "scheduled-triage-record"
+description = "Validates Local scheduled-triage analysis and publication records without external side effects"
 publish = false
 version = "0.0.0"
 
@@ -13,16 +13,12 @@ rust-version.workspace = true
 [package.metadata.docs.rs]
 all-features = true
 
-[package.metadata.cargo_check_external_types]
-allowed_external_types = ["ohno::app::error::AppError"]
-
 [dependencies]
-base64 = { workspace = true }
 jiff = { workspace = true }
 ohno = { workspace = true, features = ["app-err"] }
+scheduled-run-record = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
-sha2 = { workspace = true }
 
 [dev-dependencies]
 testing = { path = "../testing" }

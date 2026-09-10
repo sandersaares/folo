@@ -5,7 +5,7 @@ $PSNativeCommandUseErrorActionPreference = $true
 # The `scheduled-intake` skill's single entrypoint (../../.github/skills/scheduled-intake/SKILL.md):
 # a coordinator reads historical reporter records and retained attempts for reconciliation,
 # without editing source or calling native App tools. New repair admission is unsupported until
-# executable AI triage exists; hosted run evidence is not repair authorization. Coverage and
+# evidence-bound admission is implemented; hosted run evidence is not repair authorization. Coverage and
 # schedule health remain observable through LocalGitHub.psm1 and LocalLifecycle.psm1. See
 # ../../docs/scheduled-validation.md#purpose-and-responsibility.
 Import-Module (Join-Path $PSScriptRoot 'ScheduledContracts.psm1')
@@ -84,6 +84,7 @@ function Invoke-ScheduledInbox {
         -Endpoint "repos/$($policy.repository)/issues?state=open&labels=scheduled-finding&per_page=100"
     $incidents = [Collections.Generic.List[object]]::new()
     $rejected = [Collections.Generic.List[object]]::new()
+    $triaged = [Collections.Generic.List[object]]::new()
     $seen = @{}
     foreach ($issue in $issues) {
         if ($issue.Contains('pull_request')) { continue }
@@ -94,6 +95,13 @@ function Invoke-ScheduledInbox {
             continue
         }
         $seen[$issue.number] = Get-ScheduledDigest $issue
+        if (([string]$issue.body).Contains('<!-- scheduled-problem:v1 ') -and
+            -not ([string]$issue.body).Contains('<!-- scheduled-reporter:v1 ')) {
+            # Canonical triage records remain deferred while the admission handoff is
+            # unavailable. Do not reinterpret them as reporter records or repair authority.
+            $triaged.Add(@{ issue_number = $issue.number; reason = 'ai-triage-unavailable' })
+            continue
+        }
         # Run intake has its own marker and paginated evidence comments. Even if a run issue
         # carries the historical finding label, it must not enter reporter-record conversion.
         if (([string]$issue.body).Contains('<!-- scheduled-run:v1 ') -or
@@ -163,6 +171,7 @@ function Invoke-ScheduledInbox {
     $result.blocked_conditions += @(Get-ScheduledHostedCondition -Policy $policy `
         -Enabled $result.hosted_schedule_enabled -LastPlanAt $lastPlanAt -Now $Now)
     $result.rejected = @($rejected.ToArray())
+    $result.triaged_problem_issues = $triaged.ToArray()
     if ($rejected.Count -gt 0) { $result.blocked_conditions += 'missing-or-invalid-evidence' }
     $result.schema_version = 1
     $result.repository = $policy.repository

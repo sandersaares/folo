@@ -12,10 +12,11 @@ use base64::engine::general_purpose::STANDARD;
 use serde_json::{Value, json};
 
 use crate::canonical::{canonicalize, digest};
+use crate::console::{ReadInputError, WriteOutputError};
 use crate::evidence::{Evidence, Identity, InvalidRecordError};
 use crate::pages::{BODY_LIMIT, Comment, PAGE_BYTES, decode, paginate, prepare_pages};
 use crate::record::{PageReference, Record, Revision, merge, render, restore};
-use crate::{ReadInputError, WriteOutputError, run};
+use crate::run;
 
 pub(crate) fn fixture() -> Value {
     // Synthetic successful observation; IDs and commit names only distinguish fixture roles.

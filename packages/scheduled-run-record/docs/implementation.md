@@ -1,11 +1,19 @@
 # Hosted run-evidence records
 
-This nonpublished binary supplies pure, typed record machinery to the reviewed scheduled
-reporter. Its behavioral owner is the
+This nonpublished library and binary supply pure record machinery to the reviewed
+scheduled reporter and Local triage controller. Their behavioral owner is the
 [scheduled workflow design](../../../.github/workflows/design.md). GitHub transport,
 ownership checks, artifact parsing and controller provenance stay outside this package.
 The utility does not read files, invoke processes, access the network, obtain credentials,
 execute evidence, decide semantic problem identity or authorize repairs.
+
+The Local [triage-record utility](../../scheduled-triage-record/docs/implementation.md)
+reuses its JSON facade and document-page machinery. Distinct triage/problem detail
+envelopes use the same canonical JSON, UTF-8/base64 fragment limits and committed
+reference-index rules as hosted evidence. `prepare_document` and `restore_documents`
+operate on an owned numeric repository/issue pair; they do not confer writer
+authority or interpret a diagnosis. `fingerprint` exposes the same canonical digest
+for durable API evidence snapshots.
 
 ## Evidence and normalization
 

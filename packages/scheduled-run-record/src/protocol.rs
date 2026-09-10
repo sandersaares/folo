@@ -2,7 +2,8 @@ use ohno::AppError;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::canonical::{json, normalized};
+use crate::canonical::{digest, json, normalized};
+use crate::document::{DocumentKind, prepare_document, restore_documents};
 use crate::evidence::{Evidence, Identity};
 use crate::gap_paths::normalize_gap_paths;
 use crate::pages::{Comment, Page, prepare_pages};
@@ -31,6 +32,19 @@ enum Request {
     Render {
         record: Record,
     },
+    PrepareDocument {
+        kind: DocumentKind,
+        owner: String,
+        document: Value,
+    },
+    RestoreDocuments {
+        kind: DocumentKind,
+        owner: String,
+        comments: Vec<Comment>,
+    },
+    Fingerprint {
+        value: Value,
+    },
 }
 
 /// Prepared evidence and deterministic page writes, none yet acknowledged as published.
@@ -44,7 +58,8 @@ struct Prepared {
     pages: Vec<Page>,
 }
 
-pub(crate) fn execute(text: &str) -> Result<String, AppError> {
+/// Executes one complete JSON request without external side effects.
+pub fn execute(text: &str) -> Result<String, AppError> {
     let request: Request = serde_json::from_str(text).map_err(ParseRequestError::caused_by)?;
     match request {
         Request::Prepare {
@@ -67,6 +82,19 @@ pub(crate) fn execute(text: &str) -> Result<String, AppError> {
         Request::Merge { record, incoming } => json(&merge(record, incoming)?),
         Request::Validate { record } => json(&validate_json(record)?),
         Request::Render { record } => json(&render(record)?),
+        Request::PrepareDocument {
+            kind,
+            owner,
+            document,
+        } => json(&prepare_document(kind, &owner, document)?),
+        Request::RestoreDocuments {
+            kind,
+            owner,
+            comments,
+        } => json(&restore_documents(kind, &owner, comments)?),
+        Request::Fingerprint { value } => {
+            json(&serde_json::json!({"digest": digest(&json(&normalized(&value)?)?)}))
+        }
     }
 }
 

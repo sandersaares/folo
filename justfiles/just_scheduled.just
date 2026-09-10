@@ -50,3 +50,14 @@ scheduled-inbox EXECUTOR_ID:
     $PSNativeCommandUseErrorActionPreference = $true
     Import-Module ./scripts/scheduled/LocalInbox.psm1 -Force
     Invoke-ScheduledInbox -PolicyPath ./scripts/scheduled/policy.json -ExecutorId '{{ EXECUTOR_ID }}' | ConvertTo-Json -Depth 40
+
+# Ref: docs/scheduled-triage.md#helper-interface.
+# Run one bounded data/state request; native AI diagnosis and App calls remain in the skill.
+[group('scheduled')]
+[script]
+scheduled-triage REQUEST_PATH:
+    Set-StrictMode -Version Latest
+    $ErrorActionPreference = 'Stop'
+    $PSNativeCommandUseErrorActionPreference = $true
+    Import-Module ./scripts/scheduled/LocalTriage.psm1 -Force
+    Invoke-ScheduledTriageRequest -RequestPath '{{ REQUEST_PATH }}'

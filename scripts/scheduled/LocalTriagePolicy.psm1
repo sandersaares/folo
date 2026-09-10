@@ -1,0 +1,84 @@
+#requires -Version 7
+# Resolves reviewed triage-only settings for the Local skill, setup and independent health.
+# Separating this file from repair policy keeps inactive role installation from invalidating
+# a retained repair profile. Shared identity and controller changes still fence triage writes.
+# Ref: ../../docs/scheduled-triage.md#independent-configuration.
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+$PSNativeCommandUseErrorActionPreference = $true
+Import-Module (Join-Path $PSScriptRoot 'ScheduledContracts.psm1')
+
+function Get-ScheduledTriagePolicy {
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    param([string] $Path = (Join-Path $PSScriptRoot 'triage-policy.json'))
+    $policy = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json -AsHashtable
+    foreach ($field in @('schema_version', 'automation_name', 'automation_marker', 'cadence_cron',
+            'mode', 'enrolled_machine_id', 'model', 'reasoning_effort', 'max_active_analyses',
+            'max_starts_per_day', 'max_continuations_per_day', 'max_continuations_per_analysis',
+            'scan_lease_minutes', 'expected_poll_gap_minutes')) {
+        if (-not $policy.ContainsKey($field)) { throw "Missing triage configuration field: $field" }
+    }
+    if ($policy.schema_version -ne 1 -or $policy.mode -cnotin @('observe', 'paused', 'triage') -or
+        $policy.max_active_analyses -ne 1) {
+        throw 'Unsupported triage policy or competing analysis capacity.'
+    }
+    foreach ($field in @('automation_name', 'automation_marker', 'cadence_cron')) {
+        if ([string]::IsNullOrWhiteSpace($policy[$field])) { throw "Empty triage setting: $field" }
+    }
+    foreach ($field in @('max_starts_per_day', 'max_continuations_per_day',
+            'max_continuations_per_analysis', 'scan_lease_minutes', 'expected_poll_gap_minutes')) {
+        if (($policy[$field] -isnot [int] -and $policy[$field] -isnot [long]) -or $policy[$field] -le 0) {
+            throw "Triage limit must be a positive integer: $field"
+        }
+    }
+    if ($policy.mode -ceq 'triage' -and
+        ([string]::IsNullOrWhiteSpace($policy.enrolled_machine_id) -or
+            [string]::IsNullOrWhiteSpace($policy.model))) {
+        throw 'Active triage requires an enrolled machine and operator-selected model.'
+    }
+    return $policy
+}
+
+function Get-ScheduledTriagePolicyDigest {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)][hashtable] $Policy,
+        [Parameter(Mandatory)][hashtable] $TriagePolicy
+    )
+    return Get-ScheduledDigest @{
+        schema_version = $Policy.schema_version; repository = $Policy.repository
+        repository_id = $Policy.repository_id; worker_login = $Policy.worker_login
+        reporter_login = $Policy.reporter_login; triage = $TriagePolicy
+    }
+}
+
+function Get-ScheduledTriageControllerDigest {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param()
+    $root = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\..')).Path
+    $files = @(
+        Get-ChildItem -LiteralPath $PSScriptRoot -File |
+            Where-Object { $_.Name -like 'LocalTriage*.psm1' -or $_.Name -cin @(
+                    'LocalState.psm1', 'LocalGitHub.psm1', 'ScheduledContracts.psm1',
+                    'ScheduledRecordTool.psm1', 'ScheduledTransport.psm1') }
+        foreach ($package in @('scheduled-run-record', 'scheduled-triage-record')) {
+            Get-ChildItem -LiteralPath (Join-Path $root "packages\$package\src") -Recurse -File
+            Get-Item -LiteralPath (Join-Path $root "packages\$package\Cargo.toml")
+        }
+        foreach ($name in @('Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'constants.env')) {
+            Get-Item -LiteralPath (Join-Path $root $name)
+        }
+    )
+    $identity = @{}
+    foreach ($file in $files) {
+        $identity[[IO.Path]::GetRelativePath($root, $file.FullName).Replace('\', '/')] =
+            (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+    }
+    return Get-ScheduledDigest $identity
+}
+
+Export-ModuleMember -Function Get-ScheduledTriagePolicy, Get-ScheduledTriagePolicyDigest,
+Get-ScheduledTriageControllerDigest

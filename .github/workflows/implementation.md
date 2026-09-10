@@ -47,9 +47,10 @@ Local App repair timer -> problem intake -> owned repair session -> PR
 
 Hosted intake does not dispatch Local AI. The retained repair coordinator can
 inspect registered work but cannot reserve new repairs; it reports the unavailable
-triage capability even if policy is otherwise permissive. A downstream triage
-consumer has the run-record contract, not a running implementation supplied by
-these workflows. The saved repair entry retains cron `17 */3 * * *` and stays
+admission handoff even if policy is otherwise permissive. The separate Local
+`scheduled-triage` skill performs AI analysis with the typed `scheduled-triage-record`
+utility and `LocalTriage*` native/persistence adapters. Hosted workflows do not
+dispatch it. The saved repair entry retains cron `17 */3 * * *` and stays
 disabled. Its verified App timezone is independent of GitHub's UTC health timer.
 A repair session's PR activity triggers normal PR workflows. A human merge
 produces the `main` push that starts targeted confirmation. Reporter completions,
@@ -367,9 +368,9 @@ Conversely, a green rerun cannot acknowledge analysis of earlier failure evidenc
 
 #### Local AI triage and problem publication
 
-These are downstream consumer requirements, not an executable stage in hosted
-intake. No hosted parser performs semantic diagnosis or creates problem issues.
-An AI triage implementation must follow the
+The Local App's `scheduled-triage` skill implements this stage, separately from
+hosted intake. No hosted parser performs semantic diagnosis or creates problem issues.
+The role follows the
 [problem contract](../../docs/scheduled-validation.md#problems-and-triage).
 It claims an unprocessed run/attempt revision, uses a capable personally funded AI model to
 analyze every unsuccessful job, and compares all extracted problems with the complete
@@ -411,6 +412,28 @@ repair have separate capacity, budgets, pause controls and health checkpoints.
 Until that evidence-bound handoff is supported, the Local inbox and reservation
 transaction reject new repairs while retaining existing attempts and continuation
 accounting.
+
+`scheduled-run-record` exposes the shared canonical JSON/page/index machinery as
+a nonpublished library; `scheduled-triage-record` validates analysis, complete
+candidate-index receipts, occurrence transitions and evidence-backed scope.
+`LocalTriageInbox.psm1` restores reporter and triage records and reads the complete
+open/closed queues. `LocalTriageEvidence.psm1` captures the exact claimed attempt's
+paginated job/step API inventory and same-attempt committed supporting revisions.
+The primary digest never changes. The durable completion basis accounts for
+original gaps and supporting diagnostics without acknowledging another revision.
+
+`LocalTriageState.psm1` adds independent ownership, dispatch and publication
+accounting to the existing locked local envelope. `LocalTriagePublication.psm1`
+reconciles stable issue/comment operations; problem and completion adapters advance
+roots only after their detail and required issue changes are confirmed. The native
+skill performs actual issue creation and same-session continuations between
+transactions. Partial publication is recoverable before a clean queue is available.
+`LocalSetupState.psm1` separately fences unknown native automation creation without
+creating executor enrollment. `LocalHealth.psm1` publishes separate role observations;
+`ScheduledRoleHealth.psm1` reads them without conflating successful scans.
+
+The [Local triage guide](../../docs/scheduled-triage.md) owns configuration,
+helper interface, accounting defaults and the deferred native/model installation exercise.
 
 The problem record binds a versioned set of required check/package/platform/replay
 scopes to its diagnosis and hosted evidence. Admission and managed deep validation
@@ -485,7 +508,8 @@ The serialized names are compatibility details. Their mapping to operating behav
 | `local.mode` | Repair admission selection: `observe` and `paused` do not dispatch repairs; `repair` also requires matching persisted executor mode, enrollment, approved scope, profile and budgets. It does not authorize triage. |
 | Planning reason or health status `staged` | Deliberately disabled hosted operation, not proof of coverage. |
 
-Triage has a separately reviewed authorization, installed profile and budget; the repair
+Triage has separately reviewed authorization in `scripts/scheduled/triage-policy.json`,
+an installed profile and budget; the repair
 mode cannot implicitly enable it. Both roles require matching persisted enrollment and
 profile, and distinguish disabled/observe/paused behavior from active admission.
 The new-admission capability boundary is not a policy switch: enabling any of those

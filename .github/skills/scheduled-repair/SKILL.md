@@ -11,8 +11,8 @@ session is authorized by the repository automation. Final approval and merge are
 human actions. Do not create per-PR timers, background replacement agents, cloud
 sessions or another repair PR.
 
-The supported phase is **hosted evidence intake plus retained repair continuation**,
-not a working AI triage/repair automation pair. A new repair cannot be reserved:
+This role continues retained repairs alongside the separate Local AI triage role.
+A new repair still cannot be reserved:
 the executable boundary returns `ai-triage-unavailable` regardless of policy
 mode, allowlists or assertions. Do not reserve an attempt, fabricate completed
 triage, create/enable a Local automation or initialize missing ownership.

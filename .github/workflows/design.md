@@ -43,9 +43,9 @@ can describe the same problem, and one run can describe several unrelated proble
 Closing a run issue as triaged only acknowledges complete analysis and issue linkage;
 it does not claim that its problems are resolved. Repair admission requires a completed,
 actionable triage result and never consumes an unexamined workflow-failure issue.
-The consumer contract does not imply that an AI triage implementation or new
-repair-admission path is available. Independent schedules, claims, budgets and
-health remain requirements for that handoff; a timer is not an implementation.
+The Local triage skill and deterministic helpers implement that analysis and
+publication handoff with independent claims, budgets and health. Installation and
+activation remain operator actions; the new repair-admission path stays unavailable.
 
 ### Shallow and deep validation
 
@@ -67,8 +67,9 @@ it leaves automatic recurring deep coverage disabled.
 
 The reviewed policy authorizes nightly full checks and failure reporting independently of
 Local readiness. Hosted reporting creates missing reporting labels when publishing, retaining
-operator-managed metadata on existing labels. Local triage is not dispatched and new repair
-admission is rejected; operators handle failure intake manually. Installing or reconciling
+operator-managed metadata on existing labels. Local triage is implemented but inactive,
+and new repair admission is rejected; operators handle intake manually until they
+install and authorize triage. Installing or reconciling
 a Local automation does not activate it or change hosted authorization.
 
 Manual **Run workflow** requests authorize fresh checks independently of automatic

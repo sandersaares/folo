@@ -53,7 +53,8 @@ function Read-ScheduledRecord {
     [OutputType([hashtable])]
     param(
         [Parameter(Mandatory)][AllowEmptyString()][string] $Text,
-        [Parameter(Mandatory)][ValidateSet('reporter', 'worker', 'repair', 'coverage', 'health', 'run', 'run-evidence', 'run-publication')]
+        [Parameter(Mandatory)][ValidateSet('reporter', 'worker', 'repair', 'coverage', 'health', 'run', 'run-evidence', 'run-publication',
+            'triage', 'problem', 'triage-detail', 'problem-detail', 'triage-operation')]
         [string] $Kind
     )
 
@@ -75,7 +76,8 @@ function Write-ScheduledRecord {
     [OutputType([string])]
     param(
         [Parameter(Mandatory)][hashtable] $Record,
-        [Parameter(Mandatory)][ValidateSet('reporter', 'worker', 'repair', 'coverage', 'health', 'run', 'run-evidence', 'run-publication')]
+        [Parameter(Mandatory)][ValidateSet('reporter', 'worker', 'repair', 'coverage', 'health', 'run', 'run-evidence', 'run-publication',
+            'triage', 'problem', 'triage-detail', 'problem-detail', 'triage-operation')]
         [string] $Kind
     )
 

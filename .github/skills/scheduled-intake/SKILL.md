@@ -1,6 +1,6 @@
 ---
 name: scheduled-intake
-description: Observe scheduled evidence and reconcile existing registered Local repairs with bounded continuation. New repair admission and AI triage are unavailable; do not create or enable an automation.
+description: Observe scheduled evidence and reconcile existing registered Local repairs with bounded continuation. New repair admission remains unavailable; AI triage has a separate role. Do not create or enable an automation.
 ---
 
 # Scope
@@ -12,12 +12,12 @@ supports observation and continuation of already registered repairs through read
 in their existing visible/native App sessions. It does not authorize work on arbitrary
 human PRs or new repair starts.
 
-This is the **hosted-evidence-only phase**. Executable AI triage and new repair
-admission are unavailable. `reserve-attempt` unconditionally rejects new ownership
+This is the retained-repair role, separate from executable `scheduled-triage`.
+New repair admission is unavailable. `reserve-attempt` unconditionally rejects new ownership
 with `ai-triage-unavailable`, even with repair mode, full allowlists and approved
 rollout prerequisites. Do not change configuration or invent a triage record to
-bypass that boundary. Do not create, enable or split Local automations. The future
-triage/repair automation architecture is not installed by running this skill.
+bypass that boundary. Do not create, enable or split Local automations. Running
+this skill does not install or activate the separate triage role.
 
 Read `docs\scheduled-validation.md`, reviewed `scripts\scheduled\policy.json`, and
 repository instructions. Use actual native identities, not names guessed from
@@ -107,7 +107,8 @@ against the native issue association, session, branch and current activity. Read
 PR/branch records before interpreting unknown publication outcomes. Consult every
 registered PR even when its issue no longer appears in the open queue.
 
-The helper always reports `ai-triage-unavailable`, including on an empty queue.
+The helper always reports `ai-triage-unavailable`, including on an empty queue;
+this is the unavailable new-admission handoff, not absence of the separate triage implementation.
 Its empty `eligible`, zero eligible-only `backlog_count` and null
 `oldest_eligible_at` do not mean that triage is complete or the repair pipeline is
 healthy. If there are no registered repairs, record the successful read with this
@@ -242,14 +243,33 @@ than repeating bootstrap or sending the real kickoff again.
 
 Record `record-scan` only after the full inbox scan succeeds; retain explicit
 rejected-evidence, pause, budget, unsupported-capability, schedule-inactivity and
-drift conditions. Publish the executor health record to the existing rolling
-health surface separately from reporter-owned records. Locate the single
-reporter-owned open issue labelled `scheduled-health`. Create/update only the single
-worker-login-owned comment with a `health` marker matching repository name, numeric
-repository ID and executor ID, serialized with shared `Write-ScheduledRecord`.
-Do not invent a health issue or append duplicate ownership records; missing or
-ambiguous surface/author and lost write outcomes are explicit reconciliation
-blockers. Read `last_hosted_plan.planned_at` from the validated `scheduled-coverage`
+drift conditions. Publish only this repair role's health record through `LocalHealth.psm1`; the triage
+role has a separate owned comment on the same rolling surface. Do not match or
+replace a triage record merely because its author/executor is the same.
+
+```powershell
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+$PSNativeCommandUseErrorActionPreference = $true
+Import-Module .\scripts\scheduled\ScheduledContracts.psm1 -Force
+Import-Module .\scripts\scheduled\LocalHealth.psm1 -Force
+$state = Get-Content -LiteralPath "{{STATE_PATH}}" -Raw | ConvertFrom-Json -AsHashtable
+Sync-ScheduledRoleHealth -Context @{
+    state_root = Split-Path -Parent "{{STATE_PATH}}"
+    policy = Get-ScheduledPolicy
+    role = 'repair'
+    executor_id = $state.executor_id
+    login = $state.login
+    scan_token = $state.coordinator.token
+    now = [DateTimeOffset]::UtcNow
+} | ConvertTo-Json -Depth 100
+```
+
+`STATE_PATH` is the absolute enrolled state path defined above. Invoke health
+publication only for an enrolled role with its current coordinator token.
+The helper finds the existing reporter-owned rolling issue and reconciles the
+single repair-owned comment and any lost write response. Missing/ambiguous identity
+or surface remains blocked; it never creates a replacement issue. Read `last_hosted_plan.planned_at` from the validated `scheduled-coverage`
 record independently of full-success receipt age. A profile update is not a
 scan heartbeat. Release the coordinator token; persistent attempts remain owned.
 

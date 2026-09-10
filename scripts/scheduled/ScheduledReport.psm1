@@ -271,12 +271,15 @@ function Get-ScheduledHealth {
         [AllowNull()][hashtable] $Manifest,
         [AllowNull()][hashtable] $Planning,
         [AllowNull()][hashtable] $Reporting,
-        [AllowNull()][hashtable] $LocalScan,
+        [AllowNull()][hashtable] $RepairScan,
+        [AllowNull()][hashtable] $TriageScan,
         [Parameter(Mandatory)][datetimeoffset] $Now,
         [double] $ExpectedPlanGapHours = 30,
         [double] $ExpectedLocalGapMinutes = 420,
+        [double] $ExpectedTriageGapMinutes = 420,
         [int] $MaxAgeDays = 7,
-        [switch] $LocalDisabled,
+        [switch] $RepairDisabled,
+        [switch] $TriageDisabled,
         [switch] $Staged
     )
 
@@ -285,8 +288,10 @@ function Get-ScheduledHealth {
         coverage = @{ status = 'unavailable'; reason = 'missing-coverage' }
         planning = Get-ScheduledComponentHealth $Planning $Now $ExpectedPlanGapHours
         reporting = Get-ScheduledComponentHealth $Reporting $Now $ExpectedPlanGapHours
-        local_scan = if ($LocalDisabled) { @{ status = 'disabled'; reason = 'local-executor-not-expected' } }
-            else { Get-ScheduledComponentHealth $LocalScan $Now ($ExpectedLocalGapMinutes / 60) }
+        repair_scan = if ($RepairDisabled) { @{ status = 'disabled'; reason = 'repair-executor-not-expected' } }
+            else { Get-ScheduledComponentHealth $RepairScan $Now ($ExpectedLocalGapMinutes / 60) }
+        triage_scan = if ($TriageDisabled) { @{ status = 'disabled'; reason = 'triage-executor-not-expected' } }
+            else { Get-ScheduledComponentHealth $TriageScan $Now ($ExpectedTriageGapMinutes / 60) }
     }
     if ($null -ne $Scheduler -and $Scheduler.ContainsKey('state')) {
         $components.scheduler = @{

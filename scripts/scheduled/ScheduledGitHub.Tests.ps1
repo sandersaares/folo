@@ -736,7 +736,7 @@ Describe 'Archive extraction boundaries' {
                     (Get-ScheduledDigest $report.coverage.last_plan) | Should -BeExactly (Get-ScheduledDigest $persisted.last_plan)
                     (Get-ScheduledDigest $report.coverage.planning) | Should -BeExactly (Get-ScheduledDigest $persisted.planning)
                     $health = Get-ScheduledHealth -Coverage $report.coverage -Manifest $expectedManifest `
-                        -Planning $report.coverage.planning -Now ([datetimeoffset]$apiRun.updated_at) -LocalDisabled
+                        -Planning $report.coverage.planning -Now ([datetimeoffset]$apiRun.updated_at) -RepairDisabled
                     $health.components.planning.status | Should -Be unavailable
                     $health.components.coverage.status | Should -Be fresh
                 }
@@ -1302,7 +1302,7 @@ Describe 'Read-only health adapter' {
             $health.problems | Should -BeNullOrEmpty
             $health.healthy | Should -BeTrue
             $health.components.coverage.status | Should -Be reused
-            $health.components.local_scan.status | Should -Be fresh
+            $health.components.repair_scan.status | Should -Be fresh
             Should -Invoke Invoke-ScheduledGitHubApi -Times 1 -ParameterFilter { $Endpoint -like '*/issues/1/comments?*' }
             Should -Invoke Invoke-ScheduledGitHubApi -Times 0 -ParameterFilter { $Method -in @('POST', 'PATCH') }
         }
@@ -1326,7 +1326,7 @@ Describe 'Read-only health adapter' {
         It 'fails closed for GitHub outages or a different executor identity' {
             $healthLocal.executor_id = 'other'
             $health = Get-ScheduledGitHubHealth 'folo-rs/folo' ([datetimeoffset]'2026-09-08T12:00:00Z')
-            $health.components.local_scan.status | Should -Be unavailable
+            $health.components.repair_scan.status | Should -Be unavailable
             Mock Invoke-ScheduledGitHubApi { throw [IO.IOException]::new('GitHub unavailable.') }
             $health = Get-ScheduledGitHubHealth 'folo-rs/folo' ([datetimeoffset]'2026-09-08T12:00:00Z')
             $health.healthy | Should -BeFalse
@@ -1349,7 +1349,7 @@ Describe 'Read-only health adapter' {
                 -ParameterFilter { $Label -ceq 'scheduled-health' }
             $health = Get-ScheduledGitHubHealth 'folo-rs/folo' ([datetimeoffset]'2026-09-08T12:00:00Z')
             $health.healthy | Should -BeTrue
-            $health.components.local_scan.status | Should -Be disabled
+            $health.components.repair_scan.status | Should -Be disabled
             $health.components.coverage.status | Should -Be reused
             Should -Invoke Invoke-ScheduledGitHubApi -Times 0 -ParameterFilter { $Endpoint -like '*/comments*' }
         }
@@ -1364,7 +1364,7 @@ Describe 'Read-only health adapter' {
             } -ParameterFilter { $Endpoint -like '*/scheduled-report.yml/runs?*per_page=1' }
             $health = Get-ScheduledGitHubHealth 'folo-rs/folo' ([datetimeoffset]'2026-09-08T12:00:00Z')
             $health.healthy | Should -BeFalse
-            $health.components.local_scan.status | Should -Be disabled
+            $health.components.repair_scan.status | Should -Be disabled
             $health.components.coverage.status | Should -Be unavailable
             $health.components.planning.status | Should -Be unavailable
             $health.components.reporting.status | Should -Be failed
@@ -1388,12 +1388,12 @@ Describe 'Read-only health adapter' {
             $healthPolicy.local.mode = $Mode
             $healthLocal.last_successful_scan = '2026-09-01T11:00:00Z'
             $health = Get-ScheduledGitHubHealth 'folo-rs/folo' ([datetimeoffset]'2026-09-08T12:00:00Z')
-            $health.components.local_scan.status | Should -Be unavailable
+            $health.components.repair_scan.status | Should -Be unavailable
             $health.healthy | Should -BeFalse
             $healthLocal.last_successful_scan = '2026-09-08T11:00:00Z'
             $healthLocal.blocked_conditions = @('failed-scan')
             $health = Get-ScheduledGitHubHealth 'folo-rs/folo' ([datetimeoffset]'2026-09-08T12:00:00Z')
-            $health.components.local_scan.status | Should -Be failed
+            $health.components.repair_scan.status | Should -Be failed
         }
         It 'keeps cancelled and failed reporting origins visible after a later successful run' {
             Mock Invoke-ScheduledGitHubApi {
@@ -1438,7 +1438,7 @@ Describe 'Read-only health adapter' {
                 } -ParameterFilter { $Label -ceq 'scheduled-health' }
                 $health = Get-ScheduledGitHubHealth 'folo-rs/folo' ([datetimeoffset]'2026-09-08T12:00:00Z')
                 $health.status | Should -Be failed
-                $health.components.local_scan.status | Should -Be unavailable
+                $health.components.repair_scan.status | Should -Be unavailable
                 $health.problems.Count | Should -Be 1
             }
             Should -Invoke Invoke-ScheduledGitHubApi -Times 0 -ParameterFilter { $Method -in @('POST', 'PATCH') }
@@ -1455,7 +1455,7 @@ Describe 'Read-only health adapter' {
             $healthLocal.Remove('last_successful_scan')
             $health = Get-ScheduledGitHubHealth 'folo-rs/folo' ([datetimeoffset]'2026-09-08T12:00:00Z')
             $health.healthy | Should -BeFalse
-            $health.components.local_scan.status | Should -Be unavailable
+            $health.components.repair_scan.status | Should -Be unavailable
         }
     }
 }
