@@ -81,6 +81,20 @@ when applicable rather than on every polling-session creation.
 We operate under a **zero warnings allowed** requirement - fix all warnings that
 validation generates.
 
+### Coverage target selection
+
+`coverage-measure` uses Cargo's `--tests --examples` selection. `--tests` includes
+library and binary unit tests and integration tests; `--examples` includes example
+test harnesses. This works for library-only, binary-only and mixed package selections
+without requiring every selected package to define a library.
+See [Cargo target selection](https://doc.rust-lang.org/cargo/commands/cargo-test.html#target-selection).
+
+Benchmark targets stay out of coverage and run through the separate `test-benches`
+smoke pass. Do not opt benchmark targets into `test = true`, because Cargo includes
+such targets in `--tests`. Doctests retain their separate `test-docs` pass.
+The library-only selectors in many-seed Miri and exact library replays are deliberate
+scope restrictions, not general test or coverage selection.
+
 ## Multiplatform codebase
 
 This is a multiplatform codebase. In some packages you will find folders named
