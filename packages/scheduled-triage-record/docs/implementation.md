@@ -41,7 +41,9 @@ operation IDs identify writes, not causes.
 Occurrence transitions retain all evidence and complete required scopes. A supported
 recurrence requires prior resolution, newer execution and source applicability.
 Historical evidence attaches to its existing occurrence without reopening a newer
-one. Identical contributions are idempotent, including when the AI reconsiders a
+one. Required-scope growth advances the current occurrence's repair fence even
+when its contributing evidence arrives late; resolved older occurrences do not
+affect that fence. Identical contributions are idempotent, including when the AI reconsiders a
 refreshed index after partial multi-problem publication.
 Already attached diagnostics do not establish a new recurrence: a new recurrence
 disposition still validates resolution, ordering and source applicability.

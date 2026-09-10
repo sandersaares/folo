@@ -574,14 +574,50 @@ fn confirmed_recurrence_and_late_historical_evidence_have_independent_occurrence
     late["incoming"]["operation_id"] = json!("late-history");
     late["incoming"]["relation"] = json!("historical");
     late["incoming"]["diagnosis"]["summary"] = json!("Additional description of the older symptom");
+    late["incoming"]["diagnosis"]["scope"][0]["operation"] =
+        json!("Additional required operation in the resolved occurrence");
     let updated: Value = serde_json::from_str(&execute(&late.to_string()).unwrap()).unwrap();
     assert_eq!(updated["generation"], 2);
+    assert_eq!(updated["scope_revision"], recurring["scope_revision"]);
     assert_eq!(updated["observation"], recurring["observation"]);
     assert_eq!(updated["diagnosis"], recurring["diagnosis"]);
     assert_eq!(
         updated["evidence"].as_array().unwrap().last().unwrap()["generation"],
         1
     );
+}
+
+#[test]
+#[cfg_attr(
+    miri,
+    ignore = "full producer snapshots and repeated canonical hashing exceed the interpreter budget; typed guards retain Miri coverage"
+)]
+fn historical_current_occurrence_evidence_advances_only_growing_scope() {
+    let mut input = problem_update();
+    let original: Value = serde_json::from_str(&execute(&input.to_string()).unwrap()).unwrap();
+    input["existing"] = original.clone();
+    advance_update(&mut input, 788, 1, "2026-09-09T00:50:00Z");
+    input["incoming"]["operation_id"] = json!("late-current-scope");
+    input["incoming"]["relation"] = json!("historical");
+    let same_scope: Value = serde_json::from_str(&execute(&input.to_string()).unwrap()).unwrap();
+    assert_eq!(same_scope["scope_revision"], 1);
+    input["existing"] = same_scope;
+    input["incoming"]["operation_id"] = json!("late-expanded-scope");
+    input["incoming"]["diagnosis"]["scope"][0]["operation"] =
+        json!("Additional required operation in the current occurrence");
+    let expanded: Value = serde_json::from_str(&execute(&input.to_string()).unwrap()).unwrap();
+    assert_eq!(expanded["scope_revision"], 2);
+    assert_eq!(expanded["generation"], original["generation"]);
+    assert_eq!(expanded["diagnosis"], original["diagnosis"]);
+    assert_eq!(expanded["observation"], original["observation"]);
+    assert_eq!(expanded["status"], original["status"]);
+    assert_eq!(expanded["evidence"][0], original["evidence"][0]);
+    input["existing"] = expanded.clone();
+    let replayed: Value = serde_json::from_str(&execute(&input.to_string()).unwrap()).unwrap();
+    assert_eq!(replayed, expanded);
+    input["incoming"]["operation_id"] = json!("duplicate-late-scope");
+    let duplicate: Value = serde_json::from_str(&execute(&input.to_string()).unwrap()).unwrap();
+    assert_eq!(duplicate, expanded);
 }
 
 #[test]

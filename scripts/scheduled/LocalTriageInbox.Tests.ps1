@@ -40,6 +40,32 @@ Describe 'Complete reporter and problem inventory' {
         $reads.comments | Should -Be 1
     }
 
+    It 'direct-fetches retained run and problem identities only when absent from the complete label inventory' {
+        $published = Publish-TriageFixtureProblem $fixture download
+        $state = Invoke-TriageTransaction $fixture.context read
+        $state.triage.known_run_issues = @(20, 20)
+        $state.triage.known_problem_issues = @($published.link.issue_number, $published.link.issue_number)
+        $script:reads = [Collections.Generic.List[string]]::new()
+        $api = {
+            param($Endpoint, [switch] $Collection, [switch] $Pages)
+            if ($Endpoint -match '/issues/[0-9]+$') { $reads.Add($Endpoint) }
+            & $fixture.api -Endpoint $Endpoint -Collection:$Collection -Pages:$Pages
+        }
+        $snapshot = Get-ScheduledTriageInbox $fixture.context.policy $state $api
+        $snapshot.runs.Count | Should -Be 1
+        $snapshot.index.entries.Count | Should -Be 1
+        $reads.Count | Should -Be 0
+
+        $fixture.store.issues[20L].labels = @()
+        $fixture.store.issues[[long]$published.link.issue_number].labels = @()
+        $snapshot = Get-ScheduledTriageInbox $fixture.context.policy $state $api
+        $snapshot.runs.Count | Should -Be 1
+        $snapshot.index.entries[0].issue_number | Should -Be $published.link.issue_number
+        $reads.Count | Should -Be 2
+        $reads | Should -Contain 'repos/owner/repository/issues/20'
+        $reads | Should -Contain "repos/owner/repository/issues/$($published.link.issue_number)"
+    }
+
     It 'rejects <Case> from the complete inventory' -ForEach @(
         @{ Case = 'foreign run ownership'; Change = { $fixture.store.issues[20L].user.login = 'unrelated' } }
         @{ Case = 'uncommitted reporter index'; Change = { $fixture.store.comments[20L].Clear() } }
@@ -72,6 +98,7 @@ Describe 'Complete reporter and problem inventory' {
         @{ Case = 'run provenance'; Match = 'attempts/1'; Value = @{ repository = @{ id = 124 } } }
         @{ Case = 'source ancestry'; Match = 'compare/'; Value = @{ status = 'diverged' } }
     ) {
+        if ($Case -ceq 'retained ID') { $fixture.store.issues[20L].labels = @() }
         $api = {
             param($Endpoint, [switch] $Collection, [switch] $Pages)
             $matchesEndpoint = if ($Case -ceq 'repository') { $Endpoint -ceq $Match } else {

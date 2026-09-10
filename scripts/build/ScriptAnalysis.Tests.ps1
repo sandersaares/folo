@@ -42,17 +42,21 @@ Describe 'Workspace script-analysis diagnostics' {
         Should -Invoke Invoke-ScriptAnalyzer -ModuleName ScriptAnalysis -Exactly -Times 1
     }
 
-    It 'retains native and inner exceptions plus the last file/rule context without retrying' {
+    It 'retains <ExceptionType> and its inner exception plus the last file/rule context without retrying' -ForEach @(
+        @{ ExceptionType = [System.NullReferenceException] }
+        @{ ExceptionType = [System.InvalidOperationException] }
+        @{ ExceptionType = [System.ArgumentException] }
+    ) {
         Mock Invoke-ScriptAnalyzer -ModuleName ScriptAnalysis {
             Write-Verbose 'Analyzing failing.ps1 with ExampleRule.' -Verbose
-            throw [System.NullReferenceException]::new('analyzer-canary',
+            throw $ExceptionType::new('analyzer-canary',
                 [IO.IOException]::new('inner-canary'))
         }
         { Invoke-WorkspaceScriptAnalysis $root 1.25.0 $diagnostics } | Should -Throw
         $directory = @(Get-ChildItem -LiteralPath $diagnostics -Directory)[0].FullName
         $exception = Get-Content -LiteralPath (Join-Path $directory exception.log) -Raw
         $exception | Should -Match 'analyzer-canary'
-        $exception | Should -Match 'System.NullReferenceException'
+        $exception | Should -Match ([regex]::Escape($ExceptionType.FullName))
         $exception | Should -Match 'inner-canary'
         Get-Content -LiteralPath (Join-Path $directory analyzer-verbose.log) -Raw | Should -Match 'failing.ps1'
         Test-Path -LiteralPath (Join-Path $directory error-record.json) | Should -BeTrue

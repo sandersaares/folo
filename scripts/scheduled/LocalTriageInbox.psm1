@@ -57,6 +57,9 @@ function Get-TriageIssueCollection {
     }
     foreach ($number in $KnownIssues) {
         if ([string]$number -cnotmatch '^[1-9][0-9]*$') { throw [FormatException]::new('Invalid retained issue ID.') }
+        # The complete all-state inventory is authoritative for present IDs; direct reads
+        # recover retained issues that lost their role label without rereading the backlog.
+        if ($found.ContainsKey([long]$number)) { continue }
         $issue = & $Api -Endpoint "repos/$($Policy.repository)/issues/$number"
         if ($issue.number -ne $number -or $issue.Contains('pull_request')) {
             throw [FormatException]::new('Retained issue identity changed.')

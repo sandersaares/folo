@@ -321,27 +321,6 @@ pub(crate) fn update_problem(
                             problem.observation = incoming.observation.clone();
                         }
                     }
-                    let grows_scope = incoming.diagnosis.scope.iter().any(|scope| {
-                        !problem
-                            .evidence
-                            .iter()
-                            .filter(|item| item.generation == problem.generation)
-                            .flat_map(|item| &item.diagnosis.scope)
-                            .chain(
-                                problem
-                                    .legacy
-                                    .iter()
-                                    .filter(|legacy| legacy.generation == problem.generation)
-                                    .flat_map(|legacy| &legacy.scope),
-                            )
-                            .any(|existing| scope.same_verification_scope(existing))
-                    });
-                    if grows_scope {
-                        problem.scope_revision = problem
-                            .scope_revision
-                            .checked_add(1)
-                            .ok_or_else(GenerationOverflow::new)?;
-                    }
                 }
                 Relation::Historical => {
                     require(
@@ -356,6 +335,31 @@ pub(crate) fn update_problem(
                             }),
                         "historical occurrence has no established identity",
                     )?;
+                }
+            }
+            // Required scope follows occurrence membership, not delivery order. Historical
+            // evidence can expand this occurrence, but cannot affect a newer one's repair fence.
+            if incoming.target_generation == problem.generation {
+                let grows_scope = incoming.diagnosis.scope.iter().any(|scope| {
+                    !problem
+                        .evidence
+                        .iter()
+                        .filter(|item| item.generation == problem.generation)
+                        .flat_map(|item| &item.diagnosis.scope)
+                        .chain(
+                            problem
+                                .legacy
+                                .iter()
+                                .filter(|legacy| legacy.generation == problem.generation)
+                                .flat_map(|legacy| &legacy.scope),
+                        )
+                        .any(|existing| scope.same_verification_scope(existing))
+                });
+                if grows_scope {
+                    problem.scope_revision = problem
+                        .scope_revision
+                        .checked_add(1)
+                        .ok_or_else(GenerationOverflow::new)?;
                 }
             }
             problem

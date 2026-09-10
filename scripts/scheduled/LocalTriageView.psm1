@@ -34,7 +34,8 @@ function Get-ScheduledTriageIndexPage {
         $scopes = @(if ($null -ne $full.problem) {
             $full.problem.evidence | Where-Object { $_.generation -eq $full.problem.generation } |
                 ForEach-Object { $_.diagnosis.scope }
-        } else { @{ package = $full.legacy.package; check_id = $full.legacy.check_id; platform = $full.legacy.platform } })
+        } else { @{ operation = $full.legacy.check_kind; package = $full.legacy.package; check_id = $full.legacy.check_id
+            platform = $full.legacy.platform; replay = $full.legacy.evidence.replay } })
         $symptoms = @(if ($null -ne $full.problem) {
             $full.problem.evidence | ForEach-Object { $_.diagnosis.summary } | Sort-Object -Unique
         } else { $full.legacy.evidence.summary })
@@ -47,8 +48,15 @@ function Get-ScheduledTriageIndexPage {
             cause = Get-TriageBriefText $diagnosis.cause; repair_disposition = $diagnosis.repair_disposition
             scope_count = $scopes.Count
             scope_preview = @($scopes | Select-Object -First 3 | ForEach-Object {
-                @{ package = Get-TriageBriefText $_.package 64; check_id = Get-TriageBriefText $_.check_id 64
-                    platform = Get-TriageBriefText $_.platform 64 }
+                @{ operation = Get-TriageBriefText $_.operation 256
+                    package = Get-TriageBriefText $_.package 64; check_id = Get-TriageBriefText $_.check_id 64
+                    platform = Get-TriageBriefText $_.platform 64
+                    # JSON retains the meaning of nested typed qualifiers within the abbreviated
+                    # preview; the full record remains the authority for replay and scope.
+                    replay_preview = if ($null -ne $_.replay) {
+                        Get-TriageBriefText ($_.replay | ConvertTo-Json -Depth 100 -Compress) 512
+                    } else { $null }
+                }
             })
             prior_symptom_count = $symptoms.Count
             prior_symptoms = @($symptoms | Select-Object -First 2 | ForEach-Object { Get-TriageBriefText $_ 256 })

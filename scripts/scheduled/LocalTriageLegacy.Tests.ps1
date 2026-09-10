@@ -121,7 +121,9 @@ Describe 'Retained registration publication' {
         (Complete-ScheduledTriageAnalysis $fixture.context $fixture.api).run_triaged | Should -BeTrue
     }
 
-    It 'advances scope and holds the retained repair when only its required operation changes' {
+    It 'advances scope and holds the retained repair when a <Relation> changes only its required operation' -ForEach @(
+        @{ Relation = 'repeat' }, @{ Relation = 'historical' }
+    ) {
         $fixture.proposal.checkpoint = 2
         $fixture.proposal.problems[0].diagnosis.scope = @(@{
             operation = 'miri'; package = 'package'; check_id = 'miri-linux'; platform = 'linux'
@@ -135,6 +137,7 @@ Describe 'Retained registration publication' {
         $null = Publish-TriageFixtureProblem $fixture download
         $before = Invoke-TriageTransaction $fixture.context read
         $fixture.proposal.checkpoint = 3
+        $fixture.proposal.problems[0].matching.relation = $Relation
         $fixture.proposal.problems[0].diagnosis.scope[0].operation = 'miri with an additional execution qualifier'
         Invoke-TriageFixtureCheckpoint $fixture
         $null = Publish-TriageFixtureProblem $fixture download
