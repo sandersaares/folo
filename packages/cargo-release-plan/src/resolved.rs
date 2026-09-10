@@ -33,9 +33,12 @@ pub(crate) struct Inputs {
 
 impl Inputs {
     pub(crate) fn capture(manifest: &Path, base: Option<&str>) -> Result<Self, AppError> {
-        let (work_tree, git) = load_tracked_work_tree(manifest)?;
+        // Cargo preserves the supplied path spelling, including Windows short names.
+        // Normalize the entry point before discovering any paths that will be rebased.
+        let manifest = canonical(manifest)?;
+        let (work_tree, git) = load_tracked_work_tree(&manifest)?;
         let root = canonical(git.root())?;
-        let manifest = relative(&root, &canonical(manifest)?)?;
+        let manifest = relative(&root, &manifest)?;
         let base_revision = match base {
             Some(base) => base.to_owned(),
             None => git.default_base()?.revision().to_owned(),
@@ -280,8 +283,9 @@ pub(crate) fn apply_resolved(
     if plan.schema_version != SCHEMA_VERSION || plan.stage() != PlanStage::Expanded {
         return Err(ResolutionRequired::new().into());
     }
-    let already_applied = state.inputs.verify(manifest, Some(&state.final_digest))?;
-    let (work_tree, _) = load_tracked_work_tree(manifest)?;
+    let manifest = canonical(manifest)?;
+    let already_applied = state.inputs.verify(&manifest, Some(&state.final_digest))?;
+    let (work_tree, _) = load_tracked_work_tree(&manifest)?;
     let resolved = resolve_plan(
         plan,
         &work_tree.groups,
@@ -329,7 +333,7 @@ pub(crate) fn apply_resolved(
         fs::write(&path, &file.contents)
             .map_err(|error| WriteFileError::caused_by(&path, error))?;
     }
-    state.inputs.verify(manifest, Some(&state.final_digest))?;
+    state.inputs.verify(&manifest, Some(&state.final_digest))?;
     Ok(format!(
         "Installed {} captured files without Cargo resolution.",
         state.files.len()
@@ -370,7 +374,7 @@ pub(crate) fn relative(root: &Path, path: &Path) -> Result<PathBuf, AppError> {
     Ok(relative.to_path_buf())
 }
 
-fn canonical(path: &Path) -> Result<PathBuf, AppError> {
+pub(crate) fn canonical(path: &Path) -> Result<PathBuf, AppError> {
     let canonical =
         fs::canonicalize(path).map_err(|error| ReadFileError::caused_by(path, error))?;
     // Git and Cargo report ordinary Windows paths, not canonicalize's verbatim spelling.
@@ -656,7 +660,9 @@ mod tests {
     #[cfg_attr(miri, ignore = "reads local dependency manifests")]
     fn capture_includes_workspace_and_replacement_sources() {
         let directory = tempdir().unwrap();
-        let root = directory.path();
+        // The traversal consumes the canonical root captured by Inputs.
+        let root = canonical(directory.path()).unwrap();
+        let root = root.as_path();
         fs::create_dir_all(root.join("replacement/src/nested")).unwrap();
         fs::write(
             root.join("Cargo.toml"),

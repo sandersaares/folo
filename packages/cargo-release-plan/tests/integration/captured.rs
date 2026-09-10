@@ -2,7 +2,13 @@
 
 use std::fs;
 use std::path::Path;
+#[cfg(windows)]
+use std::path::PathBuf;
+#[cfg(windows)]
+use std::process::Command;
 
+#[cfg(windows)]
+use cargo_release_plan::{CheckFormat, RunOutcome};
 use cargo_release_plan::{RunInput, run};
 use serde_json::{Value, json};
 
@@ -208,4 +214,94 @@ fn preparation_rejects_absolute_paths_before_creating_a_resolution_workspace() {
     assert!(!fixture.path().join("prepared/.prospective").exists());
     assert_eq!(fixture.read("packages/demo/Cargo.toml"), manifest);
     assert!(!fixture.path().join("Cargo.lock").exists());
+}
+
+#[test]
+#[cfg(windows)]
+#[cfg_attr(
+    miri,
+    ignore = "uses Windows short paths and native PowerShell/Git/Cargo"
+)]
+fn short_windows_paths_use_the_same_captured_workspace_identity() {
+    let fixture = seeded_package();
+    // PowerShell is part of the repository's Windows test environment. The filesystem API
+    // probes actual short-name availability instead of assuming the volume provides it.
+    fixture.write(
+        "short-path.ps1",
+        "# Returns the actual short-name spelling for this test's owned directory.\n\
+         param([string] $Path)\n\
+         Set-StrictMode -Version Latest\n\
+         $ErrorActionPreference = 'Stop'\n\
+         $PSNativeCommandUseErrorActionPreference = $true\n\
+         $filesystem = New-Object -ComObject Scripting.FileSystemObject\n\
+         $filesystem.GetFolder($Path).ShortPath\n",
+    );
+    let output = Command::new("pwsh")
+        .args(["-NoProfile", "-NonInteractive", "-File"])
+        .arg(fixture.path().join("short-path.ps1"))
+        .arg(fixture.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let short_root = PathBuf::from(String::from_utf8(output.stdout).unwrap().trim());
+    assert_eq!(
+        fs::canonicalize(&short_root).unwrap(),
+        fs::canonicalize(fixture.path()).unwrap()
+    );
+    if short_root == fixture.path() {
+        eprintln!("This volume exposes no distinct short directory name.");
+        return;
+    }
+    let manifest = short_root.join("Cargo.toml");
+    let prepared = short_root.join("prepared");
+    run(&RunInput::Prepare {
+        output: prepared.clone(),
+        base: Some("HEAD".to_owned()),
+        manifest_path: manifest.clone(),
+        verbose: false,
+    })
+    .unwrap();
+    fixture.write(
+        "proposal.json",
+        r#"{"schema_version":4,"increments":[{"name":"demo","level":"patch"}]}"#,
+    );
+    let preview = short_root.join("preview");
+    run(&RunInput::Preview {
+        plan: short_root.join("proposal.json"),
+        prepared: prepared.join("prepared.json"),
+        output: preview.clone(),
+        manifest_path: manifest.clone(),
+        verbose: false,
+    })
+    .unwrap();
+    let plan = preview.join("plan.json");
+    let document: Value = serde_json::from_slice(&fs::read(&plan).unwrap()).unwrap();
+    let candidate = document
+        .pointer("/resolved/evidence_manifest_path")
+        .unwrap()
+        .as_str()
+        .unwrap();
+    run(&RunInput::VerifyPreview {
+        plan: plan.clone(),
+        manifest_path: PathBuf::from(candidate),
+        verbose: false,
+    })
+    .unwrap();
+    run(&RunInput::Apply {
+        plan,
+        dry_run: false,
+        manifest_path: manifest.clone(),
+        verbose: false,
+    })
+    .unwrap();
+    assert!(fixture.read("packages/demo/Cargo.toml").contains("0.1.1"));
+    let outcome = run(&RunInput::Check {
+        base: Some("HEAD".to_owned()),
+        manifest_path: manifest,
+        format: CheckFormat::Text,
+        verify_packaging: false,
+        verbose: false,
+    })
+    .unwrap();
+    assert!(matches!(outcome, RunOutcome::Check { passed: true, .. }));
 }

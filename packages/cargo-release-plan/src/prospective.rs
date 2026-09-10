@@ -9,7 +9,7 @@ use ohno::AppError;
 
 use crate::command::{run_capture, run_capture_input, run_capture_ok, run_capture_os};
 use crate::metadata::load_tracked_work_tree;
-use crate::resolved::{Artifact, Inputs, relative};
+use crate::resolved::{Artifact, Inputs, canonical, relative};
 use crate::verbose::Verbose;
 use crate::{ReadFileError, WriteFileError, quote_path};
 
@@ -30,6 +30,7 @@ impl Prospective {
     )]
     pub(crate) fn new(output: &Path, inputs: &Inputs) -> Result<Self, AppError> {
         fs::create_dir_all(output).map_err(|error| WriteFileError::caused_by(output, error))?;
+        let output = canonical(output)?;
         let root = output.join(".prospective");
         // Claim ownership atomically so a concurrent invocation cannot lose its clone to Drop.
         fs::create_dir(&root).map_err(|error| WriteFileError::caused_by(&root, error))?;

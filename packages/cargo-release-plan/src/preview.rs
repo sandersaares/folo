@@ -21,7 +21,7 @@ use crate::plan::{
 };
 use crate::prospective::Prospective;
 use crate::report::write_report;
-use crate::resolved::{Artifact, Inputs, ResolvedState, read_json, write_json};
+use crate::resolved::{Artifact, Inputs, ResolvedState, canonical, read_json, write_json};
 use crate::verbose::Verbose;
 
 /// Post-refresh workspace inputs captured before semantic grading.
@@ -39,13 +39,14 @@ pub(crate) fn run_prepare(
     verbose: Verbose,
 ) -> Result<String, AppError> {
     let output = absolute(output).map_err(|error| WriteFileError::caused_by(output, error))?;
-    let inputs = Inputs::capture(manifest, base)?;
+    let manifest = canonical(manifest)?;
+    let inputs = Inputs::capture(&manifest, base)?;
     let prospective = Prospective::new(&output, &inputs)?;
     remove_marker(&output.join("prepared.json"))?;
     prospective.resolve(verbose)?;
     let files = prospective.artifacts(&inputs)?;
-    inputs.verify(manifest, None)?;
-    let (work_tree, _) = load_tracked_work_tree(manifest)?;
+    inputs.verify(&manifest, None)?;
+    let (work_tree, _) = load_tracked_work_tree(&manifest)?;
     let lockfile = work_tree.workspace_root.join("Cargo.lock");
     validate_preparation_files(inputs.root(), &lockfile, &files)?;
     // Preparation is the explicit mutation boundary. Install only the successfully resolved
@@ -54,9 +55,9 @@ pub(crate) fn run_prepare(
         fs::write(&lockfile, file.contents)
             .map_err(|error| WriteFileError::caused_by(&lockfile, error))?;
     }
-    let inputs = Inputs::capture(manifest, base)?;
-    let classification = classify(manifest, Some(&inputs.base), verbose)?;
-    inputs.verify(manifest, None)?;
+    let inputs = Inputs::capture(&manifest, base)?;
+    let classification = classify(&manifest, Some(&inputs.base), verbose)?;
+    inputs.verify(&manifest, None)?;
     write_report(&output, &classification)?;
     write_json(
         &output.join("prepared.json"),

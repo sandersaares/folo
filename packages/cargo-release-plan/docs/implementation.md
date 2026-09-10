@@ -355,6 +355,11 @@ writes and installs captured bytes without invoking Cargo resolution. Lockfile
 maintenance is independent of binary relevance: a library-only workspace still
 receives a consistent resolved lockfile after version rewrites.
 
+Capture and application canonicalize the selected manifest before Cargo discovers
+workspace paths. Prospective directories are normalized after creation as well.
+This keeps Windows short-name spellings from being mixed with canonical roots
+when paths are rebased, without assuming filesystem case sensitivity.
+
 ## Diagnostics
 
 All repository-controlled names pass through one quoting helper modeled after
