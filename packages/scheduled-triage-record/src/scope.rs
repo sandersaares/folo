@@ -44,3 +44,31 @@ impl Scope {
         validate_citations(&self.citations, evidence)
     }
 }
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn typed_scope_validation_preserves_replay_and_evidence() {
+        let evidence = json!({"operation":"failed"});
+        let mut scope = Scope {
+            operation: "setup".to_owned(),
+            package: None,
+            check_id: None,
+            platform: None,
+            replay: None,
+            citations: vec!["/operation".to_owned()],
+        };
+        scope.validate(&evidence).unwrap();
+        let original = scope.clone();
+        assert!(scope.same_verification_scope(&original));
+        scope.package = Some("package".to_owned());
+        assert!(!scope.same_verification_scope(&original));
+        scope.citations = vec!["/missing".to_owned()];
+        _ = scope.validate(&evidence).unwrap_err();
+    }
+}

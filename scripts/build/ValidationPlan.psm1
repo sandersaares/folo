@@ -165,7 +165,7 @@ function Get-ValidationScriptDomain {
     $domains = @($plan.script_domains)
     foreach ($package in $packages) {
         if ($package -isnot [string]) { throw 'Affected package names must be strings.' }
-        if ($package -cin @('cargo-release-plan', 'scheduled-mutation-config', 'scheduled-run-record')) {
+        if ($package -cin @('cargo-release-plan', 'scheduled-mutation-config', 'scheduled-run-record', 'scheduled-triage-record')) {
             $domains += 'scheduled'
             Write-Verbose "Cargo delta selected '$package'; selecting its scheduled-script integration tests."
         }

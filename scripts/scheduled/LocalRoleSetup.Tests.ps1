@@ -53,4 +53,20 @@ Describe 'Independent disabled role setup' {
         (Get-ScheduledRoleSetupDecision -Role triage -Desired $desired -Workflows @($repair) `
             -MetadataComplete $true).reason | Should -Be ambiguous-role-markers
     }
+    It 'refuses a mismatched desired marker and requires pausing before changing an active role' {
+        $desired.marker = 'folo-scheduled-remediation:v1'
+        { Get-ScheduledRoleSetupDecision -Role triage -Desired $desired -Workflows @() -MetadataComplete $true } | Should -Throw
+        $desired.marker = 'folo-scheduled-triage:v1'; $desired.model = 'chosen'; $desired.reasoning_effort = 'high'
+        $triage = $repair.Clone(); $triage.id = 'triage'; $triage.prompt = $desired.prompt; $triage.enabled = $true
+        (Get-ScheduledRoleSetupDecision -Role triage -Desired $desired -Workflows @($triage) -MetadataComplete $true).reason |
+            Should -Be pause-role-before-setup
+    }
+    It 'reconciles the existing repair role independently without selecting a new model' {
+        $desired.marker = 'folo-scheduled-remediation:v1'
+        $desired.prompt = $repair.prompt; $desired.cadence_cron = $repair.cron_expression
+        $result = Get-ScheduledRoleSetupDecision -Role repair -Desired $desired -Workflows @($repair) -MetadataComplete $true
+        $result.action | Should -Be unchanged
+        $result.workflow_id | Should -Be repair
+        $result.role | Should -Be repair
+    }
 }

@@ -89,7 +89,7 @@ function Initialize-TriageFixture {
         writes = [Collections.Generic.List[object]]::new()
         lose_create = $false; lose_comment = $false; lose_update = $false
         hide_create = $false; hidden_issue = $null
-        fail_job_read = $false
+        fail_job_read = $false; extra_runs = @{}; extra_jobs = @{}
     }
     $apiJobs = @(if ($null -ne $support) {
         $support.evidence.attempt.jobs | ForEach-Object { Copy-TriageFixtureValue $_ }
@@ -125,6 +125,16 @@ function Initialize-TriageFixture {
         if ($Endpoint -ceq 'repos/owner/repository') { return @{ id = 123; full_name = 'owner/repository' } }
         if ($Endpoint -ceq 'repos/owner/repository/actions/workflows/456') {
             return @{ id = 456; name = 'Full deep validation'; path = '.github/workflows/full-deep-validation.yml' }
+        }
+        if ($Endpoint -match '^repos/owner/repository/actions/runs/(\d+)/attempts/(\d+)(/jobs\?per_page=100)?$') {
+            $runKey = "$($Matches[1])/$($Matches[2])"
+            if ($store.extra_runs.ContainsKey($runKey)) {
+                if ($Matches.ContainsKey(3)) {
+                    if (-not $Pages -and -not $Paginate) { throw 'Job pagination must be requested.' }
+                    foreach ($page in $store.extra_jobs[$runKey]) { Copy-TriageFixtureValue $page }
+                } else { Copy-TriageFixtureValue $store.extra_runs[$runKey] }
+                return
+            }
         }
         if ($Endpoint -ceq 'repos/owner/repository/actions/runs/789/attempts/1/jobs?per_page=100') {
             if (-not $Pages -and -not $Paginate) { throw 'Job pagination must be requested.' }

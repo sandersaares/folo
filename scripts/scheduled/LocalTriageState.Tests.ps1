@@ -99,10 +99,11 @@ Describe 'Durable triage ownership and budgets' {
 
     It 'rejects corrupt retained ownership instead of resetting it' {
         $state = Invoke-TriageTransaction $fixture.context read
-        foreach ($damage in @('schema', 'missing-owner', 'competing-owner')) {
+        foreach ($damage in @('schema', 'phase', 'missing-owner', 'competing-owner')) {
             $corrupt = Copy-TriageFixtureValue $state.triage
             switch ($damage) {
                 schema { $corrupt.schema_version = 99 }
+                phase { $corrupt.analyses[$corrupt.active_analysis_id].phase = 'unknown' }
                 missing-owner { $corrupt.active_analysis_id = 'missing' }
                 competing-owner {
                     $other = Copy-TriageFixtureValue $corrupt.analyses[$corrupt.active_analysis_id]
@@ -119,5 +120,109 @@ Describe 'Durable triage ownership and budgets' {
             scan_token = $fixture.context.scan_token; native_idle_verified = $true
         } } | Should -Throw
         (Invoke-TriageTransaction $fixture.context read).triage.active_analysis_id | Should -Be $fixture.context.analysis_id
+    }
+
+    It 'rejects expired scans and unapproved or incomplete role registration' {
+        $later = $fixture.context.Clone(); $later.now = $later.now.AddDays(1)
+        { Invoke-TriageTransaction $later triage-release-scan @{ scan_token = $later.scan_token } } | Should -Throw
+        $state = Invoke-TriageTransaction $fixture.context read
+        $installed = Copy-TriageFixtureValue $state.triage.profile; $installed.user_id = 0
+        { Invoke-TriageTransaction $fixture.context triage-register-profile @{
+            operator_approved = $true; profile = $installed
+        } } | Should -Throw
+        $state.Remove('triage')
+        { Invoke-ScheduledTriageStateChange $state $fixture.context.policy $fixture.context.triage_policy `
+            triage-register-profile @{ operator_approved = $false } $fixture.context.now } | Should -Throw
+    }
+
+    It 'enforces new-start budget and exact historical claim identity after ownership is retired' {
+        $state = Invoke-TriageTransaction $fixture.context read
+        $triage = $state.triage; $analysis = $triage.analyses[$triage.active_analysis_id]
+        $analysis.phase = 'retired'; $triage.active_analysis_id = $null; $triage.scan.started_analysis_id = $null
+        $data = @{ revision = Copy-TriageFixtureValue $analysis.revision; session_id = $analysis.session_id
+            scan_token = $fixture.context.scan_token; native_verified = $true }
+        $data.revision.workflow_id = 0
+        { Invoke-ScheduledTriageStateChange $state $fixture.context.policy $fixture.context.triage_policy `
+            triage-claim $data $fixture.context.now } | Should -Throw
+        $data.revision.workflow_id = 456
+        { Invoke-ScheduledTriageStateChange $state $fixture.context.policy $fixture.context.triage_policy `
+            triage-claim $data $fixture.context.now } | Should -Throw
+        foreach ($index in 1..7) {
+            $copy = Copy-TriageFixtureValue $analysis; $copy.id = "retired-$index"
+            $triage.analyses[$copy.id] = $copy
+        }
+        $data.revision.run_id = 790
+        { Invoke-ScheduledTriageStateChange $state $fixture.context.policy $fixture.context.triage_policy `
+            triage-claim $data $fixture.context.now } | Should -Throw
+    }
+
+    It 'requires summary and full-read receipts before checkpoint validation' {
+        $state = Invoke-TriageTransaction $fixture.context read
+        $analysis = $state.triage.analyses[$fixture.context.analysis_id]
+        $data = @{
+            analysis_id = $analysis.id; session_id = $analysis.session_id
+            claim_token = $analysis.claim_token; dispatch_token = $analysis.dispatch.token
+            checkpoint = Copy-TriageFixtureValue $analysis.checkpoint
+        }
+        $data.checkpoint.analysis.checkpoint = 2
+        $analysis.index_reads.Clear()
+        { Invoke-ScheduledTriageStateChange $state $fixture.context.policy $fixture.context.triage_policy `
+            triage-checkpoint $data $fixture.context.now } | Should -Throw
+        $analysis.index_reads[$data.checkpoint.index.digest] = @(31)
+        $data.checkpoint.index.entries = @(@{ issue_number = 31; full_read_digest = 'not-read' })
+        { Invoke-ScheduledTriageStateChange $state $fixture.context.policy $fixture.context.triage_policy `
+            triage-checkpoint $data $fixture.context.now } | Should -Throw
+    }
+
+    It 'rejects unfinished analysis and missing problem publication even with confirmed run writes' {
+        $state = Invoke-TriageTransaction $fixture.context read
+        $analysis = $state.triage.analyses[$fixture.context.analysis_id]
+        $data = @{ analysis_id = $analysis.id; session_id = $analysis.session_id
+            claim_token = $analysis.claim_token; dispatch_token = $analysis.dispatch.token }
+        $analysis.checkpoint.analysis.status = 'blocked'
+        { Invoke-ScheduledTriageStateChange $state $fixture.context.policy $fixture.context.triage_policy `
+            triage-complete-analysis $data $fixture.context.now } | Should -Throw
+        $analysis.checkpoint.analysis.status = 'complete'
+        foreach ($purpose in @('triage-root', 'run-presentation')) {
+            $analysis.operations[$purpose] = @{ checkpoint = 1; purpose = $purpose; stage = 'confirmed' }
+        }
+        { Invoke-ScheduledTriageStateChange $state $fixture.context.policy $fixture.context.triage_policy `
+            triage-complete-analysis $data $fixture.context.now } | Should -Throw
+    }
+
+    It 'reconciles only a proven accepted dispatch without discarding analysis ownership' {
+        $data = @{ scan_token = $fixture.context.scan_token; native_idle_verified = $false }
+        { Invoke-TriageTransaction $fixture.context triage-reconcile-dispatch $data } | Should -Throw
+        $data.native_idle_verified = $true
+        $state = Invoke-TriageTransaction $fixture.context triage-reconcile-dispatch $data
+        $state.triage.analyses[$fixture.context.analysis_id].dispatch.status | Should -Be completed
+        $state.triage.active_analysis_id | Should -Be $fixture.context.analysis_id
+        { Invoke-TriageTransaction $fixture.context triage-reconcile-dispatch $data } | Should -Throw
+        foreach ($action in @('triage-reconcile-dispatch', 'triage-begin-dispatch', 'triage-retire')) {
+            { Invoke-TriageTransaction $fixture.context $action ($data + @{ analysis_id = 'missing' }) } | Should -Throw
+        }
+    }
+
+    It 'retains a specific blocker when a dispatch has not produced its first checkpoint' {
+        $state = Invoke-TriageTransaction $fixture.context read
+        $analysis = $state.triage.analyses[$fixture.context.analysis_id]; $analysis.checkpoint = $null
+        $data = @{ analysis_id = $analysis.id; session_id = $analysis.session_id
+            claim_token = $analysis.claim_token; dispatch_token = $analysis.dispatch.token; reason = '' }
+        { Invoke-ScheduledTriageStateChange $state $fixture.context.policy $fixture.context.triage_policy `
+            triage-complete-dispatch $data $fixture.context.now } | Should -Throw
+        { Invoke-ScheduledTriageStateChange $state $fixture.context.policy $fixture.context.triage_policy `
+            triage-block $data $fixture.context.now } | Should -Throw
+        $data.reason = 'Required evidence is unavailable'
+        Invoke-ScheduledTriageStateChange $state $fixture.context.policy $fixture.context.triage_policy `
+            triage-complete-dispatch $data $fixture.context.now
+        $analysis.reason | Should -Be $data.reason
+    }
+
+    It 'reads additive triage state with the reviewed default policy without resetting retained work' {
+        $context = $fixture.context
+        $state = Invoke-ScheduledLocalAction -StateRoot $context.state_root -Policy $context.policy `
+            -ExecutorId $context.executor_id -Login $context.login -Now $context.now -Action triage-read
+        $state.triage.active_analysis_id | Should -Be $context.analysis_id
+        { Invoke-TriageTransaction $context triage-unsupported } | Should -Throw
     }
 }

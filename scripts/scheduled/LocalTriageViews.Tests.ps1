@@ -36,6 +36,22 @@ Describe 'Bounded complete-index views' {
         $numbers | Should -Be @(1..12)
         { Get-ScheduledTriageIndexPage $snapshot -1 } | Should -Throw
         { Get-ScheduledTriageIndexPage $snapshot 99 } | Should -Throw
+
+        # JSON escaping can dominate a single otherwise bounded summary. Preserve its
+        # identity and full-read route when even the preview exceeds the response budget.
+        $snapshot.index.entries = @($snapshot.index.entries[1])
+        $full = $snapshot.problems['2'].record
+        $escaped = [string][char]1
+        $full.issue.title = $escaped * 512
+        $full.problem.diagnosis.summary = $escaped * 512
+        $full.problem.diagnosis.cause = $escaped * 512
+        $scope = @{ package = $escaped * 64; check_id = $escaped * 64; platform = $escaped * 64 }
+        $full.problem.evidence[0].diagnosis.scope = @($scope, $scope, $scope)
+        $page = Get-ScheduledTriageIndexPage $snapshot 0
+        $page.entries.Count | Should -Be 1
+        $page.entries[0].issue_number | Should -Be 2
+        $page.entries[0].title.Length | Should -Be 128
+        $page.entries[0].full_record_available | Should -BeTrue
     }
 
     It 'retains human marker-like discussion while omitting only already decoded transport pages' {

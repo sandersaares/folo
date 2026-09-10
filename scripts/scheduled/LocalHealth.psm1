@@ -123,6 +123,7 @@ function Sync-ScheduledRoleHealth {
             $comment.body.Substring(0, $match.Index) + (Write-ScheduledRecord $desired health) +
                 $comment.body.Substring($match.Index + $match.Length)
         }
+        if (-not $body.StartsWith('[Copilot speaking]')) { $body = "[Copilot speaking]`n`n$body" }
         $intent = @{
             issue_number = $issues[0].number; comment_id = if ($null -ne $comment) { $comment.id } else { $null }
             record = $desired; body = $body

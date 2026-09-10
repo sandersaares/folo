@@ -1151,6 +1151,29 @@ Describe 'Merged repair confirmation authority' {
             $confirmation.merge_commit_sha | Should -BeExactly ('b' * 40)
             Should -Invoke Invoke-ScheduledGitHubApi -Times 0 -ParameterFilter { $Endpoint -like '*compare*' }
         }
+        It 'does not close a triage-owned later occurrence broader scope or human-held problem' -ForEach @(
+            @{ Generation = 2; ScopeRevision = 1; Disposition = 'actionable'; Expected = 'open' }
+            @{ Generation = 1; ScopeRevision = 2; Disposition = 'actionable'; Expected = 'open' }
+            @{ Generation = 1; ScopeRevision = 1; Disposition = 'needs-human'; Expected = 'open' }
+            @{ Generation = 1; ScopeRevision = 1; Disposition = 'actionable'; Expected = 'closed' }
+        ) {
+            $confirmationPolicy.rollout = @{ reporting_enabled = $false }
+            $problem = @{
+                schema_version = 1; repository_id = 850321188; issue_number = 2; role = 'triage'
+                generation = $Generation; scope_revision = $ScopeRevision; repair_disposition = $Disposition
+            }
+            $confirmationIssue.body += "`n$(Write-ScheduledRecord $problem problem)"
+            Mock Invoke-ScheduledGitHubApi { $confirmationIssue } -ParameterFilter { $Endpoint -ceq 'repos/folo-rs/folo/issues/2' }
+            $record = $confirmationRecord.Clone(); $record.status = 'confirmed'
+            $result = Sync-ScheduledIssue -Policy $confirmationPolicy -Issue $confirmationIssue -Record $record -Kind reporter
+            $result.payload.state | Should -Be $Expected
+            $result.payload.body | Should -Match 'scheduled-problem:v1'
+            $problem.repository_id = 124
+            $confirmationIssue.body = "$(Write-ScheduledRecord $confirmationRecord reporter)`n$(Write-ScheduledRecord $problem problem)"
+            { Sync-ScheduledIssue -Policy $confirmationPolicy -Issue $confirmationIssue -Record $record -Kind reporter } |
+                Should -Throw
+            Should -Invoke Invoke-ScheduledGitHubApi -Times 0 -ParameterFilter { $Method -in @('POST', 'PATCH') }
+        }
         It 'rejects original-head ancestry as a substitute for merge-commit reachability' {
             $confirmationPr.merge_commit_sha = 'e' * 40
             Get-ScheduledTrustedConfirmation $confirmationIssue $confirmationRecord `
@@ -1304,6 +1327,33 @@ Describe 'Read-only health adapter' {
             $health.components.coverage.status | Should -Be reused
             $health.components.repair_scan.status | Should -Be fresh
             Should -Invoke Invoke-ScheduledGitHubApi -Times 1 -ParameterFilter { $Endpoint -like '*/issues/1/comments?*' }
+            Should -Invoke Invoke-ScheduledGitHubApi -Times 0 -ParameterFilter { $Method -in @('POST', 'PATCH') }
+        }
+        It 'reports stalled or foreign triage independently of a current repair heartbeat' {
+            $healthPolicy.schema_version = 1
+            $script:healthTriagePolicy = Get-ScheduledTriagePolicy
+            $healthTriagePolicy.mode = 'triage'; $healthTriagePolicy.enrolled_machine_id = 'executor'
+            $healthTriagePolicy.model = 'chosen'; $healthTriagePolicy.reasoning_effort = 'medium'
+            Mock Get-ScheduledTriagePolicy { $healthTriagePolicy }
+            $script:healthTriage = $healthLocal.Clone()
+            $healthTriage.role = 'triage'; $healthTriage.last_successful_scan = '2026-09-01T11:00:00Z'
+            $healthTriage.profile = @{
+                policy_digest = Get-ScheduledTriagePolicyDigest $healthPolicy $healthTriagePolicy
+                cadence_cron = $healthTriagePolicy.cadence_cron; model = 'chosen'; reasoning_effort = 'medium'; enabled = $true
+            }
+            Mock Invoke-ScheduledGitHubApi {
+                @($healthLocal, $healthTriage) | ForEach-Object {
+                    @{ user = @{ login = 'sandersaares' }; body = Write-ScheduledRecord $_ health }
+                }
+            } -ParameterFilter { $Endpoint -like '*/comments?*' }
+            $health = Get-ScheduledGitHubHealth 'folo-rs/folo' ([datetimeoffset]'2026-09-08T12:00:00Z')
+            $health.components.repair_scan.status | Should -Be fresh
+            $health.components.triage_scan.status | Should -Be unavailable
+            $health.healthy | Should -BeFalse
+            $healthTriage.repository_id = 124
+            $health = Get-ScheduledGitHubHealth 'folo-rs/folo' ([datetimeoffset]'2026-09-08T12:00:00Z')
+            $health.problems | Should -Not -BeNullOrEmpty
+            $health.components.repair_scan.status | Should -Be fresh
             Should -Invoke Invoke-ScheduledGitHubApi -Times 0 -ParameterFilter { $Method -in @('POST', 'PATCH') }
         }
         It 'persists the health entrypoint observation for the workflow upload without GitHub writes' {

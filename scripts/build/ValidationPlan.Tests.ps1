@@ -84,7 +84,7 @@ Describe 'Non-Cargo change domains' {
 
 Describe 'Cargo helper integration selection' {
     It 'adds scheduled tests for affected helper <_>' -ForEach @(
-        'cargo-release-plan', 'scheduled-mutation-config', 'scheduled-run-record'
+        'cargo-release-plan', 'scheduled-mutation-config', 'scheduled-run-record', 'scheduled-triage-record'
     ) {
         $plan = ConvertTo-PlanJson (Get-ValidationPlan -ChangedPath @('scripts/book/BookSite.psm1'))
         $packages = ConvertTo-Json -InputObject @($_) -Compress

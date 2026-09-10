@@ -21,6 +21,8 @@ Describe 'Local triage publication and recovery' {
         }
         (Invoke-ScheduledTriageProblemPreparation $fixture.context $fixture.snapshot download $fixture.api).action |
             Should -Be prepared
+        (Invoke-ScheduledTriageProblemPreparation $fixture.context $fixture.snapshot download $fixture.api).action |
+            Should -Be prepared
         (Publish-ScheduledTriageProblem $fixture.context download $fixture.api).action | Should -Be published
         $result = Complete-ScheduledTriageAnalysis $fixture.context $fixture.api
         $result.run_triaged | Should -BeTrue

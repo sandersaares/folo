@@ -386,3 +386,28 @@ struct InvalidResolution;
 #[ohno::error]
 #[display("problem occurrence counter is exhausted")]
 struct GenerationOverflow;
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn typed_observation_order_uses_attempts_and_actual_start_time() {
+        let first = Observation {
+            source_sha: "a".repeat(40),
+            run_id: NonZero::new(2).unwrap(),
+            run_attempt: NonZero::new(1).unwrap(),
+            started_at: "2026-09-09T01:00:00Z".to_owned(),
+            created_at: "2026-09-09T01:00:00Z".to_owned(),
+        };
+        let mut next = first.clone();
+        next.run_attempt = NonZero::new(2).unwrap();
+        assert_eq!(next.compare(&first).unwrap(), Ordering::Greater);
+        next.run_id = NonZero::new(1).unwrap();
+        next.started_at = "2026-09-09T02:00:00Z".to_owned();
+        assert_eq!(next.compare(&first).unwrap(), Ordering::Greater);
+        next.source_sha = "not-a-sha".to_owned();
+        _ = next.validate().unwrap_err();
+    }
+}

@@ -184,3 +184,42 @@ impl CandidateComparison {
 struct ComparisonError {
     reason: &'static str,
 }
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn typed_index_requires_complete_read_and_current_occurrence() {
+        let issue = NonZero::new(7).unwrap();
+        let index = ComparisonIndex {
+            digest: "snapshot".to_owned(),
+            complete: true,
+            entries: vec![IndexEntry {
+                issue_number: issue,
+                generation: NonZero::new(2).unwrap(),
+                scope_revision: NonZero::new(1).unwrap(),
+                record_digest: "record".to_owned(),
+                summary: json!({}),
+                full_read_digest: Some("read".to_owned()),
+            }],
+        };
+        index.validate("snapshot", &[issue]).unwrap();
+        _ = index.validate("snapshot", &[]).unwrap_err();
+        let decision = MatchDecision::Existing {
+            issue_number: issue,
+            expected_generation: NonZero::new(2).unwrap(),
+            expected_scope_revision: NonZero::new(1).unwrap(),
+            target_generation: NonZero::new(2).unwrap(),
+            record_digest: "record".to_owned(),
+            full_read_digest: "read".to_owned(),
+            relation: Relation::Repeat,
+            reason: "common cause".to_owned(),
+        };
+        decision.validate(&index).unwrap();
+        _ = index.read(issue, "stale").unwrap_err();
+    }
+}

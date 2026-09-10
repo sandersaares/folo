@@ -101,6 +101,10 @@ fn empty_workflow_request(conclusion: &str) -> Value {
 }
 
 #[test]
+#[cfg_attr(
+    miri,
+    ignore = "full producer snapshots and repeated canonical hashing exceed the interpreter budget; typed guards retain Miri coverage"
+)]
 fn proved_empty_workflow_failure_or_cancellation_is_not_an_unavailable_inventory() {
     for conclusion in ["cancelled", "failure"] {
         let input = empty_workflow_request(conclusion);
@@ -118,6 +122,10 @@ fn proved_empty_workflow_failure_or_cancellation_is_not_an_unavailable_inventory
 }
 
 #[test]
+#[cfg_attr(
+    miri,
+    ignore = "full producer snapshots and repeated canonical hashing exceed the interpreter budget; typed guards retain Miri coverage"
+)]
 fn empty_success_unknown_conclusions_and_inconsistent_totals_cannot_complete_failure_analysis() {
     for conclusion in ["success", "unknown"] {
         _ = execute(&empty_workflow_request(conclusion).to_string()).unwrap_err();
@@ -175,6 +183,10 @@ fn supported_request() -> Value {
 }
 
 #[test]
+#[cfg_attr(
+    miri,
+    ignore = "full producer snapshots and repeated canonical hashing exceed the interpreter budget; typed guards retain Miri coverage"
+)]
 fn fuller_committed_same_attempt_support_preserves_the_primary_claim() {
     let input = supported_request();
     let output: Value = serde_json::from_str(&execute(&input.to_string()).unwrap()).unwrap();
@@ -193,6 +205,10 @@ fn fuller_committed_same_attempt_support_preserves_the_primary_claim() {
 }
 
 #[test]
+#[cfg_attr(
+    miri,
+    ignore = "full producer snapshots and repeated canonical hashing exceed the interpreter budget; typed guards retain Miri coverage"
+)]
 fn supporting_attempt_source_and_status_conflicts_are_not_overwritten() {
     for (pointer, value) in [
         ("/attempt/run_attempt", json!(2)),
@@ -243,6 +259,10 @@ fn request() -> Value {
 }
 
 #[test]
+#[cfg_attr(
+    miri,
+    ignore = "full producer snapshots and repeated canonical hashing exceed the interpreter budget; typed guards retain Miri coverage"
+)]
 fn serializes_complete_setup_analysis_without_manufacturing_a_code_repair() {
     let output: Value = serde_json::from_str(&execute(&request().to_string()).unwrap()).unwrap();
     assert_eq!(output["status"], "complete");
@@ -254,6 +274,10 @@ fn serializes_complete_setup_analysis_without_manufacturing_a_code_repair() {
 }
 
 #[test]
+#[cfg_attr(
+    miri,
+    ignore = "full producer snapshots and repeated canonical hashing exceed the interpreter budget; typed guards retain Miri coverage"
+)]
 fn every_failed_job_step_and_result_requires_a_disposition() {
     for pointer in [
         "/analysis/jobs",
@@ -267,6 +291,10 @@ fn every_failed_job_step_and_result_requires_a_disposition() {
 }
 
 #[test]
+#[cfg_attr(
+    miri,
+    ignore = "full producer snapshots and repeated canonical hashing exceed the interpreter budget; typed guards retain Miri coverage"
+)]
 fn rejects_changed_revision_unknown_links_and_missing_citations() {
     for (pointer, value) in [
         ("/analysis/revision/digest", json!("foreign")),
@@ -291,6 +319,10 @@ fn rejects_changed_revision_unknown_links_and_missing_citations() {
 }
 
 #[test]
+#[cfg_attr(
+    miri,
+    ignore = "full producer snapshots and repeated canonical hashing exceed the interpreter budget; typed guards retain Miri coverage"
+)]
 fn unfinished_analysis_keeps_reason_and_cannot_impersonate_completion() {
     let mut input = request();
     input["analysis"]["status"] = json!("blocked");
@@ -302,6 +334,10 @@ fn unfinished_analysis_keeps_reason_and_cannot_impersonate_completion() {
 }
 
 #[test]
+#[cfg_attr(
+    miri,
+    ignore = "full producer snapshots and repeated canonical hashing exceed the interpreter budget; typed guards retain Miri coverage"
+)]
 fn comparison_requires_the_complete_index_and_real_full_read_receipt() {
     let mut input = request();
     input["index"]["entries"] = json!([{
@@ -321,6 +357,10 @@ fn comparison_requires_the_complete_index_and_real_full_read_receipt() {
 }
 
 #[test]
+#[cfg_attr(
+    miri,
+    ignore = "full producer snapshots and repeated canonical hashing exceed the interpreter budget; typed guards retain Miri coverage"
+)]
 fn ambiguous_matches_remain_blocked_without_a_competing_new_issue() {
     let mut input = request();
     input["index"]["entries"] = json!([{
@@ -339,6 +379,10 @@ fn ambiguous_matches_remain_blocked_without_a_competing_new_issue() {
 }
 
 #[test]
+#[cfg_attr(
+    miri,
+    ignore = "full producer snapshots and repeated canonical hashing exceed the interpreter budget; typed guards retain Miri coverage"
+)]
 fn one_job_can_explain_independent_problems_without_hash_based_grouping() {
     let mut input = request();
     let mut independent = input["analysis"]["problems"][0].clone();
@@ -422,6 +466,10 @@ fn resolved_problem() -> Value {
 }
 
 #[test]
+#[cfg_attr(
+    miri,
+    ignore = "full producer snapshots and repeated canonical hashing exceed the interpreter budget; typed guards retain Miri coverage"
+)]
 fn problem_identity_and_operation_replay_preserve_scope_and_occurrence() {
     let mut input = problem_update();
     let problem: Value = serde_json::from_str(&execute(&input.to_string()).unwrap()).unwrap();
@@ -438,6 +486,10 @@ fn problem_identity_and_operation_replay_preserve_scope_and_occurrence() {
 }
 
 #[test]
+#[cfg_attr(
+    miri,
+    ignore = "full producer snapshots and repeated canonical hashing exceed the interpreter budget; typed guards retain Miri coverage"
+)]
 fn closed_without_resolution_and_new_runs_without_ancestry_do_not_recur() {
     let mut input = problem_update();
     let problem: Value = serde_json::from_str(&execute(&input.to_string()).unwrap()).unwrap();
@@ -451,6 +503,10 @@ fn closed_without_resolution_and_new_runs_without_ancestry_do_not_recur() {
 }
 
 #[test]
+#[cfg_attr(
+    miri,
+    ignore = "full producer snapshots and repeated canonical hashing exceed the interpreter budget; typed guards retain Miri coverage"
+)]
 fn confirmed_recurrence_and_late_historical_evidence_have_independent_occurrences() {
     let mut input = problem_update();
     input["existing"] = resolved_problem();
@@ -482,6 +538,10 @@ fn confirmed_recurrence_and_late_historical_evidence_have_independent_occurrence
 }
 
 #[test]
+#[cfg_attr(
+    miri,
+    ignore = "full producer snapshots and repeated canonical hashing exceed the interpreter budget; typed guards retain Miri coverage"
+)]
 fn recurrence_rejects_old_or_unrelated_execution_and_exhausted_generations() {
     for relation in ["unrelated", "unknown"] {
         let mut input = problem_update();
@@ -506,6 +566,10 @@ fn recurrence_rejects_old_or_unrelated_execution_and_exhausted_generations() {
 }
 
 #[test]
+#[cfg_attr(
+    miri,
+    ignore = "full producer snapshots and repeated canonical hashing exceed the interpreter budget; typed guards retain Miri coverage"
+)]
 fn repeats_preserve_complete_scope_and_refine_same_revision_diagnosis() {
     let mut input = problem_update();
     let original: Value = serde_json::from_str(&execute(&input.to_string()).unwrap()).unwrap();
@@ -532,9 +596,24 @@ fn repeats_preserve_complete_scope_and_refine_same_revision_diagnosis() {
     );
     input["existing"]["scope_revision"] = json!(u64::MAX);
     _ = execute(&input.to_string()).unwrap_err();
+
+    input["existing"] = original.clone();
+    input["existing"]["evidence"] = json!([]);
+    input["existing"]["legacy"] = json!({
+        "finding_id":"retained", "generation":1,
+        "scope":original["diagnosis"]["scope"], "record":{"registered":"retained"}
+    });
+    input["incoming"]["diagnosis"]["scope"] = original["diagnosis"]["scope"].clone();
+    let imported: Value = serde_json::from_str(&execute(&input.to_string()).unwrap()).unwrap();
+    assert_eq!(imported["scope_revision"], 1);
+    assert_eq!(imported["legacy"]["scope"], original["diagnosis"]["scope"]);
 }
 
 #[test]
+#[cfg_attr(
+    miri,
+    ignore = "full producer snapshots and repeated canonical hashing exceed the interpreter budget; typed guards retain Miri coverage"
+)]
 fn malformed_analysis_decisions_fail_without_partial_acceptance() {
     for (pointer, value) in [
         ("/analysis/schema_version", json!(2)),
@@ -548,6 +627,7 @@ fn malformed_analysis_decisions_fail_without_partial_acceptance() {
             json!(""),
         ),
         ("/analysis/jobs/0/disposition/explanation", json!("")),
+        ("/analysis/jobs/0/job_id", json!(102)),
         ("/analysis/jobs/0/steps/0/number", json!(2)),
         ("/analysis/results/0/index", json!(9)),
         ("/analysis/index_digest", json!("changed")),
@@ -580,7 +660,17 @@ fn malformed_analysis_decisions_fail_without_partial_acceptance() {
 }
 
 #[test]
+#[cfg_attr(
+    miri,
+    ignore = "full producer snapshots and repeated canonical hashing exceed the interpreter budget; typed guards retain Miri coverage"
+)]
 fn every_original_gap_and_support_disposition_remains_required() {
+    let mut input = request();
+    input["analysis"]["results"][0]["source_digest"] = json!("absent");
+    _ = execute(&input.to_string()).unwrap_err();
+    let mut input = supported_request();
+    input["analysis"]["gaps"][0]["source_digest"] = json!("absent");
+    _ = execute(&input.to_string()).unwrap_err();
     let mut input = supported_request();
     input["analysis"]["gaps"].as_array_mut().unwrap().pop();
     _ = execute(&input.to_string()).unwrap_err();
@@ -616,6 +706,10 @@ fn indexed_request() -> Value {
 }
 
 #[test]
+#[cfg_attr(
+    miri,
+    ignore = "full producer snapshots and repeated canonical hashing exceed the interpreter budget; typed guards retain Miri coverage"
+)]
 fn candidate_matching_preserves_generation_and_full_index_requirements() {
     for (pointer, value) in [
         (
@@ -627,6 +721,7 @@ fn candidate_matching_preserves_generation_and_full_index_requirements() {
             json!(2),
         ),
         ("/analysis/problems/0/matching/target_generation", json!(1)),
+        ("/analysis/problems/0/matching/issue_number", json!(100)),
         ("/analysis/problems/0/matching/reason", json!("")),
     ] {
         let mut input = indexed_request();
@@ -657,6 +752,10 @@ fn candidate_matching_preserves_generation_and_full_index_requirements() {
 }
 
 #[test]
+#[cfg_attr(
+    miri,
+    ignore = "full producer snapshots and repeated canonical hashing exceed the interpreter budget; typed guards retain Miri coverage"
+)]
 fn completion_basis_rejects_changed_snapshots_foreign_jobs_and_duplicate_steps() {
     for (pointer, value) in [
         ("/basis/schema_version", json!(2)),
@@ -687,6 +786,10 @@ fn completion_basis_rejects_changed_snapshots_foreign_jobs_and_duplicate_steps()
 }
 
 #[test]
+#[cfg_attr(
+    miri,
+    ignore = "full producer snapshots and repeated canonical hashing exceed the interpreter budget; typed guards retain Miri coverage"
+)]
 fn successful_or_skipped_jobs_do_not_hide_a_failed_step() {
     for conclusion in ["success", "skipped"] {
         let mut input = request();
@@ -702,6 +805,10 @@ fn successful_or_skipped_jobs_do_not_hide_a_failed_step() {
 }
 
 #[test]
+#[cfg_attr(
+    miri,
+    ignore = "full producer snapshots and repeated canonical hashing exceed the interpreter budget; typed guards retain Miri coverage"
+)]
 fn problem_updates_reject_foreign_identity_future_occurrences_and_new_unpublished_history() {
     let original: Value =
         serde_json::from_str(&execute(&problem_update().to_string()).unwrap()).unwrap();
@@ -737,6 +844,10 @@ fn problem_updates_reject_foreign_identity_future_occurrences_and_new_unpublishe
 }
 
 #[test]
+#[cfg_attr(
+    miri,
+    ignore = "full producer snapshots and repeated canonical hashing exceed the interpreter budget; typed guards retain Miri coverage"
+)]
 fn empty_workflows_reject_source_repair_claims_and_non_workflow_dispositions() {
     let mut input = empty_workflow_request("failure");
     input["analysis"]["workflow"]["kind"] = json!("actionable");
@@ -755,6 +866,10 @@ fn empty_workflows_reject_source_repair_claims_and_non_workflow_dispositions() {
 }
 
 #[test]
+#[cfg_attr(
+    miri,
+    ignore = "full producer snapshots and repeated canonical hashing exceed the interpreter budget; typed guards retain Miri coverage"
+)]
 fn problem_dispositions_need_links_and_replays_remain_structured() {
     let mut input = request();
     input["analysis"]["jobs"][0]["disposition"]["problem_keys"] = json!([]);
@@ -766,6 +881,10 @@ fn problem_dispositions_need_links_and_replays_remain_structured() {
 }
 
 #[test]
+#[cfg_attr(
+    miri,
+    ignore = "full producer snapshots and repeated canonical hashing exceed the interpreter budget; typed guards retain Miri coverage"
+)]
 fn incomplete_primary_metadata_is_retained_alongside_the_complete_api_snapshot() {
     for pointer in [
         "/attempt/jobs/0/status",
@@ -804,6 +923,10 @@ fn incomplete_primary_metadata_is_retained_alongside_the_complete_api_snapshot()
 }
 
 #[test]
+#[cfg_attr(
+    miri,
+    ignore = "full producer snapshots and repeated canonical hashing exceed the interpreter budget; typed guards retain Miri coverage"
+)]
 fn stale_occurrences_and_inapplicable_repeats_cannot_replace_current_execution() {
     let mut input = problem_update();
     let original: Value = serde_json::from_str(&execute(&input.to_string()).unwrap()).unwrap();

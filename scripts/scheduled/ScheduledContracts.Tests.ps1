@@ -27,6 +27,17 @@ Describe 'Scheduled records' {
         (Get-ScheduledDigest @('a', 'b')) | Should -Not -Be (Get-ScheduledDigest @('b', 'a'))
         (Get-ScheduledDigest 'Path') | Should -Not -Be (Get-ScheduledDigest 'path')
     }
+    It 'preserves pipeline-wrapped primitives through record and JSON round trips' {
+        $name = 'scheduled-finding' | ForEach-Object { $_ }
+        $null = $name.PSObject.Properties
+        $record = @{ schema_version = 1; labels = @(@{ name = $name }); metadata = [pscustomobject]@{ a = 1 } }
+        $copy = $record | ConvertTo-Json -Depth 10 | ConvertFrom-Json -AsHashtable
+        (Get-ScheduledDigest $record) | Should -BeExactly (Get-ScheduledDigest $copy)
+        $parsed = Read-ScheduledRecord -Kind problem -Text (Write-ScheduledRecord -Kind problem -Record $record)
+        $parsed.labels[0].name | Should -BeExactly 'scheduled-finding'
+        $parsed.metadata.a | Should -Be 1
+        (Get-ScheduledDigest $parsed) | Should -BeExactly (Get-ScheduledDigest $record)
+    }
     It 'preserves empty singleton nested and null array entries' {
         InModuleScope ScheduledContracts {
             $values = @(

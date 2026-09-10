@@ -181,6 +181,8 @@ Describe 'GitHub pagination and validated intake' {
                     @{ number = 4; body = $script:runBody; user = @{ login = 'github-actions[bot]' }
                         created_at = '2026-08-01T00:00:00Z'
                         labels = @(@{ name = 'scheduled-finding' }, @{ name = 'scheduled-run-failure' }) }
+                    @{ number = 5; body = '<!-- scheduled-problem:v1 {"schema_version":1} -->'
+                        user = @{ login = 'sandersaares' }; labels = @(@{ name = 'scheduled-finding' }) }
                 )
             }
             Mock Invoke-ScheduledApi {
@@ -204,6 +206,8 @@ Describe 'GitHub pagination and validated intake' {
             $result.rejected.reason | Should -Contain run-evidence-not-repair-authorization
             $result.deferred.issue_number | Should -Be 1
             $result.eligible.Count | Should -Be 0
+            $result.triaged_problem_issues[0].issue_number | Should -Be 5
+            $result.triaged_problem_issues[0].reason | Should -Be ai-triage-unavailable
             $result.blocked_conditions | Should -Contain ai-triage-unavailable
             $result.blocked_conditions | Should -Contain github-schedule-disabled
             $result.blocked_conditions | Should -Contain hosted-planning-evidence-missing

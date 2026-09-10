@@ -76,9 +76,18 @@ proof, not a GitHub login match or a successful mock.
 analysis/session/claim and new dispatch token, first verify this is that exact
 native owner, then call `triage-accept-dispatch`. Do not acquire a fresh scan:
 the sender still owns the short polling scan while it delivers this message.
-Continue at Stage 4 using the retained primary revision and supplied recovery or
-fresh-snapshot evidence. Complete only your accepted dispatch; the sender or a
-later poll owns scan/health recording and scan release.
+After acceptance, call the read-only `scan` action to obtain a usable fresh
+`snapshot_id`, without acquiring a scan token or claiming another revision. Then
+continue at Stage 4 with that snapshot and the retained primary revision. Recovery
+returns an eligibility fingerprint, not an evidence snapshot.
+
+If partial publication prevents scanning, resume the already persisted Stage 5/6
+publication plans first using `prepare-problem`, `publish-problem` or `finish`, as
+appropriate to their recorded state. Do not request Stage 4 evidence with an absent
+snapshot ID or replace an uncertain publication plan. Once recovery permits a
+complete scan, obtain a fresh snapshot before changed diagnosis.
+Complete only your accepted dispatch; the sender or a later poll owns scan/health
+recording and scan release.
 
 Observe/paused or unenrolled execution performs observation only. It cannot claim,
 send a continuation or publish problem/triage changes. Report deliberately
@@ -95,11 +104,12 @@ ownership of the registered analysis.
 Call `recovery`. An unfinished owned issue/page write can prevent a complete
 inbox scan; this is not a reason to abandon that analysis or open another session.
 The recovery result supplies the retained native session, exact revision, dispatch
-and a stable new-evidence key. It includes a successful provenance-validated fresh
-input snapshot when available, so recovered collection/support or changed candidate
+and a stable new-evidence key. Its fingerprint incorporates a successful
+provenance-validated fresh input read when available, so recovered collection/support or changed candidate
 evidence can resume a previously blocked analysis. Unchanged blocked reads do not
 mint repeated keys. The separate uncertain-publication path remains available
-when partial publication itself prevents a clean inbox. Recovery performs no writes.
+when partial publication itself prevents a clean inbox. Recovery performs no writes
+and does not return a `snapshot_id`; the accepting recipient obtains one with `scan`.
 
 If another native session owns analysis, inspect that exact session with native
 tools. Verify repository/project, Local execution, ownership and quiescence.

@@ -144,8 +144,14 @@ worker when it resumes that worker through native messaging.
 
 The analysis object has `schema_version`, `analysis_id`, increasing `checkpoint`,
 the exact `revision`, `status`, `reason`, `index_digest`, `considered_issues`,
-`jobs`, `results`, `gaps`, `problems`, and `support_dispositions`.
+`jobs`, `results`, `gaps`, `problems`, `support_dispositions`, and optional `workflow`.
 Status is `in-progress`, `blocked` or `complete`. A non-complete entry explains why.
+
+A proved-empty exact-attempt inventory requires a `workflow` disposition grounded
+in its API conclusion. It accounts for cancellation or failure before jobs existed;
+it does not invent checker/source defects. Unavailable pages, inconsistent totals
+or unexplained workflow outcomes remain blocked. The same disposition shape is
+used as for jobs, with a citation to `/api_evidence/workflow_conclusion`.
 
 Each job has `job_id`, a `disposition`, and step entries with `number` and
 `disposition`. Results identify their zero-based `index`; gaps identify their

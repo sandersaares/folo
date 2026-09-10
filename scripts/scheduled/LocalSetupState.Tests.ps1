@@ -74,4 +74,14 @@ Describe 'Durable disabled setup intent' {
         }
         Test-Path -LiteralPath (Join-Path $TestDrive '123') | Should -BeFalse
     }
+    It 'requires canonical repository identity and a verified desired entry before preparing creation' {
+        { Invoke-ScheduledSetupJournal 'relative.json' 123 read } | Should -Throw
+        { Invoke-ScheduledSetupJournal $path 0 read } | Should -Throw
+        { Invoke-ScheduledSetupJournal $path 123 begin-create triage @{
+            operator_approved = $true
+        } } | Should -Throw
+        { Invoke-ScheduledSetupJournal -Path $path -RepositoryId 123 -Action begin-create `
+            -Data @{ operator_approved = $true; desired = $desired } } | Should -Throw
+        Test-Path -LiteralPath $path | Should -BeFalse
+    }
 }

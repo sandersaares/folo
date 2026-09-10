@@ -25,7 +25,10 @@ function ConvertTo-ScheduledCanonicalValue {
         }
         return $result
     }
-    if ($Value -is [pscustomobject]) {
+    # Pipeline values may gain a PSObject wrapper after property inspection. The -is
+    # operator then also identifies wrapped strings as custom objects; their actual
+    # runtime type preserves the same canonical value before and after JSON persistence.
+    if ($Value.GetType() -eq [System.Management.Automation.PSCustomObject]) {
         $values = @{}
         foreach ($property in $Value.PSObject.Properties) { $values[$property.Name] = $property.Value }
         return ConvertTo-ScheduledCanonicalValue $values

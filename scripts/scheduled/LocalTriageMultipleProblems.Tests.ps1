@@ -26,7 +26,7 @@ BeforeAll {
         return $published
     }
 
-    function Add-FixtureExistingProblem($Fixture) {
+    function Add-FixtureExistingProblem($Fixture, [switch] $Closed) {
         $state = Invoke-TriageTransaction $Fixture.context read
         $analysis = $state.triage.analyses[$Fixture.context.analysis_id]
         $created = & $Fixture.api -Endpoint 'repos/owner/repository/issues' -Method POST -Body @{
@@ -67,6 +67,7 @@ BeforeAll {
         $null = & $Fixture.api -Endpoint "repos/owner/repository/issues/$($created.number)" -Method PATCH -Body @{
             body = "[Copilot speaking]`n`n$(ConvertTo-TriageOwnedBlock problem (Write-ScheduledRecord $root problem))"
         }
+        if ($Closed) { $Fixture.store.issues[[long]$created.number].state = 'closed' }
         $snapshot = Get-ScheduledTriageInbox $Fixture.context.policy $state $Fixture.api
         $null = Invoke-TriageTransaction $Fixture.context triage-record-index-read @{
             index_digest = $snapshot.index.digest; issue_numbers = @($created.number)
@@ -143,5 +144,39 @@ Describe 'Several problems in one analysis' {
         (Complete-ScheduledTriageAnalysis $fixture.context $fixture.api).run_triaged | Should -BeTrue
         @($fixture.store.writes | Select-Object -Skip $before |
             Where-Object { $_.endpoint -ceq 'repos/owner/repository/issues' }).Count | Should -Be 1
+    }
+
+    It 'holds a physically closed typed problem without treating closure as resolution or reopening it' {
+        $existing = Add-FixtureExistingProblem $fixture -Closed
+        $updated = Publish-FixtureProblem $fixture download
+        $updated.link.issue_number | Should -Be $existing
+        $issue = $fixture.store.issues[[long]$existing]
+        $root = Read-ScheduledRecord $issue.body problem
+        $root.status | Should -Be needs-human
+        $root.repair_disposition | Should -Be needs-human
+        $root.generation | Should -Be 1
+        $issue.state | Should -Be closed
+        $null = Publish-FixtureProblem $fixture archive
+        (Complete-ScheduledTriageAnalysis $fixture.context $fixture.api).run_triaged | Should -BeTrue
+    }
+
+    It 'requires every problem publication and a current complete index before committing completion' {
+        { Complete-ScheduledTriageAnalysis $fixture.context $fixture.api } | Should -Throw
+        $first = Publish-FixtureProblem $fixture download
+        $null = Publish-FixtureProblem $fixture archive
+        $fixture.store.issues[[long]$first.link.issue_number].title = 'External evidence changed the title'
+        (Complete-ScheduledTriageAnalysis $fixture.context $fixture.api).action | Should -Be reanalysis-required
+        $fixture.store.issues[20L].state | Should -Be open
+    }
+
+    It 'refuses unavailable source ancestry and unrelated label initialization without publishing' {
+        $null = Add-FixtureExistingProblem $fixture
+        $api = {
+            param($Endpoint, $Method = 'GET', $Body, [switch] $Paginate)
+            if ($Endpoint.EndsWith("compare/$('a' * 40)...$('a' * 40)")) { return @{ status = 'unknown' } }
+            & $fixture.api -Endpoint $Endpoint -Method $Method -Body $Body -Paginate:$Paginate
+        }
+        { Invoke-ScheduledTriageProblemPreparation $fixture.context $fixture.snapshot download $api } | Should -Throw
+        { Initialize-ScheduledTriageLabel $fixture.context unrelated $fixture.api } | Should -Throw
     }
 }

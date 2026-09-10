@@ -50,3 +50,11 @@ Role-specific envelopes stay distinct, while serialization and recovery primitiv
 are reused. Only the publication adapter can confirm external writes and advance a
 triage root. Analysis validation alone is not publication, resolution or repair
 admission.
+
+## Validation workloads
+
+Native protocol tests exercise complete producer JSON, repeated canonical hashing
+and publication round trips. These workloads exceed the interpreter test budget.
+Small typed tests retain Miri coverage for scope/citation validation, complete-index
+and occurrence matching, and execution ordering. Production behavior and runner
+deadlines are identical; only the full protocol workloads are native-only.

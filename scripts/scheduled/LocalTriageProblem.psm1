@@ -179,6 +179,11 @@ function Invoke-ScheduledTriageProblemPreparation {
                 $existing.observation = $confirmed.observation
             }
         }
+        if ($issue.state -ceq 'closed' -and $existing.status -ceq 'open') {
+            # Closing an issue does not establish resolution or authorize repair. Preserve
+            # the canonical occurrence while requiring the operator to reconcile its status.
+            $existing.status = 'needs-human'
+        }
         $block = Get-TriageOwnedBlock -Text $issue.body -Kind problem
         if ($null -ne $block) { $originalBlock = $block.Value }
         $relation = $choice.matching.relation

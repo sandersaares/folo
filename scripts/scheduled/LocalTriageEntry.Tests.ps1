@@ -5,6 +5,8 @@ BeforeAll {
     Import-Module (Join-Path $PSScriptRoot 'fixtures\TriageFixture.psm1') -Force
     Import-Module (Join-Path $PSScriptRoot 'LocalTriage.psm1') -Force
     Import-Module (Join-Path $PSScriptRoot 'LocalTriageView.psm1') -Force
+    Import-Module (Join-Path $PSScriptRoot 'LocalTriageInbox.psm1')
+    Import-Module (Join-Path $PSScriptRoot 'LocalTriagePublication.psm1')
 
     function Invoke-EntryFixtureRequest($Action, $Data) {
         $path = Join-Path $TestDrive 'request.json'
@@ -107,6 +109,98 @@ Describe 'Local triage JSON entry point' {
         $requestPath = Join-Path $TestDrive 'missing-fields.json'
         '{}' | Set-Content -LiteralPath $requestPath
         { Invoke-ScheduledTriageRequest -RequestPath $requestPath -Now $fixture.context.now } | Should -Throw
+    }
+
+    It 'accepts a retained continuation then obtains a usable snapshot without taking the sender scan' {
+        $null = Invoke-EntryFixtureRequest state @{ action = 'triage-complete-dispatch'
+            fields = $identity + @{ reason = 'Resume retained analysis' } }
+        $null = Invoke-EntryFixtureRequest state @{ action = 'triage-release-scan'
+            fields = @{ scan_token = $fixture.context.scan_token } }
+        $state = Invoke-EntryFixtureRequest state @{ action = 'triage-acquire-scan'
+            fields = @{ session_id = 'sender' } }
+        $senderScan = $state.triage.scan.token
+        $state = Invoke-EntryFixtureRequest state @{ action = 'triage-reserve-continuation'
+            fields = $identity + @{ scan_token = $senderScan; native_idle_verified = $true; evidence_key = 'recovered-input' } }
+        $identity.dispatch_token = $state.triage.analyses[$identity.analysis_id].dispatch.token
+        $null = Invoke-EntryFixtureRequest state @{ action = 'triage-begin-dispatch'
+            fields = @{ analysis_id = $identity.analysis_id; scan_token = $senderScan } }
+        $null = Invoke-EntryFixtureRequest state @{ action = 'triage-accept-dispatch'; fields = $identity }
+        $scan = Invoke-EntryFixtureRequest scan @{}
+        $scan.snapshot_id | Should -Not -BeNullOrEmpty
+        $data = $identity.Clone(); $data.snapshot_id = $scan.snapshot_id
+        $page = Invoke-EntryFixtureRequest evidence $data
+        $page.content.Length | Should -BeGreaterThan 0
+        $state = Invoke-EntryFixtureRequest state @{ action = 'triage-read'; fields = @{} }
+        $state.triage.scan.token | Should -Be $senderScan
+        $state.triage.scan.session_id | Should -Be sender
+        $state.triage.active_analysis_id | Should -Be $fixture.context.analysis_id
+        $state.triage.analyses.Count | Should -Be 1
+    }
+
+    It 'routes retained publication before requiring a fresh scan when collection is blocked' {
+        $scan = Invoke-EntryFixtureRequest scan @{}
+        $data = $identity.Clone(); $data.snapshot_id = $scan.snapshot_id
+        $data.analysis = Copy-TriageFixtureValue $fixture.proposal; $data.analysis.checkpoint = 2
+        $null = Invoke-EntryFixtureRequest checkpoint $data
+        Mock Get-ScheduledTriageInbox -ModuleName LocalTriage {
+            throw [IO.IOException]::new('Publication is incomplete.')
+        }
+        Mock Invoke-ScheduledTriageProblemPreparation -ModuleName LocalTriage { @{ action = 'prepared' } }
+        Mock Publish-ScheduledTriageProblem -ModuleName LocalTriage { @{ action = 'published' } }
+        Mock Complete-ScheduledTriageAnalysis -ModuleName LocalTriage { @{ action = 'recorded' } }
+        { Invoke-EntryFixtureRequest scan @{} } | Should -Throw
+        $data.problem_key = 'download'
+        (Invoke-EntryFixtureRequest prepare-problem $data).action | Should -Be prepared
+        (Invoke-EntryFixtureRequest publish-problem $data).action | Should -Be published
+        (Invoke-EntryFixtureRequest finish $data).action | Should -Be recorded
+        Should -Invoke Get-ScheduledTriageInbox -ModuleName LocalTriage -Exactly -Times 2
+    }
+
+    It 'publishes through the entry adapter and records paginated full candidate reads before a refreshed checkpoint' {
+        Mock Invoke-ScheduledGitHubApi -ModuleName LocalTriage {
+            & $fixture.api -Endpoint $Endpoint -Method $Method -Body $Body -Paginate:$Paginate
+        }
+        $scan = Invoke-EntryFixtureRequest scan @{}
+        $data = $identity.Clone(); $data.snapshot_id = $scan.snapshot_id
+        $data.analysis = Copy-TriageFixtureValue $fixture.proposal; $data.analysis.checkpoint = 2
+        $null = Invoke-EntryFixtureRequest checkpoint $data
+        $data.problem_key = 'download'
+        $prepared = Invoke-EntryFixtureRequest prepare-problem $data
+        $prepared.action | Should -Be native-create-issue
+        $created = & $fixture.api -Endpoint 'repos/owner/repository/issues' -Method POST -Body $prepared.payload
+        $data.operation_key = $prepared.operation_key; $data.issue_number = $created.number
+        (Invoke-EntryFixtureRequest native-issue-result $data).operations[$data.operation_key].target_id | Should -Be $created.number
+        (Invoke-EntryFixtureRequest prepare-problem $data).action | Should -Be prepared
+        (Invoke-EntryFixtureRequest publish-problem $data).action | Should -Be published
+        (Invoke-EntryFixtureRequest recovery @{}).active.analysis_id | Should -Be $identity.analysis_id
+        $state = Invoke-TriageTransaction $fixture.context read
+        $fixture.snapshot = Get-ScheduledTriageInbox $fixture.context.policy $state $fixture.api
+        $scan = Invoke-EntryFixtureRequest scan @{}
+        $data.snapshot_id = $scan.snapshot_id; $data.offset = 0
+        (Invoke-EntryFixtureRequest index $data).entries.Count | Should -Be 1
+        $data.Remove('offset')
+        do {
+            $page = Invoke-EntryFixtureRequest problem $data
+            $page.end_offset | Should -BeGreaterThan $page.offset
+            $data.offset = $page.next_offset
+        } while ($null -ne $data.offset)
+        $entry = $fixture.snapshot.index.entries[0]
+        $data.analysis.checkpoint = 3; $data.analysis.index_digest = $fixture.snapshot.index.digest
+        $data.analysis.considered_issues = @($created.number)
+        $data.analysis.problems[0].matching = @{
+            kind = 'existing'; issue_number = $created.number; expected_generation = 1; expected_scope_revision = 1
+            target_generation = 1; record_digest = $entry.record_digest; full_read_digest = $entry.record_digest
+            relation = 'repeat'; reason = 'The confirmed publication describes the same diagnosed access failure.'
+        }
+        (Invoke-EntryFixtureRequest checkpoint $data).checkpoint.analysis.checkpoint | Should -Be 3
+    }
+
+    It 'does not use a snapshot lacking its exact claimed revision for evidence or checkpointing' {
+        $fixture.snapshot.pending = @()
+        $scan = Invoke-EntryFixtureRequest scan @{}
+        $data = $identity.Clone(); $data.snapshot_id = $scan.snapshot_id; $data.analysis = $fixture.proposal
+        { Invoke-EntryFixtureRequest evidence $data } | Should -Throw
+        { Invoke-EntryFixtureRequest checkpoint $data } | Should -Throw
     }
 }
 
