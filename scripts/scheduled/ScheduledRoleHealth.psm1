@@ -48,6 +48,26 @@ function Get-ScheduledRoleScan {
             }
         }
         $installed = $record['profile']
+        if ($null -ne $installed) {
+            # Native prompt proof does not validate the rest of the installed profile.
+            # Require the producer's fields before comparison; missing data is unavailable.
+            foreach ($field in @('policy_digest', 'controller_digest', 'cadence_cron',
+                    'automation_id', 'prompt_digest', 'model')) {
+                if ($installed[$field] -isnot [string] -or [string]::IsNullOrWhiteSpace($installed[$field])) {
+                    throw [FormatException]::new("Triage health profile has no valid $field.")
+                }
+            }
+            foreach ($field in @('policy_digest', 'controller_digest', 'prompt_digest')) {
+                if ($installed[$field] -cnotmatch '^[0-9a-f]{64}$') {
+                    throw [FormatException]::new("Triage health profile has a malformed $field.")
+                }
+            }
+            if ($installed['enabled'] -isnot [bool] -or -not $installed.ContainsKey('reasoning_effort') -or (
+                $null -ne $installed['reasoning_effort'] -and ($installed['reasoning_effort'] -isnot [string] -or
+                    [string]::IsNullOrWhiteSpace($installed['reasoning_effort'])))) {
+                throw [FormatException]::new('Triage health profile has no valid enabled/effort settings.')
+            }
+        }
         $scan = $record['profile_scan']
         $observed = Test-ScheduledTriageHealthObservation $installed $record['profile_observation'] $scan
         if ($null -eq $installed -or
