@@ -443,16 +443,20 @@ function Invoke-ScheduledReporting {
         $run = Invoke-ScheduledGitHubApi "repos/$Repository/actions/runs/$($eventRun.id)/attempts/$($eventRun.run_attempt)"
         $workflow = Invoke-ScheduledGitHubApi "repos/$Repository/actions/workflows/$($run.workflow_id)"
         Assert-ScheduledReportingRun -WorkflowEvent $workflowEvent -Run $run -Workflow $workflow -Policy $policy
+        # Authorization comes from the API-validated event, never an artifact-supplied flag.
+        # Manual checks do not depend on, or modify, retained repair/coverage state.
+        # Ref: ../../.github/workflows/implementation.md#manual-checks.
+        $diagnostic = $run.event -ceq 'workflow_dispatch'
+        $applyWrites = $Apply -and $policy.rollout.reporting_enabled
         $root = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
         $checkoutSha = (& git -C $root rev-parse HEAD).Trim()
         $defaultRef = Invoke-ScheduledGitHubApi "repos/$Repository/git/ref/heads/main"
-        if ($Apply -and $policy.rollout.reporting_enabled) {
+        if ($applyWrites) {
             Assert-ScheduledWriteController -Policy $policy -CheckoutSha $checkoutSha -DefaultSha $defaultRef.object.sha
         }
         if (-not (Test-ScheduledGitHubAncestor $Repository $run.head_sha $defaultRef.object.sha)) {
             throw [FormatException]::new('Originating controller is not on default-branch ancestry.')
         }
-        $applyWrites = $Apply -and $policy.rollout.reporting_enabled
         $report.writes_authorized = [bool]$applyWrites
         if ($applyWrites) {
             Restore-ScheduledRunPublicationState -Policy $policy -Run $run -OutputDirectory $OutputDirectory
@@ -476,11 +480,16 @@ function Invoke-ScheduledReporting {
             run_started_at = $run.run_started_at
         }
         $contractDigest = Get-ScheduledContractDigest -Root $root
-        $coverageIssues = @(Get-ScheduledOwnedIssue -Policy $policy -Label scheduled-coverage)
-        if ($coverageIssues.Count -gt 1) { throw [FormatException]::new('More than one reporter-owned coverage issue exists.') }
-        $coverageIssue = if ($coverageIssues.Count -eq 1) { $coverageIssues[0] } else { $null }
-        $coverage = if ($null -ne $coverageIssue) { Read-ScheduledRecord -Text $coverageIssue.body -Kind coverage } else { $null }
-        $issues = @(Get-ScheduledOwnedIssue -Policy $policy -Label scheduled-finding)
+        $coverageIssue = $null
+        $coverage = $null
+        $issues = @()
+        if (-not $diagnostic) {
+            $coverageIssues = @(Get-ScheduledOwnedIssue -Policy $policy -Label scheduled-coverage)
+            if ($coverageIssues.Count -gt 1) { throw [FormatException]::new('More than one reporter-owned coverage issue exists.') }
+            $coverageIssue = if ($coverageIssues.Count -eq 1) { $coverageIssues[0] } else { $null }
+            $coverage = if ($null -ne $coverageIssue) { Read-ScheduledRecord -Text $coverageIssue.body -Kind coverage } else { $null }
+            $issues = @(Get-ScheduledOwnedIssue -Policy $policy -Label scheduled-finding)
+        }
         $index = @{}
         $ambiguous = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
         foreach ($issue in $issues) {
@@ -532,21 +541,21 @@ function Invoke-ScheduledReporting {
                 $plan.manifest.check_contract_digest -cne $contractDigest -or
                 $plan.manifest.scope -cne $scope) { throw [FormatException]::new('Plan identity or contract is incompatible.') }
             Assert-ScheduledSha $plan.manifest.source_sha
-            if (-not (& $isAncestor $plan.manifest.source_sha $run.head_sha) -or
+            if ((-not $diagnostic -and -not (& $isAncestor $plan.manifest.source_sha $run.head_sha)) -or
                 ($scope -ceq 'full' -and $plan.manifest.source_sha -cne $run.head_sha)) {
                 throw [FormatException]::new('Planned source is not the authoritative main candidate.')
             }
             $packages = @()
             $checkIds = @()
             if ($plan.decision.run -isnot [bool]) { throw [FormatException]::new('Plan decision is malformed.') }
+            if ($diagnostic -and -not $plan.decision.run) {
+                throw [FormatException]::new('A manual request must run fresh checks, not skip execution.')
+            }
             # No-work verification retains the unselected catalog. Package-specific many-seed
             # entries are not a global package selection when no confirmation was admitted.
             if ($scope -ceq 'confirmation' -and $plan.decision.run) {
-                $packages = @($plan.manifest.checks.packages | Sort-Object -Unique)
+                $packages = @($plan.manifest.checks | ForEach-Object { $_.packages } | Sort-Object -Unique)
                 $checkIds = @($plan.manifest.checks.id)
-                foreach ($packageName in $packages) {
-                    if ($packageName -cnotin $policy.repair.allowed_packages) { throw [FormatException]::new('Unapproved confirmation package.') }
-                }
                 if ($packages.Count -eq 0 -and $plan.decision.run) { throw [FormatException]::new('Confirmation has no package scope.') }
             }
             $manifest = Get-ScheduledCheckManifest -SourceSha $plan.manifest.source_sha -ControllerSha $run.head_sha `
@@ -557,6 +566,9 @@ function Invoke-ScheduledReporting {
             if ($plan.ContainsKey('confirmations')) {
                 if ($plan.confirmations -isnot [array]) { throw [FormatException]::new('Plan confirmations must be an array.') }
                 $confirmations = @($plan.confirmations)
+            }
+            if ($diagnostic -and $confirmations.Count -gt 0) {
+                throw [FormatException]::new('Manual checks cannot declare repair confirmations.')
             }
             if (-not $plan.ContainsKey('planned_at')) { throw [FormatException]::new('Plan has no planning timestamp.') }
             $plannedAt = [datetimeoffset]$plan.planned_at
@@ -602,7 +614,7 @@ function Invoke-ScheduledReporting {
         }
         $context.evidence_complete = $verdict.complete -and $report.problems.Count -eq 0
         $executionEvidenceComplete = $context.evidence_complete
-        if (-not $skipped) {
+        if (-not $skipped -and -not $diagnostic) {
             $confirmedScope = @{}
             foreach ($declaration in $confirmations) {
                 try {
@@ -665,13 +677,29 @@ function Invoke-ScheduledReporting {
         }
         $intakeGaps = @($report.problems)
         if (-not $skipped) { $intakeGaps += $verdict.problems }
-        $intake = Sync-ScheduledRunIntake -Policy $policy -Run $run -Plan $validatedPlan `
-            -Manifest $manifest -Results $results -Jobs $jobEvidence.jobs `
-            -EvidenceGaps $intakeGaps -Skipped:$skipped `
-            -Artifacts $artifacts -TransientPaths (@($OutputDirectory, $downloadRoot) + $jobEvidence.transient_paths) `
-            -OutputDirectory $OutputDirectory -Api $api -Apply:$applyWrites
-        $report.actions += $intake.actions
-        $report.run_intake = $intake
+        if (-not $diagnostic -or $applyWrites) {
+            $intake = Sync-ScheduledRunIntake -Policy $policy -Run $run -Plan $validatedPlan `
+                -Manifest $manifest -Results $results -Jobs $jobEvidence.jobs `
+                -EvidenceGaps $intakeGaps -Skipped:$skipped `
+                -Artifacts $artifacts -TransientPaths (@($OutputDirectory, $downloadRoot) + $jobEvidence.transient_paths) `
+                -OutputDirectory $OutputDirectory -Api $api -Apply:$applyWrites
+            $report.actions += $intake.actions
+            $report.run_intake = $intake
+        }
+        if ($diagnostic) {
+            # Preserve exact-source diagnostics without proposing main coverage or repair closure.
+            # Separately authorized run-level intake remains available for on-demand reporting.
+            $report.diagnostic = $true
+            $report.manifest = $manifest
+            $report.results = $results
+            $report.jobs = $jobEvidence.jobs
+            $report.problems = $intakeGaps
+            $report.applied = [bool]$applyWrites
+            $report.status = if ($applyWrites -and $intake.requires_triage) { 'reported' }
+                elseif (-not $context.evidence_complete) { 'incomplete' }
+                elseif ($verdict.successful) { 'passed' } else { 'reported' }
+            return $report
+        }
         $nextCoverage = Merge-ScheduledCoverage -Coverage $coverage -Manifest $manifest -Results $results `
             -Context $context -IsAncestor $isAncestor -Skipped:$skipped
         $nextCoverage.repository_id = $policy.repository_id

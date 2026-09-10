@@ -382,6 +382,153 @@ Describe 'Archive extraction boundaries' {
                 Should -Invoke Invoke-ScheduledGitHubApi -Times 0 -ParameterFilter { $Method -in @('POST', 'PATCH') }
                 Test-Path -LiteralPath (Join-Path $caseRoot 'report\report.json') | Should -BeTrue
             }
+            Describe 'Manual diagnostics with the checked-in policy' {
+                BeforeEach {
+                    $script:apiPolicy = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'policy.json') -Raw |
+                        ConvertFrom-Json -AsHashtable
+                    $apiRun.name = 'Scheduled verification'
+                    $apiRun.path = '.github/workflows/scheduled-verify.yml'
+                    $apiRun.event = 'workflow_dispatch'
+                    @{
+                        action = 'completed'; workflow_run = $apiRun
+                        repository = @{ id = 850321188; full_name = 'folo-rs/folo'; default_branch = 'main' }
+                    } | ConvertTo-Json -Depth 50 | Set-Content -LiteralPath $eventFile
+                    $apiPlan.manifest = Get-ScheduledCheckManifest -SourceSha ('b' * 40) -ControllerSha ('a' * 40) `
+                        -ContractDigest ('c' * 64) -Scope confirmation -Packages cpulist -CheckIds miri-ubuntu-latest
+                    $apiPlan.confirmations = @()
+                    $apiPlan | ConvertTo-Json -Depth 50 | Set-Content -LiteralPath (Join-Path $planRoot 'plan.json')
+                    Mock Get-ScheduledOwnedIssue { throw 'Unrelated repair or coverage state must not be read.' }
+                    Mock Get-ScheduledTrustedConfirmation { throw 'A diagnostic is not repair confirmation.' }
+                    Mock Merge-ScheduledCoverage { throw 'A diagnostic cannot change main coverage.' }
+                    Mock Sync-ScheduledIssue { throw 'A diagnostic cannot change repair or coverage issues.' }
+                }
+
+                It 'accepts cpulist Miri evidence for the exact candidate without issue or repair authority' {
+                    $report = Invoke-ScheduledReporting 'folo-rs/folo' $eventFile (Join-Path $caseRoot 'manual') -Apply
+                    $report.problems | Should -BeNullOrEmpty
+                    $report.status | Should -Be passed
+                    $report.diagnostic | Should -BeTrue
+                    $report.applied | Should -BeFalse
+                    $report.writes_authorized | Should -BeFalse
+                    $report.ContainsKey('coverage') | Should -BeFalse
+                    $report.manifest.source_sha | Should -BeExactly ('b' * 40)
+                    $report.results.Count | Should -Be 1
+                    $report.results[0].actual_scope.packages | Should -Be @('cpulist')
+                    $saved = Get-Content -LiteralPath (Join-Path $caseRoot 'manual\report.json') -Raw | ConvertFrom-Json
+                    $saved.manifest.source_sha | Should -BeExactly ('b' * 40)
+                    $saved.results[0].outcome | Should -Be passed
+                    Should -Invoke Get-ScheduledCheckResult -Times 1
+                    Should -Invoke Get-ScheduledOwnedIssue -Times 0
+                    Should -Invoke Get-ScheduledTrustedConfirmation -Times 0
+                    Should -Invoke Sync-ScheduledRunIntake -Times 0
+                    Should -Invoke Restore-ScheduledRunPublicationState -Times 0
+                    Should -Invoke Invoke-ScheduledGitHubApi -Times 0 -ParameterFilter { $Endpoint -like '*/issues*' }
+                    Should -Invoke Invoke-ScheduledGitHubApi -Times 0 -ParameterFilter { $Method -in @('POST', 'PATCH') }
+                }
+
+                It 'retains full manual evidence without creating or invalidating a main coverage receipt' {
+                    $apiRun.name = 'Scheduled validation'; $apiRun.path = '.github/workflows/scheduled-validation.yml'
+                    @{
+                        action = 'completed'; workflow_run = $apiRun
+                        repository = @{ id = 850321188; full_name = 'folo-rs/folo'; default_branch = 'main' }
+                    } | ConvertTo-Json -Depth 50 | Set-Content -LiteralPath $eventFile
+                    $apiPlan.manifest = $expectedManifest
+                    $apiPlan | ConvertTo-Json -Depth 50 | Set-Content -LiteralPath (Join-Path $planRoot 'plan.json')
+                    $report = Invoke-ScheduledReporting 'folo-rs/folo' $eventFile (Join-Path $caseRoot 'full-manual') -Apply
+                    $report.status | Should -Be passed
+                    $report.results.Count | Should -Be 32
+                    $report.ContainsKey('coverage') | Should -BeFalse
+                    Should -Invoke Merge-ScheduledCoverage -Times 0
+                    Should -Invoke Sync-ScheduledIssue -Times 0
+                }
+
+                It 'retains failing check evidence without attempting issue publication' {
+                    Mock Get-ScheduledCheckResult {
+                        param($Check, $RunContext)
+                        $result = $RunContext.Clone()
+                        $result.schema_version = 1; $result.check_id = $Check.id; $result.actual_scope = $Check
+                        $result.outcome = 'findings'; $result.summary = 'Miri reported undefined behavior.'
+                        return $result
+                    }
+                    $report = Invoke-ScheduledReporting 'folo-rs/folo' $eventFile (Join-Path $caseRoot 'failed-manual') -Apply
+                    $report.status | Should -Be reported
+                    $report.results[0].outcome | Should -Be findings
+                    $report.jobs.Count | Should -Be 1
+                    $report.actions | Should -BeNullOrEmpty
+                    Should -Invoke Sync-ScheduledRunIntake -Times 0
+                }
+
+                It 'keeps on-demand run intake available only with separately authorized writes' {
+                    $apiPolicy.rollout.reporting_enabled = $true
+                    Mock Assert-ScheduledWriteController {}
+                    Mock Get-ScheduledArtifact { throw [IO.IOException]::new('Missing check artifact.') } `
+                        -ParameterFilter { $Name -like 'scheduled-result-*' }
+                    $report = Invoke-ScheduledReporting 'folo-rs/folo' $eventFile (Join-Path $caseRoot 'authorized') -Apply
+                    $report.status | Should -Be reported
+                    $report.applied | Should -BeTrue
+                    $report.run_intake.requires_triage | Should -BeTrue
+                    $report.ContainsKey('coverage') | Should -BeFalse
+                    Should -Invoke Assert-ScheduledWriteController -Times 1
+                    Should -Invoke Restore-ScheduledRunPublicationState -Times 1
+                    Should -Invoke Sync-ScheduledRunIntake -Times 1 -ParameterFilter { $Apply }
+                    Should -Invoke Get-ScheduledOwnedIssue -Times 0
+                    Should -Invoke Get-ScheduledTrustedConfirmation -Times 0
+                    Should -Invoke Merge-ScheduledCoverage -Times 0
+                    Should -Invoke Sync-ScheduledIssue -Times 0
+                }
+
+                It 'does not read issue state when reporting is enabled but Apply is absent' {
+                    $apiPolicy.rollout.reporting_enabled = $true
+                    Mock Get-ScheduledArtifact { throw [IO.IOException]::new('Missing check artifact.') } `
+                        -ParameterFilter { $Name -like 'scheduled-result-*' }
+                    $report = Invoke-ScheduledReporting 'folo-rs/folo' $eventFile (Join-Path $caseRoot 'no-apply')
+                    $report.status | Should -Be incomplete
+                    $report.applied | Should -BeFalse
+                    $report.writes_authorized | Should -BeFalse
+                    $report.jobs.Count | Should -Be 1
+                    $report.problems.Count | Should -BeGreaterThan 0
+                    Should -Invoke Sync-ScheduledRunIntake -Times 0
+                    Should -Invoke Restore-ScheduledRunPublicationState -Times 0
+                    Should -Invoke Get-ScheduledOwnedIssue -Times 0
+                    Should -Invoke Invoke-ScheduledGitHubApi -Times 0 -ParameterFilter { $Endpoint -like '*/issues*' }
+                }
+
+                It 'reports incomplete evidence for <Damage> rather than accepting a manual exception' -TestCases @(
+                    @{ Damage = 'skipped' }, @{ Damage = 'confirmation' }, @{ Damage = 'contract' },
+                    @{ Damage = 'unknown-check' }, @{ Damage = 'empty-packages' },
+                    @{ Damage = 'stale-source' }, @{ Damage = 'missing-artifact' }
+                ) {
+                    param($Damage)
+                    switch ($Damage) {
+                        'skipped' { $apiPlan.decision.run = $false }
+                        'confirmation' { $apiPlan.confirmations = @(@{ finding_id = 'f' * 64 }) }
+                        'contract' { $apiPlan.manifest.check_contract_digest = 'd' * 64 }
+                        'unknown-check' { $apiPlan.manifest.checks[0].id = 'unknown' }
+                        'empty-packages' { $apiPlan.manifest.checks[0].packages = @() }
+                        'stale-source' {
+                            Mock Get-ScheduledCheckResult {
+                                param($Check, $RunContext)
+                                $result = $RunContext.Clone()
+                                $result.schema_version = 1; $result.check_id = $Check.id; $result.actual_scope = $Check
+                                $result.source_sha = 'd' * 40; $result.outcome = 'passed'
+                                return $result
+                            }
+                        }
+                        'missing-artifact' {
+                            Mock Get-ScheduledArtifact { throw [IO.IOException]::new('Missing check artifact.') } `
+                                -ParameterFilter { $Name -like 'scheduled-result-*' }
+                        }
+                    }
+                    $apiPlan | ConvertTo-Json -Depth 50 | Set-Content -LiteralPath (Join-Path $planRoot 'plan.json')
+                    $report = Invoke-ScheduledReporting 'folo-rs/folo' $eventFile (Join-Path $caseRoot $Damage) -Apply
+                    $report.status | Should -Be incomplete
+                    $report.problems.Count | Should -BeGreaterThan 0
+                    $report.actions | Should -BeNullOrEmpty
+                    $report.ContainsKey('coverage') | Should -BeFalse
+                    Test-Path -LiteralPath (Join-Path $caseRoot "$Damage\report.json") | Should -BeTrue
+                    Should -Invoke Sync-ScheduledRunIntake -Times 0
+                }
+            }
             It 'normalizes relative report paths before supplying artifact roots to the parser' {
                 $relativeOutput = [IO.Path]::GetRelativePath((Get-Location).Path, (Join-Path $caseRoot 'relative-output'))
                 $report = Invoke-ScheduledReporting 'folo-rs/folo' $eventFile $relativeOutput
@@ -389,6 +536,16 @@ Describe 'Archive extraction boundaries' {
                 Should -Invoke Get-ScheduledArtifact -Times 1 -ParameterFilter {
                     $Name -like 'scheduled-plan-*' -and [IO.Path]::IsPathFullyQualified($OutputDirectory)
                 }
+            }
+            It 'rejects ambiguous authoritative coverage for automatic reporting' {
+                Mock Sync-ScheduledIssue { throw 'Ambiguous coverage must not be published.' }
+                Mock Get-ScheduledOwnedIssue { @(@{ number = 1 }, @{ number = 2 }) } `
+                    -ParameterFilter { $Label -ceq 'scheduled-coverage' }
+                $report = Invoke-ScheduledReporting 'folo-rs/folo' $eventFile (Join-Path $caseRoot 'ambiguous')
+                $report.status | Should -Be incomplete
+                $report.problems.Count | Should -BeGreaterThan 0
+                Should -Invoke Sync-ScheduledIssue -Times 0
+                Should -Invoke Get-ScheduledArtifact -Times 0
             }
             It 'serializes a setup-only failure through the real Rust intake contract' {
                 $apiRun.conclusion = 'failure'

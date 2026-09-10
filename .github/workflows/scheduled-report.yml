@@ -50,9 +50,10 @@ jobs:
           $PSNativeCommandUseErrorActionPreference = $true
           Import-Module ./scripts/setup/RustToolchain.psm1 -Force
           Install-RustupToolchain -Channel (Get-PinnedRustChannel) -InstallProfile minimal
-      - name: Reconcile durable evidence under reviewed operating policy
+      - name: Collect results and report automatic runs under reviewed policy
         # The reporting switch authorizes writes independently of execution and Local admission.
         # Downloaded replay evidence remains data and cannot select controller code or policy.
+        # Manual requests retain artifacts by default; authorized writes target run intake only.
         # Ref: .github/workflows/implementation.md#serialized-reporting.
         # Ref: .github/workflows/implementation.md#operating-policy.
         shell: pwsh

@@ -11,7 +11,10 @@ influenced by candidate content; see
 `Invoke-ScheduledReporting` (ScheduledGitHub.psm1), which downloads and validates the originating
 run's job/step inventory and plan/result artifacts, preserves failure evidence for AI triage,
 and (only with `-Apply`, gated further by `policy.rollout.reporting_enabled`) writes run-level
-issues. It never creates diagnosed problem issues. `-Apply` is the switch
+issues. Manual runs retain diagnostic artifacts without consulting issue state by default.
+Separately authorized issue reporting also permits run-level intake for manual runs, but they
+never consult or change coverage or problem issues.
+It never creates diagnosed problem issues. `-Apply` is the switch
 between the workflow's dry-run/report-only path and the path with side effects; the reporting run's
 `queue: max` concurrency means a superseded or failed attempt must be recovered explicitly, not
 silently reattempted (../../docs/scheduled-validation.md#health-recovery-and-rollback). An

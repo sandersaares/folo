@@ -24,6 +24,11 @@ function Get-ScheduledCheckManifest {
 
     Assert-ScheduledSha $SourceSha
     Assert-ScheduledSha $ControllerSha
+    foreach ($packageName in $Packages) {
+        if ($packageName -cnotmatch '^[A-Za-z0-9_][A-Za-z0-9_-]*$') {
+            throw [ArgumentException]::new("Enter a crate name, not a Cargo package pattern or option: '$packageName'.")
+        }
+    }
     $checks = @()
     foreach ($platform in @('ubuntu-latest', 'windows-latest', 'ubuntu-24.04-arm', 'windows-11-arm')) {
         $checks += @{
@@ -62,9 +67,16 @@ function Get-ScheduledCheckManifest {
     if ($CheckIds.Count -gt 0) {
         if ($Scope -eq 'full') { throw 'A partial selection cannot claim full coverage.' }
         foreach ($id in $CheckIds) {
-            if ($id -cnotin @($checks.id)) { throw "Unknown scheduled check: $id" }
+            if ($id -cnotin @($checks.id)) {
+                throw [ArgumentException]::new("Check '$id' is unknown or does not support the selected crates. See docs/scheduled-validation.md#running-checks-manually.")
+            }
         }
         $checks = @($checks | Where-Object { $_.id -cin $CheckIds })
+    }
+    foreach ($packageName in $Packages) {
+        if ($packageName -cnotin @($checks.packages)) {
+            throw [ArgumentException]::new("No selected check runs crate '$packageName'. Select a compatible check for every requested crate.")
+        }
     }
     if ($Scope -eq 'full' -and $Packages.Count -gt 0) { throw 'Full coverage requires the workspace.' }
     return @{
@@ -163,12 +175,10 @@ function Get-ScheduledRunDecision {
         [Parameter(Mandatory)][hashtable] $Manifest,
         [AllowNull()][hashtable] $Coverage,
         [Parameter(Mandatory)][datetimeoffset] $Now,
-        [int] $MaxAgeDays = 7,
-        [switch] $Force
+        [int] $MaxAgeDays = 7
     )
 
     $reason = 'no-compatible-complete-success'
-    if ($Force) { return @{ run = $true; reason = 'forced'; receipt = $null } }
     if ($null -ne $Coverage -and $Coverage.ContainsKey('schema_version') -and
         $Coverage.schema_version -eq 1 -and $Coverage.ContainsKey('invalidation') -and
         $Coverage.ContainsKey('receipt') -and $null -ne $Coverage.receipt) {

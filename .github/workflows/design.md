@@ -65,6 +65,14 @@ reporting disabled. Local triage is not dispatched and new repair admission is r
 The operator approves enrollment, scope and operating settings; installing or reconciling
 either automation does not activate them.
 
+Manual **Run workflow** requests authorize fresh checks independently of automatic
+execution or AI repair settings. Targeted checks accept workspace crates rather than
+repair allowlists. Their results remain diagnostics: they cannot update authoritative
+main coverage or confirm a repair. Issue reporting requires its own existing
+authorization and may publish run-level intake for manual failures, never repair
+closure. The [manual instructions](../../docs/scheduled-validation.md#running-checks-manually)
+describe the inputs and supported checks.
+
 ### Scheduled evidence
 
 Complete coverage is evidence for an immutable source and check contract, not merely a green

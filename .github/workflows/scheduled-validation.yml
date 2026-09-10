@@ -4,15 +4,6 @@ on:
   schedule:
     - cron: 41 2 * * *
   workflow_dispatch:
-    inputs:
-      force:
-        description: Force fresh full evidence even when unchanged main is covered
-        type: boolean
-        default: false
-      canary:
-        description: Explicit read-only execution check without enabling recurring execution
-        type: boolean
-        default: false
 
 permissions:
   contents: read
@@ -25,9 +16,9 @@ concurrency:
 
 jobs:
   plan:
-    # Recurring scope is fixed before any checker starts and only for this repository's main.
+    # The planner rejects a non-main workflow selection with instructions rather than skipping.
     # Ref: .github/workflows/implementation.md#immutable-execution.
-    if: github.repository == 'folo-rs/folo' && github.ref == 'refs/heads/main'
+    if: github.repository == 'folo-rs/folo'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -47,7 +38,7 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - name: Decide whether complete coverage is reusable
+      - name: Plan fresh manual checks or reusable automatic checks
         # Reuse requires compatible full success and no unsettled/newer failure; skips do not
         # renew success age or imply authorization to run the personal repair worker.
         # Ref: .github/workflows/implementation.md#complete-evidence-and-reuse.
@@ -55,13 +46,11 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-          FORCE_RECHECK: ${{ inputs.force || false }}
-          EXECUTION_CANARY: ${{ inputs.canary || false }}
         run: |
           Set-StrictMode -Version Latest
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $true
-          ./scripts/scheduled/Invoke-ScheduledPlan.ps1 -Force:($env:FORCE_RECHECK -eq 'true') -Canary:($env:EXECUTION_CANARY -eq 'true')
+          ./scripts/scheduled/Invoke-ScheduledPlan.ps1
       - name: Preserve expected scope even when checks are not run
         # Reporting must distinguish an intentional skip from incomplete evidence.
         # Ref: .github/workflows/implementation.md#complete-evidence-and-reuse.
