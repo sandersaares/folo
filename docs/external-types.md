@@ -74,6 +74,15 @@ type is reported by its partition path: `many_cpus`'s `SystemHardware` appears
 everywhere as `many_cpus_impl::system_hardware::SystemHardware`. Allow-list
 entries must use that canonical path.
 
+Canonical paths are not a complete inventory of the types reachable through
+each exported item. The checker
+[does not recursively inspect external re-export internals](https://github.com/awslabs/cargo-check-external-types/blob/705a0941997ebeb3bfb1a7f14070ba342f79d879/src/visitor.rs#L202-L250),
+so naming an external type does not necessarily name the other crates used by
+that type's public methods. The release process therefore retains
+[conservative breaking-change propagation](release-versioning.md#conservative-breaking-change-propagation)
+through private implementation packages rather than treating a dependent's
+allow-list as sufficient evidence to skip them.
+
 ## The dedicated nightly toolchain
 
 `cargo-check-external-types` reads nightly rustdoc's unstable JSON output, which

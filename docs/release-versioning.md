@@ -289,6 +289,45 @@ first-publication handoff described under [Package status](#package-status). A n
 helper never does. `release-plz.toml` does not declare groups or make alignment-only targets
 publishable.
 
+## Conservative breaking-change propagation
+
+A **public dependency** supplies types exposed by its dependent's public API. When a public
+workspace dependency moves to a semver-incompatible version, an already-released dependent
+must also move incompatibly. The rule compares each package's version with its own release
+anchor, not whether the particular items exposed by the dependent changed.
+
+Published packages declaring `[package.metadata.release-plan] private-api = true` still
+participate in this propagation. That declaration excludes their own library surface from
+direct API-compatibility assessment; it does not remove their role in another package's
+consumer contract. If a private implementation package `P` exposes `X`, and a public package
+`Q` exposes `P`, an incompatible release of `X` propagates through `P` to `Q`.
+
+Matching only the defining crates named in `Q`'s `allowed_external_types` is not a safe
+substitute. For example, `P` can define `Adapter` with a public method accepting `X::Value`,
+while `Q` re-exports `P::Adapter`. `Q`'s allow-list can name `P::Adapter` without naming
+`X::Value`: the external-types checker does not recursively inspect the internals of external
+re-exports. A consumer calling that method can nevertheless be affected by `X`'s incompatible
+release. Skipping `P` would sever the propagation chain. See
+[external-type canonical paths](external-types.md#canonical-paths) for the evidence boundary.
+
+This conservative rule can require an unnecessary breaking release. If `P` exposes a breaking
+dependency outside its own version group, its required incompatible version also moves the
+group's public member, even when that member does not expose the affected API. Version grouping
+is still binding, and that propagated increment belongs in the complete release plan.
+
+**We accept these unnecessary breaking releases.** The combination of cross-group exposure and
+an unaffected public group member is considered unlikely enough that more precise analysis is
+not worth its implementation and maintenance cost. This is an accepted trade-off, not a defect
+to fix by exempting private intermediaries or lowering the generated increment.
+
+Safely distinguishing the affected and unaffected public surfaces would require complete,
+validated exposure evidence for the particular items each package exports. Following
+allow-lists transitively without incrementing intermediaries remains conservative because it
+cannot distinguish which of an intermediary's exposed types a consumer can reach. The release
+process retains the existing propagation rule rather than introducing either alternative.
+The supporting analysis and disposition are recorded in
+[issue #531](https://github.com/folo-rs/folo/issues/531).
+
 ## Package status
 
 | Status            | Condition                                                | Verdict  |
@@ -359,10 +398,10 @@ Alongside each publishable package's status the report carries `dependencies` an
 because version decisions **cascade**. A package's own diff identifies only the roots; the
 increment set grows from there. `many_cpus` pins `many_cpus_impl` exactly, so incrementing the
 impl package forces a manifest edit in the shell package, which is itself a released-content
-change requiring its own increment. Beyond that mechanical propagation, an exposed dependency's
-breaking change is usually a breaking change in its dependent too, unless analysis shows the
-broken API is not re-exposed. Deciding each package independently in one pass is wrong; the graph
-makes the required ordering explicit.
+change requiring its own increment. Beyond that mechanical propagation, public dependencies
+follow the [conservative breaking-change rule](#conservative-breaking-change-propagation),
+including through private implementation packages. Deciding each package independently in one
+pass is wrong; the graph makes the required ordering explicit.
 
 **`check`** exits non-zero on any package with unreleased changes or any inconsistent group,
 printing one actionable line per offence: what changed, what the anchor was, which group members
