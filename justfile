@@ -13,7 +13,7 @@ _default:
     @just --list
 
 import 'justfiles/just_basics.just'
-import 'justfiles/just_automation.just'
+import 'justfiles/just_bench_history.just'
 import 'justfiles/just_book.just'
 import 'justfiles/just_delta.just'
 import 'justfiles/just_quality.just'

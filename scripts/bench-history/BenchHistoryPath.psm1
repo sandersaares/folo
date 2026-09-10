@@ -1,7 +1,7 @@
 #requires -Version 7
 
 # Output-directory preparation shared by the benchmark-history automation recipes in
-# justfiles/just_automation.just. Both analyze recipes (gh-analyze-bench-history,
+# justfiles/just_bench_history.just. Both analyze recipes (gh-analyze-bench-history,
 # gh-analyze-pr-bench-history) must ensure their scratch report directory exists before writing the
 # four report artefacts into it, and gh-write-bench-history-machine-key must ensure the parent
 # directory of the key file exists before writing the key.

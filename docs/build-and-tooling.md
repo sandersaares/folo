@@ -191,7 +191,7 @@ over everything under `scripts/`, gating on Error/Warning findings. The rule set
 `PSScriptAnalyzerSettings.psd1`, supplemented by repo-local custom rules in
 `scripts/analyzer/FoloAnalyzerRules.psm1` - which catch classes the built-in rules (and strict
 mode) miss, such as a `foreach` whose loop variable case-insensitively collides with the
-collection it enumerates. It runs as part of `just validate-local` and the CI `test-scripts` job.
+collection it enumerates. It runs as part of `just validate-local` and the CI `validate-scripts` job.
 Silence a genuine false positive with a justified
 `[Diagnostics.CodeAnalysis.SuppressMessageAttribute(...)]`, never by relaxing the gate; the tree
 is expected to be finding-free.
@@ -203,3 +203,10 @@ When the calling environment requires PowerShell, put nontrivial orchestration i
 a module under `scripts/`, covered by Pester (`just test-scripts`) and the analyzer.
 The recipe or workflow step then imports and invokes that boundary. A preamble and
 a command or two may stay inline.
+
+`just test-scripts` discovers the full PowerShell suite. Pass space-separated script-directory
+domains, for example `just test-scripts "book release"`, to run their union. CI selects these
+domains from changed inputs and native-helper dependency impact; script analysis and workflow
+lint have independent selections. Main pushes retain full validation. See
+[non-Cargo change planning](../.github/workflows/implementation.md#non-cargo-change-planning)
+for ownership, shared-input rules and the lightweight workflow-lint environment.

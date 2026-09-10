@@ -140,3 +140,73 @@ Describe 'Get-RequiredCheckFailure' {
         }
     }
 }
+
+Describe 'Planned tooling results' {
+    BeforeEach {
+        $script:plan = @{ workflows = $false; script_analysis = $false; script_domains = @() }
+        $script:needs = @{
+            changes = @{ result = 'success'; outputs = @{} }
+            delta = @{ result = 'success'; outputs = @{ packages_json = '[]'; script_domains = '[]' } }
+            'test-scripts' = @{ result = 'skipped' }
+            'validate-scripts' = @{ result = 'skipped' }
+            'validate-workflows' = @{ result = 'skipped' }
+        }
+        function Assert-PlannedResult {
+            $needs.changes.outputs.plan = ConvertTo-Json -InputObject $plan -Compress
+            Assert-RequiredCheck -NeedsJson (ConvertTo-Json -InputObject $needs -Depth 10) `
+                -MustSucceedJob @('changes', 'delta')
+        }
+    }
+
+    It 'accepts planned skips but rejects a selected workflow check that skipped' {
+        { Assert-PlannedResult } | Should -Not -Throw
+        $plan.workflows = $true
+        { Assert-PlannedResult } | Should -Throw
+        $needs['validate-workflows'].result = 'success'
+        { Assert-PlannedResult } | Should -Not -Throw
+    }
+
+    It 'requires script analysis when selected' {
+        $plan.script_analysis = $true
+        { Assert-PlannedResult } | Should -Throw
+        $needs['validate-scripts'].result = 'success'
+        { Assert-PlannedResult } | Should -Not -Throw
+    }
+
+    It 'requires path-selected script tests and rejects lost domains' {
+        $plan.script_domains = @('book')
+        { Assert-PlannedResult } | Should -Throw
+        $needs.delta.outputs.script_domains = '["book"]'
+        { Assert-PlannedResult } | Should -Throw
+        $needs['test-scripts'].result = 'success'
+        { Assert-PlannedResult } | Should -Not -Throw
+    }
+
+    It 'requires integration tests for an affected native helper' {
+        $needs.delta.outputs.packages_json = '["scheduled-mutation-config"]'
+        { Assert-PlannedResult } | Should -Throw
+        $needs.delta.outputs.script_domains = '["scheduled"]'
+        { Assert-PlannedResult } | Should -Throw
+        $needs['test-scripts'].result = 'success'
+        { Assert-PlannedResult } | Should -Not -Throw
+    }
+
+    It 'rejects omitted conditional jobs even for a no-work plan' -ForEach @(
+        'test-scripts', 'validate-scripts', 'validate-workflows'
+    ) {
+        $needs.Remove($_)
+        { Assert-PlannedResult } | Should -Throw
+    }
+
+    It 'rejects failed or cancelled planners even when all tooling jobs skipped' -ForEach @(
+        'failure', 'cancelled', 'skipped'
+    ) {
+        $needs.changes.result = $_
+        { Assert-PlannedResult } | Should -Throw
+    }
+
+    It 'rejects absent planner output' {
+        $needs.delta.outputs.Remove('script_domains')
+        { Assert-PlannedResult } | Should -Throw
+    }
+}

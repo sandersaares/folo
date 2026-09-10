@@ -3,8 +3,8 @@
 # Release-automation logic for the `Release` GitHub workflow (.github/workflows/release.yml)
 # and the local `just check-never-published` recipe.
 #
-# The workflow steps and release recipes are thin `just` wrappers (in justfiles/just_automation.just
-# and justfiles/just_release.just) that import this module and call its functions, so the
+# The workflow steps and release recipes are thin `just` wrappers (in justfiles/just_release.just)
+# that import this module and call its functions, so the
 # non-trivial logic lives here where it can be exercised by the Pester suite
 # (ReleaseAutomation.Tests.ps1) against fixtures rather than only by pushing to `main`.
 #

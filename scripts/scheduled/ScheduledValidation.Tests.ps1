@@ -97,7 +97,7 @@ Describe 'Shallow hosted validation with managed deep evidence' {
 
     It 'retains every shallow job while removing ordinary deep jobs' {
         $expected = @('scheduled-context', 'scheduled-repair-checks', 'scheduled-repair-gate',
-            'scheduled-version-check', 'delta', 'test-scripts', 'validate-workflows',
+            'scheduled-version-check', 'changes', 'delta', 'test-scripts', 'validate-scripts', 'validate-workflows',
             'validate-versions', 'semver-checks', 'format-check', 'default-features-check',
             'check-external-types', 'clippy-dev', 'test-x64', 'test-docs', 'docs', 'test-arm',
             'machete', 'clippy-release', 'build-release', 'check-frozen', 'run-examples', 'hack',
@@ -106,6 +106,43 @@ Describe 'Shallow hosted validation with managed deep evidence' {
         $workflow | Should -Not -Match '(?m)^\s+run:.*\b(miri|miri-harder|mutants|careful)\b'
         $jobs['scheduled-repair-checks'] | Should -Match '(?m)^    uses: \./\.github/workflows/deep-checks\.yml\r?$'
         $jobs['scheduled-repair-checks'] | Should -Match "(?m)^    if: needs\.scheduled-context\.outputs\.run == 'true'\r?$"
+    }
+
+    It 'keeps change planning independent of Rust setup and combines both script selectors' {
+        $jobs.changes | Should -Not -Match 'setup-environment|(?m)^\s+(cargo|just) '
+        $jobs.changes | Should -Match 'fetch-depth: 0'
+        $jobs.changes | Should -Match 'Get-ValidationWorkflowPlan'
+        $jobs.delta | Should -Match '(?m)^    needs: changes\r?$'
+        $jobs.delta | Should -Match 'Get-ValidationScriptDomain'
+        $jobs['test-scripts'] | Should -Match "(?m)^    if: needs\.delta\.outputs\.script_domains != '\[\]'\r?$"
+        $jobs['validate-scripts'] | Should -Match 'if: fromJSON\(needs\.changes\.outputs\.plan\)\.script_analysis'
+        $jobs['validate-workflows'] | Should -Match 'if: fromJSON\(needs\.changes\.outputs\.plan\)\.workflows'
+        foreach ($name in @('test-scripts', 'validate-scripts', 'validate-workflows')) {
+            $jobs[$name] | Should -Not -Match 'needs\.delta\.outputs\.skip_all'
+        }
+    }
+
+    It 'uses the same lint command and installer pins without the Rust environment' {
+        $jobs['validate-workflows'] | Should -Match 'uses: \./\.github/actions/setup-workflow-lint'
+        $jobs['validate-workflows'] | Should -Not -Match 'uses: \./\.github/actions/setup-environment'
+        $jobs['validate-workflows'] | Should -Match '(?m)^          actionlint -color\r?$'
+        $recipes['validate-workflows'].body[-1][-1] | Should -BeExactly 'actionlint -color'
+        $light = Get-Content -LiteralPath (Join-Path $root '.github\actions\setup-workflow-lint\action.yml') -Raw
+        $full = Get-Content -LiteralPath (Join-Path $root '.github\actions\setup-environment\action.yml') -Raw
+        $light | Should -Not -Match 'cargo install|rustup |install-tools|apt-get'
+        $keyPattern = '(?m)^        key: lint-tools-.+\r?$'
+        [regex]::Match($light, $keyPattern).Value.TrimEnd("`r") |
+            Should -BeExactly ([regex]::Match($full, $keyPattern).Value.TrimEnd("`r"))
+        foreach ($name in @('actionlint', 'shellcheck')) {
+            $light | Should -Match "\./scripts/setup/install-$name\.ps1 -Destination"
+            Test-Path -LiteralPath (Join-Path $root "scripts/setup/install-$name.ps1") | Should -BeTrue
+        }
+    }
+
+    It 'keeps live binstall metadata validation with unconditional release validation' {
+        $jobs['test-scripts'] | Should -Not -Match 'validate-binstall'
+        $jobs['validate-versions'] | Should -Match 'run: just validate-binstall'
+        $jobs['validate-versions'] | Should -Not -Match '(?m)^    (if|needs):'
     }
 
     It 'keeps the required-checks and alert dependency sets complete' {
@@ -122,6 +159,13 @@ Describe 'Shallow hosted validation with managed deep evidence' {
         $jobs['required-checks'] | Should -Match '(?m)^    name: required-checks\r?$'
         $jobs['required-checks'] | Should -Match '(?m)^    if: always\(\)\r?$'
         $jobs['required-checks'] | Should -Match '(?m)^          MUST_SUCCEED_JOBS:.*\bscheduled-context\b.*\bscheduled-repair-gate\b'
+        $mustSucceed = [regex]::Match($jobs['required-checks'], '(?m)^          MUST_SUCCEED_JOBS: (.+)\r?$').Groups[1].Value -split '\s+'
+        foreach ($name in @('changes', 'delta', 'validate-versions', 'semver-checks')) {
+            $mustSucceed | Should -Contain $name
+        }
+        foreach ($name in @('test-scripts', 'validate-scripts', 'validate-workflows')) {
+            $mustSucceed | Should -Not -Contain $name
+        }
         $jobs['scheduled-repair-gate'] | Should -Match '(?m)^    if: always\(\)\r?$'
         $jobs['scheduled-repair-gate'] | Should -Match '(?m)^    needs: \[scheduled-context, scheduled-repair-checks, scheduled-version-check\]\r?$'
     }
