@@ -23,9 +23,10 @@ Describe 'Non-Cargo change domains' {
         @{ Path = 'scripts/book/BookSite.Tests.ps1'; Domains = @('book'); Analysis = $true; Workflows = $false },
         @{ Path = 'scripts/bench-history/fixtures/result.json'; Domains = @('bench-history'); Analysis = $false; Workflows = $false },
         @{ Path = 'scripts/build/Miri.psm1'; Domains = @('build', 'scheduled'); Analysis = $true; Workflows = $false },
+        @{ Path = 'scripts/build/CargoExecutable.psm1'; Domains = @('build', 'release', 'scheduled'); Analysis = $true; Workflows = $false },
         @{ Path = 'scripts/release/ReleasePlan.psm1'; Domains = @('release', 'scheduled'); Analysis = $true; Workflows = $false },
         @{ Path = 'PSScriptAnalyzerSettings.psd1'; Domains = @('analyzer'); Analysis = $true; Workflows = $false },
-        @{ Path = '.github/workflows/release.yml'; Domains = @('scheduled'); Analysis = $false; Workflows = $true },
+        @{ Path = '.github/workflows/release.yml'; Domains = @('release', 'scheduled'); Analysis = $false; Workflows = $true },
         @{ Path = '.github/actionlint.yaml'; Domains = @('scheduled'); Analysis = $false; Workflows = $true },
         @{ Path = '.github/actions/setup-workflow-lint/action.yml'; Domains = @('scheduled'); Analysis = $false; Workflows = $true },
         @{ Path = 'justfiles/just_bench_history.just'; Domains = @('bench-history'); Analysis = $false; Workflows = $false },
@@ -84,12 +85,21 @@ Describe 'Non-Cargo change domains' {
 
 Describe 'Cargo helper integration selection' {
     It 'adds scheduled tests for affected helper <_>' -ForEach @(
-        'cargo-release-plan', 'scheduled-mutation-config', 'scheduled-run-record'
+        'scheduled-mutation-config', 'scheduled-run-record'
     ) {
         $plan = ConvertTo-PlanJson (Get-ValidationPlan -ChangedPath @('scripts/book/BookSite.psm1'))
         $packages = ConvertTo-Json -InputObject @($_) -Compress
         @(Get-ValidationScriptDomain -PlanJson $plan -AffectedPackageJson $packages) |
             Should -Be @('book', 'scheduled')
+    }
+
+    It 'adds release and dependent tests for affected helper <_>' -ForEach @(
+        'cargo-release-plan', 'release-target-check'
+    ) {
+        $plan = ConvertTo-PlanJson (Get-ValidationPlan -ChangedPath @('scripts/book/BookSite.psm1'))
+        $packages = ConvertTo-Json -InputObject @($_) -Compress
+        @(Get-ValidationScriptDomain -PlanJson $plan -AffectedPackageJson $packages) |
+            Should -Be @('book', 'release', 'scheduled')
     }
 
     It 'does not select scripts for unrelated Cargo dependency impact' {

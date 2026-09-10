@@ -28,8 +28,10 @@ so a brand-new crate's first version must be published manually:
 1. `cargo publish -p <crate>` (with a crates.io token login).
 1. Configure Trusted Publishing for the crate on crates.io (owner `folo-rs`, repo
    `folo`, workflow `release.yml`).
-1. Re-run `release.yml`. For a binary crate, the workflow creates the missing tag
-   and GitHub release at the package's version anchor before uploading its prebuilt binaries.
+1. Re-run `release.yml`. The workflow creates missing package tags at verified
+   release-equivalent main snapshots. For a binary crate it also creates the GitHub
+   release and uploads prebuilt binaries. The requested package version must still
+   be present at the selected snapshot; existing tags are never moved.
    Subsequent releases then go through `release.yml` automatically.
 
 The `increment-versions` skill runs `just check-never-published` as an early,
