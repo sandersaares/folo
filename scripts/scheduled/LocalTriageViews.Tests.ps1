@@ -31,6 +31,7 @@ Describe 'Bounded complete-index views' {
             $numbers += @($page.entries | ForEach-Object { $_.issue_number })
             $page.entries[0].issue_state | Should -Be closed
             $page.entries[0].summary_is_abbreviated | Should -BeTrue
+            foreach ($entry in $page.entries) { $entry.evidence_issue_numbers -is [array] | Should -BeTrue }
             $offset = $page.next_offset
         } while ($null -ne $offset)
         $numbers | Should -Be @(1..12)

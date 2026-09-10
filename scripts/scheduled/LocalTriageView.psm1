@@ -52,9 +52,9 @@ function Get-ScheduledTriageIndexPage {
             })
             prior_symptom_count = $symptoms.Count
             prior_symptoms = @($symptoms | Select-Object -First 2 | ForEach-Object { Get-TriageBriefText $_ 256 })
-            evidence_issue_numbers = if ($null -ne $full.problem) {
-                @($full.problem.evidence | ForEach-Object { $_.revision.issue_number } | Sort-Object -Unique | Select-Object -First 3)
-            } else { @() }
+            evidence_issue_numbers = @(if ($null -ne $full.problem) {
+                $full.problem.evidence | ForEach-Object { $_.revision.issue_number } | Sort-Object -Unique | Select-Object -First 3
+            })
             summary_is_abbreviated = $true
             full_record_available = $true
         }

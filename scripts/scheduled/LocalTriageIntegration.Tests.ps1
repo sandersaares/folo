@@ -3,6 +3,7 @@
 # publication against a strict in-memory transport. These tests do not run an AI or touch GitHub.
 BeforeAll {
     Import-Module (Join-Path $PSScriptRoot 'fixtures\TriageFixture.psm1') -Force
+    Import-Module (Join-Path $PSScriptRoot 'fixtures\TriageScenarioFixture.psm1')
     Import-Module (Join-Path $PSScriptRoot 'LocalTriageProblem.psm1') -Force
     Import-Module (Join-Path $PSScriptRoot 'LocalTriagePublication.psm1') -Force
     Import-Module (Join-Path $PSScriptRoot 'LocalTriageCompletion.psm1') -Force
@@ -75,5 +76,33 @@ Describe 'Local triage publication and recovery' {
         { Invoke-TriageTransaction $fixture.context prepare-publication } | Should -Throw
         { Invoke-TriageTransaction $fixture.context register-pr } | Should -Throw
         (Invoke-TriageTransaction $fixture.context read).attempts.Count | Should -Be 0
+    }
+
+    It 'rejects a new recurrence disposition for already attached evidence after a human closes the problem' {
+        $published = Publish-TriageFixtureProblem $fixture download
+        $number = [long]$published.link.issue_number
+        $fixture.store.issues[$number].state = 'closed'
+        $fixture.proposal.checkpoint = 2
+        $fixture.proposal.problems[0].matching = @{
+            kind = 'existing'; issue_number = $number; target_generation = 1; relation = 'recurrence'
+            reason = 'A new recurrence was claimed for the already attached revision.'
+        }
+        Invoke-TriageFixtureCheckpoint $fixture
+        $writes = $fixture.store.writes.Count
+        {
+            $null = Invoke-ScheduledTriageProblemPreparation $fixture.context $fixture.snapshot download $fixture.api
+            $null = Publish-ScheduledTriageProblem $fixture.context download $fixture.api
+        } | Should -Throw
+        $fixture.store.issues[$number].state | Should -Be closed
+        $fixture.store.writes.Count | Should -Be $writes
+        { Publish-ScheduledTriageProblem $fixture.context download $fixture.api } | Should -Throw
+        $fixture.proposal.checkpoint = 3
+        $fixture.proposal.problems[0].matching.relation = 'repeat'
+        Invoke-TriageFixtureCheckpoint $fixture
+        (Publish-TriageFixtureProblem $fixture download).link.issue_number | Should -Be $number
+        $fixture.store.issues[$number].state | Should -Be closed
+        $snapshot = Get-ScheduledTriageInbox $fixture.context.policy (Invoke-TriageTransaction $fixture.context read) $fixture.api
+        $snapshot.problems[[string]$number].record.problem.evidence.Count | Should -Be 1
+        $snapshot.problems[[string]$number].record.problem.status | Should -Be needs-human
     }
 }

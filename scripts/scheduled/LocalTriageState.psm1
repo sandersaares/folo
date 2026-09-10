@@ -445,9 +445,9 @@ function Invoke-ScheduledTriageStateChange {
         'triage-record-index-read' {
             $analysis = Get-TriageOwnedAnalysis $triage $Data
             Assert-TriageField $Data @('index_digest', 'issue_numbers')
-            $previous = if ($analysis.index_reads.ContainsKey($Data.index_digest)) {
-                @($analysis.index_reads[$Data.index_digest])
-            } else { @() }
+            $previous = @(if ($analysis.index_reads.ContainsKey($Data.index_digest)) {
+                $analysis.index_reads[$Data.index_digest]
+            })
             $analysis.index_reads[$Data.index_digest] = @($previous + @($Data.issue_numbers) | Sort-Object -Unique)
         }
         'triage-record-problem-page' {

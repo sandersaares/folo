@@ -530,6 +530,27 @@ fn closed_without_resolution_and_new_runs_without_ancestry_do_not_recur() {
     miri,
     ignore = "full producer snapshots and repeated canonical hashing exceed the interpreter budget; typed guards retain Miri coverage"
 )]
+fn duplicate_evidence_does_not_authorize_a_new_unproved_recurrence() {
+    let mut input = problem_update();
+    let original: Value = serde_json::from_str(&execute(&input.to_string()).unwrap()).unwrap();
+    input["existing"] = original.clone();
+    input["incoming"]["operation_id"] = json!("new-disposition");
+    input["incoming"]["relation"] = json!("recurrence");
+    for status in ["open", "needs-human"] {
+        input["existing"]["status"] = json!(status);
+        _ = execute(&input.to_string()).unwrap_err();
+    }
+    input["incoming"]["relation"] = json!("repeat");
+    let repeated: Value = serde_json::from_str(&execute(&input.to_string()).unwrap()).unwrap();
+    assert_eq!(repeated["evidence"], original["evidence"]);
+    assert_eq!(repeated["status"], "needs-human");
+}
+
+#[test]
+#[cfg_attr(
+    miri,
+    ignore = "full producer snapshots and repeated canonical hashing exceed the interpreter budget; typed guards retain Miri coverage"
+)]
 fn confirmed_recurrence_and_late_historical_evidence_have_independent_occurrences() {
     let mut input = problem_update();
     input["existing"] = resolved_problem();
@@ -544,6 +565,9 @@ fn confirmed_recurrence_and_late_historical_evidence_have_independent_occurrence
         recurring["resolved_occurrences"].as_array().unwrap().len(),
         1
     );
+    input["existing"] = recurring.clone();
+    let replayed: Value = serde_json::from_str(&execute(&input.to_string()).unwrap()).unwrap();
+    assert_eq!(replayed, recurring);
 
     let mut late = problem_update();
     late["existing"] = recurring.clone();

@@ -43,6 +43,9 @@ recurrence requires prior resolution, newer execution and source applicability.
 Historical evidence attaches to its existing occurrence without reopening a newer
 one. Identical contributions are idempotent, including when the AI reconsiders a
 refreshed index after partial multi-problem publication.
+Already attached diagnostics do not establish a new recurrence: a new recurrence
+disposition still validates resolution, ordering and source applicability.
+Replaying a known publication operation preserves its completed transition.
 
 Required-scope identity includes the operation as well as package, check, platform
 and typed replay. Optional attribution does not guarantee that every execution

@@ -125,4 +125,17 @@ Describe 'Triage publication state requirements' {
         }
         $state.triage.analyses[$fixture.context.analysis_id].reads['31'] | Should -Be read
     }
+
+    It 'merges repeated singleton index receipts without unwrapping their array shape' {
+        $null = Invoke-TriageTransaction $fixture.context triage-record-index-read @{
+            index_digest = 'same-index'; issue_numbers = @(31)
+        }
+        $null = Invoke-TriageTransaction $fixture.context triage-record-index-read @{
+            index_digest = 'same-index'; issue_numbers = @(31, 32)
+        }
+        $state = Invoke-TriageTransaction $fixture.context triage-record-index-read @{
+            index_digest = 'same-index'; issue_numbers = @()
+        }
+        $state.triage.analyses[$fixture.context.analysis_id].index_reads['same-index'] | Should -Be @(31, 32)
+    }
 }

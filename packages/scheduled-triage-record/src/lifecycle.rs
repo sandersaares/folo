@@ -242,21 +242,25 @@ pub(crate) fn update_problem(
                 )?;
                 return Ok(problem);
             }
-            if problem.evidence.iter().any(|item| {
-                (
-                    item.generation,
-                    &item.revision,
-                    &item.diagnosis,
-                    &item.observation,
-                ) == (
-                    incoming.target_generation,
-                    &incoming.revision,
-                    &incoming.diagnosis,
-                    &incoming.observation,
-                )
-            }) {
+            if incoming.relation != Relation::Recurrence
+                && problem.evidence.iter().any(|item| {
+                    (
+                        item.generation,
+                        &item.revision,
+                        &item.diagnosis,
+                        &item.observation,
+                    ) == (
+                        incoming.target_generation,
+                        &incoming.revision,
+                        &incoming.diagnosis,
+                        &incoming.observation,
+                    )
+                })
+            {
                 // Reconsidering a refreshed index must not republish unchanged evidence and
                 // change that index again before the next independently diagnosed problem.
+                // A new recurrence still needs resolution and ordering proof; only a known
+                // publication operation above can replay an already completed transition.
                 return Ok(problem);
             }
             require(
