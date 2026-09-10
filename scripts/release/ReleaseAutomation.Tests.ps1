@@ -7,8 +7,7 @@ $VerbosePreference = 'Continue'
 
 # Pester suite for ReleaseAutomation.psm1. Where it is safe on fixtures, the tests drive the
 # real external tools: workspace discovery runs actual `cargo metadata` and Git queries against
-# a fixture workspace, and New-ReleasePlzConfig / Set-GitHubOutput perform real file I/O (so
-# encoding and line endings are asserted on the bytes on disk). The tools that would touch
+# a fixture workspace, and Set-GitHubOutput performs real file I/O. The tools that would touch
 # crates.io / GitHub for real -- `release-plz` and `gh` -- are isolated behind functions the
 # tests mock in the module's scope.
 
@@ -18,7 +17,6 @@ BeforeAll {
     $script:FixtureDir = Join-Path $PSScriptRoot 'fixtures'
     $script:MetadataManifest = Join-Path $script:FixtureDir 'metadata-workspace/Cargo.toml'
     $script:MultiBinaryManifest = Join-Path $script:FixtureDir 'multi-binary-workspace/Cargo.toml'
-    $script:SampleToml = Join-Path $script:FixtureDir 'release-plz.sample.toml'
 }
 
 Describe 'Get-TrackedWorkspaceMember (real cargo metadata and Git on a fixture workspace)' {
@@ -327,102 +325,6 @@ Describe 'Get-DeclaredReleaseTarget (crafted package objects)' {
     }
 }
 
-Describe 'Add-GitReleaseEnableFlag (pure line-based injection)' {
-    BeforeAll {
-        $script:SourceLines = [System.IO.File]::ReadAllText($script:SampleToml) -split "`r?`n"
-    }
-
-    It 'inserts the flag immediately after the crate name line, inside its block' {
-        $result = Add-GitReleaseEnableFlag -Line $script:SourceLines -CrateName 'demo-tool'
-        $nameIndex = [array]::IndexOf($result, 'name = "demo-tool"')
-        $result[$nameIndex + 1] | Should -Be 'git_release_enable = true'
-    }
-
-    It 'preserves other keys already in the block' {
-        $result = Add-GitReleaseEnableFlag -Line $script:SourceLines -CrateName 'demo-tool'
-        $result | Should -Contain 'changelog_update = false'
-    }
-
-    It 'matches the crate name exactly so a name-prefix sibling is untouched' {
-        $result = Add-GitReleaseEnableFlag -Line $script:SourceLines -CrateName 'demo-tool'
-        $coreIndex = [array]::IndexOf($result, 'name = "demo-tool-core"')
-        $result[$coreIndex + 1] | Should -Be 'changelog_update = false'
-    }
-
-    It 'appends a new [[package]] block for a crate with no existing entry' {
-        $result = Add-GitReleaseEnableFlag -Line $script:SourceLines -CrateName 'pub-bin'
-        $nameIndex = [array]::IndexOf($result, 'name = "pub-bin"')
-        $nameIndex | Should -BeGreaterThan -1
-        $result[$nameIndex - 1] | Should -Be '[[package]]'
-        $result[$nameIndex + 1] | Should -Be 'git_release_enable = true'
-    }
-
-    It 'is idempotent: a second pass does not duplicate the flag' {
-        $once = Add-GitReleaseEnableFlag -Line $script:SourceLines -CrateName 'demo-tool'
-        $twice = Add-GitReleaseEnableFlag -Line $once -CrateName 'demo-tool'
-        @($twice | Where-Object { $_ -eq 'git_release_enable = true' }).Count | Should -Be 1
-    }
-
-    It 'forces an existing git_release_enable = false to true' {
-        $lines = @(
-            '[[package]]'
-            'name = "demo-tool"'
-            'git_release_enable = false'
-            'changelog_update = false'
-        )
-        $result = Add-GitReleaseEnableFlag -Line $lines -CrateName 'demo-tool'
-        $result | Should -Contain 'git_release_enable = true'
-        $result | Should -Not -Contain 'git_release_enable = false'
-        # Replaced in place, not duplicated, and the sibling key is preserved.
-        @($result | Where-Object { $_ -match '^git_release_enable' }).Count | Should -Be 1
-        $result | Should -Contain 'changelog_update = false'
-    }
-
-    It 'enables every requested crate in one pass' {
-        $result = Add-GitReleaseEnableFlag -Line $script:SourceLines -CrateName @('demo-tool', 'pub-bin')
-        @($result | Where-Object { $_ -eq 'git_release_enable = true' }).Count | Should -Be 2
-    }
-}
-
-Describe 'New-ReleasePlzConfig (real file write)' {
-    BeforeEach {
-        $script:OutPath = Join-Path $TestDrive ("rp-" + [guid]::NewGuid() + ".toml")
-    }
-
-    AfterEach {
-        if (Test-Path $script:OutPath) { Remove-Item $script:OutPath -Force }
-    }
-
-    It 'writes UTF-8 without a byte-order mark' {
-        New-ReleasePlzConfig -SourcePath $script:SampleToml -OutputPath $script:OutPath -CrateName 'demo-tool'
-        $bytes = [System.IO.File]::ReadAllBytes($script:OutPath)
-        # A UTF-8 BOM is EF BB BF.
-        ($bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) | Should -BeFalse
-    }
-
-    It 'writes LF line endings with no carriage returns' {
-        New-ReleasePlzConfig -SourcePath $script:SampleToml -OutputPath $script:OutPath -CrateName 'demo-tool'
-        $bytes = [System.IO.File]::ReadAllBytes($script:OutPath)
-        ($bytes -contains 0x0D) | Should -BeFalse
-    }
-
-    It 'ends with a single trailing newline' {
-        New-ReleasePlzConfig -SourcePath $script:SampleToml -OutputPath $script:OutPath -CrateName 'demo-tool'
-        $text = [System.IO.File]::ReadAllText($script:OutPath)
-        $text.EndsWith("`n") | Should -BeTrue
-        $text.EndsWith("`n`n") | Should -BeFalse
-    }
-
-    It 'injects the flag for the requested crates' {
-        New-ReleasePlzConfig -SourcePath $script:SampleToml -OutputPath $script:OutPath -CrateName @('demo-tool', 'pub-bin')
-        $lines = [System.IO.File]::ReadAllText($script:OutPath) -split "`n"
-        $demoIndex = [array]::IndexOf($lines, 'name = "demo-tool"')
-        $lines[$demoIndex + 1] | Should -Be 'git_release_enable = true'
-        $pubIndex = [array]::IndexOf($lines, 'name = "pub-bin"')
-        $lines[$pubIndex + 1] | Should -Be 'git_release_enable = true'
-    }
-}
-
 Describe 'Get-PublishableCrate (real cargo metadata on a fixture workspace)' {
     BeforeAll {
         $script:AllCrates = Get-PublishableCrate -ManifestPath $script:MetadataManifest
@@ -555,111 +457,6 @@ Describe 'Get-ReleaseTarget' {
     It 'builds Apple Silicon but not Intel macOS' {
         $script:Targets.Triple | Should -Contain 'aarch64-apple-darwin'
         $script:Targets.Triple | Should -Not -Contain 'x86_64-apple-darwin'
-    }
-}
-
-Describe 'New-MissingBinaryRelease' {
-    BeforeEach {
-        Mock Get-BinaryReleaseAsset -ModuleName ReleaseAutomation {
-            if ($Tag -eq 'present-v1.0.0') { @('existing-asset') } else { $null }
-        }
-        Mock gh -ModuleName ReleaseAutomation {}
-    }
-
-    It 'creates a missing release at the requested version anchor' {
-        $crate = [pscustomobject]@{ Name = 'missing'; Version = '2.0.0' }
-        New-MissingBinaryRelease -Crate $crate -TargetCommitByName @{ missing = 'abc123' }
-
-        Should -Invoke gh -ModuleName ReleaseAutomation -Times 1 -Exactly -ParameterFilter {
-            $args[0] -eq 'release' -and
-            $args[1] -eq 'create' -and
-            $args[2] -eq 'missing-v2.0.0' -and
-            $args[3] -eq '--target' -and
-            $args[4] -eq 'abc123'
-        }
-    }
-
-    It 'does not recreate an existing release' {
-        $crate = [pscustomobject]@{ Name = 'present'; Version = '1.0.0' }
-        New-MissingBinaryRelease -Crate $crate -TargetCommitByName @{}
-
-        Should -Invoke gh -ModuleName ReleaseAutomation -Times 0 -Exactly
-    }
-
-    It 'does not recreate an existing empty release' {
-        Mock Get-BinaryReleaseAsset -ModuleName ReleaseAutomation {
-            return , @()
-        }
-        $crate = [pscustomobject]@{ Name = 'empty'; Version = '1.0.0' }
-        New-MissingBinaryRelease -Crate $crate -TargetCommitByName @{}
-
-        Should -Invoke gh -ModuleName ReleaseAutomation -Times 0 -Exactly
-    }
-
-    It 'rejects a missing version-anchor commit before creating a release' {
-        $crate = [pscustomobject]@{ Name = 'missing'; Version = '2.0.0' }
-        { New-MissingBinaryRelease -Crate $crate -TargetCommitByName @{} } | Should -Throw
-
-        Should -Invoke gh -ModuleName ReleaseAutomation -Times 0 -Exactly
-    }
-}
-
-Describe 'Invoke-BinaryReleaseReconciliation' {
-    BeforeEach {
-        Mock Get-BinaryReleaseAsset -ModuleName ReleaseAutomation { $null }
-        Mock gh -ModuleName ReleaseAutomation {}
-    }
-
-    It 'creates a missing release at the package version anchor' {
-        $cargo = {
-            param([string[]] $Argument)
-
-            $outDirIndex = [array]::IndexOf($Argument, '--out-dir')
-            $report = [ordered]@{
-                schema_version           = 4
-                head                     = 'current'
-                packages                 = @(
-                    [ordered]@{
-                        name             = 'missing'
-                        declared_version = '2.0.0'
-                        status           = 'unchanged'
-                        anchor           = [ordered]@{
-                            commit  = 'version-anchor'
-                            version = '2.0.0'
-                        }
-                        changed          = @()
-                        dependencies     = @()
-                    }
-                )
-                non_publishable_packages = @()
-                groups                   = [ordered]@{}
-            }
-            $report |
-                ConvertTo-Json -Depth 5 |
-                Set-Content -LiteralPath (Join-Path $Argument[$outDirIndex + 1] 'report.json')
-            $global:LASTEXITCODE = 0
-        }
-        $crate = [pscustomobject]@{ Name = 'missing'; Version = '2.0.0' }
-
-        Invoke-BinaryReleaseReconciliation -Crate $crate -Base 'current' -Cargo $cargo
-
-        Should -Invoke gh -ModuleName ReleaseAutomation -Times 1 -Exactly -ParameterFilter {
-            $args[3] -eq '--target' -and $args[4] -eq 'version-anchor'
-        }
-    }
-
-    It 'rejects a missing checked-out commit before invoking cargo' {
-        $calls = [System.Collections.Generic.List[object]]::new()
-        $cargo = {
-            param([string[]] $Argument)
-            $calls.Add($Argument)
-        }
-        $crate = [pscustomobject]@{ Name = 'missing'; Version = '2.0.0' }
-
-        { Invoke-BinaryReleaseReconciliation -Crate $crate -Base '' -Cargo $cargo } |
-            Should -Throw
-
-        $calls.Count | Should -Be 0
     }
 }
 
@@ -938,7 +735,13 @@ Describe 'ConvertTo-MatrixJson' {
 }
 
 Describe 'Invoke-ReleasePublish (mocked release-plz)' {
-    It 'invokes release-plz once with the composed config on success' {
+    BeforeEach {
+        # These warnings describe injected fixture failures, so assert their calls rather than
+        # printing them as unexamined validation warnings.
+        Mock Write-Warning -ModuleName Retry {}
+    }
+
+    It 'invokes release-plz once with the registry-only config on success' {
         $configPath = Join-Path $TestDrive 'ci.toml'
         Mock release-plz -ModuleName ReleaseAutomation { $global:LASTEXITCODE = 0 }
         Invoke-ReleasePublish -ConfigPath $configPath -Attempt 3 -DelaySeconds 0
@@ -953,15 +756,21 @@ Describe 'Invoke-ReleasePublish (mocked release-plz)' {
             $script:attempts++
             $global:LASTEXITCODE = if ($script:attempts -lt 2) { 1 } else { 0 }
         }
-        Invoke-ReleasePublish -ConfigPath $configPath -Attempt 3 -DelaySeconds 0
+        Invoke-ReleasePublish -ConfigPath $configPath -Attempt 3 -DelaySeconds 0 `
+            -WarningAction SilentlyContinue
+        Should -Invoke Write-Warning -ModuleName Retry -Times 1 -Exactly
         Should -Invoke release-plz -ModuleName ReleaseAutomation -Times 2 -Exactly
     }
 
     It 'throws after every attempt fails' {
         $configPath = Join-Path $TestDrive 'ci.toml'
         Mock release-plz -ModuleName ReleaseAutomation { $global:LASTEXITCODE = 1 }
-        { Invoke-ReleasePublish -ConfigPath $configPath -Attempt 3 -DelaySeconds 0 } | Should -Throw
+        {
+            Invoke-ReleasePublish -ConfigPath $configPath -Attempt 3 -DelaySeconds 0 `
+                -WarningAction SilentlyContinue
+        } | Should -Throw
         Should -Invoke release-plz -ModuleName ReleaseAutomation -Times 3 -Exactly
+        Should -Invoke Write-Warning -ModuleName Retry -Times 2 -Exactly
     }
 }
 

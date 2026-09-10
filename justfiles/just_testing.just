@@ -524,12 +524,15 @@ run-examples:
     Write-Host "Running $($targets.Count) $exampleWord (timeout ${timeoutSeconds}s each)"
     Write-Host ""
 
+    # Children inherit Cargo's resolved output directory instead of performing dependency discovery
+    # inside each example's runtime budget. Ref: docs/build-and-tooling.md#example-execution.
+    Initialize-ExampleEnvironment
+
     # Pre-compile each package's examples up front so first-time compilation does not eat into the
     # per-example execution timeout (on slow CI runners a cold compile can exceed it). A package
     # whose examples fail to build is recorded and its examples skipped, so one broken package does
     # not mask the others' results. Each affected example is recorded as its own failure so the
     # summary's total, successful and failed counts stay consistent (total = successful + failed).
-    $env:IS_TESTING = "1"
     $buildFailed = @{}
     foreach ($pkg in ($targets | ForEach-Object { $_.Package } | Sort-Object -Unique)) {
         Write-Host "Building examples for package '$pkg'..." -ForegroundColor DarkGray
@@ -548,7 +551,6 @@ run-examples:
     # is the process exit code, which Invoke-ExampleRun peels off the captured output.
     $cargoRunner = {
         param($pkg, $exampleName)
-        $env:IS_TESTING = "1"
         & cargo run --package $pkg --example $exampleName --all-features --locked 2>&1
         return $LASTEXITCODE
     }
@@ -574,6 +576,10 @@ run-examples:
             }
             "Timeout" {
                 Write-Host "  TIMEOUT: '$($target.Example)' in package '$($target.Package)' after ${timeoutSeconds}s" -ForegroundColor Red
+                if (-not [string]::IsNullOrWhiteSpace($result.Output)) {
+                    Write-Host "Partial output:" -ForegroundColor Yellow
+                    Write-Host $result.Output -ForegroundColor DarkYellow
+                }
                 $failures += "$($target.Package)::$($target.Example) (timeout)"
             }
             "Exception" {

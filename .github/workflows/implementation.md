@@ -185,6 +185,39 @@ non-Windows validation. The override can be reassessed when
 [cargo-semver-checks issue #1725](https://github.com/obi1kenobi/cargo-semver-checks/issues/1725)
 shortens the generated paths upstream.
 
+## Release publication
+
+`release-plz` owns registry publication only. Its committed configuration disables Git
+tag and release creation, so a main-advance race in GitHub publication cannot turn a
+successful crates.io publish into a publisher retry. The publish job's ambient GitHub
+token is read-only; Trusted Publishing retains its independent OIDC permission.
+
+`scripts/release/ReleasePublication.psm1` owns Git/GitHub process orchestration after
+publication. It derives package/version requests from the checked-out publication source,
+reads existing remote tags, and builds `release-target-check` from that same controller
+checkout only when a new tag needs a source candidate. The temporary candidate worktree
+is data for the verifier, not the source of the verifier executable or automation scripts.
+
+The nonpublished `release-target-check` utility owns candidate identity and version
+constraints, and delegates released-content validation to `cargo-release-plan`. It requires
+a clean checkout at the supplied immutable commit on the supplied main history, exact
+requested package versions, and the release invariant against that snapshot's own anchors.
+Using the candidate as the validator's baseline does not relax the invariant: the clean
+worktree must still match each package's version anchor within that main history.
+
+The PowerShell boundary uses the verified SHA in GitHub reference creation, confirms
+the resulting remote reference, and retries only after observing that main moved.
+It does not duplicate the Rust package-content or binary-dependency comparison.
+Its temporary worktree is removed on both success and failure; cleanup failures retain
+the original diagnostic rather than replacing it.
+
+Missing binary releases use `gh release create --verify-tag` against the established
+reference. Asset planning resolves each tag to a commit and carries `source_sha` in
+the build matrix. Checkout consumes that immutable SHA; upload consumes the versioned
+tag name. Existing references are not rewritten to match a newer preferred snapshot.
+See [Release-equivalent snapshots](design.md#release-equivalent-snapshots) for the
+identity contract and credential rationale.
+
 ## Merge-blocking result
 
 The `required-checks` job is the intended single ruleset target. Its `needs` graph contains

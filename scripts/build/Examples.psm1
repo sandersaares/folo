@@ -1,7 +1,7 @@
 #requires -Version 7
 
-# Backs the `run-examples` recipe: discovers stand-alone example binaries and runs each one under a
-# timeout, classifying the outcome.
+# Backs the `run-examples` recipe: prepares the child environment, discovers stand-alone example
+# binaries and runs each one under a timeout, classifying the outcome.
 #
 # `run-examples` executes every example in the workspace to prove they complete without panicking.
 # Two parts are easy to get subtly wrong and worth testing in isolation: (1) discovering the example
@@ -12,6 +12,27 @@
 # both also collapses the recipe's two near-identical run blocks (files vs. subdirectories) into one.
 
 Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+$PSNativeCommandUseErrorActionPreference = $true
+$VerbosePreference = 'Continue'
+
+function Initialize-ExampleEnvironment {
+    # Resolve Cargo's configured target directory once, without resolving/downloading the workspace
+    # dependency graph. Criterion otherwise starts a full `cargo metadata` subprocess from its
+    # constructor, and the measurement trackers also rediscover this directory on output.
+    # Export the absolute path before spawning children so neither repeats that work.
+    # Ref: docs/build-and-tooling.md#example-execution.
+    [CmdletBinding()]
+    param()
+
+    $metadata = cargo metadata --format-version 1 --no-deps --locked | ConvertFrom-Json
+    if ([string]::IsNullOrWhiteSpace($metadata.target_directory)) {
+        throw 'Cargo metadata did not provide an example output directory.'
+    }
+
+    $env:CARGO_TARGET_DIR = $metadata.target_directory
+    $env:IS_TESTING = '1'
+}
 
 function Get-ExampleTarget {
     # Returns the runnable example targets under $PackagesRoot as objects with `Package` and
@@ -72,8 +93,8 @@ function Invoke-ExampleRun {
     # Runs a single example via $Command (a scriptblock receiving $Package and $Example whose final
     # pipeline value is the process exit code) under a $TimeoutSeconds watchdog, and returns a result
     # object with `Status` ('Success' | 'Failed' | 'Timeout' | 'Exception'), `ExitCode`, `Output`
-    # (captured stdout/stderr minus the exit code) and `Message`. Injecting $Command keeps the
-    # timeout/classification logic testable without invoking cargo.
+    # (captured stdout/stderr minus the exit code, or all partial output on timeout) and `Message`.
+    # Injecting $Command keeps the timeout/classification logic testable without invoking cargo.
     [CmdletBinding()]
     [OutputType([pscustomobject])]
     param(
@@ -90,10 +111,13 @@ function Invoke-ExampleRun {
 
         if (-not $completed) {
             Stop-Job -Job $job
+            # The final pipeline value is an exit code only for a completed command. Retain all
+            # available output here so a stalled phase remains diagnosable.
+            $output = @(Receive-Job -Job $job) -join "`n"
             return [pscustomobject]@{
                 Status   = 'Timeout'
                 ExitCode = $null
-                Output   = ''
+                Output   = $output
                 Message  = "timed out after $TimeoutSeconds seconds"
             }
         }
@@ -131,4 +155,4 @@ function Invoke-ExampleRun {
     }
 }
 
-Export-ModuleMember -Function Get-ExampleTarget, Invoke-ExampleRun
+Export-ModuleMember -Function Initialize-ExampleEnvironment, Get-ExampleTarget, Invoke-ExampleRun

@@ -3,12 +3,11 @@
 //! This shows the recommended `iter_custom` pattern for tracking processor time,
 //! feeding the Criterion-chosen iteration count into each recorded span.
 //!
-//! Criterion is configured with small measurement and statistical-analysis
-//! budgets so the example runs quickly as a smoke test; a real benchmark would
-//! use `Criterion::default()`.
+//! Criterion runs each workload once in test mode, without warm-up or statistical
+//! analysis. Pass `-- --bench` to `cargo run` to opt into actual benchmarking.
 
 use std::hint::black_box;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use all_the_time::Session;
 use criterion::Criterion;
@@ -17,12 +16,7 @@ fn main() {
     let session = Session::new();
     let operation = session.operation("my_operation");
 
-    let mut criterion = Criterion::default()
-        .warm_up_time(Duration::from_millis(10))
-        .measurement_time(Duration::from_millis(20))
-        .sample_size(10)
-        .nresamples(2000)
-        .without_plots();
+    let mut criterion = Criterion::default().without_plots().configure_from_args();
     criterion.bench_function("my_operation", |b| {
         b.iter_custom(|iters| {
             let start = Instant::now();
