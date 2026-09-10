@@ -30,7 +30,7 @@ flowchart TD
     C --> D{"release-plz detects an<br/>unpublished version?"}
     D -- yes --> E["Publish changed crates to crates.io<br/>(Trusted Publishing, OIDC — no token)"]
     D -- no --> F
-    E --> F["Ensure a git tag + GitHub release exists<br/>per published binary crate"]
+    E --> F["Reconcile package tags at verified main snapshots<br/>and GitHub releases for binary packages"]
     F --> G["Reconcile: for every published binary crate,<br/>find incomplete archive/checksum pairs"]
     G --> H["Matrix build only the incomplete<br/>(crate, target) pairs"]
     H --> I["Upload archives + .sha256<br/>to each crate's release"]
@@ -92,8 +92,10 @@ Keeping publish and binaries in **one** workflow run is deliberate: a workflow
 that creates a tag/release with the default `GITHUB_TOKEN` does not trigger
 downstream `on: release` / `on: push: tags` workflows (GitHub suppresses these to
 avoid recursion). Driving the binary jobs from within the same run sidesteps that
-entirely, so the ambient `GITHUB_TOKEN` suffices and no PAT or GitHub App token is
-needed.
+entirely. New tags use verified, release-equivalent main snapshots so ordinary
+publication and missing-tag recovery can use the ambient token. The source identity
+contract and the limits of recovery are defined in
+[Release-equivalent snapshots](../.github/workflows/design.md#release-equivalent-snapshots).
 
 ```yaml
 # Illustrative sketch — not a final workflow file.
@@ -120,9 +122,9 @@ crates.io **Trusted Publishing (OIDC)** is the credential model: the job carries
 `id-token: write` and no `CARGO_REGISTRY_TOKEN` exists anywhere. `release-plz`
 performs the crates.io OIDC token exchange itself, so no long-lived crates.io
 token is stored. This matches the repo's OIDC-first posture (the
-`bench-history` workflow already federates into Azure the same way). The GitHub
-side (tags + releases) uses the ambient `secrets.GITHUB_TOKEN` with
-`contents: write`.
+`bench-history` workflow already federates into Azure the same way). The publisher's
+GitHub token is read-only. The committed release-plz configuration disables both
+`git_tag_enable` and `git_release_enable`; GitHub writes belong to reconciliation.
 
 ```yaml
 # Illustrative.
@@ -130,35 +132,37 @@ publish:
   if: github.repository == 'folo-rs/folo'   # forks can't federate OIDC
   runs-on: ubuntu-latest
   permissions:
-    contents: write   # release-plz creates tags + GitHub releases
+    contents: read    # GitHub writes belong to reconciliation
     id-token: write   # crates.io Trusted Publishing (OIDC)
   timeout-minutes: 270   # covers the retry budget plus a cold-cache setup (see below)
   steps:
     - uses: actions/checkout@v7
       with:
         fetch-depth: 0
-        # persist-credentials stays at its default (true): release-plz pushes the
-        # release tags via git, which uses the checkout-persisted token.
     - uses: ./.github/actions/setup-environment
     - name: Verify the checked-in lockfile is consistent
       shell: pwsh
-      run: just verify-lockfile   # aborts before publish/tag if Cargo.lock is stale
-    - name: Compose the CI release-plz config
-      shell: pwsh
-      run: just gh-compose-release-config "$env:RUNNER_TEMP/release-plz.ci.toml"
+      run: |
+        Set-StrictMode -Version Latest
+        $ErrorActionPreference = "Stop"
+        $PSNativeCommandUseErrorActionPreference = $true
+        just verify-lockfile
     - shell: pwsh
-      run: just gh-release "$env:RUNNER_TEMP/release-plz.ci.toml"
+      run: |
+        Set-StrictMode -Version Latest
+        $ErrorActionPreference = "Stop"
+        $PSNativeCommandUseErrorActionPreference = $true
+        just gh-release
       env:
-        GIT_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # forge API (tags + GitHub releases)
+        GIT_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # read-only forge access
 ```
 
 Before it publishes or tags anything, `publish` runs a **lockfile-consistency gate**
 (`just verify-lockfile`). The whole workspace shares a single `Cargo.lock`, so one entry
 that disagrees with its manifest — the classic case being a version bumped in a
 `Cargo.toml` without the matching lock entry updated — makes *every* `--locked` build fail.
-Nothing else stops such a commit from being tagged: `release-plz` publishes and tags on push
-to `main` before the ordinary `--locked` validation on that push can block it, so the broken
-lock would only surface downstream as a total `build-binaries` wipeout. The gate runs
+Publishing is independent of the ordinary validation on that push, so the lockfile must
+be checked before publication rather than left to downstream binary builds. The gate runs
 `cargo metadata --locked`, which resolves the graph against the committed lockfile and exits
 non-zero if the lock would need to change, turning that latent failure into an early, actionable
 abort — no crate is published and no tag is created. It is **verify-only**: it reads the
@@ -166,11 +170,13 @@ checked-in lockfile and never regenerates it (workflows build the committed lock
 The same recipe is runnable locally (`just verify-lockfile`) to catch a stale lock after a manual
 version edit, before pushing.
 
-Each step is a thin `pwsh` call into a `just` recipe; the publishing logic — deriving
-the binary crates, injecting `git_release_enable`, and the retry loop — lives in
+Each step is a thin `pwsh` call into a `just` recipe. The entry points live in
 [`justfiles/just_release.just`](../justfiles/just_release.just), which delegates in
 turn to the [`scripts/release/ReleaseAutomation.psm1`](../scripts/release/ReleaseAutomation.psm1)
-module, so it can be run and tested on a developer PC rather than only by pushing to `main`.
+module for registry publication and
+[`ReleasePublication.psm1`](../scripts/release/ReleasePublication.psm1) for GitHub
+reconciliation. The nonpublished `release-target-check` utility reuses the release
+validator rather than duplicating its package-content model in PowerShell.
 The module is covered by a Pester suite run via `just test-scripts` (a required CI check); the
 suite exercises the real logic against fixture workspaces with `cargo metadata` and real file
 I/O, mocking only the tools that would mutate crates.io / GitHub (`release-plz`, `gh`). The
@@ -189,19 +195,21 @@ without republishing.
 It **auto-determines** the work by reconciling desired state against actual state,
 with no hardcoded or human-supplied crate list. The job:
 
-1. Derives the publishable binary crates and their current manifest versions from
-   `cargo metadata` (the filter below), including each package's single binary
-   target name. Each crate's expected release tag is `{crate}-v{version}`.
-2. Creates any missing tag and GitHub release at the package's version-anchor
-   commit. This repairs manual publishes and partial release-plz runs, because
-   release-plz skips a version that crates.io already has.
-3. Lists each release's assets (`gh release view`) and computes which expected
+1. Derives published package/version requests from the successful publisher's
+   checked-out source. Each expected tag is `{crate}-v{version}`.
+2. Preserves existing tags. For missing tags, fetches and pins current main, then
+   verifies a clean disposable checkout with `release-target-check`. The requested
+   versions must still be present and satisfy the release-content invariant.
+   Writes name that immutable commit; a failed write is retried only when main
+   advanced, with a fresh verification and a bounded attempt budget.
+3. Creates missing GitHub releases for binary packages with `--verify-tag`, using
+   the established references without moving them.
+4. Lists each release's assets (`gh release view`) and computes which expected
    per-target archive/checksum pairs are incomplete.
-4. Emits a matrix of exactly the incomplete `(crate, target)` pairs (as its `matrix` and
-   `has_binaries` step outputs).
+5. Emits exactly the incomplete `(crate, target)` pairs, including each tag's
+   resolved `source_sha`, as its `matrix` and `has_binaries` step outputs.
 
-The binary-crate derivation is a single filter, reused here and by the
-git-release-enable injection so the two can never disagree. In
+The binary-crate derivation is shared by GitHub release creation and asset planning. In
 `cargo metadata --format-version 1` the `publish` field is `null` (publishable to
 any registry), `[]` (never publish), or a non-empty registry list, so a crate is a
 release candidate when it is publishable (`publish` is `null` or a non-empty list)
@@ -246,7 +254,7 @@ build-binaries:
   strategy:
     fail-fast: false   # one target's failure must not abandon the others' archives
     # The matrix is computed by plan-binaries: one entry per incomplete (crate, target)
-    # pair, each carrying {name, bin, tag, version, triple, os} (os from the target table below).
+    # pair, carrying {name, bin, tag, version, source_sha, triple, os}.
     matrix:
       include: ${{ fromJSON(needs.plan-binaries.outputs.matrix) }}
   runs-on: ${{ matrix.os }}
@@ -255,7 +263,7 @@ build-binaries:
   steps:
     - uses: actions/checkout@v7
       with:
-        ref: refs/tags/${{ matrix.tag }}   # build the exact released code
+        ref: ${{ matrix.source_sha }}   # immutable source, independent of the upload label
     - uses: ./.github/actions/setup-environment
     - uses: taiki-e/upload-rust-binary-action@v1
       with:
@@ -369,7 +377,8 @@ publish step is built to ride out both without bespoke complexity:
   beyond the retry.
 * **Binaries after a partial failure — auto-reconciled, no manual crate list.**
   The binary jobs never depend on "what was published *this run*"; `plan-binaries`
-  creates any missing release/tag at the package's version anchor, then reconciles the
+  creates missing tags at verified release-equivalent main snapshots and attaches
+  binary releases to those tags, then reconciles the
   current published state against uploaded assets (see
   [`plan-binaries`](#plan-binaries--reconcile-missing-binary-assets)). So if a
   crate published but its GitHub release or binaries did not complete, simply
@@ -377,7 +386,13 @@ publish step is built to ride out both without bespoke complexity:
   and recomputes the incomplete `(crate, target)` pairs across *all* affected
   crates. The recovery set is always self-determined; there is no per-crate
   dispatch and no human-supplied tag list. `taiki-e` overwrites existing assets,
-  so re-uploading restores identical checksummed archives.
+  so re-uploading restores complete archive/checksum pairs.
+
+Missing-tag recovery requires the requested version to remain available at an
+eligible main snapshot. A newer version is not relabeled as the older version;
+automatic repair of a superseded version is not guaranteed. Existing tags are
+never moved. The version validator continues comparing against version anchors,
+independently of the later equivalent commit a GitHub tag may identify.
 
 (Because a GitHub Actions `uses:` step cannot be retried in place, the retry is
 implemented as a PowerShell loop inside the `gh-release` recipe that re-runs the
@@ -387,9 +402,9 @@ release-plz invocation.)
 
 [`release-plz.toml`](../release-plz.toml) is the publish-half config:
 
-* `git_release_enable` stays **`false`** at the workspace level (pure-library and
-  invisible `_impl` / `_macros` crates must not spawn releases — there are many of
-  them and the noise is not wanted), and is turned on **per binary crate**.
+* `git_tag_enable` and `git_release_enable` are both **`false`**. Registry publication
+  cannot create references at its potentially historical checkout; the GitHub
+  reconciler owns tag selection and binary release creation.
 * `git_tag_name = "{{ package }}-v{{ version }}"` is pinned explicitly. This is
   the workspace default, but pinning it freezes the tag format that the
   binstall URLs depend on, so a future release-plz default change cannot silently
@@ -399,16 +414,10 @@ release-plz invocation.)
   release-plz configuration. Group alignment can include `publish = false`
   packages; release-plz still considers only publishable members.
 
-**Per-binary-crate git releases, injected dynamically.** Rather than committing
-`git_release_enable = true` into each binary crate's `[[package]]` entry (which
-must be remembered for every new tool, and drifts out of sync with the derived
-set), the `publish` job injects it at CI time: the `gh-compose-release-config`
-recipe derives the binary-crate set (the same filter as `plan-binaries`) and, for
-each, sets `git_release_enable = true` in a CI-only copy of `release-plz.toml`
-(merging into any existing `[[package]]` entry). The committed config stays free of
-per-binary release flags, and the release-enabled set is *always* exactly the
-derived binary-crate set — so a newly-added binary crate gets its release with no
-config edit, and no library crate is ever released.
+**Binary releases are derived dynamically.** The reconciler discovers publishable
+binary packages from Cargo metadata and creates their missing GitHub releases
+against established tags. Adding a binary package needs no release-plz override;
+library packages receive tags but do not create GitHub release entries.
 
 ## The asset-naming contract
 
@@ -423,7 +432,8 @@ One convention governs both:
 | Checksum sidecar  | `{crate}-v{version}-{target}.sha256`    | `…-aarch64-apple-darwin.sha256`                                |
 | Binary in archive | at archive root, `{bin}` (`+ .exe`)    | `cargo-bench-history` / `cargo-bench-history.exe`              |
 
-* The **tag** comes from release-plz (`git_tag_name` pinned above).
+* The **tag** follows the reconciler's package/version convention. Release-plz uses
+  the same pinned `git_tag_name` when recognizing existing releases.
 * The **archive base** is `taiki-e`'s `archive:` input,
   `{crate}-v{version}-$target` (the action expands `$target`) — the single source
   of truth for the filename; the binstall blocks mirror it.

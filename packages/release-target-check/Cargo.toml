@@ -1,0 +1,28 @@
+[package]
+name = "release-target-check"
+description = "Verifies immutable main-line source snapshots for release orchestration"
+publish = false
+version = "0.0.0"
+
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
+
+[dependencies]
+cargo-release-plan = { workspace = true }
+ohno = { workspace = true, features = ["app-err"] }
+semver = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+testing = { path = "../testing" }
+
+[lints]
+workspace = true

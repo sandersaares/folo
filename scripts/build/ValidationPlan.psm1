@@ -94,6 +94,11 @@ function Get-ValidationPlan {
             $null = $domains.Add('release')
             Write-Verbose "'$path' configures release automation; selecting release tests."
         }
+        if ($path -ceq '.github/workflows/release.yml' -or
+            $path -cmatch '^scripts/build/CargoExecutable\.(psm1|Tests\.ps1)$') {
+            $null = $domains.Add('release')
+            Write-Verbose "'$path' supplies the release workflow or its native executable boundary; selecting release tests."
+        }
         if ($path -cmatch '^\.cargo/config(\.toml)?$') {
             # Cargo fixture tests and real helper builds consume workspace Cargo configuration.
             $domains.UnionWith([string[]] @('release', 'scheduled'))
@@ -168,6 +173,10 @@ function Get-ValidationScriptDomain {
         if ($package -cin @('cargo-release-plan', 'scheduled-mutation-config', 'scheduled-run-record', 'scheduled-triage-record')) {
             $domains += 'scheduled'
             Write-Verbose "Cargo delta selected '$package'; selecting its scheduled-script integration tests."
+        }
+        if ($package -cin @('cargo-release-plan', 'release-target-check')) {
+            $domains += @('release', 'scheduled')
+            Write-Verbose "Cargo delta selected '$package'; selecting release verification and dependent scheduled-script tests."
         }
     }
     return @($domains | Sort-Object -Unique)

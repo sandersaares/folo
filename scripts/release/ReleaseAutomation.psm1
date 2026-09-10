@@ -364,82 +364,6 @@ function Get-PublishableBinaryCrate {
         Sort-Object -Property Name -Unique
 }
 
-function Add-GitReleaseEnableFlag {
-    # Pure line-based edit: returns a copy of $Line with `git_release_enable = true` set for each
-    # crate in $CrateName. The committed release-plz.toml keeps releases off at the workspace
-    # level (most crates are libraries); this turns it on only for the binary crates.
-    #
-    # `name = "<crate>"` is unique and is the first key of its [[package]] block, so inserting
-    # right after that line lands the flag inside the block. The match is exact (trimmed) so
-    # `cargo-bench-history` does not collide with `cargo-bench-history-stress`. A crate with no
-    # existing entry gets a fresh [[package]] block. An existing `git_release_enable` line is
-    # forced to `true` (so a per-package `= false` override cannot defeat enabling a binary
-    # crate); idempotent when it is already `true`.
-    [CmdletBinding()]
-    param(
-        [string[]] $Line,
-        [string[]] $CrateName
-    )
-
-    $lines = [System.Collections.Generic.List[string]]::new()
-    foreach ($item in $Line) { $lines.Add($item) }
-
-    foreach ($crate in $CrateName) {
-        $needle = 'name = "' + $crate + '"'
-        $nameIndex = -1
-        for ($i = 0; $i -lt $lines.Count; $i++) {
-            if ($lines[$i].Trim() -eq $needle) { $nameIndex = $i; break }
-        }
-
-        if ($nameIndex -ge 0) {
-            $existingIndex = -1
-            for ($j = $nameIndex + 1; $j -lt $lines.Count; $j++) {
-                $trimmed = $lines[$j].Trim()
-                if ($trimmed.StartsWith('[')) { break }
-                if ($trimmed -match '^git_release_enable\s*=') { $existingIndex = $j; break }
-            }
-            if ($existingIndex -ge 0) {
-                # Force an existing assignment to true: a per-package `git_release_enable = false`
-                # must not defeat enabling releases for a binary crate. Preserve the original
-                # indentation of the line being replaced.
-                $indent = if ($lines[$existingIndex] -match '^(\s*)') { $Matches[1] } else { '' }
-                $lines[$existingIndex] = "${indent}git_release_enable = true"
-            } else {
-                $lines.Insert($nameIndex + 1, 'git_release_enable = true')
-            }
-        } else {
-            $lines.Add('')
-            $lines.Add('[[package]]')
-            $lines.Add($needle)
-            $lines.Add('git_release_enable = true')
-        }
-    }
-
-    # Comma keeps a single-line result an array rather than a bare string.
-    , $lines.ToArray()
-}
-
-function New-ReleasePlzConfig {
-    # Reads the committed release-plz.toml at $SourcePath, injects `git_release_enable = true`
-    # for each $CrateName, and writes the result to $OutputPath. The output is UTF-8 without a
-    # BOM and uses LF line endings with a trailing newline, deterministically on every platform,
-    # so the artifact does not vary with the runner OS. The caller writes this outside the
-    # working tree so `cargo publish` never sees a dirty repo.
-    [CmdletBinding(SupportsShouldProcess)]
-    param(
-        [Parameter(Mandatory)][string] $SourcePath,
-        [Parameter(Mandatory)][string] $OutputPath,
-        [string[]] $CrateName
-    )
-
-    $sourceLines = [System.IO.File]::ReadAllText($SourcePath) -split "`r?`n"
-    $newLines = Add-GitReleaseEnableFlag -Line $sourceLines -CrateName $CrateName
-    $content = ($newLines -join "`n").TrimEnd("`n") + "`n"
-    if ($PSCmdlet.ShouldProcess($OutputPath, 'write CI release-plz config')) {
-        [System.IO.File]::WriteAllText($OutputPath, $content, [System.Text.UTF8Encoding]::new($false))
-    }
-}
-
 function Get-BinaryReleaseAsset {
     # Returns the names of the assets already attached to the GitHub release for $Tag, or $null
     # if no such release exists yet. Isolates the real `gh release view` call so the tests can
@@ -451,14 +375,17 @@ function Get-BinaryReleaseAsset {
     # the workflow looks successful while binaries are still missing.
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)][string] $Tag
+        [Parameter(Mandatory)][string] $Tag,
+        [string] $Repository
     )
 
     # Disable the native-error preference locally so a non-zero exit does not terminate here
     # before we can classify it; we inspect the exit code and output ourselves. 2>&1 merges
     # stderr (where gh prints "release not found") into the captured output.
     $PSNativeCommandUseErrorActionPreference = $false
-    $output = gh release view $Tag --json assets 2>&1
+    $arguments = @('release', 'view', $Tag, '--json', 'assets')
+    if ($Repository) { $arguments += @('--repo', $Repository) }
+    $output = & gh @arguments 2>&1
     $exitCode = $LASTEXITCODE
 
     if ($exitCode -ne 0) {
@@ -474,87 +401,6 @@ function Get-BinaryReleaseAsset {
     , @($parsed.assets.name)
 }
 
-function New-MissingBinaryRelease {
-    # Creates the GitHub tag and release that binary assets need when release-plz did not create
-    # them. This occurs after a manual crates.io publish and can also occur when crates.io
-    # publication succeeded before forge release creation failed. The release workflow invokes
-    # this only after its publish job succeeded, so every current manifest version is already
-    # published. Target commits come from cargo-release-plan version anchors, which identify the
-    # source revision that introduced each published version.
-    [CmdletBinding(SupportsShouldProcess)]
-    param(
-        [Parameter(Mandatory)][object[]] $Crate,
-        [Parameter(Mandatory)][hashtable] $TargetCommitByName
-    )
-
-    foreach ($crateInfo in $Crate) {
-        $tag = "$($crateInfo.Name)-v$($crateInfo.Version)"
-        if ($null -ne (Get-BinaryReleaseAsset -Tag $tag)) {
-            Write-Verbose "GitHub release '$tag' already exists."
-            continue
-        }
-
-        $targetCommit = [string] $TargetCommitByName[[string] $crateInfo.Name]
-        if ([string]::IsNullOrWhiteSpace($targetCommit)) {
-            throw "Creating missing binary release '$tag' requires its version-anchor commit."
-        }
-        Write-Verbose (
-            "GitHub release '$tag' is missing; creating it at version anchor '$targetCommit'."
-        )
-        if ($PSCmdlet.ShouldProcess($tag, "create GitHub release at $targetCommit")) {
-            gh release create $tag `
-                --target $targetCommit `
-                --title $tag `
-                --notes "Prebuilt binaries for $($crateInfo.Name) $($crateInfo.Version)."
-        }
-    }
-}
-
-function Invoke-BinaryReleaseReconciliation {
-    # Generates a release-plan report for the current tree, resolves each binary package's
-    # version-anchor commit, and creates any missing GitHub releases at those anchors. Report
-    # generation and temporary-file cleanup stay here so the just recipe remains a thin entry
-    # point and the orchestration can be tested with an injected Cargo boundary.
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)][object[]] $Crate,
-        [Parameter(Mandatory)][AllowEmptyString()][string] $Base,
-        [scriptblock] $Cargo = { param([string[]] $Argument) & cargo @Argument }
-    )
-
-    if ([string]::IsNullOrWhiteSpace($Base)) {
-        throw 'Binary release reconciliation requires the checked-out commit as its base.'
-    }
-
-    $outDir = Join-Path ([System.IO.Path]::GetTempPath()) "binary-release-plan-$(New-Guid)"
-    New-Item -ItemType Directory -Path $outDir | Out-Null
-    try {
-        $argument = @(
-            'run', '-p', 'cargo-release-plan', '--locked', '--',
-            'report', '--out-dir', $outDir
-        )
-        $argument += @('--base', $Base)
-        & $Cargo $argument
-        if ($LASTEXITCODE -ne 0) {
-            throw "cargo-release-plan report failed with exit code $LASTEXITCODE."
-        }
-
-        Import-Module (Join-Path $PSScriptRoot 'ReleasePlan.psm1') -Force
-        $anchors = @(
-            Get-ReleasePlanPackageAnchor `
-                -ReportPath (Join-Path $outDir 'report.json') `
-                -Name $Crate.Name
-        )
-        $targetCommitByName = @{}
-        foreach ($anchor in $anchors) {
-            $targetCommitByName[[string] $anchor.Name] = [string] $anchor.Commit
-        }
-        New-MissingBinaryRelease -Crate $Crate -TargetCommitByName $targetCommitByName
-    } finally {
-        Remove-Item -LiteralPath $outDir -Recurse -Force -ErrorAction SilentlyContinue
-    }
-}
-
 function Get-MissingBinaryMatrix {
     # Reconciles desired vs. actual binary assets. For each crate it computes the expected tag
     # `{Name}-v{Version}` and the per-target archive/checksum pair
@@ -568,7 +414,8 @@ function Get-MissingBinaryMatrix {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][object[]] $Crate,
-        [object[]] $Target = (Get-ReleaseTarget)
+        [object[]] $Target = (Get-ReleaseTarget),
+        [string] $Repository
     )
 
     # Verbose emits the full decision history - every crate, its expected tag, whether the
@@ -611,7 +458,7 @@ function Get-MissingBinaryMatrix {
             Write-Verbose "  Crate restricts its release targets to: $($declaredTargets -join ', ') (declared in [package.metadata.folo] release-targets), so these targets are not built for it: $skippedText."
         }
 
-        $assets = Get-BinaryReleaseAsset -Tag $tag
+        $assets = Get-BinaryReleaseAsset -Tag $tag -Repository $Repository
         if ($null -eq $assets) {
             throw (
                 "GitHub release '$tag' is missing. Run the missing-release reconciliation " +
@@ -683,7 +530,7 @@ function ConvertTo-MatrixJson {
 }
 
 function Invoke-ReleasePublish {
-    # Publishes changed crates to crates.io via `release-plz release` using the composed CI
+    # Publishes changed crates to crates.io via `release-plz release` using the registry-only
     # config, with bounded retries. release-plz is idempotent (it skips already-published
     # versions), so a retry or a whole re-run safely resumes a partially-published release. NOT
     # for local use: it performs real publishes. The native-error preference is disabled locally
@@ -824,11 +671,7 @@ Export-ModuleMember -Function `
     Get-CrateIndexPath, `
     Get-CratePublishStatus, `
     Test-NeverPublishedCrate, `
-    Add-GitReleaseEnableFlag, `
-    New-ReleasePlzConfig, `
     Get-BinaryReleaseAsset, `
-    New-MissingBinaryRelease, `
-    Invoke-BinaryReleaseReconciliation, `
     Get-MissingBinaryMatrix, `
     ConvertTo-MatrixJson, `
     Invoke-ReleasePublish, `

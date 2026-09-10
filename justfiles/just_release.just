@@ -254,34 +254,7 @@ apply-release-plan EXPANDED:
 # decisions through `just test-scripts`; the recipes only import and invoke the owning module.
 # See docs/release-automation.md for the release workflow's responsibilities.
 
-# Writes a CI-only copy of release-plz.toml to {{output}} with `git_release_enable = true`
-# set for each publishable binary crate (derived from cargo metadata), leaving everything
-# else untouched. The committed config keeps releases OFF at the workspace level so the many
-# library/`_impl` crates never spawn GitHub releases; enabling it only for the derived binary
-# crates means a newly-added binary tool is covered with no config edit and no library crate
-# is ever released. The caller writes this OUTSIDE the working tree so `cargo publish` never
-# sees a dirty repo. See .github/workflows/release.yml and docs/release-automation.md.
-[group('automation')]
-[script]
-gh-compose-release-config output:
-    Set-StrictMode -Version Latest
-    $ErrorActionPreference = "Stop"
-    $PSNativeCommandUseErrorActionPreference = $true
-    Import-Module ./scripts/release/ReleaseAutomation.psm1 -Force
-
-    $crates = @(Get-PublishableBinaryCrate)
-    $crateNames = @($crates | ForEach-Object { $_.Name })
-    Write-Verbose "Publishable binary crates: $($crateNames -join ', ')" -Verbose
-    New-ReleasePlzConfig -SourcePath 'release-plz.toml' -OutputPath '{{output}}' -CrateName $crateNames
-    Write-Verbose "Wrote CI release-plz config to {{output}}." -Verbose
-
-    # Print the composed config so the CI log records exactly what release-plz will run with
-    # (which crates got `git_release_enable = true`), without needing to unpack the runner temp.
-    Write-Host "----- Composed CI release-plz config ({{output}}) -----"
-    Get-Content -Path '{{output}}' -Raw | Write-Host
-    Write-Host "----- End composed CI release-plz config -----"
-
-# Publishes changed crates to crates.io via release-plz using the composed CI config, with
+# Publishes changed crates to crates.io via release-plz using the registry-only config, with
 # bounded retries (3 attempts, 15 minutes apart) to ride out crates.io rate limits and the
 # short-lived OIDC token. release-plz is idempotent - it re-checks the registry and skips
 # already-published versions - so a retry (or a whole re-run) safely resumes a partially
@@ -289,7 +262,7 @@ gh-compose-release-config output:
 # performs real publishes. See docs/release-automation.md.
 [group('automation')]
 [script]
-gh-release config:
+gh-release config='release-plz.toml':
     Set-StrictMode -Version Latest
     $ErrorActionPreference = "Stop"
     $PSNativeCommandUseErrorActionPreference = $true
@@ -297,26 +270,18 @@ gh-release config:
 
     Invoke-ReleasePublish -ConfigPath '{{config}}'
 
-# Creates any GitHub release/tag that release-plz could not create because the matching crates.io
-# version was already published manually or before a partial failure. Each tag points at the
-# package's version anchor from cargo-release-plan, so it identifies the revision that introduced
-# the published version even when recovery happens after later unrelated merges. COMMIT is the
-# exact checked-out release-branch commit: it fixes the report baseline so a feature branch or a
-# later-moving remote-tracking ref cannot pair current manifest versions with older anchors.
+# Reconciles tags for published packages and GitHub releases for binary packages. COMMIT freezes
+# the successful registry publication's package/version requests; missing tags use a freshly
+# verified equivalent main snapshot. Ref: .github/workflows/design.md#publication-and-recovery.
 [group('automation')]
 [script]
-gh-create-missing-binary-releases COMMIT:
+gh-reconcile-releases COMMIT:
     Set-StrictMode -Version Latest
     $ErrorActionPreference = "Stop"
     $PSNativeCommandUseErrorActionPreference = $true
-    Import-Module ./scripts/release/ReleaseAutomation.psm1 -Force
+    Import-Module ./scripts/release/ReleasePublication.psm1 -Force
 
-    $crates = @(Get-PublishableBinaryCrate)
-    $crateNames = @($crates | ForEach-Object { $_.Name })
-    Write-Verbose "Publishable binary crates: $($crateNames -join ', ')" -Verbose
-    if ($crates.Count -gt 0) {
-        Invoke-BinaryReleaseReconciliation -Crate $crates -Base "{{ COMMIT }}" -Verbose
-    }
+    Invoke-ReleaseReconciliation -Source "{{ COMMIT }}" -Repository $env:GH_REPO -Verbose
 
 # Reconciles the desired prebuilt-binary archive and checksum pairs against each
 # published binary crate's GitHub release, and emits the matrix of incomplete
@@ -331,23 +296,6 @@ gh-plan-release-binaries:
     Set-StrictMode -Version Latest
     $ErrorActionPreference = "Stop"
     $PSNativeCommandUseErrorActionPreference = $true
-    Import-Module ./scripts/release/ReleaseAutomation.psm1 -Force
+    Import-Module ./scripts/release/ReleasePublication.psm1 -Force
 
-    # Get-MissingBinaryMatrix emits its decision history (per crate: expected tag, whether the
-    # release exists, and the per-target present/missing verdict) via Write-Verbose. This is an
-    # automation-only recipe, so always emit it: the reasoning is worth capturing in every run
-    # (CI log or a local diagnostic invocation), not just the final count.
-    $crates = @(Get-PublishableBinaryCrate)
-    $crateNames = @($crates | ForEach-Object { $_.Name })
-    Write-Verbose "Publishable binary crates: $($crateNames -join ', ')" -Verbose
-    # Wrap the entire conditional because PowerShell enumerates a branch-local array when the
-    # conditional writes to the pipeline, collapsing an empty result to $null under strict mode.
-    $rows = @(
-        if ($crates.Count -gt 0) {
-            Get-MissingBinaryMatrix -Crate $crates -Verbose
-        }
-    )
-
-    Write-Host "Incomplete (crate, target) asset pairs: $($rows.Count)"
-    Set-GitHubOutput -Name 'matrix' -Value (ConvertTo-MatrixJson -Row $rows)
-    Set-GitHubOutput -Name 'has_binaries' -Value $(if ($rows.Count -gt 0) { 'true' } else { 'false' })
+    Invoke-ReleaseBinaryPlan -Repository $env:GH_REPO -Verbose

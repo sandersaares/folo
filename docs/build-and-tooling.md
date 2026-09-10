@@ -95,6 +95,26 @@ such targets in `--tests`. Doctests retain their separate `test-docs` pass.
 The library-only selectors in many-seed Miri and exact library replays are deliberate
 scope restrictions, not general test or coverage selection.
 
+### Example execution
+
+`just run-examples` prebuilds the selected examples before starting their runtime
+watchdogs. The recipe prepares their environment through
+`scripts/build/Examples.psm1`: it resolves Cargo's configured target directory once
+with `cargo metadata --no-deps --locked`, exports the resulting absolute
+`CARGO_TARGET_DIR`, and enables the examples' `IS_TESTING` smoke paths.
+
+Passing the resolved directory avoids nested Cargo invocations from Criterion's
+constructor and from measurement-report output. Criterion's own discovery uses
+full-workspace metadata, which can resolve and download unrelated dependencies;
+that preparation does not belong inside an example's runtime budget. Cargo remains
+the authority for custom output-directory configuration.
+
+Examples should complete within single-digit seconds. Criterion-based examples
+use its single-iteration test mode by default rather than collecting benchmark
+samples or performing statistical analysis. The watchdog is a last-chance
+safeguard, not the expected execution budget. If it fires, the runner retains and
+prints partial child output to identify the last completed phase.
+
 ## Multiplatform codebase
 
 This is a multiplatform codebase. In some packages you will find folders named

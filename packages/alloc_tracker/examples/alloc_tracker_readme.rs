@@ -4,9 +4,8 @@
 //! allocations, plus how to debug unexpected allocations with the
 //! `panic_on_next_alloc` feature.
 //!
-//! Criterion is configured with a small measurement budget so the example runs
-//! quickly and deterministically as a smoke test; a real benchmark would use
-//! `Criterion::default()`.
+//! Criterion runs each workload once in test mode, without warm-up or statistical
+//! analysis. Pass `-- --bench` to `cargo run` to opt into actual benchmarking.
 //!
 //! To run the `panic_on_next_alloc` functionality, enable the feature:
 //! ```bash
@@ -14,7 +13,7 @@
 //! ```
 
 use std::hint::black_box;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 #[cfg(not(feature = "panic_on_next_alloc"))]
 use alloc_tracker::{Allocator, Session};
@@ -30,11 +29,7 @@ fn main() {
     let session = Session::new();
     let operation = session.operation("my_operation");
 
-    let mut criterion = Criterion::default()
-        .warm_up_time(Duration::from_millis(100))
-        .measurement_time(Duration::from_millis(500))
-        .sample_size(10)
-        .without_plots();
+    let mut criterion = Criterion::default().without_plots().configure_from_args();
     criterion.bench_function("my_operation", |b| {
         b.iter_custom(|iters| {
             let start = Instant::now();

@@ -651,12 +651,58 @@ file nothing.
 
 ## Release automation
 
-Publishing changed crates to crates.io and attaching cargo-binstall prebuilt binaries is
-fully automated after the single manual version-bump step. Its full design — single-workflow
-structure, crates.io Trusted Publishing, dynamic derivation of which crates receive GitHub
-releases, repair of a missing release after a manual or partial publish, and self-healing
-reconciliation of incomplete archive/checksum pairs —
+Merging reviewed version increments to main publishes their packages to crates.io and
+reconciles GitHub tags, binary releases and cargo-binstall archives. The operational flow
 lives in [`docs/release-automation.md`](../../docs/release-automation.md).
+
+### Release-equivalent snapshots
+
+A package's version anchor identifies the main commit that introduced its version. It
+remains the comparison baseline for version validation, not a mandatory release-tag target.
+A release tag identifies an immutable main snapshot containing the package's released
+content at that version. A later main commit is equally valid when the package version
+and its release-relevant content remain unchanged.
+
+This follows from the merge gate: released-content changes require a version increment.
+Equivalence uses the same package-content model as that gate, including inherited manifest
+values and an installable binary's locked dependency closure. It does not require identical
+unrelated workspace files, workflow files or build environments, and does not promise
+byte-identical rebuilt binaries. A crate already on crates.io is never republished;
+its recorded source commit can differ from the equivalent snapshot chosen for its
+GitHub release and prebuilt binaries.
+
+GitHub can require workflow-write authority when creating a tag at a historical commit
+whose workflow files differ from main. Actions' ambient token cannot receive that
+permission. Requiring every tag to point at its version anchor would therefore make
+unattended recovery depend on a permission the workflow does not possess. Selecting a
+verified current-main snapshot preserves package identity without adding credentials or
+blocking unrelated merges.
+
+### Publication and recovery
+
+Registry publication and GitHub publication have separate owners. Release-plz publishes
+crates through Trusted Publishing but creates neither tags nor GitHub releases. A shared
+reconciler handles both ordinary GitHub publication and recovery after a partial or manual
+registry publish. Libraries receive tags; publishable binary packages also receive GitHub
+releases and prebuilt assets. Discovery remains package-driven rather than a hardcoded list.
+
+The reconciler freezes the package/version requests from the successful registry
+publication's source snapshot. Before creating missing tags, it fetches main, pins its
+commit, and verifies a clean disposable checkout with the release validator. Every requested
+package must still be publishable at exactly the requested version. A version string alone
+does not authorize content that fails the release invariant.
+
+Writes use the verified commit ID, never an unchecked moving `main` reference. If tag
+creation fails and main has advanced, a bounded retry selects and verifies a fresh snapshot.
+An unchanged main, failed verification or exhausted retry budget surfaces an error.
+Advancement to a different package version is not permission to relabel that version:
+automatic recovery of a superseded version is not guaranteed.
+
+Existing tags are authoritative and are never moved or overwritten. A missing binary release
+is attached to its existing tag, without asking GitHub to choose another target.
+Binary build jobs receive the tag's resolved commit ID separately from the release name,
+so source checkout remains pinned while assets are uploaded to the correct versioned release.
+Partial successes survive a retry; reconciliation creates only what remains missing.
 
 ## Cache warmup
 

@@ -5,10 +5,11 @@ allow_dirty = true
 # Changelogs do not offer much value, not worth the effort.
 changelog_update = false
 
-# Git releases are off by default because most crates are libraries that only publish to
-# crates.io. The binary crates are the exception: release.yml injects git_release_enable = true
-# for them at CI time so their prebuilt-binary uploads have a GitHub release to attach to. The
-# committed config stays free of per-binary release flags.
+# Registry publication must not create tags at its potentially historical checkout. The
+# GitHub reconciler selects verified, release-equivalent main snapshots for every new tag
+# and creates releases only for binary packages.
+# Ref: .github/workflows/design.md, "Release-equivalent snapshots".
+git_tag_enable = false
 git_release_enable = false
 
 # Pin the tag format explicitly (this is already the multi-package-workspace default).
