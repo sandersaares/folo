@@ -60,10 +60,13 @@ function Get-ScheduledTriageControllerDigest {
     param()
     $root = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\..')).Path
     $files = @(
-        Get-ChildItem -LiteralPath $PSScriptRoot -File |
-            Where-Object { $_.Name -like 'LocalTriage*.psm1' -or $_.Name -cin @(
-                    'LocalState.psm1', 'LocalGitHub.psm1', 'ScheduledContracts.psm1',
-                    'ScheduledRecordTool.psm1', 'ScheduledTransport.psm1') }
+        # Scheduled modules share the GitHub write and local-state boundaries. Include that
+        # complete module family and the imported build helpers rather than omitting a
+        # transitive writer when a facade changes its imports.
+        Get-ChildItem -LiteralPath $PSScriptRoot -File -Filter '*.psm1'
+        foreach ($name in @('CargoExecutable.psm1', 'Miri.psm1', 'Mutants.psm1', 'Sharding.psm1')) {
+            Get-Item -LiteralPath (Join-Path $root "scripts\build\$name")
+        }
         foreach ($package in @('scheduled-run-record', 'scheduled-triage-record')) {
             Get-ChildItem -LiteralPath (Join-Path $root "packages\$package\src") -Recurse -File
             Get-Item -LiteralPath (Join-Path $root "packages\$package\Cargo.toml")

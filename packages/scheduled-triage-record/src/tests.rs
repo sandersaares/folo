@@ -426,6 +426,29 @@ fn problem_update() -> Value {
     })
 }
 
+#[test]
+#[cfg_attr(
+    miri,
+    ignore = "full producer snapshots and repeated canonical hashing exceed the interpreter budget; typed scope comparison retains Miri coverage"
+)]
+fn operation_only_actionable_scope_changes_advance_required_scope() {
+    let mut input = problem_update();
+    input["incoming"]["diagnosis"]["category"] = json!("code");
+    input["incoming"]["diagnosis"]["repair_disposition"] = json!("actionable");
+    input["incoming"]["diagnosis"]["scope"][0]["platform"] = Value::Null;
+    input["incoming"]["diagnosis"]["scope"][0]["operation"] =
+        json!("Run the failing target with its original execution qualifier");
+    let original: Value = serde_json::from_str(&execute(&input.to_string()).unwrap()).unwrap();
+    input["existing"] = original.clone();
+    input["incoming"]["operation_id"] = json!("expanded-operation");
+    input["incoming"]["diagnosis"]["scope"][0]["operation"] =
+        json!("Run the failing target with an additional execution qualifier");
+    let expanded: Value = serde_json::from_str(&execute(&input.to_string()).unwrap()).unwrap();
+    assert_eq!(expanded["scope_revision"], 2);
+    assert_eq!(expanded["generation"], original["generation"]);
+    assert_eq!(expanded["evidence"][0], original["evidence"][0]);
+}
+
 fn advance_update(input: &mut Value, run_id: u64, attempt: u64, stamp: &str) {
     let mut evidence = input["incoming"]["primary_evidence"].clone();
     evidence["run_id"] = json!(run_id);

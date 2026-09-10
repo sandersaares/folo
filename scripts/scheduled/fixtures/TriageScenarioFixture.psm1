@@ -75,9 +75,9 @@ function Invoke-TriageFixtureNextAnalysis {
     param($Fixture, [long] $RunId, [int] $Attempt = 1)
     $context = $Fixture.context
     $null = Invoke-TriageTransaction $context triage-complete-dispatch @{ reason = 'Publication is complete' }
-    $null = Invoke-TriageTransaction $context triage-retire @{
+    $null = Complete-ScheduledTriageRetirement $context @{
         scan_token = $context.scan_token; native_idle_verified = $true
-    }
+    } $Fixture.api
     $null = Invoke-TriageTransaction $context triage-release-scan @{ scan_token = $context.scan_token }
     $context.session_id = 'next-session'
     $state = Invoke-TriageTransaction $context triage-acquire-scan @{ session_id = $context.session_id }

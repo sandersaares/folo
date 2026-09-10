@@ -481,6 +481,9 @@ accounting to the existing locked local envelope. Restoring an outbox validates
 each operation's kind, identity, stage, immutable specification digest and receipt
 before GitHub access. Creation targets acquired during publication do not alter
 the original intent; update targets remain digest-bound.
+Checkpoint, comparison and prepared-document digests protect the inputs from which
+operations are generated. Typed checkpoint validation/build work runs outside the
+state lock and is bound to an owner/digest recheck under that lock.
 `LocalTriagePublication.psm1`
 reconciles stable issue/comment operations; problem and completion adapters advance
 roots only after their detail and required issue changes are confirmed. The native
@@ -489,6 +492,17 @@ transactions. Partial publication is recoverable before a clean queue is availab
 `LocalSetupState.psm1` separately fences unknown native automation creation without
 creating executor enrollment. `LocalHealth.psm1` publishes separate role observations;
 `ScheduledRoleHealth.psm1` reads them without conflating successful scans.
+Health intent digests preserve original targets and body/record correspondence
+separately from observed comment IDs and completion receipts.
+
+`LocalTriageCache.psm1` prepares owner-tagged temporary payloads outside the state
+lock. Atomic installation, durable scan/working-view/checkpoint pins and cleanup
+share the state transaction, so interleaved polls cannot delete an accepted
+worker's uncheckpointed view. Only unowned payloads and temporary writes whose
+owner token no longer permits installation are collected. Quiescent retirement
+restores current committed proof before retaining a small revision/native/budget
+tombstone and remote completion reference instead of full local analysis detail.
+Durable identity/accounting history is not part of the evictable payload cache.
 
 The [Local triage guide](../../docs/scheduled-triage.md) owns configuration,
 helper interface, accounting defaults and the deferred native/model installation exercise.

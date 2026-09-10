@@ -178,7 +178,10 @@ Describe 'Independent Local health publication' {
             intent = @{ issue_number = 0; body = 'not-a-record'; comment_id = 1; record = @{ value = 1 } } }
         { Invoke-ScheduledHealthStateChange $state $fixture.context.policy health-prepare $data $fixture.context.now } |
             Should -Throw
-        $data.intent.issue_number = 10; $data.intent.body = '[Copilot speaking]'
+        $data.intent.issue_number = 10
+        $data.intent.record = Get-ScheduledRoleHealthRecord $state triage
+        $data.intent.body = "[Copilot speaking]`n$(Write-ScheduledRecord $data.intent.record health)"
+        $data.intent.preimage = $null
         Invoke-ScheduledHealthStateChange $state $fixture.context.policy health-prepare $data $fixture.context.now
         { Invoke-ScheduledHealthStateChange $state $fixture.context.policy health-prepare $data $fixture.context.now } |
             Should -Throw
@@ -248,11 +251,12 @@ Describe 'Independent Local health publication' {
                 body = "[Copilot speaking]`n$(Write-ScheduledRecord $record health)" }
         }
         { Sync-ScheduledRoleHealth $healthContext $fixture.api } | Should -Throw
+        $operationId = (Invoke-TriageTransaction $fixture.context read).health_publications.triage.id
         $null = Invoke-TriageTransaction $fixture.context health-begin @{
-            role = 'triage'; scan_token = $fixture.context.scan_token
+            role = 'triage'; scan_token = $fixture.context.scan_token; operation_id = $operationId
         }
         { Invoke-TriageTransaction $fixture.context health-begin @{
-            role = 'triage'; scan_token = $fixture.context.scan_token
+            role = 'triage'; scan_token = $fixture.context.scan_token; operation_id = $operationId
         } } | Should -Throw
         $fixture.store.writes.Count | Should -Be 0
     }

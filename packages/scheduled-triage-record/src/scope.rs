@@ -23,7 +23,9 @@ pub(crate) struct Scope {
 
 impl Scope {
     pub(crate) fn same_verification_scope(&self, other: &Self) -> bool {
-        self.package == other.package
+        // Operation text may carry execution qualifiers absent from optional attribution.
+        self.operation == other.operation
+            && self.package == other.package
             && self.check_id == other.check_id
             && self.platform == other.platform
             && self.replay == other.replay
@@ -66,6 +68,9 @@ mod tests {
         scope.validate(&evidence).unwrap();
         let original = scope.clone();
         assert!(scope.same_verification_scope(&original));
+        scope.operation = "another setup operation".to_owned();
+        assert!(!scope.same_verification_scope(&original));
+        scope.operation.clone_from(&original.operation);
         scope.package = Some("package".to_owned());
         assert!(!scope.same_verification_scope(&original));
         scope.citations = vec!["/missing".to_owned()];

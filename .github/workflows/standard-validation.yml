@@ -345,6 +345,16 @@ jobs:
       - uses: ./.github/actions/setup-environment
       - name: Validate scripts (PSScriptAnalyzer)
         run: just validate-scripts
+      - name: Retain script-analysis diagnostics
+        # Preserve native engine/inner exceptions and file/rule context without relaxing the gate.
+        # Setup failures may occur before the analyzer creates any diagnostic files.
+        # Ref: docs/build-and-tooling.md#powershell-linting.
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: script-analysis-${{ github.run_id }}-${{ github.run_attempt }}
+          path: target/script-analysis
+          if-no-files-found: ignore
 
   # Reuse the pinned standalone installers without restoring the Rust development environment.
   # Ref: .github/workflows/implementation.md#workflow-lint-environment.

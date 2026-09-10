@@ -196,6 +196,11 @@ Silence a genuine false positive with a justified
 `[Diagnostics.CodeAnalysis.SuppressMessageAttribute(...)]`, never by relaxing the gate; the tree
 is expected to be finding-free.
 
+The wrapper retains runtime/module metadata, full managed/inner exception diagnostics
+and the analyzer's file/rule trace under `target/script-analysis/`. Standard validation
+uploads those diagnostics even when the analyzer itself fails. Diagnostic collection
+does not retry, suppress rules or turn an engine failure into a successful result.
+
 PSScriptAnalyzer can only see `.ps1`/`.psm1` files, so **nontrivial** inline PowerShell
 is not linted where it sits. Keep justfile `[script]` blocks and workflow `pwsh`
 steps thin. Put automation logic in a nonpublished Rust utility when practical.

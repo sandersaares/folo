@@ -80,6 +80,20 @@ resumes that exact session after verifying native ownership and activity. Elapse
 age or idle status alone does not establish abandonment. Unknown native outcomes
 retain ownership and require reconciliation.
 
+Retained checkpoints, comparison baselines, publication plans and health intents
+carry integrity digests. Restoring state checks those digests before transport.
+Typed checkpoint validation and tool preparation run outside the short lock; the
+validated owner and checkpoint digest are rechecked under the lock before use.
+Observed creation IDs do not rewrite immutable intents.
+
+Cached snapshots are payloads owned by a scan, an accepted analysis's working view,
+or its checkpoint. The helper establishes durable pins before returning a usable
+snapshot. Replacing a working view does not release its checkpoint, and a poll
+cannot release another session's uncheckpointed working view. Atomic installation,
+pin handoff and cleanup are serialized with state changes. Cleanup removes only
+provably unowned payloads and abandoned temporary writes, never active analysis
+data merely because time passed.
+
 Persist publication intent before external writes. Stable operation identities,
 known GitHub IDs and complete paginated lookup recover uncertain outcomes.
 Append-only detail pages precede their bounded root/index checkpoint. A single
@@ -91,6 +105,14 @@ An analysis completes only after all required problem updates are confirmed.
 Partial publication, stale source/index, changed generation or ambiguous ownership
 keeps it pending or blocked. A new attempt arriving during analysis is a new input,
 not covered by completion of the claimed revision.
+
+Retirement requires reconciled publication, fresh restoration of its committed
+remote proof and verified native quiescence. It removes the large local analysis
+payloads while retaining exact revision/native identities, start/continuation
+accounting and completion references. This small identity/accounting history is
+durable rather than an evictable cache. The full completed analysis remains in its
+committed GitHub documents. Missing remote proof is an explicit recovery problem,
+not permission to recreate the analysis or reset its budgets.
 
 Repeated active problems receive evidence in place. Recurrence requires causal
 agreement, prior applicable resolution, attempt ordering and source applicability.
@@ -125,7 +147,7 @@ No request initializes enrollment or permits a repair action.
 
 | Action | Data and result |
 |---|---|
-| `scan` | Empty data. Returns complete-read status, pending revision descriptors, backlog/oldest evidence and a content-addressed snapshot ID when the role is registered. No source is inspected and no analysis start is charged. |
+| `scan` | Empty data observes without caching. A current poll supplies `scan_token` and its native `session_id`; an accepted analysis supplies worker identity instead, without taking the sender's scan. An owned read returns a durably pinned content-addressed `snapshot_id` along with complete-read status, pending revisions and backlog/oldest evidence. No source is inspected and no analysis start is charged. |
 | `state` | `action` naming a `triage-*` transition and `fields` containing its arguments. Returns the persisted state. |
 | `recovery` | Empty data. Reads retained analysis and pending operation visibility even when partial publication prevents a clean inbox. Returns native ownership and a stable continuation evidence key; performs no writes. |
 | `evidence` | Worker identity, `snapshot_id`, optional zero-based text `offset`. Streams JSON containing the exact primary evidence and its completion `basis`; continue until `next_offset` is null. |
@@ -171,7 +193,9 @@ scope array. Categories are `code`, `infrastructure`, `operator`, `nondeterminis
 and `unknown`; repair dispositions are `actionable`, `needs-human`,
 `operator-recovery` and `unresolved`. A scope identifies its operation, optional
 package/check/platform/replay and citations. Absence is explicit for failures that
-precede package/check/source selection.
+precede package/check/source selection. Preserve execution qualifiers in the scope;
+operation changes participate in required-scope revision even when the optional
+attribution fields are unchanged. Citation-only changes do not change required scope.
 
 Matching is `new` with separation reasoning and closest full-read candidates,
 `existing` with canonical issue number, expected generation/scope revision, target
@@ -186,6 +210,9 @@ Resume uses `triage-reconcile-dispatch` when accepted work is proven quiescent,
 then `triage-reserve-continuation`, `triage-begin-dispatch` and
 `triage-accept-dispatch`. `triage-complete-dispatch` records turn completion;
 `triage-retire` separately requires complete publication and verified native
-quiescence. Publication helpers own their operation/document transitions.
+quiescence; the request entry point verifies current committed proof before
+compacting the retired record. Claims inherit their scan's snapshot pin. Accepted
+worker scans update only that worker's working-view pin; checkpoints retain their
+own pin. Publication and cache helpers own their operation/document/pin transitions.
 `triage-register-profile`, `triage-set-mode` and release of repair-scope holds
 require explicit operator approval.

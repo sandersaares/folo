@@ -110,7 +110,7 @@ function Sync-ScheduledRoleHealth {
     $operation = if ($state.ContainsKey('health_publications') -and $state.health_publications.ContainsKey($Context.role)) {
         $state.health_publications[$Context.role]
     } else { $null }
-    $knownId = if ($null -ne $operation) { $operation.intent.comment_id } else { $null }
+    $knownId = if ($null -ne $operation) { $operation.comment_id } else { $null }
     $comment = Find-RoleHealthComment $Context $issues[0].number $Api $knownId
     $desired = Get-ScheduledRoleHealthRecord -State $state -Role $Context.role
     if ($null -eq $operation -or $operation.stage -ceq 'complete') {
@@ -136,6 +136,14 @@ function Sync-ScheduledRoleHealth {
     if ($null -ne $comment) {
         $current = Read-ScheduledRecord $comment.body health
         if ((Get-ScheduledDigest $current) -ceq (Get-ScheduledDigest $operation.intent.record)) {
+            if ($operation.stage -ceq 'prepared') {
+                $null = Invoke-RoleHealthTransaction $Context health-begin @{ operation_id = $operation.id }
+            }
+            if ($operation.stage -cne 'complete') {
+                $null = Invoke-RoleHealthTransaction $Context health-observe @{
+                    operation_id = $operation.id; comment_id = $comment.id
+                }
+            }
             $null = Invoke-RoleHealthTransaction $Context health-confirm @{
                 operation_id = $operation.id; comment_id = $comment.id
                 record_digest = Get-ScheduledDigest $current
@@ -148,7 +156,9 @@ function Sync-ScheduledRoleHealth {
     } elseif ($operation.stage -ceq 'sending') {
         throw [IO.IOException]::new('Health comment creation is unresolved; no duplicate POST is authorized.')
     }
-    if ($operation.stage -ceq 'prepared') { $null = Invoke-RoleHealthTransaction $Context health-begin }
+    if ($operation.stage -ceq 'prepared') {
+        $null = Invoke-RoleHealthTransaction $Context health-begin @{ operation_id = $operation.id }
+    }
     $endpoint = if ($null -eq $comment) {
         "repos/$($Context.policy.repository)/issues/$($operation.intent.issue_number)/comments"
     } else { "repos/$($Context.policy.repository)/issues/comments/$($comment.id)" }
@@ -166,7 +176,9 @@ function Sync-ScheduledRoleHealth {
         throw 'Health publication exceeds the body budget; human discussion was not truncated.'
     }
     $response = & $Api -Endpoint $endpoint -Method $method -Body @{ body = $body }
-    $null = Invoke-RoleHealthTransaction $Context health-observe @{ comment_id = $response.id }
+    $null = Invoke-RoleHealthTransaction $Context health-observe @{
+        operation_id = $operation.id; comment_id = $response.id
+    }
     $confirmed = Find-RoleHealthComment $Context $issues[0].number $Api $response.id
     $record = Read-ScheduledRecord $confirmed.body health
     $null = Invoke-RoleHealthTransaction $Context health-confirm @{

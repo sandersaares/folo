@@ -6,6 +6,9 @@ Import-Module (Join-Path $PSScriptRoot 'ScheduledContracts.psm1')
 Import-Module (Join-Path $PSScriptRoot 'LocalTriageState.psm1')
 Import-Module (Join-Path $PSScriptRoot 'LocalTriagePolicy.psm1')
 Import-Module (Join-Path $PSScriptRoot 'LocalHealthState.psm1')
+Import-Module (Join-Path $PSScriptRoot 'LocalHealthIntegrity.psm1')
+Import-Module (Join-Path $PSScriptRoot 'LocalTriageCheckpoint.psm1')
+Import-Module (Join-Path $PSScriptRoot 'LocalTriageCache.psm1')
 
 # The single mutation point for the executor's durable state (state.json under
 # %LOCALAPPDATA%\Folo\ScheduledRemediation\<repository_id>): every skill and entrypoint that reads
@@ -44,6 +47,7 @@ function Assert-ScheduledLocalState {
         throw 'Unsupported or corrupt executor state; recover without resetting admission history.'
     }
     if ($State.Contains('triage')) { Assert-ScheduledTriageState $State.triage }
+    Assert-ScheduledHealthJournal $State
     foreach ($entry in $State.attempts.GetEnumerator()) {
         $attempt = $entry.Value
         Assert-LocalField $attempt @('attempt_id', 'issue_number', 'finding_id', 'generation',
@@ -111,13 +115,13 @@ function Assert-LocalAdmission {
 }
 
 function Invoke-LocalStateChange {
-    param($State, $Policy, [string] $Action, $Data, [DateTimeOffset] $Now, $TriagePolicy)
+    param($State, $Policy, [string] $Action, $Data, [DateTimeOffset] $Now, $TriagePolicy, $CheckpointValidation)
     if ($Action.StartsWith('health-', [StringComparison]::Ordinal)) {
         Invoke-ScheduledHealthStateChange $State $Policy $Action $Data $Now
         return
     }
     if ($Action.StartsWith('triage-', [StringComparison]::Ordinal)) {
-        Invoke-ScheduledTriageStateChange $State $Policy $TriagePolicy $Action $Data $Now
+        Invoke-ScheduledTriageStateChange $State $Policy $TriagePolicy $Action $Data $Now $CheckpointValidation
         return
     }
     $stamp = $Now.ToUniversalTime().ToString('o')
@@ -407,6 +411,11 @@ function Invoke-ScheduledLocalAction {
     }
     $path = Join-Path $StateRoot 'state.json'
     $temporary = Join-Path $StateRoot ("state.$([guid]::NewGuid()).tmp")
+    $checkpointValidation = $null
+    if ($Action -ceq 'triage-checkpoint') {
+        Assert-LocalField $Data @('checkpoint')
+        $checkpointValidation = Get-ScheduledTriageCheckpointValidation $Data.checkpoint
+    }
     # No retry loop: contention is visible, and a future repository poll can retry the scan.
     $lock = [IO.File]::Open((Join-Path $StateRoot 'transaction.lock'),
         [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
@@ -443,8 +452,16 @@ function Invoke-ScheduledLocalAction {
             $TriagePolicy = Get-ScheduledTriagePolicy
         }
         $before = Get-ScheduledDigest $state
-        if ($Action -cne 'initialize') { Invoke-LocalStateChange $state $Policy $Action $Data $Now $TriagePolicy }
-        if ($Action -cin @('read', 'triage-read', 'triage-authorize-publication', 'health-authorize') -or
+        if ($Action -cne 'initialize') {
+            Invoke-LocalStateChange $state $Policy $Action $Data $Now $TriagePolicy $checkpointValidation
+        }
+        if ($Action -ceq 'triage-pin-snapshot') {
+            # Payload bytes were prepared before locking. Installation and the durable pin
+            # commit are serialized with cleanup so another poll cannot delete a new view.
+            Complete-ScheduledTriageSnapshotFile $StateRoot $Data.snapshot_id $Data.temporary_path $Data.owner_kind $Data.owner_token
+        }
+        if ($Action -cin @('read', 'triage-read', 'triage-authorize-publication', 'triage-verify-checkpoint',
+                'triage-authorize-snapshot', 'triage-authorize-retirement', 'health-authorize') -or
             ($Action -ceq 'triage-register-profile' -and (Get-ScheduledDigest $state) -ceq $before)) {
             return $state
         }
@@ -458,6 +475,9 @@ function Invoke-ScheduledLocalAction {
             $writer.Flush($true)
         } finally { $writer.Dispose() }
         [IO.File]::Move($temporary, $path, $true)
+        if ($Action -cin @('triage-pin-snapshot', 'triage-clean-cache', 'triage-release-scan', 'triage-retire')) {
+            Invoke-ScheduledTriageCacheCleanup $StateRoot $state.triage
+        }
         return $state
     } finally {
         $lock.Dispose()

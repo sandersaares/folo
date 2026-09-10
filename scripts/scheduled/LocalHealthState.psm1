@@ -8,6 +8,7 @@ $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
 Import-Module (Join-Path $PSScriptRoot 'ScheduledContracts.psm1')
 Import-Module (Join-Path $PSScriptRoot 'LocalTriagePolicy.psm1')
+Import-Module (Join-Path $PSScriptRoot 'LocalHealthIntegrity.psm1')
 
 function Invoke-ScheduledHealthStateChange {
     param($State, $Policy, [string] $Action, $Data, [DateTimeOffset] $Now)
@@ -43,32 +44,43 @@ function Invoke-ScheduledHealthStateChange {
             }
             $State.health_publications[$role] = @{
                 id = [guid]::NewGuid().ToString(); stage = 'prepared'; intent = $Data.intent
+                intent_digest = Get-ScheduledDigest $Data.intent
+                kind = if ($null -eq $Data.intent.comment_id) { 'create-comment' } else { 'update-comment' }
+                comment_id = $Data.intent.comment_id; receipt = $null
             }
         }
         'health-begin' {
             $operation = $State.health_publications[$role]
-            if ($operation.stage -cne 'prepared') { throw 'Health write outcome must be reconciled.' }
+            if ($operation.stage -cne 'prepared' -or $operation.id -cne $Data['operation_id']) {
+                throw 'Health write outcome must be reconciled.'
+            }
             $operation.stage = 'sending'
         }
         'health-observe' {
             $operation = $State.health_publications[$role]
-            if ($operation.stage -cne 'sending' -or $Data['comment_id'] -le 0 -or
-                ($null -ne $operation.intent.comment_id -and $operation.intent.comment_id -ne $Data.comment_id)) {
+            if ($operation.stage -cne 'sending' -or $operation.id -cne $Data['operation_id'] -or $Data['comment_id'] -le 0 -or
+                ($null -ne $operation.comment_id -and $operation.comment_id -ne $Data.comment_id)) {
                 throw 'Observed health comment differs from the retained intent.'
             }
-            $operation.intent.comment_id = $Data.comment_id
+            $operation.comment_id = $Data.comment_id
         }
         'health-confirm' {
             $operation = $State.health_publications[$role]
-            if ($operation.id -cne $Data['operation_id'] -or $Data['comment_id'] -le 0 -or
+            if ($operation.stage -cnotin @('sending', 'complete') -or $operation.id -cne $Data['operation_id'] -or
+                $null -eq $operation.comment_id -or $Data['comment_id'] -le 0 -or
+                $operation.comment_id -ne $Data.comment_id -or
                 $Data['record_digest'] -cne (Get-ScheduledDigest $operation.intent.record)) {
                 throw 'Health readback does not match its durable intent.'
             }
-            $operation.intent.comment_id = $Data.comment_id
+            $operation.comment_id = $Data.comment_id
+            $operation.receipt = @{
+                operation_id = $Data.operation_id; comment_id = $Data.comment_id; record_digest = $Data.record_digest
+            }
             $operation.stage = 'complete'
         }
         default { throw 'Unsupported health transition.' }
     }
+    Assert-ScheduledHealthJournal $State
 }
 
 Export-ModuleMember -Function Invoke-ScheduledHealthStateChange

@@ -14,21 +14,19 @@ Import-Module (Join-Path $PSScriptRoot 'LocalTriageProblem.psm1')
 Import-Module (Join-Path $PSScriptRoot 'LocalTriageCompletion.psm1')
 Import-Module (Join-Path $PSScriptRoot 'ScheduledGitHub.psm1')
 Import-Module (Join-Path $PSScriptRoot 'LocalState.psm1')
-Import-Module (Join-Path $PSScriptRoot 'ScheduledRunGitHub.psm1')
-Import-Module (Join-Path $PSScriptRoot 'ScheduledRecordTool.psm1')
 Import-Module (Join-Path $PSScriptRoot 'LocalHealth.psm1')
 Import-Module (Join-Path $PSScriptRoot 'LocalTriageView.psm1')
-
-function Get-TriageSnapshotPath {
-    param([string] $StateRoot, [ValidatePattern('^[0-9a-f]{64}$')][string] $Id)
-    return Join-Path $StateRoot "triage-cache\$Id.json"
-}
+Import-Module (Join-Path $PSScriptRoot 'LocalTriageCache.psm1')
 
 function Read-TriageSnapshot {
-    param([string] $StateRoot, [string] $Id)
-    $snapshot = Get-Content -LiteralPath (Get-TriageSnapshotPath $StateRoot $Id) -Raw | ConvertFrom-Json -AsHashtable
-    if ((Get-ScheduledDigest $snapshot) -cne $Id) { throw 'Cached triage observation changed; repeat the complete scan.' }
-    return $snapshot
+    param([string] $StateRoot, [string] $Id, $Analysis)
+    $checkpointId = if ($null -ne $Analysis.checkpoint -and $Analysis.checkpoint.ContainsKey('snapshot_id')) {
+        $Analysis.checkpoint.snapshot_id
+    } else { $null }
+    if ($Id -cne $Analysis.working_snapshot_id -and $Id -cne $checkpointId) {
+        throw 'Snapshot is not pinned by the accepted analysis.'
+    }
+    return Read-ScheduledTriageSnapshot $StateRoot $Id
 }
 
 function Get-TriageSummary {
@@ -62,22 +60,28 @@ function Invoke-ScheduledTriageRequest {
     $root = Get-ScheduledStateRoot -RepositoryId $policy.repository_id
     # Reject corrupt retained authority before even an identity lookup. This local read
     # uses reviewed identity; the subsequent API lookup still verifies the selected account.
+    $readContext = @{
+        state_root = $root; policy = $policy; triage_policy = $triagePolicy
+        executor_id = $request.executor_id; login = $policy.worker_login; now = $Now
+        analysis_id = $null; session_id = $null; claim_token = $null; dispatch_token = $null
+    }
     $state = if (Test-Path -LiteralPath $root) {
-        Invoke-ScheduledLocalAction -StateRoot $root -Policy $policy -TriagePolicy $triagePolicy `
-            -ExecutorId $request.executor_id -Login $policy.worker_login -Now $Now -Action read
+        Get-ScheduledTriageValidatedState $readContext
     } else { $null }
     $user = Invoke-ScheduledTriageRead -Endpoint user
     if ($user.login -cne $policy.worker_login) { throw 'Selected account does not match reviewed triage identity.' }
     if ($request.action -ceq 'scan') {
+        $hasOwner = $request.data.ContainsKey('scan_token') -or
+            ($request.data.ContainsKey('analysis_id') -and $null -ne $request.data.analysis_id)
+        if ($hasOwner) {
+            if ($null -eq $state -or -not $state.ContainsKey('triage')) { throw 'A cached scan requires registered ownership.' }
+            $null = Invoke-TriageTransaction $readContext triage-authorize-snapshot $request.data
+        }
         $snapshot = Get-ScheduledTriageInbox -Policy $policy -State $state
         $summary = Get-TriageSummary $snapshot
         $summary.snapshot_id = $null
-        if ($null -ne $state -and $state.ContainsKey('triage')) {
-            $id = Get-ScheduledDigest $snapshot
-            $path = Get-TriageSnapshotPath $root $id
-            $null = New-Item -ItemType Directory -Path (Split-Path -Parent $path) -Force
-            Write-ScheduledRunJournal -Path $path -Record $snapshot
-            $summary.snapshot_id = $id
+        if ($hasOwner) {
+            $summary.snapshot_id = Save-ScheduledTriageSnapshot $readContext $snapshot $request.data
         }
         $summary.mode = $triagePolicy.mode
         $summary.registered = $null -ne $state -and $state.ContainsKey('triage')
@@ -87,6 +91,15 @@ function Invoke-ScheduledTriageRequest {
     if ($request.action -ceq 'state') {
         if (-not ([string]$request.data.action).StartsWith('triage-', [StringComparison]::Ordinal)) {
             throw 'The triage entry point cannot perform repair actions.'
+        }
+        if ($request.data.action -ceq 'triage-retire') {
+            $retirementContext = $readContext.Clone()
+            $retirementContext.analysis_id = $request.data.fields.analysis_id
+            $retirementContext.session_id = $request.data.fields.session_id
+            return (Complete-ScheduledTriageRetirement $retirementContext $request.data.fields {
+                param($Endpoint, $Method = 'GET', $Body, [switch] $Paginate)
+                Invoke-ScheduledGitHubApi -Endpoint $Endpoint -Method $Method -Body $Body -Paginate:$Paginate
+            }) | ConvertTo-Json -Depth 100
         }
         $result = Invoke-ScheduledLocalAction -StateRoot $root -Policy $policy -TriagePolicy $triagePolicy `
             -ExecutorId $request.executor_id -Login $user.login -Now $Now `
@@ -121,8 +134,8 @@ function Invoke-ScheduledTriageRequest {
     }
     switch -CaseSensitive ($request.action) {
         'evidence' {
-            $snapshot = Read-TriageSnapshot $root $request.data.snapshot_id
             $analysis = $state.triage.analyses[$context.analysis_id]
+            $snapshot = Read-TriageSnapshot $root $request.data.snapshot_id $analysis
             $revisions = @($snapshot.pending | Where-Object {
                 $_.digest -ceq $analysis.revision.digest -and $_.run_id -eq $analysis.revision.run_id -and
                 $_.run_attempt -eq $analysis.revision.run_attempt
@@ -134,7 +147,7 @@ function Invoke-ScheduledTriageRequest {
             } -Offset $offset) | ConvertTo-Json -Depth 100
         }
         'index' {
-            $snapshot = Read-TriageSnapshot $root $request.data.snapshot_id
+            $snapshot = Read-TriageSnapshot $root $request.data.snapshot_id $state.triage.analyses[$context.analysis_id]
             $page = Get-ScheduledTriageIndexPage $snapshot ([int]$request.data.offset)
             $null = Invoke-TriageTransaction $context triage-record-index-read @{
                 index_digest = $snapshot.index.digest
@@ -143,7 +156,7 @@ function Invoke-ScheduledTriageRequest {
             return $page | ConvertTo-Json -Depth 100
         }
         'problem' {
-            $snapshot = Read-TriageSnapshot $root $request.data.snapshot_id
+            $snapshot = Read-TriageSnapshot $root $request.data.snapshot_id $state.triage.analyses[$context.analysis_id]
             $problem = Get-ScheduledTriageProblem -Snapshot $snapshot -IssueNumber $request.data.issue_number
             $offset = if ($request.data.ContainsKey('offset')) { [int]$request.data.offset } else { 0 }
             $page = Get-ScheduledTriageProblemPage $problem $offset
@@ -154,8 +167,8 @@ function Invoke-ScheduledTriageRequest {
             return $page | ConvertTo-Json -Depth 100
         }
         'checkpoint' {
-            $snapshot = Read-TriageSnapshot $root $request.data.snapshot_id
             $current = $state.triage.analyses[$context.analysis_id]
+            $snapshot = Read-TriageSnapshot $root $request.data.snapshot_id $current
             $revisions = @($snapshot.pending | Where-Object {
                 $_.digest -ceq $current.revision.digest -and $_.run_id -eq $current.revision.run_id -and
                 $_.run_attempt -eq $current.revision.run_attempt
@@ -166,12 +179,6 @@ function Invoke-ScheduledTriageRequest {
                     $current.reads[[string]$entry.issue_number] -ceq $entry.record_digest) {
                     $entry.full_read_digest = $entry.record_digest
                 }
-            }
-            # Prepare the utility before entering the short transaction; the transaction validates
-            # the same input again against its current ownership and checkpoint.
-            $null = Invoke-ScheduledRecordTool -Package scheduled-triage-record -Request @{
-                op = 'validate_analysis'; analysis = $request.data.analysis
-                index = $snapshot.index; evidence = $revisions[0].evidence; basis = $revisions[0].basis
             }
             $result = Invoke-TriageTransaction $context triage-checkpoint @{
                 checkpoint = @{
@@ -190,7 +197,7 @@ function Invoke-ScheduledTriageRequest {
         }
         'prepare-problem' {
             $current = $state.triage.analyses[$context.analysis_id]
-            $snapshot = Read-TriageSnapshot $root $current.checkpoint.snapshot_id
+            $snapshot = Read-TriageSnapshot $root $current.checkpoint.snapshot_id $current
             return (Invoke-ScheduledTriageProblemPreparation $context $snapshot $request.data.problem_key $api) |
                 ConvertTo-Json -Depth 100
         }

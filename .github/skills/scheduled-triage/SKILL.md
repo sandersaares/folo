@@ -76,8 +76,10 @@ proof, not a GitHub login match or a successful mock.
 analysis/session/claim and new dispatch token, first verify this is that exact
 native owner, then call `triage-accept-dispatch`. Do not acquire a fresh scan:
 the sender still owns the short polling scan while it delivers this message.
-After acceptance, call the read-only `scan` action to obtain a usable fresh
-`snapshot_id`, without acquiring a scan token or claiming another revision. Then
+After acceptance, call the read-only `scan` action with the accepted
+analysis/session/claim/dispatch identity in `data` to obtain a usable fresh
+`snapshot_id`, without acquiring a scan token or claiming another revision. The
+helper pins this working view independently of the sender's scan. Then
 continue at Stage 4 with that snapshot and the retained primary revision. Recovery
 returns an eligibility fingerprint, not an evidence snapshot.
 
@@ -133,11 +135,18 @@ decision can supply new input; do not invent such a decision or reset budgets.
 
 If analysis is complete, retire it only after its dispatch is completed and the
 same native session is proven quiescent. A completed run or issue is not proof
-that a native session stopped.
+that a native session stopped. The request helper restores current committed
+publication proof before compaction; missing proof blocks retirement. Retired
+records preserve revision/native identities, budgets and remote completion
+references, not their large local analysis payloads. Do not recreate work whose
+retained identity points to missing remote evidence.
 
 # Stage 3: Read the complete backlog and claim one exact revision
 
-Call `scan`. The helper reads all open and closed run issues, retained IDs, complete
+Call `scan` with the current poll's `scan_token` and actual native `session_id`.
+An accepted retained analysis uses its worker identity instead. Empty `data` is
+observation-only and does not return a usable cached snapshot.
+The helper reads all open and closed run issues, retained IDs, complete
 comments, committed evidence pages and the complete problem index. It verifies the
 exact attempt's paginated jobs API, not the run's latest attempt.
 
@@ -151,9 +160,12 @@ When there is no retained analysis, claim at most one pending revision using
 `run_attempt`, `digest` and run `issue_number` into `revision`. Supply the current
 scan token and actual native session, with ownership verified from Stage 1.
 The transaction enforces independent capacity and budgets.
+It transfers the scan's pin to the accepted analysis before that scan is released.
 
 For an accepted retained analysis in this session, keep its primary revision and
 claim. A fresh snapshot may supply additional evidence, not a different claim.
+Use only this analysis's working or checkpoint snapshot. The helper removes
+unowned cache payloads; do not manage cache files or infer abandonment from age.
 
 # Stage 4: Diagnose all failures and compare existing problems
 

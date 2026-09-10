@@ -8,7 +8,8 @@ BeforeAll {
     Import-Module (Join-Path $PSScriptRoot 'LocalTriageInbox.psm1')
     Import-Module (Join-Path $PSScriptRoot 'LocalTriagePublication.psm1')
 
-    function Invoke-EntryFixtureRequest($Action, $Data) {
+    function Invoke-EntryFixtureRequest($Action, $Data, [switch] $ObserveOnly) {
+        if ($Action -ceq 'scan' -and $Data.Count -eq 0 -and -not $ObserveOnly) { $Data = $identity.Clone() }
         $path = Join-Path $TestDrive 'request.json'
         @{ action = $Action; executor_id = 'executor'; data = $Data } |
             ConvertTo-Json -Depth 100 | Set-Content -LiteralPath $path
@@ -91,7 +92,7 @@ Describe 'Local triage JSON entry point' {
 
     It 'does not initialize absent state or accept a changed account' {
         Mock Get-ScheduledStateRoot -ModuleName LocalTriage { Join-Path $TestDrive 'not-enrolled' }
-        $scan = Invoke-EntryFixtureRequest scan @{}
+        $scan = Invoke-EntryFixtureRequest scan @{} -ObserveOnly
         $scan.registered | Should -BeFalse
         $scan.snapshot_id | Should -BeNullOrEmpty
         Test-Path (Join-Path $TestDrive 'not-enrolled') | Should -BeFalse

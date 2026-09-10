@@ -44,6 +44,12 @@ Historical evidence attaches to its existing occurrence without reopening a newe
 one. Identical contributions are idempotent, including when the AI reconsiders a
 refreshed index after partial multi-problem publication.
 
+Required-scope identity includes the operation as well as package, check, platform
+and typed replay. Optional attribution does not guarantee that every execution
+qualifier has a dedicated field, so changing only operation text conservatively
+advances required scope. Citations remain evidence references rather than execution
+requirements.
+
 The shared [run-record library](../../scheduled-run-record/docs/implementation.md)
 owns canonical JSON, byte framing, lossless pagination and committed page indexes.
 Role-specific envelopes stay distinct, while serialization and recovery primitives

@@ -205,7 +205,9 @@ Describe 'Durable triage ownership and budgets' {
 
     It 'retains a specific blocker when a dispatch has not produced its first checkpoint' {
         $state = Invoke-TriageTransaction $fixture.context read
-        $analysis = $state.triage.analyses[$fixture.context.analysis_id]; $analysis.checkpoint = $null
+        $analysis = $state.triage.analyses[$fixture.context.analysis_id]
+        $analysis.checkpoint = $null; $analysis.checkpoint_digest = $null
+        $analysis.comparison = $null; $analysis.comparison_digest = $null
         $data = @{ analysis_id = $analysis.id; session_id = $analysis.session_id
             claim_token = $analysis.claim_token; dispatch_token = $analysis.dispatch.token; reason = '' }
         { Invoke-ScheduledTriageStateChange $state $fixture.context.policy $fixture.context.triage_policy `

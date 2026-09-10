@@ -10,19 +10,60 @@ Import-Module (Join-Path $PSScriptRoot 'ScheduledContracts.psm1')
 Import-Module (Join-Path $PSScriptRoot 'ScheduledRecordTool.psm1')
 Import-Module (Join-Path $PSScriptRoot 'LocalState.psm1')
 Import-Module (Join-Path $PSScriptRoot 'LocalTriageState.psm1')
+Import-Module (Join-Path $PSScriptRoot 'LocalTriageCheckpoint.psm1')
+Import-Module (Join-Path $PSScriptRoot 'LocalTriageCache.psm1')
 Import-Module (Join-Path $PSScriptRoot 'ScheduledGitHub.psm1')
 Import-Module (Join-Path $PSScriptRoot 'LocalTriageInbox.psm1')
 
 function Invoke-TriageTransaction {
     param($Context, [string] $Action, [hashtable] $Data = @{})
+    $validatedDigest = $null
+    if ($Action -ceq 'triage-authorize-publication') {
+        $state = Get-ScheduledTriageValidatedState $Context
+        if ($state.ContainsKey('triage') -and $null -ne $state.triage.active_analysis_id) {
+            $validatedDigest = $state.triage.analyses[$state.triage.active_analysis_id].checkpoint_digest
+        }
+    }
     $request = @{
         analysis_id = $Context.analysis_id; session_id = $Context.session_id
         claim_token = $Context.claim_token; dispatch_token = $Context.dispatch_token
     }
     foreach ($key in $Data.Keys) { $request[$key] = $Data[$key] }
+    if ($Action -ceq 'triage-authorize-publication') { $request.checkpoint_digest = $validatedDigest }
     return Invoke-ScheduledLocalAction -StateRoot $Context.state_root -Policy $Context.policy `
         -TriagePolicy $Context.triage_policy -ExecutorId $Context.executor_id -Login $Context.login `
         -Now $Context.now -Action $Action -Data $request
+}
+
+function Get-ScheduledTriageValidatedState {
+    param($Context)
+    $state = Invoke-TriageTransaction $Context read
+    if (-not $state.ContainsKey('triage') -or $null -eq $state.triage.active_analysis_id) { return $state }
+    $analysis = $state.triage.analyses[$state.triage.active_analysis_id]
+    if ($null -eq $analysis.checkpoint) { return $state }
+    Assert-ScheduledTriageCheckpointContent $analysis.checkpoint $analysis.checkpoint_digest
+    # The utility/build work is outside the lock; the subsequent short transaction rejects
+    # an owner/checkpoint change before this validated snapshot can authorize transport.
+    return Invoke-TriageTransaction $Context triage-verify-checkpoint @{
+        expected_analysis_id = $analysis.id; checkpoint_digest = $analysis.checkpoint_digest
+    }
+}
+
+function Save-ScheduledTriageSnapshot {
+    param($Context, [hashtable] $Snapshot, [hashtable] $Owner)
+    $null = Invoke-TriageTransaction $Context triage-authorize-snapshot $Owner
+    $kind = if ($Owner.ContainsKey('analysis_id') -and $null -ne $Owner.analysis_id) { 'analysis' } else { 'scan' }
+    $token = if ($kind -ceq 'analysis') { $Owner.dispatch_token } else { $Owner.scan_token }
+    $prepared = Write-ScheduledTriageSnapshotFile $Context.state_root $Snapshot $kind $token
+    try {
+        $data = $Owner.Clone()
+        $data.snapshot_id = $prepared.id; $data.temporary_path = $prepared.temporary_path
+        $data.owner_kind = $prepared.owner_kind; $data.owner_token = $prepared.owner_token
+        $null = Invoke-TriageTransaction $Context triage-pin-snapshot $data
+        return $prepared.id
+    } finally {
+        if (Test-Path -LiteralPath $prepared.temporary_path) { Remove-Item -LiteralPath $prepared.temporary_path }
+    }
 }
 
 function Get-TriageOwnedBlock {
@@ -279,6 +320,9 @@ function Get-ScheduledTriageRecovery {
         return @{ active = $null; evidence_key = $null; operations = @() }
     }
     $analysis = $State.triage.analyses[$State.triage.active_analysis_id]
+    if ($null -ne $analysis.checkpoint) {
+        Assert-ScheduledTriageCheckpointContent $analysis.checkpoint $analysis.checkpoint_digest
+    }
     $context = @{ policy = $Policy; login = $State.login }
     $observations = @(
         foreach ($operation in @($analysis.operations.Values | Sort-Object key)) {
@@ -325,6 +369,7 @@ function Get-ScheduledTriageRecovery {
     }
 }
 
-Export-ModuleMember -Function Invoke-TriageTransaction, Invoke-ScheduledTriageOperation,
+Export-ModuleMember -Function Invoke-TriageTransaction, Get-ScheduledTriageValidatedState, Save-ScheduledTriageSnapshot,
+Invoke-ScheduledTriageOperation,
 Publish-ScheduledTriageDocument, ConvertTo-TriageOwnedBlock, Get-TriageOwnedBlock,
 Get-ScheduledTriageRecovery

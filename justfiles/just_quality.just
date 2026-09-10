@@ -112,31 +112,9 @@ validate-scripts:
     $PSNativeCommandUseErrorActionPreference = $true
 
     $root = "{{justfile_directory()}}"
-    Import-Module PSScriptAnalyzer -RequiredVersion $env:PSSCRIPTANALYZER_VERSION -Force
-
-    $results = @(Invoke-ScriptAnalyzer `
-            -Path (Join-Path $root 'scripts') `
-            -Recurse `
-            -Settings (Join-Path $root 'PSScriptAnalyzerSettings.psd1') `
-            -CustomRulePath (Join-Path $root 'scripts/analyzer/FoloAnalyzerRules.psm1') `
-            -IncludeDefaultRules)
-
-    if ($results.Count -gt 0) {
-        foreach ($finding in $results) {
-            $scriptName = [string]$finding.ScriptName
-            if ($scriptName.StartsWith($root, [System.StringComparison]::OrdinalIgnoreCase)) {
-                $relative = $scriptName.Substring($root.Length).TrimStart('\', '/')
-            } else {
-                $relative = $scriptName
-            }
-            Write-Host ("{0}:{1} [{2}] {3}: {4}" -f $relative, $finding.Line, $finding.Severity, $finding.RuleName, $finding.Message)
-        }
-        $issueNoun = if ($results.Count -eq 1) { 'issue' } else { 'issues' }
-        $issuePronoun = if ($results.Count -eq 1) { 'it' } else { 'them' }
-        throw "PSScriptAnalyzer reported $($results.Count) $issueNoun. Fix $issuePronoun (or add a justified SuppressMessageAttribute) so the tree stays clean."
-    }
-
-    Write-Host "PSScriptAnalyzer: no issues in scripts/."
+    Import-Module (Join-Path $root 'scripts\build\ScriptAnalysis.psm1') -Force
+    Invoke-WorkspaceScriptAnalysis -RepositoryRoot $root -AnalyzerVersion $env:PSSCRIPTANALYZER_VERSION `
+        -DiagnosticsDirectory (Join-Path $root 'target\script-analysis')
 
 [group('quality')]
 hack:

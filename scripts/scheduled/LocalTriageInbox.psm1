@@ -300,6 +300,20 @@ function Get-ScheduledTriageInbox {
             }
         }
     }
+    if ($null -ne $State -and $State.ContainsKey('triage')) {
+        foreach ($analysis in @($State.triage.analyses.Values | Where-Object { $_.phase -cin @('complete', 'retired') })) {
+            $reference = $analysis.completion
+            $run = $runs[[string]$analysis.revision.issue_number]
+            $committed = @($run.details.revisions | Where-Object { $_.digest -ceq $reference.digest })
+            if ($run.triage_comment_id -ne $reference.comment_id -or $committed.Count -ne 1 -or
+                $committed[0].document.status -cne 'complete' -or
+                $committed[0].document.analysis.analysis_id -cne $analysis.id -or
+                $committed[0].document.analysis.checkpoint -ne $reference.checkpoint -or
+                (Get-ScheduledDigest $committed[0].document.analysis.revision) -cne (Get-ScheduledDigest $analysis.revision)) {
+                throw [FormatException]::new('Retained completed analysis has missing or changed committed publication proof.')
+            }
+        }
+    }
     $indexDigest = Get-ScheduledDigest $entries
     return @{
         schema_version = 1; repository = $Policy.repository; repository_id = $Policy.repository_id

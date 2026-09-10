@@ -9,6 +9,7 @@ $PSNativeCommandUseErrorActionPreference = $true
 Import-Module (Join-Path $PSScriptRoot 'ScheduledContracts.psm1')
 Import-Module (Join-Path $PSScriptRoot 'LocalTriagePolicy.psm1')
 Import-Module (Join-Path $PSScriptRoot 'ScheduledRecordTool.psm1')
+Import-Module (Join-Path $PSScriptRoot 'LocalTriageCache.psm1')
 
 function Assert-TriageField {
     param([System.Collections.IDictionary] $Value, [string[]] $Fields)
@@ -21,24 +22,51 @@ function Assert-TriageField {
 function Assert-ScheduledTriageState {
     param([System.Collections.IDictionary] $Triage)
     Assert-TriageField $Triage @('schema_version', 'mode', 'profile', 'scan', 'health',
-        'active_analysis_id', 'analyses', 'known_run_issues', 'known_problem_issues', 'health_publication', 'repair_holds')
+        'active_analysis_id', 'analyses', 'known_run_issues', 'known_problem_issues', 'health_publication', 'repair_holds', 'cache_digest')
     if ($Triage.schema_version -ne 1 -or $Triage.mode -cnotin @('observe', 'paused', 'triage') -or
         $Triage.analyses -isnot [System.Collections.IDictionary]) {
         throw 'Corrupt triage state; recover ownership and accounting instead of resetting.'
     }
     foreach ($entry in $Triage.analyses.GetEnumerator()) {
         $analysis = $entry.Value
-        Assert-TriageField $analysis @('id', 'revision', 'session_id', 'claim_token', 'started_at',
-            'phase', 'dispatch', 'continuations', 'checkpoint', 'comparison', 'operations', 'publication', 'reads', 'read_progress', 'index_reads', 'reason')
+        $identityFields = @('id', 'revision', 'session_id', 'claim_token', 'started_at',
+            'phase', 'dispatch', 'continuations', 'completion', 'completion_digest')
+        Assert-TriageField $analysis $identityFields
         if ($analysis.id -cne $entry.Key -or $analysis.phase -cnotin @(
-                'analyzing', 'publishing', 'blocked', 'complete', 'retired') -or
-            $analysis.operations -isnot [System.Collections.IDictionary]) {
+                'analyzing', 'publishing', 'blocked', 'complete', 'retired')) {
             throw 'Corrupt registered triage analysis.'
         }
         $null = [DateTimeOffset]$analysis.started_at
         foreach ($continuation in $analysis.continuations) {
             Assert-TriageField $continuation @('token', 'key', 'admitted_at')
             $null = [DateTimeOffset]$continuation.admitted_at
+        }
+        Assert-TriageCompletionReference $analysis
+        if ($analysis.phase -ceq 'retired') {
+            if (@($analysis.Keys | Where-Object { $_ -cnotin $identityFields }).Count -gt 0 -or
+                $analysis.dispatch.status -cne 'completed' -or $null -eq $analysis.completion) {
+                throw 'Retired analysis must retain only reconciled identity, accounting and completion references.'
+            }
+            continue
+        }
+        Assert-TriageField $analysis @('checkpoint', 'checkpoint_digest', 'comparison', 'comparison_digest',
+            'operations', 'publication', 'publication_digest', 'reads', 'read_progress', 'index_reads', 'reason', 'working_snapshot_id')
+        if ($analysis.operations -isnot [System.Collections.IDictionary]) { throw 'Corrupt triage outbox.' }
+        if (($null -eq $analysis.checkpoint -and $null -ne $analysis.checkpoint_digest) -or
+            ($null -ne $analysis.checkpoint -and (Get-ScheduledDigest $analysis.checkpoint) -cne $analysis.checkpoint_digest) -or
+            ($null -eq $analysis.comparison -and $null -ne $analysis.comparison_digest) -or
+            ($null -ne $analysis.comparison -and (Get-ScheduledDigest $analysis.comparison) -cne $analysis.comparison_digest) -or
+            $analysis.publication -isnot [System.Collections.IDictionary] -or
+            (Get-ScheduledDigest $analysis.publication) -cne $analysis.publication_digest) {
+            throw 'Retained triage checkpoint, comparison or publication content changed.'
+        }
+        if ($null -ne $analysis.checkpoint) {
+            Assert-TriageField $analysis.checkpoint @('analysis', 'index', 'evidence', 'basis')
+            Assert-TriageField $analysis.checkpoint.analysis @('analysis_id', 'revision', 'checkpoint')
+            if ($analysis.checkpoint.analysis.analysis_id -cne $analysis.id -or
+                (Get-ScheduledDigest $analysis.checkpoint.analysis.revision) -cne (Get-ScheduledDigest $analysis.revision)) {
+                throw 'Retained checkpoint does not belong to its registered analysis and revision.'
+            }
         }
         foreach ($operationEntry in $analysis.operations.GetEnumerator()) {
             Assert-TriageOperation $analysis $operationEntry.Key $operationEntry.Value
@@ -53,6 +81,35 @@ function Assert-ScheduledTriageState {
         ($retained.Count -eq 1 -and $retained[0].id -cne $Triage.active_analysis_id) -or
         ($retained.Count -eq 0 -and $null -ne $Triage.active_analysis_id)) {
         throw 'Triage ownership does not identify exactly its retained native analysis.'
+    }
+    if ($null -ne $Triage.scan) { Assert-TriageField $Triage.scan @('snapshot_id') }
+    $projection = Get-ScheduledTriageCacheProjection $Triage
+    foreach ($id in @(
+        if ($null -ne $projection.scan) { $projection.scan.snapshot_id }
+        if ($null -ne $projection.analysis) { $projection.analysis.working_snapshot_id; $projection.analysis.checkpoint_snapshot_id }
+    )) {
+        if ($null -ne $id -and [string]$id -cnotmatch '^[0-9a-f]{64}$') { throw 'Invalid owned snapshot identity.' }
+    }
+    if ((Get-ScheduledDigest $projection) -cne $Triage.cache_digest) {
+        throw 'Durable snapshot ownership changed; do not delete cache payloads.'
+    }
+}
+
+function Assert-TriageCompletionReference {
+    param($Analysis)
+    if ($null -eq $Analysis.completion) {
+        if ($null -ne $Analysis.completion_digest -or $Analysis.phase -cin @('complete', 'retired')) {
+            throw 'Completed analysis has no reconciled publication reference.'
+        }
+        return
+    }
+    Assert-TriageField $Analysis.completion @('checkpoint', 'issue_number', 'comment_id', 'digest')
+    if ((Get-ScheduledDigest $Analysis.completion) -cne $Analysis.completion_digest -or
+        $Analysis.completion.issue_number -ne $Analysis.revision.issue_number -or
+        [string]$Analysis.completion.comment_id -cnotmatch '^[1-9][0-9]*$' -or
+        [string]$Analysis.completion.checkpoint -cnotmatch '^[1-9][0-9]*$' -or
+        $Analysis.completion.digest -cnotmatch '^[0-9a-f]{64}$') {
+        throw 'Retained analysis completion reference is invalid.'
     }
 }
 
@@ -131,8 +188,34 @@ function Get-TriageOwnedAnalysis {
     return $analysis
 }
 
+function Get-TriageSnapshotOwner {
+    param($State, $Policy, $TriagePolicy, $Data, [DateTimeOffset] $Now)
+    if ($Data.ContainsKey('analysis_id') -and $null -ne $Data.analysis_id) {
+        Assert-TriageAdmission $State $Policy $TriagePolicy
+        $analysis = Get-TriageOwnedAnalysis $State.triage $Data
+        return @{ kind = 'analysis'; token = $analysis.dispatch.token }
+    }
+    Assert-TriageScan $State.triage $Data $Now
+    Assert-TriageField $Data @('session_id')
+    if ($Data.session_id -cne $State.triage.scan.session_id) { throw 'Snapshot belongs to another native scan.' }
+    return @{ kind = 'scan'; token = $State.triage.scan.token }
+}
+
+function Assert-TriageRetirement {
+    param($Triage, $Data, [DateTimeOffset] $Now)
+    Assert-TriageScan $Triage $Data $Now
+    Assert-TriageField $Data @('analysis_id', 'session_id', 'native_idle_verified', 'completion_digest')
+    if ($Triage.active_analysis_id -cne $Data.analysis_id) { throw 'Unknown completed analysis.' }
+    $analysis = $Triage.analyses[$Data.analysis_id]
+    if ($analysis.phase -cne 'complete' -or $analysis.dispatch.status -cne 'completed' -or
+        $analysis.session_id -cne $Data.session_id -or $Data.native_idle_verified -ne $true -or
+        $null -eq $analysis.completion -or $analysis.completion_digest -cne $Data.completion_digest) {
+        throw 'Publication and native quiescence must be established before retiring analysis.'
+    }
+}
+
 function Invoke-ScheduledTriageStateChange {
-    param($State, $Policy, $TriagePolicy, [string] $Action, $Data, [DateTimeOffset] $Now)
+    param($State, $Policy, $TriagePolicy, [string] $Action, $Data, [DateTimeOffset] $Now, $CheckpointValidation)
     $stamp = $Now.ToUniversalTime().ToString('o')
     if (-not $State.Contains('triage')) {
         if ($Action -ceq 'triage-read') { return }
@@ -143,6 +226,7 @@ function Invoke-ScheduledTriageStateChange {
             schema_version = 1; mode = 'observe'; profile = $null; scan = $null
             active_analysis_id = $null; analyses = @{}; known_run_issues = @(); known_problem_issues = @()
             health_publication = @{}; repair_holds = @{}
+            cache_digest = $null
             health = @{
                 last_scan_at = $null; last_successful_scan = $null; backlog_count = $null
                 oldest_pending_at = $null; blocked_conditions = @(); profile_registered_at = $null
@@ -154,8 +238,42 @@ function Invoke-ScheduledTriageStateChange {
         'triage-read' { return }
         'triage-authorize-publication' {
             Assert-TriageAdmission $State $Policy $TriagePolicy
-            $null = Get-TriageOwnedAnalysis $triage $Data
+            $analysis = Get-TriageOwnedAnalysis $triage $Data
+            Assert-TriageField $Data @('checkpoint_digest')
+            if ($analysis.checkpoint_digest -cne $Data.checkpoint_digest) {
+                throw 'Checkpoint changed after typed publication validation.'
+            }
             return
+        }
+        'triage-verify-checkpoint' {
+            Assert-TriageField $Data @('expected_analysis_id', 'checkpoint_digest')
+            if ($triage.active_analysis_id -cne $Data.expected_analysis_id -or
+                $triage.analyses[$Data.expected_analysis_id].checkpoint_digest -cne $Data.checkpoint_digest) {
+                throw 'Registered checkpoint changed while its typed content was being validated.'
+            }
+            return
+        }
+        'triage-authorize-snapshot' {
+            $null = Get-TriageSnapshotOwner $State $Policy $TriagePolicy $Data $Now
+            return
+        }
+        'triage-authorize-retirement' {
+            Assert-TriageRetirement $triage $Data $Now
+            return
+        }
+        'triage-pin-snapshot' {
+            $owner = Get-TriageSnapshotOwner $State $Policy $TriagePolicy $Data $Now
+            Assert-TriageField $Data @('snapshot_id', 'temporary_path', 'owner_kind', 'owner_token')
+            if ($Data.snapshot_id -cnotmatch '^[0-9a-f]{64}$' -or
+                $Data.owner_kind -cne $owner.kind -or $Data.owner_token -cne $owner.token) {
+                throw 'Prepared snapshot does not belong to the current native owner.'
+            }
+            if ($owner.kind -ceq 'analysis') {
+                $triage.analyses[$Data.analysis_id].working_snapshot_id = $Data.snapshot_id
+            } else { $triage.scan.snapshot_id = $Data.snapshot_id }
+        }
+        'triage-clean-cache' {
+            $null = Get-TriageSnapshotOwner $State $Policy $TriagePolicy $Data $Now
         }
         'triage-register-profile' {
             Assert-TriageField $Data @('operator_approved', 'profile')
@@ -194,6 +312,7 @@ function Invoke-ScheduledTriageStateChange {
                 token = [guid]::NewGuid().ToString(); session_id = $Data.session_id
                 expires_at = $Now.AddMinutes($TriagePolicy.scan_lease_minutes).ToString('o')
                 started_analysis_id = $null
+                snapshot_id = $null
             }
         }
         'triage-release-scan' {
@@ -241,7 +360,11 @@ function Invoke-ScheduledTriageStateChange {
                 id = $id; revision = $Data.revision; session_id = $Data.session_id
                 claim_token = [guid]::NewGuid().ToString(); started_at = $stamp; phase = 'analyzing'
                 dispatch = @{ token = [guid]::NewGuid().ToString(); status = 'accepted' }
-                continuations = @(); checkpoint = $null; comparison = $null; operations = @{}; publication = @{}
+                continuations = @(); checkpoint = $null; checkpoint_digest = $null
+                comparison = $null; comparison_digest = $null; operations = @{}; publication = @{}
+                publication_digest = Get-ScheduledDigest @{}
+                working_snapshot_id = $triage.scan.snapshot_id
+                completion = $null; completion_digest = $null
                 reads = @{}; read_progress = @{}; index_reads = @{}; reason = $null
             }
             $triage.active_analysis_id = $id
@@ -252,6 +375,12 @@ function Invoke-ScheduledTriageStateChange {
             $analysis = Get-TriageOwnedAnalysis $triage $Data
             Assert-TriageField $Data @('checkpoint')
             Assert-TriageField $Data.checkpoint @('analysis', 'index', 'evidence', 'basis')
+            if ($Data.checkpoint.ContainsKey('snapshot_id') -and
+                $Data.checkpoint.snapshot_id -cne $analysis.working_snapshot_id -and (
+                    $null -eq $analysis.checkpoint -or -not $analysis.checkpoint.ContainsKey('snapshot_id') -or
+                    $Data.checkpoint.snapshot_id -cne $analysis.checkpoint.snapshot_id)) {
+                throw 'Checkpoint snapshot is not pinned by its accepted analysis.'
+            }
             $index = $Data.checkpoint.index
             if (-not $analysis.index_reads.ContainsKey($index.digest) -or
                 (Get-ScheduledDigest @($analysis.index_reads[$index.digest] | Sort-Object)) -cne
@@ -265,9 +394,10 @@ function Invoke-ScheduledTriageStateChange {
                     throw 'Full candidate read receipt is missing or stale.'
                 }
             }
-            $validated = Invoke-ScheduledRecordTool -Package scheduled-triage-record -Request @{
-                op = 'validate_analysis'; analysis = $Data.checkpoint.analysis
-                evidence = $Data.checkpoint.evidence; index = $Data.checkpoint.index; basis = $Data.checkpoint.basis
+            if ($null -eq $CheckpointValidation -or
+                $CheckpointValidation.input_digest -cne (Get-ScheduledDigest $Data.checkpoint) -or
+                $CheckpointValidation.digest -cne (Get-ScheduledDigest $CheckpointValidation.checkpoint)) {
+                throw 'Checkpoint differs from the input validated outside the transaction.'
             }
             if ($Data.checkpoint.analysis.analysis_id -cne $analysis.id -or
                 (Get-ScheduledDigest $Data.checkpoint.analysis.revision) -cne (Get-ScheduledDigest $analysis.revision) -or
@@ -281,11 +411,14 @@ function Invoke-ScheduledTriageStateChange {
             foreach ($operation in $analysis.operations.Values) {
                 if ($operation.stage -ceq 'prepared') { $operation.stage = 'superseded' }
             }
-            $analysis.checkpoint = $Data.checkpoint
-            $analysis.checkpoint.analysis = $validated
+            $analysis.checkpoint = $CheckpointValidation.checkpoint
+            $analysis.checkpoint_digest = $CheckpointValidation.digest
+            $analysis.completion = $null; $analysis.completion_digest = $null
+            $analysis.phase = 'analyzing'
             $comparisonIndex = $Data.checkpoint.index | ConvertTo-Json -Depth 100 | ConvertFrom-Json -AsHashtable
             foreach ($entry in $comparisonIndex.entries) { $entry.full_read_digest = $null }
             $analysis.comparison = @{ index = $comparisonIndex; requires_reanalysis = $false; reason = $null }
+            $analysis.comparison_digest = Get-ScheduledDigest $analysis.comparison
         }
         'triage-accept-own-index' {
             $analysis = Get-TriageOwnedAnalysis $triage $Data
@@ -298,6 +431,7 @@ function Invoke-ScheduledTriageStateChange {
                 throw 'Only a confirmed problem publication can advance its comparison baseline.'
             }
             $analysis.comparison.index = $Data.index
+            $analysis.comparison_digest = Get-ScheduledDigest $analysis.comparison
         }
         'triage-require-reanalysis' {
             $analysis = Get-TriageOwnedAnalysis $triage $Data
@@ -306,6 +440,7 @@ function Invoke-ScheduledTriageStateChange {
             }
             $analysis.comparison.requires_reanalysis = $true
             $analysis.comparison.reason = $Data.reason
+            $analysis.comparison_digest = Get-ScheduledDigest $analysis.comparison
         }
         'triage-record-index-read' {
             $analysis = Get-TriageOwnedAnalysis $triage $Data
@@ -342,6 +477,7 @@ function Invoke-ScheduledTriageStateChange {
                 return
             }
             $analysis.publication[$key] = $Data.document
+            $analysis.publication_digest = Get-ScheduledDigest $analysis.publication
         }
         'triage-record-repair-hold' {
             $analysis = Get-TriageOwnedAnalysis $triage $Data
@@ -450,6 +586,17 @@ function Invoke-ScheduledTriageStateChange {
                     throw 'Problem publication is incomplete.'
                 }
             }
+            $rootOperation = @($operations | Where-Object { $_.purpose -ceq 'triage-root' })[0]
+            $root = Read-ScheduledRecord $rootOperation.payload.body triage
+            if ($root.analysis_id -cne $analysis.id -or $root.run_id -ne $analysis.revision.run_id -or
+                $root.issue_number -ne $analysis.revision.issue_number -or $root.status -cne 'complete') {
+                throw 'Publication root does not confirm this completed analysis.'
+            }
+            $analysis.completion = @{
+                checkpoint = $analysis.checkpoint.analysis.checkpoint; issue_number = $analysis.revision.issue_number
+                comment_id = $rootOperation.target_id; digest = $root.current_digest
+            }
+            $analysis.completion_digest = Get-ScheduledDigest $analysis.completion
             $analysis.phase = 'complete'
         }
         'triage-supersede-presentation' {
@@ -537,19 +684,20 @@ function Invoke-ScheduledTriageStateChange {
             $analysis.reason = $Data.reason
         }
         'triage-retire' {
-            Assert-TriageScan $triage $Data $Now
-            Assert-TriageField $Data @('analysis_id', 'session_id', 'native_idle_verified')
-            if ($triage.active_analysis_id -cne $Data.analysis_id) { throw 'Unknown completed analysis.' }
+            Assert-TriageRetirement $triage $Data $Now
             $analysis = $triage.analyses[$Data.analysis_id]
-            if ($analysis.phase -cne 'complete' -or $analysis.dispatch.status -cne 'completed' -or
-                $analysis.session_id -cne $Data.session_id -or $Data.native_idle_verified -ne $true) {
-                throw 'Publication and native quiescence must be established before retiring analysis.'
+            $tombstone = @{}
+            foreach ($field in @('id', 'revision', 'session_id', 'claim_token', 'started_at',
+                    'dispatch', 'continuations', 'completion', 'completion_digest')) {
+                $tombstone[$field] = $analysis[$field]
             }
-            $analysis.phase = 'retired'
+            $tombstone.phase = 'retired'
+            $triage.analyses[$analysis.id] = $tombstone
             $triage.active_analysis_id = $null
         }
         default { throw "Unsupported triage state action: $Action" }
     }
+    $triage.cache_digest = Get-ScheduledDigest (Get-ScheduledTriageCacheProjection $triage)
     Assert-ScheduledTriageState $triage
 }
 

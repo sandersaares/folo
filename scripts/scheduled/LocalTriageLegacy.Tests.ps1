@@ -120,6 +120,29 @@ Describe 'Retained registration publication' {
         $record.scope_revision | Should -Be 1
         (Complete-ScheduledTriageAnalysis $fixture.context $fixture.api).run_triaged | Should -BeTrue
     }
+
+    It 'advances scope and holds the retained repair when only its required operation changes' {
+        $fixture.proposal.checkpoint = 2
+        $fixture.proposal.problems[0].diagnosis.scope = @(@{
+            operation = 'miri'; package = 'package'; check_id = 'miri-linux'; platform = 'linux'
+            replay = @{ target = 'package' }; citations = @('/attempt/jobs/0/log/excerpt')
+        })
+        $fixture.proposal.problems[0].matching = @{
+            kind = 'existing'; issue_number = 30; target_generation = 1; relation = 'repeat'
+            reason = 'The existing problem accounts for the observed failure.'
+        }
+        Invoke-TriageFixtureCheckpoint $fixture
+        $null = Publish-TriageFixtureProblem $fixture download
+        $before = Invoke-TriageTransaction $fixture.context read
+        $fixture.proposal.checkpoint = 3
+        $fixture.proposal.problems[0].diagnosis.scope[0].operation = 'miri with an additional execution qualifier'
+        Invoke-TriageFixtureCheckpoint $fixture
+        $null = Publish-TriageFixtureProblem $fixture download
+        $state = Invoke-TriageTransaction $fixture.context read
+        $snapshot = Get-ScheduledTriageInbox $fixture.context.policy $state $fixture.api
+        $snapshot.problems['30'].record.problem.scope_revision | Should -Be 2
+        $state.triage.repair_holds['30'].reason | Should -Not -Be $before.triage.repair_holds['30'].reason
+    }
 }
 
 Describe 'Retained reporter problem interpretation' {

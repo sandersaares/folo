@@ -109,4 +109,19 @@ function Complete-ScheduledTriageAnalysis {
     }
 }
 
-Export-ModuleMember -Function Complete-ScheduledTriageAnalysis
+function Complete-ScheduledTriageRetirement {
+    [CmdletBinding()]
+    param($Context, [hashtable] $Data, [scriptblock] $Api)
+    $state = Get-ScheduledTriageValidatedState $Context
+    if ($state.triage.active_analysis_id -cne $Context.analysis_id) { throw 'Retirement does not identify the retained analysis.' }
+    $analysis = $state.triage.analyses[$Context.analysis_id]
+    $fields = $Data.Clone()
+    $fields.completion_digest = $analysis.completion_digest
+    $null = Invoke-TriageTransaction $Context triage-authorize-retirement $fields
+    # Restoring the committed documents proves that compaction can retain references instead
+    # of full local payloads. Missing remote proof blocks retirement, never recreates work.
+    $null = Get-ScheduledTriageInbox -Policy $Context.policy -State $state -Api (Get-TriageReadAdapter $Api)
+    return Invoke-TriageTransaction $Context triage-retire $fields
+}
+
+Export-ModuleMember -Function Complete-ScheduledTriageAnalysis, Complete-ScheduledTriageRetirement

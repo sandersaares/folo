@@ -23,7 +23,8 @@ function Initialize-TriageFixture {
         [Parameter(Mandatory)][string] $Root,
         [ValidateRange(1, 2)][int] $ProblemCount = 1,
         [ValidateSet('', 'cancelled', 'failure')][string] $EmptyWorkflowConclusion = '',
-        [switch] $PartialWithSupport
+        [switch] $PartialWithSupport,
+        [switch] $Unclaimed
     )
     $policy = Get-ScheduledPolicy
     $policy.repository = 'owner/repository'; $policy.repository_id = 123
@@ -229,17 +230,25 @@ function Initialize-TriageFixture {
     $revision = @{
         repository_id = 123; workflow_id = 456; run_id = 789; run_attempt = 1; digest = $prepared.digest; issue_number = 20
     }
+    $context = @{
+        state_root = $Root; policy = $policy; triage_policy = $triagePolicy
+        executor_id = 'executor'; login = 'worker'; now = $now
+        analysis_id = $null; session_id = 'session'; claim_token = $null; dispatch_token = $null
+        scan_token = $state.triage.scan.token
+    }
+    if ($Unclaimed) {
+        return @{
+            context = $context; api = $api; store = $store; evidence = $prepared.evidence
+            revision = $revision; snapshot = Get-ScheduledTriageInbox -Policy $policy -State $state -Api $api
+        }
+    }
     $state = Invoke-ScheduledLocalAction -StateRoot $Root -Policy $policy -TriagePolicy $triagePolicy `
         -ExecutorId executor -Login worker -Now $now -Action triage-claim -Data @{
             scan_token = $state.triage.scan.token; revision = $revision; session_id = 'session'; native_verified = $true
         }
     $analysis = $state.triage.analyses[$state.triage.active_analysis_id]
-    $context = @{
-        state_root = $Root; policy = $policy; triage_policy = $triagePolicy
-        executor_id = 'executor'; login = 'worker'; now = $now
-        analysis_id = $analysis.id; session_id = 'session'; claim_token = $analysis.claim_token
-        dispatch_token = $analysis.dispatch.token; scan_token = $state.triage.scan.token
-    }
+    $context.analysis_id = $analysis.id; $context.claim_token = $analysis.claim_token
+    $context.dispatch_token = $analysis.dispatch.token
     $snapshot = Get-ScheduledTriageInbox -Policy $policy -State $state -Api $api
     $null = Invoke-TriageTransaction $context triage-record-index-read @{
         index_digest = $snapshot.index.digest; issue_numbers = @()
