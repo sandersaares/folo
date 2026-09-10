@@ -231,7 +231,7 @@ fn apply_rejects_an_expanded_plan_whose_group_gained_a_member() {
     .unwrap();
     let expanded_path = fixture.path().join("expanded.json");
     run(&RunInput::Expand {
-        plan: plan_path,
+        plan: plan_path.clone(),
         out: expanded_path.clone(),
         manifest_path: fixture.manifest(),
         verbose: false,
@@ -252,6 +252,14 @@ fn apply_rejects_an_expanded_plan_whose_group_gained_a_member() {
         .collect();
     assert_eq!(names, vec!["shell"]);
     let resolved = resolved_plan(&fixture, &expanded_path);
+    run(&RunInput::Apply {
+        plan: resolved.clone(),
+        dry_run: true,
+        manifest_path: fixture.manifest(),
+        verbose: false,
+    })
+    .unwrap();
+    let original_helper = fixture.read("packages/aaa-helper/Cargo.toml");
 
     // An exact dependency connects an earlier-sorting helper between resolution and application.
     fixture.write(
@@ -267,20 +275,59 @@ shell = { path = "../shell", version = "=0.1.0" }
 "#,
     );
 
-    let error = run(&RunInput::Apply {
-        plan: resolved,
+    let shell = fixture.read("packages/shell/Cargo.toml");
+    let helper = fixture.read("packages/aaa-helper/Cargo.toml");
+    let lockfile = fixture.read("Cargo.lock");
+    run(&RunInput::Apply {
+        plan: resolved.clone(),
         dry_run: false,
         manifest_path: fixture.manifest(),
         verbose: false,
     })
-    .is_err();
-    assert!(error);
+    .unwrap_err();
 
     // Nothing was written: the rejection precedes every manifest edit.
-    let shell = fs::read_to_string(fixture.path().join("packages/shell/Cargo.toml")).unwrap();
-    assert!(shell.contains("version = \"0.1.0\""), "{shell}");
-    let helper = fs::read_to_string(fixture.path().join("packages/aaa-helper/Cargo.toml")).unwrap();
-    assert!(helper.contains("version = \"0.1.0\""), "{helper}");
+    assert_eq!(fixture.read("packages/shell/Cargo.toml"), shell);
+    assert_eq!(fixture.read("packages/aaa-helper/Cargo.toml"), helper);
+    assert_eq!(fixture.read("Cargo.lock"), lockfile);
+
+    // Restoring precisely the captured inputs restores acceptance of the same plan.
+    fixture.write("packages/aaa-helper/Cargo.toml", &original_helper);
+    run(&RunInput::Apply {
+        plan: resolved,
+        dry_run: true,
+        manifest_path: fixture.manifest(),
+        verbose: false,
+    })
+    .unwrap();
+    fixture.write("packages/aaa-helper/Cargo.toml", &helper);
+
+    // The changed graph is valid; only fresh resolution may include its additional member.
+    let fresh = resolved_plan(&fixture, &plan_path);
+    let expanded: Value = serde_json::from_slice(&fs::read(&fresh).unwrap()).unwrap();
+    let names: Vec<_> = expanded
+        .get("increments")
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| entry.get("name").unwrap().as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["aaa-helper", "shell"]);
+    run(&RunInput::Apply {
+        plan: fresh,
+        dry_run: false,
+        manifest_path: fixture.manifest(),
+        verbose: false,
+    })
+    .unwrap();
+    for member in ["shell", "aaa-helper"] {
+        assert!(
+            fixture
+                .read(&format!("packages/{member}/Cargo.toml"))
+                .contains("0.1.1")
+        );
+    }
 }
 
 /// A group whose members disagree on an explicit version is rejected.
