@@ -1,0 +1,86 @@
+﻿<?xml version="1.0" encoding="utf-8" standalone="no"?>
+<test-results xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="nunit_schema_2.5.xsd" name="Pester" total="41" errors="0" failures="0" not-run="0" inconclusive="0" ignored="0" skipped="0" invalid="0" date="2026-09-11" time="21:21:36">
+  <environment user="sander" nunit-version="2.5.8.0" cwd="/mnt/c/Source/copilot/copilot-worktrees/folo/sandersaares-legendary-parakeet" platform="Linux" os-version="6.18.33.2-microsoft-standard-WSL2" user-domain="" clr-version="10.0.11" machine-name="benum" />
+  <culture-info current-culture="" current-uiculture="" />
+  <test-suite type="TestFixture" name="Pester" executed="True" result="Success" success="True" time="6.0718" asserts="0" description="Pester">
+    <results>
+      <test-suite type="TestFixture" name="/mnt/c/Source/copilot/copilot-worktrees/folo/sandersaares-legendary-parakeet/scripts/scheduled/ScheduledGitHub.Tests.ps1" executed="True" result="Success" success="True" time="5.3934" asserts="0" description="/mnt/c/Source/copilot/copilot-worktrees/folo/sandersaares-legendary-parakeet/scripts/scheduled/ScheduledGitHub.Tests.ps1">
+        <results>
+          <test-suite type="TestFixture" name="Completed attempt reporting" executed="True" result="Success" success="True" time="4.552" asserts="0" description="Completed attempt reporting">
+            <results>
+              <test-case description="reports setup failure without Rust or result artifacts and omits successful jobs" name="Completed attempt reporting.reports setup failure without Rust or result artifacts and omits successful jobs" time="0.6398" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="reports cancellation and checks that never ran" name="Completed attempt reporting.reports cancellation and checks that never ran" time="0.1746" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="uses the selected tested source and only exact-attempt artifacts" name="Completed attempt reporting.uses the selected tested source and only exact-attempt artifacts" time="0.2651" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="retains selected source metadata when failed-job reruns reuse a prior successful plan" name="Completed attempt reporting.retains selected source metadata when failed-job reruns reuse a prior successful plan" time="0.2061" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="ignores future and different-run plans when reporting an older attempt" name="Completed attempt reporting.ignores future and different-run plans when reporting an older attempt" time="0.1556" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="prefers the current plan over prior plans and ignores later plans" name="Completed attempt reporting.prefers the current plan over prior plans and ignores later plans" time="0.1442" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="rejects retained plans whose controller does not match the originating workflow run" name="Completed attempt reporting.rejects retained plans whose controller does not match the originating workflow run" time="0.15" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="does not identify the controller commit as a selected candidate when planning failed" name="Completed attempt reporting.does not identify the controller commit as a selected candidate when planning failed" time="0.1425" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="requests the originating attempt rather than the latest source rerun" name="Completed attempt reporting.requests the originating attempt rather than the latest source rerun" time="0.2313" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="reuses a human report without overwriting it or requiring an author/schema" name="Completed attempt reporting.reuses a human report without overwriting it or requiring an author/schema" time="0.1638" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="does not repeat an already published report when the reporter is rerun" name="Completed attempt reporting.does not repeat an already published report when the reporter is rerun" time="0.2889" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="creates a separate report for a failed source rerun" name="Completed attempt reporting.creates a separate report for a failed source rerun" time="0.1285" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="does not match the current attempt as a prefix of a different attempt" name="Completed attempt reporting.does not match the current attempt as a prefix of a different attempt" time="0.1297" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="leaves earlier issues unchanged after a successful source rerun" name="Completed attempt reporting.leaves earlier issues unchanged after a successful source rerun" time="0.0209" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="makes unavailable logs and artifact inventory explicit while still reporting failure" name="Completed attempt reporting.makes unavailable logs and artifact inventory explicit while still reporting failure" time="0.1207" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="does not reinterpret failed job-list or issue-list API calls as empty work" name="Completed attempt reporting.does not reinterpret failed job-list or issue-list API calls as empty work" time="0.0682" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="propagates an issue search failure before publishing" name="Completed attempt reporting.propagates an issue search failure before publishing" time="0.0639" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="propagates issue publication failures" name="Completed attempt reporting.propagates issue publication failures" time="0.1435" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="propagates continuation publication failures" name="Completed attempt reporting.propagates continuation publication failures" time="0.2314" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="retains check summaries whose job association is unavailable" name="Completed attempt reporting.retains check summaries whose job association is unavailable" time="0.13" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="makes malformed or expired diagnostic summaries explicit without losing the failed job" name="Completed attempt reporting.makes malformed or expired diagnostic summaries explicit without losing the failed job" time="0.1358" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="reads all pages for jobs, artifacts and ordinary closed issues" name="Completed attempt reporting.reads all pages for jobs, artifacts and ordinary closed issues" time="0.0354" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="propagates an API failure on a later page rather than publishing partial inventory" name="Completed attempt reporting.propagates an API failure on a later page rather than publishing partial inventory" time="0.0205" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="reconciles exact-attempt duplicates with a normal linked comment and closure" name="Completed attempt reporting.reconciles exact-attempt duplicates with a normal linked comment and closure" time="0.1345" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="completes missing continuation comments after interrupted publication without repeating saved text" name="Completed attempt reporting.completes missing continuation comments after interrupted publication without repeating saved text" time="0.4881" asserts="0" success="True" result="Success" executed="True" />
+            </results>
+          </test-suite>
+          <test-suite type="TestFixture" name="Artifact controller isolation" executed="True" result="Success" success="True" time="4.9775" asserts="0" description="Artifact controller isolation">
+            <results>
+              <test-suite type="TestFixture" name="Artifact controller isolation.GitHub command boundary" executed="True" result="Success" success="True" time="0.3382" asserts="0" description="Artifact controller isolation.GitHub command boundary">
+                <results>
+                  <test-suite type="TestFixture" name="Artifact controller isolation.GitHub command boundary.Completion event entry point" executed="True" result="Success" success="True" time="0.2367" asserts="0" description="Artifact controller isolation.GitHub command boundary.Completion event entry point">
+                    <results>
+                      <test-case description="uses the originating event attempt when retrying the reporter" name="Artifact controller isolation.GitHub command boundary.Completion event entry point.uses the originating event attempt when retrying the reporter" time="0.0924" asserts="0" success="True" result="Success" executed="True" />
+                    </results>
+                  </test-suite>
+                  <test-case description="preserves empty and singleton API arrays for collection pagination" name="Artifact controller isolation.GitHub command boundary.preserves empty and singleton API arrays for collection pagination" time="0.0302" asserts="0" success="True" result="Success" executed="True" />
+                  <test-case description="rejects malformed successful API output rather than assuming an empty collection" name="Artifact controller isolation.GitHub command boundary.rejects malformed successful API output rather than assuming an empty collection" time="0.0124" asserts="0" success="True" result="Success" executed="True" />
+                  <test-case description="propagates a failed GitHub command even if it emitted valid JSON" name="Artifact controller isolation.GitHub command boundary.propagates a failed GitHub command even if it emitted valid JSON" time="0.0157" asserts="0" success="True" result="Success" executed="True" />
+                </results>
+              </test-suite>
+              <test-case description="reads only the root text entry without extracting executable or traversal paths" name="Artifact controller isolation.reads only the root text entry without extracting executable or traversal paths" time="0.0891" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="reports expired archives without attempting a download" name="Artifact controller isolation.reports expired archives without attempting a download" time="0.0095" asserts="0" success="True" result="Success" executed="True" />
+            </results>
+          </test-suite>
+        </results>
+      </test-suite>
+      <test-suite type="TestFixture" name="/mnt/c/Source/copilot/copilot-worktrees/folo/sandersaares-legendary-parakeet/scripts/scheduled/ScheduledReport.Tests.ps1" executed="True" result="Success" success="True" time="0.6783" asserts="0" description="/mnt/c/Source/copilot/copilot-worktrees/folo/sandersaares-legendary-parakeet/scripts/scheduled/ScheduledReport.Tests.ps1">
+        <results>
+          <test-suite type="TestFixture" name="Readable failure rendering" executed="True" result="Success" success="True" time="0.5842" asserts="0" description="Readable failure rendering">
+            <results>
+              <test-case description="renders identity, linked failed-job table and useful diagnostics" name="Readable failure rendering.renders identity, linked failed-job table and useful diagnostics" time="0.011" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="describes absent execution without inventing a source defect" name="Readable failure rendering.describes absent execution without inventing a source defect" time="0.0066" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="retains the first and last failures in lengthy ordinary continuation comments" name="Readable failure rendering.retains the first and last failures in lengthy ordinary continuation comments" time="0.382" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="escapes table content and keeps artifact HTML visible rather than active" name="Readable failure rendering.escapes table content and keeps artifact HTML visible rather than active" time="0.0057" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="keeps every failed job when the unsuccessful-job table spans comments" name="Readable failure rendering.keeps every failed job when the unsuccessful-job table spans comments" time="0.1757" asserts="0" success="True" result="Success" executed="True" />
+            </results>
+          </test-suite>
+          <test-suite type="TestFixture" name="Failure log excerpts" executed="True" result="Success" success="True" time="0.6044" asserts="0" description="Failure log excerpts">
+            <results>
+              <test-case description="keeps distant error contexts without copying entire successful steps" name="Failure log excerpts.keeps distant error contexts without copying entire successful steps" time="0.0069" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="retains an unfamiliar failure tail and strips terminal control sequences" name="Failure log excerpts.retains an unfamiliar failure tail and strips terminal control sequences" time="0.0033" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="does not clip a long error list to its first matches" name="Failure log excerpts.does not clip a long error list to its first matches" time="0.0072" asserts="0" success="True" result="Success" executed="True" />
+            </results>
+          </test-suite>
+          <test-suite type="TestFixture" name="Completion reporting workflow" executed="True" result="Success" success="True" time="0.6335" asserts="0" description="Completion reporting workflow">
+            <results>
+              <test-case description="runs the default-branch controller with diagnostics outside its checkout" name="Completion reporting workflow.runs the default-branch controller with diagnostics outside its checkout" time="0.0068" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="uses the Actions token and serializes the originating attempt independently of other runs" name="Completion reporting workflow.uses the Actions token and serializes the originating attempt independently of other runs" time="0.0047" asserts="0" success="True" result="Success" executed="True" />
+            </results>
+          </test-suite>
+        </results>
+      </test-suite>
+    </results>
+  </test-suite>
+</test-results>

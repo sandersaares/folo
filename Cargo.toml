@@ -27,22 +27,22 @@ azure_core = { version = "1.0.0", default-features = false }
 azure_identity = { version = "1.0.0", default-features = false }
 azure_storage_blob = { version = "1.0.0", default-features = false }
 base64 = { version = "0.23.1", default-features = false, features = ["std"] }
-cargo-freeze-deps = { version = "0.1.12", path = "packages/cargo-freeze-deps", default-features = false }
-cargo-release-plan = { version = "0.3.0", path = "packages/cargo-release-plan", default-features = false }
-cbh_analyze = { version = "=0.2.10", path = "packages/cbh_analyze", default-features = false }
-cbh_cli = { version = "=0.2.10", path = "packages/cbh_cli", default-features = false }
-cbh_codec = { version = "=0.2.10", path = "packages/cbh_codec", default-features = false }
-cbh_command = { version = "=0.2.10", path = "packages/cbh_command", default-features = false }
-cbh_config = { version = "=0.2.10", path = "packages/cbh_config", default-features = false }
-cbh_detect = { version = "=0.2.10", path = "packages/cbh_detect", default-features = false }
-cbh_diag = { version = "=0.2.10", path = "packages/cbh_diag", default-features = false }
-cbh_engines = { version = "=0.2.10", path = "packages/cbh_engines", default-features = false }
-cbh_git = { version = "=0.2.10", path = "packages/cbh_git", default-features = false }
-cbh_model = { version = "=0.2.10", path = "packages/cbh_model", default-features = false }
-cbh_probe = { version = "=0.2.10", path = "packages/cbh_probe", default-features = false }
-cbh_render = { version = "=0.2.10", path = "packages/cbh_render", default-features = false }
-cbh_stats = { version = "=0.2.10", path = "packages/cbh_stats", default-features = false }
-cbh_storage = { version = "=0.2.10", path = "packages/cbh_storage", default-features = false }
+cargo-freeze-deps = { version = "0.1.13", path = "packages/cargo-freeze-deps", default-features = false }
+cargo-release-plan = { version = "0.3.1", path = "packages/cargo-release-plan", default-features = false }
+cbh_analyze = { version = "=0.2.11", path = "packages/cbh_analyze", default-features = false }
+cbh_cli = { version = "=0.2.11", path = "packages/cbh_cli", default-features = false }
+cbh_codec = { version = "=0.2.11", path = "packages/cbh_codec", default-features = false }
+cbh_command = { version = "=0.2.11", path = "packages/cbh_command", default-features = false }
+cbh_config = { version = "=0.2.11", path = "packages/cbh_config", default-features = false }
+cbh_detect = { version = "=0.2.11", path = "packages/cbh_detect", default-features = false }
+cbh_diag = { version = "=0.2.11", path = "packages/cbh_diag", default-features = false }
+cbh_engines = { version = "=0.2.11", path = "packages/cbh_engines", default-features = false }
+cbh_git = { version = "=0.2.11", path = "packages/cbh_git", default-features = false }
+cbh_model = { version = "=0.2.11", path = "packages/cbh_model", default-features = false }
+cbh_probe = { version = "=0.2.11", path = "packages/cbh_probe", default-features = false }
+cbh_render = { version = "=0.2.11", path = "packages/cbh_render", default-features = false }
+cbh_stats = { version = "=0.2.11", path = "packages/cbh_stats", default-features = false }
+cbh_storage = { version = "=0.2.11", path = "packages/cbh_storage", default-features = false }
 clap = { version = "4.6.1", default-features = false, features = ["default"] }
 colored = { version = "3.1.1", default-features = false }
 cpu-time = { version = "1.0.0", default-features = false }
@@ -125,7 +125,6 @@ rasciigraph = { version = "0.3.0", default-features = false }
 reqwest = { version = "0.13.4", default-features = false }
 rsevents = { version = "0.3.1", default-features = false }
 scc = { version = "3.0.2", default-features = false }
-scheduled-run-record = { version = "0.0.0", path = "packages/scheduled-run-record", default-features = false }
 scopeguard = { version = "1.2.0", default-features = false }
 semver = { version = "1.0.28", default-features = false, features = ["std"] }
 seq-macro = { version = "0.3.0", default-features = false }

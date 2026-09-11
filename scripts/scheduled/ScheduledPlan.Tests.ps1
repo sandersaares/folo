@@ -1,146 +1,59 @@
 #Requires -Modules @{ ModuleName = 'Pester'; ModuleVersion = '5.0' }
-# Protect the hosted plan's completeness and reuse contract, including the trusted decoder
-# inputs that make an empty-shard baseline comparable. Ref: workflow implementation,
-# "Scheduled controller ownership"; no GitHub or native checker execution is needed here.
+
+# Protects the nightly check scope and manual selection rules without executing expensive tools.
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
 
-BeforeAll {
-    Import-Module (Join-Path $PSScriptRoot 'ScheduledPlan.psm1') -Force
-    function Get-TestManifest {
-        Get-ScheduledCheckManifest -SourceSha ('a' * 40) -ControllerSha ('b' * 40) -ContractDigest ('c' * 64)
-    }
-    function Get-TestResult($manifest) {
-        @($manifest.checks | ForEach-Object {
-            @{
-                schema_version = 1; check_id = $_.id; actual_scope = $_; outcome = 'passed'
-                source_sha = $manifest.source_sha; controller_sha = $manifest.controller_sha
-                check_contract_digest = $manifest.check_contract_digest
+BeforeAll { Import-Module (Join-Path $PSScriptRoot 'ScheduledPlan.psm1') -Force }
+
+Describe 'Fresh deep check catalog' {
+    It 'preserves every platform, mutation shard and many-seed family' {
+        $checks = @(Get-ScheduledCheck)
+        $checks.Count | Should -Be 32
+        @($checks.id | Sort-Object -Unique).Count | Should -Be $checks.Count
+        @($checks | Where-Object kind -EQ 'miri').platform | Should -Be @(
+            'ubuntu-latest', 'windows-latest', 'ubuntu-24.04-arm', 'windows-11-arm')
+        foreach ($platform in @('ubuntu-latest', 'windows-latest')) {
+            @($checks | Where-Object { $_.kind -eq 'mutants' -and $_.platform -eq $platform }).shard |
+                Should -Be @(1..8 | ForEach-Object { "$_/8" })
+            @($checks | Where-Object { $_.kind -eq 'careful' -and $_.platform -eq $platform }).Count | Should -Be 1
+        }
+        foreach ($family in @(
+                @{ package = 'events_once'; shards = 4 }, @{ package = 'events'; shards = 2 },
+                @{ package = 'awaiter_set'; shards = 2 }, @{ package = 'nm_impl'; shards = 2 })) {
+            $selected = @($checks | Where-Object { $_.kind -eq 'miri-many' -and $_.packages -contains $family.package })
+            $selected.Count | Should -Be $family.shards
+            $bounds = @($selected.seed_range | ForEach-Object { $_ -split '\.\.' })
+            $bounds[0] | Should -Be '0'
+            $bounds[-1] | Should -Be '64'
+            for ($index = 1; $index -lt $selected.Count; $index++) {
+                ($selected[$index - 1].seed_range -split '\.\.')[1] |
+                    Should -Be ($selected[$index].seed_range -split '\.\.')[0]
             }
-        })
-    }
-}
-Describe 'Expected deep scope' {
-    It 'keeps version movement and repair admission separate from checker compatibility' {
-        InModuleScope ScheduledPlan {
-            Mock Get-FileHash { @{ Hash = $LiteralPath } }
-            Mock Get-ScheduledPolicy { throw 'Admission policy is not a checker input.' }
-            $root = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\..')).Path
-            Get-ScheduledContractDigest -Root $root | Should -Match '^[0-9a-f]{64}$'
-            Should -Invoke Get-FileHash -Times 0 -ParameterFilter {
-                $LiteralPath -eq (Join-Path $root 'Cargo.toml') -or $LiteralPath -like '*Cargo.lock'
-            }
-            Should -Invoke Get-FileHash -Times 1 -ParameterFilter { $LiteralPath -like '*constants.env' }
-            Should -Invoke Get-FileHash -Times 1 -ParameterFilter { $LiteralPath -like '*rust-toolchain.toml' }
-            Should -Invoke Get-FileHash -Times 1 -ParameterFilter { $LiteralPath -like '*mutants.toml' }
-            Should -Invoke Get-FileHash -Times 1 -ParameterFilter { $LiteralPath -like '*ScheduledJson.psm1' }
-            Should -Invoke Get-FileHash -Times 1 -ParameterFilter { $LiteralPath -like '*Invoke-ScheduledCheck.ps1' }
-            Should -Invoke Get-FileHash -Times 1 -ParameterFilter { $LiteralPath -like '*just_scheduled.just' }
-            Should -Invoke Get-FileHash -Times 1 -ParameterFilter {
-                $LiteralPath -like '*scheduled-mutation-config*Cargo.toml'
-            }
-            Should -Invoke Get-FileHash -Times 1 -ParameterFilter {
-                $LiteralPath -like '*scheduled-mutation-config*src*main.rs'
-            }
-            Should -Invoke Get-FileHash -Times 1 -ParameterFilter {
-                $LiteralPath -like '*scheduled-mutation-config*src*mutation_config.rs'
-            }
-            Should -Invoke Get-FileHash -Times 1 -ParameterFilter {
-                $LiteralPath -like '*scheduled-mutation-config*src*dependency_contract.rs'
-            }
-            Should -Invoke Get-FileHash -Times 1 -ParameterFilter {
-                $LiteralPath -like '*scheduled-mutation-config*dependency-contract.json'
-            }
-            Should -Invoke Get-ScheduledPolicy -Times 0
         }
     }
-    It 'preserves ordinary Miri platforms mutation shards many-seed budgets and careful platforms' {
-        $manifest = Get-TestManifest
-        $manifest.checks.Count | Should -Be 32
-        @($manifest.checks | Where-Object kind -EQ mutants).Count | Should -Be 16
-        @($manifest.checks | Where-Object kind -EQ miri).Count | Should -Be 4
-        @($manifest.checks | Where-Object kind -EQ careful).Count | Should -Be 2
-        @($manifest.checks | Where-Object { $_.id -like 'miri-many-events_once-*' }).seed_range |
-            Should -Be @('0..16', '16..32', '32..48', '48..64')
+
+    It 'selects requested checks and applies package scope' {
+        $checks = @(Get-ScheduledCheck -Packages cpulist -CheckIds miri-ubuntu-latest, mutants-windows-latest-2)
+        $checks.Count | Should -Be 2
+        foreach ($check in $checks) { $check.packages | Should -Be @('cpulist') }
     }
-    It 'cannot describe partial runs as full coverage' {
-        { Get-ScheduledCheckManifest -SourceSha ('a' * 40) -ControllerSha ('b' * 40) -ContractDigest x -Packages foo } |
-            Should -Throw
+
+    It 'rejects invalid or unsupported selections' -ForEach @(
+        @{ packages = @('cpulist'); ids = @('missing-check') }
+        @{ packages = @('cpulist'); ids = @('miri-many-events-1') }
+        @{ packages = @('events', 'cpulist'); ids = @('miri-many-events-1') }
+        @{ packages = @('--workspace'); ids = @() }
+        @{ packages = @('foo*'); ids = @() }
+        @{ packages = @(''); ids = @() }
+    ) {
+        { Get-ScheduledCheck -Packages $packages -CheckIds $ids } | Should -Throw
     }
-    It 'rejects every missing duplicate stale unknown or skipped required result' {
-        $manifest = Get-TestManifest
-        $results = Get-TestResult $manifest
-        (Test-ScheduledManifest -Manifest $manifest -Results $results).successful | Should -BeTrue
-        (Test-ScheduledManifest -Manifest $manifest -Results $results[1..31]).complete | Should -BeFalse
-        (Test-ScheduledManifest -Manifest $manifest -Results ($results + $results[0])).complete | Should -BeFalse
-        $results[0].source_sha = 'd' * 40
-        (Test-ScheduledManifest -Manifest $manifest -Results $results).complete | Should -BeFalse
-    }
-    It 'distinguishes complete findings from incomplete execution' {
-        $manifest = Get-TestManifest
-        $results = Get-TestResult $manifest
-        $results[0].outcome = 'findings'
-        $verdict = Test-ScheduledManifest -Manifest $manifest -Results $results
-        $verdict.complete | Should -BeTrue
-        $verdict.successful | Should -BeFalse
-        foreach ($outcome in @('skipped', 'incomplete', 'blocked', 'execution-error', 'not-applicable')) {
-            $results[0].outcome = $outcome
-            (Test-ScheduledManifest -Manifest $manifest -Results $results).complete | Should -BeFalse
-        }
-    }
-}
-Describe 'Unchanged main decisions' {
-    BeforeEach {
-        $manifest = Get-TestManifest
-        $script:now = [datetimeoffset]'2026-09-08T12:00:00Z'
-        $receipt = @{
-            scope = 'full'; complete = $true; successful = $true; manifest = $manifest
-            source_sha = $manifest.source_sha; check_contract_digest = $manifest.check_contract_digest
-            run_id = 1; run_number = 2; run_attempt = 1; completed_at = '2026-09-07T12:00:00Z'
-        }
-        $script:coverage = @{ schema_version = 1; receipt = $receipt; invalidation = $null }
-    }
-    It 'reuses a complete compatible receipt without refreshing its time' {
-        $decision = Get-ScheduledRunDecision -Manifest $manifest -Coverage $coverage -Now $now
-        $decision.run | Should -BeFalse
-        $decision.receipt.completed_at | Should -Be $receipt.completed_at
-    }
-    It 'reruns missing stale future or partial evidence' {
-        (Get-ScheduledRunDecision -Manifest $manifest -Coverage $null -Now $now).run | Should -BeTrue
-        foreach ($completed in @('2026-09-01T12:00:00Z', '2026-09-09T12:00:00Z')) {
-            $receipt.completed_at = $completed
-            (Get-ScheduledRunDecision -Manifest $manifest -Coverage $coverage -Now $now).run | Should -BeTrue
-        }
-        $receipt.completed_at = '2026-09-07T12:00:00Z'
-        $receipt.scope = 'repair'
-        (Get-ScheduledRunDecision -Manifest $manifest -Coverage $coverage -Now $now).run | Should -BeTrue
-    }
-    It 'does not let an old success conceal a newer failure or retry' {
-        $coverage.invalidation = @{
-            source_sha = $manifest.source_sha; check_contract_digest = $manifest.check_contract_digest
-            run_number = 2; run_attempt = 2
-        }
-        (Get-ScheduledRunDecision -Manifest $manifest -Coverage $coverage -Now $now).run | Should -BeTrue
-        # A different workflow has its own independent sequence and can fail later with a
-        # numerically smaller run number. The reporter retains that unresolved invalidation.
-        $coverage.invalidation.run_number = 1
-        $coverage.invalidation.run_attempt = 1
-        (Get-ScheduledRunDecision -Manifest $manifest -Coverage $coverage -Now $now).run | Should -BeTrue
-    }
-    It 'reruns malformed or unreadable receipts rather than suppressing checks' {
-        foreach ($invalid in @(@{}, @{ schema_version = 99 },
-                @{ schema_version = 1; receipt = @{}; invalidation = $null })) {
-            (Get-ScheduledRunDecision -Manifest $manifest -Coverage $invalid -Now $now).run | Should -BeTrue
-        }
-        $receipt.completed_at = 'not a timestamp'
-        (Get-ScheduledRunDecision -Manifest $manifest -Coverage $coverage -Now $now).run | Should -BeTrue
-    }
-    It 'preserves timestamp meaning after JSON DateTime conversion' {
-        $serialized = $coverage | ConvertTo-Json -Depth 50
-        $roundTripped = $serialized | ConvertFrom-Json -AsHashtable
-        (Get-ScheduledRunDecision -Manifest $manifest -Coverage $roundTripped -Now $now).run | Should -BeFalse
-        $roundTripped.receipt.completed_at = [datetime]'2026-09-01T12:00:00Z'
-        (Get-ScheduledRunDecision -Manifest $manifest -Coverage $roundTripped -Now $now).run | Should -BeTrue
+
+    It 'returns independent plain declarations without coordination metadata' {
+        $check = @(Get-ScheduledCheck -Packages events -CheckIds miri-many-events-2)[0]
+        @($check.Keys | Sort-Object) | Should -Be @('id', 'kind', 'packages', 'platform', 'seed_range', 'shard')
+        $check.seed_range | Should -Be '32..64'
     }
 }

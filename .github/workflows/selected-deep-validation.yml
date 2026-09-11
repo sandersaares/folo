@@ -1,22 +1,18 @@
 name: Selected deep validation
 
 on:
-  # Confirmation tests merged main bytes, not the pre-squash repair head.
-  # Ref: .github/workflows/implementation.md#managed-repair-gate.
-  push:
-    branches: [main]
   workflow_dispatch:
     inputs:
       source_sha:
-        description: Full commit SHA to test (main, branch or PR); leave blank for current main. Keep Use workflow from set to main.
+        description: Full commit SHA to test; leave blank for this main event. Keep Use workflow from set to main.
         required: false
         type: string
       check_ids:
-        description: Check IDs, separated by commas (for example miri-ubuntu-latest); see docs/scheduled-validation.md
+        description: Check IDs separated by commas (for example miri-ubuntu-latest); see docs/scheduled-validation.md
         required: true
         type: string
       packages:
-        description: Crate names, separated by commas (for example cpulist)
+        description: Crate names separated by commas (for example cpulist)
         required: true
         type: string
 
@@ -25,44 +21,30 @@ permissions:
 
 jobs:
   plan:
-    # Automatic confirmation uses live registrations; manual requests need no repair permission.
-    # A non-main workflow selection fails in the planner instead of silently skipping.
-    # Ref: .github/workflows/implementation.md#managed-repair-gate.
     if: github.repository == 'folo-rs/folo'
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      issues: read
-      actions: read
-      pull-requests: read
     outputs:
-      run: ${{ steps.plan.outputs.run }}
       source_sha: ${{ steps.plan.outputs.source_sha }}
       controller_sha: ${{ steps.plan.outputs.controller_sha }}
       matrix: ${{ steps.plan.outputs.matrix }}
-      manifest: ${{ steps.plan.outputs.manifest }}
     steps:
-      # Bind confirmation planning to the pushed controller SHA before main can advance again.
+      # Manual source selection never replaces the event-pinned main controller.
       # Ref: .github/workflows/implementation.md#immutable-execution.
       - uses: actions/checkout@v7
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - name: Select requested checks or pending merged repairs
-        # Manual diagnostics never update repair records or shared main coverage.
-        # Ref: .github/workflows/implementation.md#manual-checks.
+      - name: Plan fresh selected checks
         id: plan
         shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           Set-StrictMode -Version Latest
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $true
           ./scripts/scheduled/Invoke-ScheduledPlan.ps1 -Mode selected
+      # Preserve scope independently of the candidate's ability to build.
+      # Ref: .github/workflows/implementation.md#failure-reporting.
       - uses: actions/upload-artifact@v6
-        # No pending repair is valid no-work; retaining the hidden plan makes that auditable.
-        # Ref: .github/workflows/implementation.md#serialized-reporting.
         if: always()
         with:
           name: scheduled-plan-${{ github.run_id }}-${{ github.run_attempt }}
@@ -71,13 +53,9 @@ jobs:
           if-no-files-found: error
           retention-days: 30
   checks:
-    # Do not run the workspace when automatic confirmation has no pending repair.
-    # Ref: .github/workflows/implementation.md#serialized-reporting.
     needs: plan
-    if: needs.plan.outputs.run == 'true'
     uses: ./.github/workflows/deep-checks.yml
     with:
       source_sha: ${{ needs.plan.outputs.source_sha }}
       controller_sha: ${{ needs.plan.outputs.controller_sha }}
       matrix: ${{ needs.plan.outputs.matrix }}
-      manifest: ${{ needs.plan.outputs.manifest }}

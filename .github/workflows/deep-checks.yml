@@ -12,9 +12,6 @@ on:
       matrix:
         required: true
         type: string
-      manifest:
-        required: true
-        type: string
 
 permissions:
   # Candidate builds never share the reporter's issue-write authority.
@@ -23,8 +20,9 @@ permissions:
 
 jobs:
   execute:
-    # Every declared leg contributes evidence even if another leg fails.
-    # Ref: .github/workflows/implementation.md#complete-evidence-and-reuse.
+    name: ${{ matrix.id }}
+    # Independent checks still run after a finding; every nonzero exit fails its matrix job.
+    # Ref: .github/workflows/design.md#scheduled-validation.
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(inputs.matrix) }}
@@ -50,16 +48,20 @@ jobs:
           path: candidate
           persist-credentials: false
       - name: Execute declared check
-        # Execute only manifest-declared scope; raw evidence binds it to this source and attempt.
-        # Ref: .github/workflows/implementation.md#evidence-decoding.
+        # Native exit codes and incomplete execution fail the job, not just its artifact.
+        # Ref: .github/workflows/implementation.md#immutable-execution.
         shell: pwsh
         env:
           SCHEDULED_CHECK: ${{ toJSON(matrix) }}
-          SCHEDULED_MANIFEST: ${{ inputs.manifest }}
-        run: just scheduled-check
-      - name: Preserve result and raw replay evidence
-        # Failed setup/checks still need diagnostic evidence; the output directory is hidden.
-        # Ref: .github/workflows/implementation.md#immutable-execution.
+          SCHEDULED_SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          just scheduled-check
+      - name: Preserve readable summary and tool diagnostics
+        # Always upload partial diagnostics; setup-only failures remain visible in Actions logs.
+        # Ref: .github/workflows/implementation.md#failure-reporting.
         if: always()
         uses: actions/upload-artifact@v6
         with:

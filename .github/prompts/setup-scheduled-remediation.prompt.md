@@ -1,212 +1,114 @@
-# Reconcile disabled Local scheduled roles
+# Set up Local scheduled triage and repair
 
-Apply this procedure only when the operator explicitly requests installation/setup.
-Reconcile the existing repair entry and a separate triage entry using the selected
-personal Copilot account and an actual **Local** App environment. Create only
-disabled entries. Do not run either automation, enroll implicitly, enable schedules,
-change accounts/billing, start a pilot, dispatch checks, or reset any existing work.
+Run this procedure only when the operator explicitly requests setup. Install or
+update repository-level Local Copilot App automations using supported native App
+tools and controls. Read [scheduled validation](../../docs/scheduled-validation.md)
+and the `scheduled-triage`, `scheduled-intake` and `scheduled-repair` skills.
 
-Hosted execution and reporting remain independently enabled by reviewed policy.
-Manual Selected/Full deep checks do not require Local installation or repair
-allowlists. Executable triage is separate from the still-unavailable new-repair
-handoff: `reserve-attempt` continues to reject `ai-triage-unavailable`.
+Do not run an automation during setup. Create and update entries **disabled**
+unless the operator separately and explicitly authorizes enabling them. Do not
+change accounts or billing, install tools, dispatch checks, or start repairs.
+GitHub Actions does no AI inference; the App work uses the operator's personally
+funded account and actual Local environment.
 
-## Stage 1: Read desired state and operator choices
+## Stage 1: Select the repository and ordinary App settings
 
-Read `docs\scheduled-validation.md`, `docs\scheduled-triage.md`,
-`scripts\scheduled\policy.json`, `scripts\scheduled\triage-policy.json`, and the
-`scheduled-intake`, `scheduled-triage` and `scheduled-repair` skills.
+Use `list_projects` to identify the repository's existing Local project. Use
+`list_workflows` without an enabled filter to show existing entries, including
+disabled and renamed ones. Inspect their prompts and project association with
+supported App metadata or the Automations UI. Ask the operator which relevant
+disabled entries to update; do not infer ownership from a name alone or create a
+duplicate because a lookup is incomplete.
 
-Repair retains its marker, schedule, scopes, budgets, native sessions and selected
-models. Triage has its own marker, cadence, mode, profile and budget. The triage
-model/effort are intentionally unconfigured; ask the operator to choose supported
-native settings rather than selecting a paid model or inheriting a default silently.
-Preserve an existing role's model unless an explicit model change is requested.
+Confirm the actual Local environment, personal account, model/effort and schedule
+for each role. The operator may explicitly choose App model defaults instead of an
+override. Preserve an existing model unless a change is requested; never select a
+paid model on the operator's behalf. Record the chosen repair-session model in the
+repair prompt as ordinary prose, or explicitly say to use the App defaults.
+Use the App's displayed timezone and schedule preview; do not assume UTC or invent
+an environment ID. GitHub login alone does not establish personal inference billing.
+Missing settings can be selected in the native editor rather than reconstructed
+from private App storage.
 
-Verify the selected GitHub identity without printing credentials:
+The entries are:
 
-```powershell
-Set-StrictMode -Version Latest
-$ErrorActionPreference = 'Stop'
-$PSNativeCommandUseErrorActionPreference = $true
-gh api user --jq '{login: .login, id: .id}'
-gh api repos/folo-rs/folo --jq '{id: .id, full_name: .full_name, default_branch: .default_branch}'
-```
-
-These commands contain no placeholders. Compare the actual results with reviewed
-policy and stop on mismatch. GitHub login does not prove personal inference
-billing, model quality, consent or machine availability. Record those remaining
-operator exercises without claiming they succeeded. Do not install tooling or
-build/run checks during setup.
-
-## Stage 2: Discover native entries and durable ownership
-
-Use native `list_projects` to identify the canonical repository project and
-`list_workflows` without an enabled-only filter. Obtain actual Local host, project,
-prompt, model/effort, mode, enabled state, workspace type, timezone and next-run
-preview through supported native metadata/UI. A host ID of `local` is valid only
-when actually observed. Never substitute a project ID, machine name or guessed ID.
-
-Inspect renamed entries, entries associated with an earlier project ID and cached
-registered IDs. Match verified repository identity and the role marker; a name or
-cached ID alone is not ownership proof. If native metadata is incomplete, use
-supported App UI/operator confirmation or stop. Do not inspect private App storage.
-
-Resolve existing executor state with `Get-ScheduledStateRoot`. Missing/corrupt
-state in an existing enrollment requires recovery, not empty initialization.
-Reconcile retained GitHub/native ownership before any genuinely new enrollment.
-Keep enrollment a separate explicit operator action. Disabled entry installation
-does not require fabricating an executor ID or creating `state.json`.
-
-Use the separate setup journal to retain an uncertain native create even when
-executor enrollment does not yet exist:
-
-```powershell
-Set-StrictMode -Version Latest
-$ErrorActionPreference = 'Stop'
-$PSNativeCommandUseErrorActionPreference = $true
-Import-Module .\scripts\scheduled\LocalSetupState.psm1 -Force
-$path = Get-ScheduledSetupJournalPath -RepositoryId {{REPOSITORY_ID}}
-Invoke-ScheduledSetupJournal -Path $path -RepositoryId {{REPOSITORY_ID}} -Action read |
-    ConvertTo-Json -Depth 100
-```
-
-| Placeholder | Source |
+| Suggested name | Saved prompt |
 |---|---|
-| `REPOSITORY_ID` | Numeric repository ID verified through GitHub, not an App project ID or repository name. |
+| Folo scheduled failure triage | Run the repository's `scheduled-triage` skill in this Local App project. Process open run reports oldest first using the selected model. Do not edit source, start repairs or change automation/account/billing settings. |
+| Folo scheduled repair | Run the repository's `scheduled-intake` skill in this Local App project. Follow existing repairs and PRs first, then start at most one new repair. Use the operator-selected repair-session model settings described below; preserve existing session settings. Do not create per-PR automations or change automation/account/billing settings. |
 
-Preserve an existing `creating` entry. An empty native lookup does not authorize
-another create while its previous outcome remains uncertain.
+Expand the repair prompt's model sentence with the actual operator choice, not a
+placeholder or inferred model. Keep the prompts short and refer to the checked-in
+skills rather than copying their procedures. There is no installation marker,
+enrollment, policy file, profile registration or local-state migration.
 
-## Stage 3: Compute independent reconciliation decisions
+The repair skill uses native `rename_branch` before the first PR to include
+`scheduled-repair-<issue-number>` in its branch name. This is solely an
+external-service/production-benchmark opt-out, available to humans too, not an
+automation identity or ownership protocol. Do not add a setup registry or body
+marker for it.
 
-Normalize actual native metadata with `ConvertTo-ScheduledNativeWorkflow`.
-Its camelCase fields are native read metadata, not fields to invent on a write.
-Join project IDs to repositories only from verified native/registered association.
+## Stage 2: Save disabled entries through supported controls
 
-Prepare a JSON artifact containing `role`, `desired`, `workflows`,
-`metadata_complete`, `registered_profile` and the actual `setup_journal`.
+For an existing entry, present the proposed prompt and settings changes, then use
+`save_workflow` with its actual `workflow_id` after operator approval. Update only
+the selected entry. Preserve unrelated settings and keep redundant entries
+disabled; remove one through supported App UI only when explicitly requested.
+An unresolved existing claim or PR must be handed over explicitly, not discarded
+as part of setup.
 
-| Object | Required content |
+For a missing role, use `save_workflow` with `user_confirmation: "dialog"` to open
+the native creation editor. The following is a tool-input example, not a file to
+persist or a schema for issues:
+
+```json
+{
+  "project_id": "PROJECT_ID",
+  "name": "ROLE_NAME",
+  "prompt": "ROLE_PROMPT",
+  "interval": "manual",
+  "cron_expression": "OPERATOR_CRON",
+  "mode": "autopilot",
+  "enabled": false,
+  "clear_remote_branch": true,
+  "user_confirmation": "dialog"
+}
+```
+
+| Placeholder | Value |
 |---|---|
-| `desired` | Verified repository name and numeric `repository_id`, project/Local host, existing executor/login when enrolled, reviewed name/marker/cron and prompt. Repair uses its existing `coordinator_model` and optional supported `coordinator_effort`; triage uses operator-selected `model` and optional `reasoning_effort`. |
-| `workflows` | Normalized actual native entries, including all candidate roles and renamed entries. |
-| `registered_profile` | That role's existing profile, not the other role's; null only when absence/recovery is established. |
-| `metadata_complete` | True only when all facts needed for matching and comparison are available. |
-| `setup_journal` | The helper's persisted read result, including any unknown native create. |
+| `PROJECT_ID` | Actual repository project ID returned by `list_projects`. |
+| `ROLE_NAME` | Operator-approved name for this role. |
+| `ROLE_PROMPT` | The role's short prompt, with the operator's model choice included where needed. |
+| `OPERATOR_CRON` | Operator-selected schedule, reviewed in the App's timezone and next-run preview. |
 
-The saved prompts contain only their own reviewed marker and point to the
-corresponding version-controlled skill:
+Select the actual **Local** environment and approved model/effort in the editor,
+and save disabled. The dialog does not require guessing a host ID. A direct create
+instead requires the actual observed `host_id`; never substitute a project ID or
+a machine name. Only pass a `model` or `reasoning_effort` override that the operator
+selected and the native tool supports.
 
-```text
-TRIAGE_MARKER
-Run the repository's scheduled-triage skill for folo-rs/folo in Local mode.
-Use the selected App model for complete evidence-backed diagnosis and causal
-comparison. Reconcile durable ownership and publication; never edit source,
-create repair PRs, authorize new repairs, activate automation or change billing.
-```
+For updates, `user_confirmation` is not supported: use the existing
+`workflow_id` and the already approved changed fields. `interval: "manual"` with
+`cron_expression` is the native custom-schedule representation, not a request to
+run now. When changing to Local, use `clear_remote_branch: true`. To explicitly
+return model/effort to App defaults on an update, use `clear_model: true` and/or
+`clear_reasoning_effort: true`, omitting the corresponding value. Do not invent
+account, billing, worker-model or workspace-type fields on `save_workflow`.
 
-```text
-REPAIR_MARKER
-Run the repository's scheduled-intake skill for folo-rs/folo in Local mode.
-Reconcile and continue already registered repairs in their existing native
-sessions within policy and budgets. New repair admission remains unavailable
-with ai-triage-unavailable; completed triage does not lift that boundary.
-Do not create or enable automation, start new repairs or change accounts/billing.
-```
+If a save result is uncertain, reread `list_workflows` and inspect the editor before
+trying again. Report a concrete blocker when the outcome cannot be established;
+do not write a setup journal or create another entry blindly.
 
-Replace `TRIAGE_MARKER` and `REPAIR_MARKER` with their respective reviewed policy
-values. Do not put both markers in one prompt or duplicate the skill protocol.
+## Stage 3: Verify and report
 
-```powershell
-Set-StrictMode -Version Latest
-$ErrorActionPreference = 'Stop'
-$PSNativeCommandUseErrorActionPreference = $true
-Import-Module .\scripts\scheduled\LocalSetup.psm1 -Force
-Import-Module .\scripts\scheduled\ScheduledJson.psm1
-$inputData = Get-Content -LiteralPath "{{SETUP_INPUT_PATH}}" -Raw | ConvertFrom-ScheduledJson
-Get-ScheduledRoleSetupDecision -Role $inputData.role -Desired $inputData.desired `
-    -Workflows $inputData.workflows -MetadataComplete $inputData.metadata_complete `
-    -RegisteredProfile $inputData.registered_profile -SetupJournal $inputData.setup_journal |
-    ConvertTo-Json -Depth 100
-```
+Reread `list_workflows` and use the native editor as needed to verify each entry's
+repository, Local environment, prompt, selected model/effort, schedule and disabled
+state. Report the actual entry names/IDs and any remaining operator decisions.
+Saving an entry does not prove unattended permissions, machine availability or
+successful execution.
 
-| Placeholder | Source |
-|---|---|
-| `SETUP_INPUT_PATH` | Absolute non-secret artifact containing verified native facts and desired settings for one role. |
-
-`unchanged` means no native write. `blocked` preserves work and reports the reason.
-Review proposed differences before applying an `update`; rerun the same comparison
-with `-ApproveProfileChange` after approval. Include `-UpdateModel` only for an
-explicitly requested model/effort change. A paused role stays paused, a renamed entry
-keeps its name, and an unexpectedly enabled entry requires operator reconciliation.
-
-## Stage 4: Apply only approved disabled native changes
-
-Before native `save_workflow` creates a missing entry, persist its intent:
-
-```powershell
-Set-StrictMode -Version Latest
-$ErrorActionPreference = 'Stop'
-$PSNativeCommandUseErrorActionPreference = $true
-Import-Module .\scripts\scheduled\LocalSetupState.psm1 -Force
-Import-Module .\scripts\scheduled\ScheduledJson.psm1
-$inputData = Get-Content -LiteralPath "{{SETUP_INPUT_PATH}}" -Raw | ConvertFrom-ScheduledJson
-$path = Get-ScheduledSetupJournalPath -RepositoryId {{REPOSITORY_ID}}
-Invoke-ScheduledSetupJournal -Path $path -RepositoryId {{REPOSITORY_ID}} `
-    -Role $inputData.role -Action begin-create `
-    -Data @{ operator_approved = $true; desired = $inputData.desired } |
-    ConvertTo-Json -Depth 100
-```
-
-Placeholders are the same verified input path and numeric repository ID above.
-An exception stops creation. A later unknown create outcome is reconciled by
-native lookup and the existing marker/identity; never repeat creation blindly.
-
-Use native `save_workflow` with only the helper's supported changes. Custom cron is
-`interval: manual` plus `cron_expression`. Creation has `enabled: false` and the
-actual host/project; updates target only the verified `workflow_id`. Do not supply
-invented billing, spending-cap, `repair_model` or workspace fields. The repair
-session model belongs to its supported kickoff field, not `save_workflow`.
-
-For an approved update with an explicit null `reasoning_effort` change, clear the
-saved override with `clear_reasoning_effort: true` and omit `reasoning_effort` from
-the native call. An absent change key preserves the existing effort selection.
-
-Re-read the entry and verify identity, role marker and selected settings. Confirm
-the actual ID through `Invoke-ScheduledSetupJournal` with `-Action confirm` and
-`data` containing `operator_approved`, `ownership_verified` and `automation_id`.
-If confirmation is unavailable, retain the creation fence and report the blocker.
-Do not delete arbitrary entries, run an automation or create a per-PR timer.
-
-## Stage 5: Register observations without resetting work
-
-For an already verified enrollment, register only that role's observed profile.
-Repair uses the existing `register-profile`; triage uses `triage-register-profile`.
-These are operator setup operations through the existing `scheduled-local` /
-`Invoke-ScheduledLocalAction` surface, not the AI-facing `scheduled-triage` entry.
-The approval field records an actual operator decision; it is not a credential
-that the triage role may supply to grant itself authority.
-Both preserve claims, counters and owned sessions. Do not call `record-scan`:
-setup is not a successful queue scan.
-
-The triage profile contains actual automation/project/host/executor/login/numeric
-user identity, enabled state, model/effort, cron/timezone and policy/controller/
-prompt digests. Use the shared digest helpers. Do not store credentials or inferred
-billing fields. If enrollment is intentionally absent, report profile registration
-as deferred instead of initializing it implicitly.
-
-Compute triage's registered `prompt_digest` with
-`Get-ScheduledTriagePromptDigest` over the actual approved saved App prompt, not
-over the skill file. `Get-ScheduledTriageControllerDigest` independently includes
-the executable skill and normalized current controller content. Later executions
-must supply fresh native prompt/identity facts bound to their scan or accepted
-dispatch; installing or registering the profile does not supply those observations.
-
-Report each role's unchanged/created-disabled/updated/blocked outcome separately.
-Identify remaining operator enrollment, model/billing/consent, timezone,
-machine/restart and semantic-quality exercises. Do not call those facts proved by
-helper tests, configuration, or successful native metadata writes.
-
-No activation or live exercise is part of this setup. New repair admission remains
-a separate implementation boundary even after triage installation succeeds.
+Keep one enabled automation per role and avoid overlapping invocations when the
+operator chooses to activate them. Enabling is a separate explicit decision, not
+an implied consequence of setup. Do not invoke `run_workflow`, create a per-PR
+timer or perform a live exercise as part of this procedure.

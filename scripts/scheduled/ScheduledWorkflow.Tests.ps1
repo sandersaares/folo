@@ -1,131 +1,83 @@
 #Requires -Modules @{ ModuleName = 'Pester'; ModuleVersion = '5.0' }
-# Protects planning/gate orchestration: the deep-checks matrix and managed/confirmation decision
-# must reflect the triggering event correctly, coverage reuse must never mask a stale or forced
-# rerun, and the reporting workflow's queue-without-replacement concurrency contract this module
-# relies on must not silently regress.
+
+# Exercises event-pinned, always-fresh planning with no issue history or checker toolchain.
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+$PSNativeCommandUseErrorActionPreference = $true
+
 BeforeAll {
     Import-Module (Join-Path $PSScriptRoot 'ScheduledWorkflow.psm1') -Force
+    $script:variables = @('GITHUB_REF', 'GITHUB_EVENT_NAME', 'GITHUB_SHA', 'GITHUB_OUTPUT', 'GITHUB_STEP_SUMMARY')
+    $script:saved = @{}
+    foreach ($key in $variables) { $saved[$key] = [Environment]::GetEnvironmentVariable($key) }
 }
-Describe 'Repair gate orchestration' {
-    It 'wires manual requests without redundant checkboxes or a silent branch skip' {
-        $root = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
-        foreach ($name in @('full-deep-validation.yml', 'selected-deep-validation.yml')) {
-            $workflow = Get-Content -LiteralPath (Join-Path $root ".github\workflows\$name") -Raw
-            $workflow | Should -Match '(?m)^  workflow_dispatch:\r?$'
-            $workflow | Should -Match "(?m)^    if: github.repository == 'folo-rs/folo'\r?$"
-            $workflow | Should -Not -Match 'EXECUTION_CANARY|FORCE_RECHECK|inputs\.canary|inputs\.force'
-            $workflow | Should -Match 'ref: \$\{\{ github.sha \}\}'
-            $workflow | Should -Match '(?m)^          ./scripts/scheduled/Invoke-ScheduledPlan.ps1'
-            $workflow | Should -Match '(?m)^          include-hidden-files: true\r?$'
-        }
+AfterAll {
+    foreach ($key in $variables) { [Environment]::SetEnvironmentVariable($key, $saved[$key]) }
+}
+
+Describe 'Deep workflow planning' {
+    BeforeEach {
+        $env:GITHUB_REF = 'refs/heads/main'
+        $env:GITHUB_EVENT_NAME = 'schedule'
+        $env:GITHUB_SHA = 'a' * 40
+        $env:GITHUB_OUTPUT = Join-Path $TestDrive 'outputs'
+        $env:GITHUB_STEP_SUMMARY = Join-Path $TestDrive 'summary.md'
+        $script:eventPath = Join-Path $TestDrive 'event.json'
+        '{}' | Set-Content -LiteralPath $eventPath
+        $script:output = Join-Path $TestDrive 'plan'
     }
 
-    It 'serializes reporting without replacing pending events' {
-        $root = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
-        $workflow = Get-Content -LiteralPath (Join-Path $root '.github\workflows\scheduled-report.yml') -Raw
-        $workflow | Should -Match '(?m)^    branches: \[main\]\r?$'
-        $concurrency = [regex]::Match($workflow, '(?m)^concurrency:\r?\n(?:[ \t]+[^\r\n]*\r?\n)+').Value
-        $concurrency | Should -Match '(?m)^  group: scheduled-reporting\r?$'
-        $concurrency | Should -Match '(?m)^  cancel-in-progress: false\r?$'
-        $concurrency | Should -Match '(?m)^  queue: max\r?$'
-        @([regex]::Matches($workflow, '(?m)^[ \t]*queue:')).Count | Should -Be 1
-    }
-    It 'rejects failed context before treating an ordinary PR as cheap success' {
-        { Invoke-ScheduledGate -PlanPath absent -ResultsDirectory absent -ContextResult failure `
-                -DeepResult skipped -RunId 1 -RunAttempt 1 } | Should -Throw
-    }
-    It 'passes ordinary PRs without deep artifacts' {
-        $path = Join-Path $TestDrive 'ordinary.json'
-        @{ managed = $false } | ConvertTo-Json | Set-Content $path
-        { Invoke-ScheduledGate -PlanPath $path -ResultsDirectory absent -ContextResult success `
-                -DeepResult skipped -RunId 1 -RunAttempt 1 } | Should -Not -Throw
-    }
-    It 'rejects missing skipped cancelled and failed relevant execution' {
-        $path = Join-Path $TestDrive 'managed.json'
-        @{ managed = $true } | ConvertTo-Json | Set-Content $path
-        foreach ($result in @('skipped', 'cancelled', 'failure', '')) {
-            { Invoke-ScheduledGate -PlanPath $path -ResultsDirectory absent -ContextResult success `
-                    -DeepResult $result -RunId 1 -RunAttempt 1 } | Should -Throw
-        }
+    It 'runs the entire nightly suite again even when the commit is unchanged' {
+        $first = Invoke-ScheduledPlanning -Mode full -EventPath $eventPath -OutputDirectory $output
+        $second = Invoke-ScheduledPlanning -Mode full -EventPath $eventPath -OutputDirectory $output
+        $first.checks.Count | Should -Be 32
+        $second.checks.Count | Should -Be 32
+        $second.source_sha | Should -Be $env:GITHUB_SHA
+        @($second.Keys | Sort-Object) | Should -Be @('checks', 'controller_sha', 'source_sha')
+        $persisted = Get-Content -LiteralPath (Join-Path $output 'plan.json') -Raw | ConvertFrom-Json -AsHashtable
+        $persisted.source_sha | Should -Be $env:GITHUB_SHA
+        (Get-Content -LiteralPath $env:GITHUB_OUTPUT -Raw) | Should -Match 'matrix='
     }
 
-    Describe 'Coverage reporting lag' {
-        It 'does not reuse success across <Reason>' -TestCases @(
-            @{ Status = 'completed'; Conclusion = 'failure'; Attempt = 1; Id = 20; Reason = 'unreported-validation-failure' }
-            @{ Status = 'in_progress'; Conclusion = $null; Attempt = 1; Id = 20; Reason = 'unsettled-validation-run' }
-            @{ Status = 'completed'; Conclusion = 'success'; Attempt = 2; Id = 10; Reason = 'coverage-run-reattempted' }
-        ) {
-            param($Status, $Conclusion, $Attempt, $Id, $Reason)
-            InModuleScope ScheduledWorkflow -Parameters @{
-                Status = $Status; Conclusion = $Conclusion; Attempt = $Attempt; Id = $Id; Reason = $Reason
-            } {
-                param($Status, $Conclusion, $Attempt, $Id, $Reason)
-                $execution = @{
-                    id = $Id; run_attempt = $Attempt; head_sha = 'a' * 40; head_branch = 'main'
-                    event = 'schedule'
-                    status = $Status; conclusion = $Conclusion; updated_at = '2026-09-08T11:00:00Z'
-                }
-                Mock Invoke-ScheduledReadApi { @(@{ workflow_runs = @($execution) }) }
-                Get-ScheduledCoverageRunRisk -Policy @{ repository = 'folo-rs/folo' } `
-                    -Receipt @{ run_id = 10; run_attempt = 1; source_sha = 'a' * 40; completed_at = '2026-09-08T10:00:00Z' } `
-                    -CurrentRunId 30 -CurrentRunAttempt 1 | Should -Be $Reason
-            }
-        }
-
-        It 'ignores its own planning run without refreshing or invalidating prior coverage' {
-            InModuleScope ScheduledWorkflow {
-                Mock Invoke-ScheduledReadApi { @(@{ workflow_runs = @(@{ id = 30 }) }) }
-                Get-ScheduledCoverageRunRisk -Policy @{ repository = 'folo-rs/folo' } `
-                    -Receipt @{ run_id = 10; run_attempt = 1; source_sha = 'a' * 40; completed_at = '2026-09-08T10:00:00Z' } `
-                    -CurrentRunId 30 -CurrentRunAttempt 1 | Should -BeNullOrEmpty
-                Should -Invoke Invoke-ScheduledReadApi -Times 2 -Exactly
-            }
-        }
-
-        It 'ignores manual failures and unfinished diagnostics when reusing automatic coverage' {
-            InModuleScope ScheduledWorkflow {
-                Mock Invoke-ScheduledReadApi {
-                    @(@{ workflow_runs = @(
-                        @{ id = 20; event = 'workflow_dispatch'; status = 'completed'; conclusion = 'failure' },
-                        @{ id = 21; event = 'workflow_dispatch'; status = 'in_progress' }
-                    ) })
-                }
-                Get-ScheduledCoverageRunRisk -Policy @{ repository = 'folo-rs/folo' } `
-                    -Receipt @{ run_id = 10; run_attempt = 1; source_sha = 'a' * 40; completed_at = '2026-09-08T10:00:00Z' } `
-                    -CurrentRunId 30 -CurrentRunAttempt 1 | Should -BeNullOrEmpty
-                Should -Invoke Invoke-ScheduledReadApi -Times 2 -Exactly
-            }
-        }
-
-        It 'forces a rerun of the coverage-producing workflow even before querying its own attempt' {
-            InModuleScope ScheduledWorkflow {
-                Mock Invoke-ScheduledReadApi { throw 'No API read needed' }
-                Get-ScheduledCoverageRunRisk -Policy @{ repository = 'folo-rs/folo' } `
-                    -Receipt @{ run_id = 10; run_attempt = 1 } -CurrentRunId 10 -CurrentRunAttempt 2 |
-                    Should -Be 'coverage-run-reattempted'
-            }
-        }
+    It 'allows a manual full run at exact candidate bytes without changing the controller' {
+        $env:GITHUB_EVENT_NAME = 'workflow_dispatch'
+        @{ inputs = @{ source_sha = 'b' * 40 } } | ConvertTo-Json | Set-Content -LiteralPath $eventPath
+        $plan = Invoke-ScheduledPlanning -Mode full -EventPath $eventPath -OutputDirectory $output
+        $plan.source_sha | Should -Be ('b' * 40)
+        $plan.controller_sha | Should -Be ('a' * 40)
+        $plan.checks.Count | Should -Be 32
     }
-    It 'keeps content-reader callbacks in their defining module when only the workflow is imported' {
-        $root = Join-Path $TestDrive 'callback-workspace'
-        New-Item -ItemType Directory -Path (Join-Path $root 'packages/sample') -Force | Out-Null
-        '[package]', 'name = "sample"', 'version = "0.1.0"' |
-            Set-Content (Join-Path $root 'packages/sample/Cargo.toml')
-        InModuleScope ScheduledWorkflow -Parameters @{ Root = $root } {
-            param($Root)
-            Mock gh -ModuleName ScheduledGate {
-                $endpoint = $args[1]
-                if ($endpoint -like '*/files?*') {
-                    return '[[{"filename":"Cargo.toml","status":"modified"}]]'
-                }
-                $version = if ($endpoint -like '*ref=base') { '0.1.0' } else { '0.1.1' }
-                return @{ content = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(
-                            "sample = { version = `"=$version`", path = `"packages/sample`" }")) } | ConvertTo-Json -Compress
-            }
-            Assert-ScheduledPullRequestChange -Root $Root -Policy @{ repository = 'folo-rs/folo' } `
-                -PullRequest @{ number = 42; base = @{ sha = 'base' }; head = @{ sha = 'head' } } `
-                -Scope @{ packages = @('sample') }
-            Should -Invoke gh -ModuleName ScheduledGate -Times 3 -Exactly
-        }
+
+    It 'selects exact checks and packages for a manual run' {
+        $env:GITHUB_EVENT_NAME = 'workflow_dispatch'
+        @{ inputs = @{ source_sha = ''; check_ids = 'miri-ubuntu-latest, careful-windows-latest'; packages = 'cpulist, many_cpus' } } |
+            ConvertTo-Json | Set-Content -LiteralPath $eventPath
+        $plan = Invoke-ScheduledPlanning -Mode selected -EventPath $eventPath -OutputDirectory $output
+        $plan.source_sha | Should -Be ('a' * 40)
+        $plan.checks.Count | Should -Be 2
+        $plan.checks[0].packages | Should -Be @('cpulist', 'many_cpus')
+    }
+
+    It 'rejects a non-main controller' {
+        $env:GITHUB_REF = 'refs/heads/feature'
+        { Invoke-ScheduledPlanning -Mode full -EventPath $eventPath -OutputDirectory $output } | Should -Throw
+    }
+
+    It 'does not run selected checks on a main push' {
+        $env:GITHUB_EVENT_NAME = 'push'
+        { Invoke-ScheduledPlanning -Mode selected -EventPath $eventPath -OutputDirectory $output } | Should -Throw
+    }
+
+    It 'rejects malformed SHA and empty selections' -ForEach @(
+        @{ inputs = @{ source_sha = 'main'; check_ids = 'miri-ubuntu-latest'; packages = 'cpulist' } }
+        @{ inputs = @{ source_sha = 'a' * 39; check_ids = 'miri-ubuntu-latest'; packages = 'cpulist' } }
+        @{ inputs = @{ check_ids = ''; packages = 'cpulist' } }
+        @{ inputs = @{ check_ids = 'miri-ubuntu-latest'; packages = '' } }
+        @{ inputs = @{ check_ids = 'miri-ubuntu-latest,'; packages = 'cpulist' } }
+        @{ inputs = @{ check_ids = 'miri-ubuntu-latest'; packages = 'cpulist,' } }
+    ) {
+        $env:GITHUB_EVENT_NAME = 'workflow_dispatch'
+        @{ inputs = $inputs } | ConvertTo-Json | Set-Content -LiteralPath $eventPath
+        { Invoke-ScheduledPlanning -Mode selected -EventPath $eventPath -OutputDirectory $output } | Should -Throw
     }
 }

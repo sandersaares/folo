@@ -1,11 +1,11 @@
 use ohno::AppError;
 use serde::{Deserialize, Serialize};
 
-/// Carries the baseline-relevant options shared by the checker and reporter.
+/// Carries cargo-mutants options used to run an empty shard's unmutated baseline.
 ///
 /// Unknown fields belong to cargo-mutants, not this baseline protocol. Serde validates only
 /// the fields we consume, without restricting unrelated configuration.
-/// Ref: .github/workflows/implementation.md, "Scheduled controller ownership".
+/// Ref: .github/workflows/implementation.md, "Immutable execution".
 #[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(default)]
 struct MutationConfig {

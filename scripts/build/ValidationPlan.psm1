@@ -55,8 +55,13 @@ function Get-ValidationPlan {
             $path -cin @('.github/actionlint.yaml', '.github/actionlint.yml')) {
             $workflows = $true
             # Pester also asserts the actual workflow contracts, not just script behavior.
-            $null = $domains.Add('scheduled')
+            $domains.UnionWith([string[]] @('build', 'scheduled'))
             Write-Verbose "'$path' is workflow/lint configuration; selecting workflow lint and workflow-contract tests."
+        }
+        if ($path -cmatch '^\.github/skills/scheduled-(intake|triage|repair)/' -or
+            $path -ceq '.github/prompts/setup-scheduled-remediation.prompt.md') {
+            $null = $domains.Add('scheduled')
+            Write-Verbose "'$path' defines App triage or repair behavior; selecting its workflow-contract tests."
         }
 
         if ($path -ceq 'PSScriptAnalyzerSettings.psd1') {
@@ -104,19 +109,18 @@ function Get-ValidationPlan {
             $domains.UnionWith([string[]] @('release', 'scheduled'))
             Write-Verbose "'$path' affects Cargo fixture and native-helper execution; selecting release and scheduled tests."
         }
-        if ($path -ceq 'Cargo.toml' -or $path -cmatch '^packages/[^/]+/Cargo\.toml$' -or
-            $path -ceq 'packages/scheduled-mutation-config/dependency-contract.json') {
-            # Scheduled integration tests read live workspace metadata and the decoder contract.
+        if ($path -ceq 'Cargo.toml' -or $path -cmatch '^packages/[^/]+/Cargo\.toml$') {
+            # Scheduled check planning reads live workspace metadata.
             $null = $domains.Add('scheduled')
-            Write-Verbose "'$path' is a live metadata/decoder-contract input to scheduled integration tests."
+            Write-Verbose "'$path' is a live metadata input to scheduled integration tests."
         }
     }
 
-    # Scheduled execution imports build helpers; canonical version verification imports release
-    # helpers. Other cross-domain sharing goes through setup/utility and selects all above.
-    if ($domains.Contains('build') -or $domains.Contains('release')) {
+    # Scheduled execution imports build helpers. Other cross-domain sharing goes through
+    # setup/utility and selects all above.
+    if ($domains.Contains('build')) {
         $null = $domains.Add('scheduled')
-        Write-Verbose 'Scheduled tests consume build/release helpers; including that dependent domain.'
+        Write-Verbose 'Scheduled tests consume build helpers; including that dependent domain.'
     }
     Write-Verbose "Tooling selection: workflows=$workflows, script analysis=$analysis, script domains=$(@($domains | Sort-Object) -join ', '). Inputs outside declared tooling domains are left to Cargo/package checks."
     return @{
@@ -170,13 +174,13 @@ function Get-ValidationScriptDomain {
     $domains = @($plan.script_domains)
     foreach ($package in $packages) {
         if ($package -isnot [string]) { throw 'Affected package names must be strings.' }
-        if ($package -cin @('cargo-release-plan', 'scheduled-mutation-config', 'scheduled-run-record', 'scheduled-triage-record')) {
+        if ($package -ceq 'scheduled-mutation-config') {
             $domains += 'scheduled'
             Write-Verbose "Cargo delta selected '$package'; selecting its scheduled-script integration tests."
         }
         if ($package -cin @('cargo-release-plan', 'release-target-check')) {
-            $domains += @('release', 'scheduled')
-            Write-Verbose "Cargo delta selected '$package'; selecting release verification and dependent scheduled-script tests."
+            $domains += 'release'
+            Write-Verbose "Cargo delta selected '$package'; selecting its release verification tests."
         }
     }
     return @($domains | Sort-Object -Unique)

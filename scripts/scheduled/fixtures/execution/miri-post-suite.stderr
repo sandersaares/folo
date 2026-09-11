@@ -1,2 +1,0 @@
-error: the evaluated program leaked memory
-note: allocation originated in tests::test_a

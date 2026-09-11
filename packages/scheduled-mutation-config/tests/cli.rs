@@ -8,7 +8,7 @@
 use std::io::Write;
 use std::process::{Command, Output, Stdio};
 
-use serde_json::{Value, json};
+use serde_json::Value;
 use testing::with_watchdog;
 
 fn invoke(arguments: &[&str], input: Vec<u8>) -> Output {
@@ -40,32 +40,8 @@ fn decodes_configuration_on_the_default_command_path() {
 
 #[test]
 #[cfg_attr(miri, ignore = "exercises the real utility process and OS pipes")]
-fn selects_dependency_attestation_instead_of_toml_decoding() {
-    let metadata = json!({
-        "packages": [{
-            "id":"helper", "name":"scheduled-mutation-config", "version":"0.0.0",
-            "source":null, "dependencies":[]
-        }],
-        "workspace_members":["helper"],
-        "resolve":{"nodes":[{"id":"helper","deps":[],"features":[]}]}
-    });
-    let output = invoke(
-        &["--dependency-contract"],
-        metadata.to_string().into_bytes(),
-    );
-    assert!(output.status.success());
-    assert!(output.stderr.is_empty());
-    let actual: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(actual, json!({"requirements":[],"packages":{}}));
-}
-
-#[test]
-#[cfg_attr(miri, ignore = "exercises the real utility process and OS pipes")]
 fn rejects_unknown_or_extra_arguments_without_success_output() {
-    for arguments in [
-        vec!["--unknown"],
-        vec!["--dependency-contract", "unexpected"],
-    ] {
+    for arguments in [vec!["--unknown"], vec!["unexpected", "arguments"]] {
         let output = invoke(&arguments, Vec::new());
         assert!(!output.status.success());
         assert!(output.stdout.is_empty());
@@ -82,8 +58,4 @@ fn reports_input_errors_without_emitting_partial_json() {
         assert!(output.stdout.is_empty());
         assert!(!output.stderr.is_empty());
     }
-    let output = invoke(&["--dependency-contract"], b"{}".to_vec());
-    assert!(!output.status.success());
-    assert!(output.stdout.is_empty());
-    assert!(!output.stderr.is_empty());
 }

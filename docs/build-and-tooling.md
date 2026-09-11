@@ -65,18 +65,17 @@ implicitly rerun the shallow suite.
 The **Standard validation** workflow performs shallow PR/push/merge-queue checks;
 **Full deep validation** and **Selected deep validation** perform deep checks.
 CI composes their constituent commands into separately reported jobs
-and evidence-producing matrix entries rather than running one monolithic local
-recipe. Managed repair PRs also run the particular deep checks needed to verify
-their repair. Scheduling and authorization belong to workflow orchestration, not
+and diagnostic-producing matrix entries rather than running one monolithic local
+recipe. Repair authors also run the particular deep checks needed to verify
+their repair and link the results for review. Scheduling belongs to workflow orchestration, not
 to the definitions of the local recipes. To run just mutation testing, use
 `just package="foo bar" mutants`. Mutation timeouts and missed mutations remain
 anomalies; changing enforcement cadence does not relax test-quality requirements.
 
-See [deep validation and local remediation](scheduled-validation.md) for the
-hosted/local responsibility split, exact-head repair gates, reproducible Local App
-setup, admission limits and recovery. The local coordinator needs only the existing
-PowerShell/GitHub tooling on empty scans; prepare Rust/WSL tooling in repair sessions
-when applicable rather than on every polling-session creation.
+See [scheduled validation](scheduled-validation.md) for readable failure reporting,
+GitHub issue triage, repair ownership and reproducible Local App setup. Empty App
+scans need only GitHub access; prepare Rust/WSL tooling in repair sessions when
+applicable rather than on every polling-session creation.
 
 We operate under a **zero warnings allowed** requirement - fix all warnings that
 validation generates.
@@ -149,14 +148,12 @@ a reporter with issue-write permission executes automation code from the reviewe
 default branch, not code supplied by the run it is reporting.
 
 For example, `scheduled-report.yml` checks out the repository's default branch
-into its controller directory and records that checkout's SHA. It imports
-`ScheduledGitHub.psm1` and builds `scheduled-mutation-config` from that checkout,
-using its manifest, lockfile and pinned toolchain. It downloads the triggering
-run's logs/results into a separate evidence directory and passes them to the
-controller as data. It must not check out the triggering run's SHA as its automation
-code, import a script from an artifact, execute an artifact-supplied decoder, or
-let artifact extraction overwrite the controller directory. A repair's edits to
-reporting code therefore cannot grant themselves issue-write authority.
+into its controller directory. The PowerShell reporter must work even when Rust
+setup failed, so it uses the runner's existing PowerShell and GitHub CLI rather
+than building a reporting executable. It downloads the triggering run's
+diagnostics into a separate directory and treats them as data. It must not execute
+the triggering run's scripts or let artifact extraction overwrite the controller.
+A repair's edits to reporting code cannot grant themselves issue-write authority.
 See [immutable execution](../.github/workflows/implementation.md#immutable-execution)
 for the controller/candidate separation.
 
