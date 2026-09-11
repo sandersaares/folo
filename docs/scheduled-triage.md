@@ -45,6 +45,10 @@ identity and the Local scan's owned prompt observation with the approved profile
 it does not query or invent App metadata.
 Published health uses a fingerprint of the owning scan binding, not the local
 authorization token itself.
+Native and published observations retain strict scalar representations: schema
+versions are supported integers, identifiers are nonempty strings, and digests are
+canonical strings. Malformed present observations remain invalid even when a sibling
+observation is absent; absence does not establish a successful profile observation.
 
 The default three-hour schedule has a distinct offset from repair. This separates
 the entries, not their correctness: publication is the handoff, never timer order.
@@ -112,6 +116,8 @@ cannot release another session's uncheckpointed working view. Atomic installatio
 pin handoff and cleanup are serialized with state changes. Cleanup removes only
 provably unowned payloads and abandoned temporary writes, never active analysis
 data merely because time passed.
+Replacing an expired scan runs cleanup after committing its new owner, without
+depending on that poll subsequently saving or releasing a snapshot.
 
 Persist publication intent before external writes. Stable operation identities,
 known GitHub IDs and complete paginated lookup recover uncertain outcomes.

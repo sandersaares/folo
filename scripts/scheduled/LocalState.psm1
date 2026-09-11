@@ -475,7 +475,9 @@ function Invoke-ScheduledLocalAction {
             $writer.Flush($true)
         } finally { $writer.Dispose() }
         [IO.File]::Move($temporary, $path, $true)
-        if ($Action -cin @('triage-pin-snapshot', 'triage-clean-cache', 'triage-release-scan', 'triage-retire')) {
+        # Acquisition can replace an expired scan's pin even if its poll never saves a view.
+        # The committed projection still protects every active worker/checkpoint and writer.
+        if ($Action -cin @('triage-acquire-scan', 'triage-pin-snapshot', 'triage-clean-cache', 'triage-release-scan', 'triage-retire')) {
             Invoke-ScheduledTriageCacheCleanup $StateRoot $state.triage
         }
         return $state

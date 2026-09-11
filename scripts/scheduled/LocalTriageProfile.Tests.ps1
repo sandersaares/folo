@@ -12,6 +12,34 @@ BeforeAll {
 }
 
 Describe 'Owned native profile observations' {
+    It 'requires native and restored observation identities to retain their scalar types' {
+        $native = @{ automation_id = 'entry'; prompt_digest = 'a' * 64 }
+        foreach ($field in @('automation_id', 'prompt_digest')) {
+            $invalid = $native.Clone(); $invalid[$field] = @($native[$field])
+            { Get-ScheduledTriageProfileObservation $invalid scan 'token' 'session' } |
+                Should -Throw -ExceptionType ([FormatException])
+        }
+        { Get-ScheduledTriageProfileObservation $native scan 42 'session' } | Should -Throw -ExceptionType ([FormatException])
+        { Get-ScheduledTriageProfileObservation $native scan 'token' 42 } | Should -Throw -ExceptionType ([FormatException])
+        $valid = Get-ScheduledTriageProfileObservation $native scan 'token' 'session'
+        foreach ($field in @($valid.Keys)) {
+            $invalid = $valid.Clone()
+            $invalid[$field] = if ($field -ceq 'schema_version') { '1' } else { ,@($valid[$field]) }
+            if ($field -cne 'digest') {
+                $payload = $invalid.Clone(); $payload.Remove('digest')
+                $invalid.digest = Get-ScheduledDigest $payload
+            }
+            { Assert-ScheduledTriageProfileObservation $invalid scan 'token' 'session' } |
+                Should -Throw -ExceptionType ([FormatException])
+        }
+        $valid.schema_version = [long]1
+        Assert-ScheduledTriageProfileObservation $valid scan 'token' 'session'
+        $public = Get-ScheduledTriageHealthObservation $valid
+        Test-ScheduledTriageHealthObservation $native $public @{
+            session_id = 'session'; binding_digest = $public.binding_digest
+        } | Should -BeTrue
+    }
+
     It 'blocks missing, changed and foreign native prompt observations without consuming an analysis start' -ForEach @(
         @{ Change = 'missing' }, @{ Change = 'prompt' }, @{ Change = 'automation' }
     ) {

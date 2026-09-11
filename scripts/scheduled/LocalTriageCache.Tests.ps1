@@ -89,6 +89,46 @@ Describe 'Durable cache ownership' {
         (Invoke-TriageTransaction $later read).triage.active_analysis_id | Should -Be $fixture.context.analysis_id
     }
 
+    It 'collects replaced scan payloads before a failed poll can leave them orphaned' {
+        $checkpointId = Save-ScheduledTriageSnapshot $fixture.context (Get-CacheFixtureSnapshot $fixture checkpoint) $owner
+        $state = Invoke-TriageTransaction $fixture.context read
+        $checkpoint = Copy-TriageFixtureValue $state.triage.analyses[$fixture.context.analysis_id].checkpoint
+        $checkpoint.analysis.checkpoint = 2; $checkpoint.snapshot_id = $checkpointId
+        $null = Invoke-TriageTransaction $fixture.context triage-checkpoint @{ checkpoint = $checkpoint }
+        $workerId = Save-ScheduledTriageSnapshot $fixture.context (Get-CacheFixtureSnapshot $fixture worker) $owner
+        $writer = Write-ScheduledTriageSnapshotFile $fixture.context.state_root `
+            (Get-CacheFixtureSnapshot $fixture pending-worker) analysis $fixture.context.dispatch_token
+        $poll = @{ analysis_id = $null; session_id = 'session'; scan_token = $fixture.context.scan_token }
+        $pollId = Save-ScheduledTriageSnapshot $fixture.context (Get-CacheFixtureSnapshot $fixture poll) $poll
+        $abandoned = Write-ScheduledTriageSnapshotFile $fixture.context.state_root $fixture.snapshot scan $poll.scan_token
+        $later = $fixture.context.Clone(); $later.now = $later.now.AddDays(1)
+        $script:cleanupFault = @{ pending = $true }
+        Mock Remove-Item -ModuleName LocalTriageCache {
+            if ($cleanupFault.pending) { throw [IO.IOException]::new('Interrupted post-commit cleanup.') }
+            Microsoft.PowerShell.Management\Remove-Item -LiteralPath $LiteralPath
+        }
+        { Invoke-TriageTransaction $later triage-acquire-scan @{ session_id = 'failed-poll' } } | Should -Throw
+        $committed = Invoke-TriageTransaction $later read
+        $committed.triage.scan.session_id | Should -Be failed-poll
+        $committed.triage.scan.snapshot_id | Should -BeNullOrEmpty
+        $cleanupFault.pending = $false
+        $later.now = $later.now.AddDays(1)
+        $null = Invoke-TriageTransaction $later triage-acquire-scan @{ session_id = 'next-poll' }
+        Test-Path (Get-ScheduledTriageSnapshotPath $fixture.context.state_root $pollId) | Should -BeFalse
+        Test-Path -LiteralPath $abandoned.temporary_path | Should -BeFalse
+        Test-Path (Get-ScheduledTriageSnapshotPath $fixture.context.state_root $checkpointId) | Should -BeTrue
+        Test-Path (Get-ScheduledTriageSnapshotPath $fixture.context.state_root $workerId) | Should -BeTrue
+        Test-Path -LiteralPath $writer.temporary_path | Should -BeTrue
+        # No successful snapshot/release follows these acquisitions; retries themselves reclaim
+        # abandoned writes without transferring analysis ownership or waiting for another action.
+        $retry = Invoke-TriageTransaction $later read
+        $pending = Write-ScheduledTriageSnapshotFile $later.state_root $fixture.snapshot scan $retry.triage.scan.token
+        $later.now = $later.now.AddDays(1)
+        $null = Invoke-TriageTransaction $later triage-acquire-scan @{ session_id = 'another-poll' }
+        Test-Path -LiteralPath $pending.temporary_path | Should -BeFalse
+        (Invoke-TriageTransaction $later read).triage.active_analysis_id | Should -Be $fixture.context.analysis_id
+    }
+
     It 'preserves a pending current writer but rejects its installation after dispatch replacement' {
         $old = Write-ScheduledTriageSnapshotFile $fixture.context.state_root `
             (Get-CacheFixtureSnapshot $fixture old) analysis $fixture.context.dispatch_token

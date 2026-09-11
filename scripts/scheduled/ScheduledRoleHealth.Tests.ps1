@@ -94,6 +94,7 @@ Describe 'Complete <Role> health observations' -ForEach @(@{ Role = 'repair' }, 
                 } else {
                     (Invoke-HealthProjection $record $Role).outcome | Should -Be passed
                 }
+
             }
             $record.profile[$field] = $original
         }
@@ -110,6 +111,66 @@ Describe 'Complete <Role> health observations' -ForEach @(@{ Role = 'repair' }, 
         $record.profile.reasoning_effort = $null
         $record.profile.policy_digest = Get-ScheduledTriagePolicyDigest $policy $triagePolicy
         (Invoke-HealthProjection $record $Role).outcome | Should -Be passed
+    }
+
+    It 'rejects malformed nested observation scalars even with self-consistent digests' {
+        foreach ($object in @('profile_scan', 'profile_observation')) {
+            $original = $record[$object].Clone()
+            foreach ($field in @($original.Keys)) {
+                foreach ($damage in @('missing', 'null', 'object', 'array', 'number', 'boolean', 'float', 'empty', 'string')) {
+                    if ($damage -ceq 'string' -and $field -cne 'schema_version') { continue }
+                    $record[$object] = $original.Clone()
+                    $record[$object][$field] = switch ($damage) {
+                        missing { $original[$field] }
+                        null { $null }
+                        object { @{} }
+                        array { ,@($original[$field]) }
+                        number { 42 }
+                        boolean { $true }
+                        float { 1.0 }
+                        empty { '' }
+                        string { '1' }
+                    }
+                    if ($damage -ceq 'missing') { $record[$object].Remove($field) }
+                    if ($object -ceq 'profile_observation' -and $field -cne 'digest') {
+                        $payload = $record.profile_observation.Clone(); $payload.Remove('digest')
+                        $record.profile_observation.digest = Get-ScheduledDigest $payload
+                    }
+                    if ($Role -ceq 'triage') {
+                        { Invoke-HealthProjection $record $Role } | Should -Throw -ExceptionType ([FormatException])
+                    } else {
+                        (Invoke-HealthProjection $record $Role).outcome | Should -Be passed
+                    }
+                }
+            }
+            $record[$object] = $original
+        }
+        $record.profile_scan.session_id = 42
+        $record.profile_observation.session_id = 42
+        $payload = $record.profile_observation.Clone(); $payload.Remove('digest')
+        $record.profile_observation.digest = Get-ScheduledDigest $payload
+        if ($Role -ceq 'triage') {
+            { Invoke-HealthProjection $record $Role } | Should -Throw -ExceptionType ([FormatException])
+        } else {
+            (Invoke-HealthProjection $record $Role).outcome | Should -Be passed
+        }
+    }
+
+    It 'validates present siblings before treating absent observations as unavailable' {
+        if ($Role -ceq 'triage') {
+            foreach ($object in @('profile_scan', 'profile_observation')) {
+                $original = $record[$object]
+                $record[$object] = $null
+                (Invoke-HealthProjection $record $Role).blocked_conditions | Should -Contain triage-profile-drift
+                $record[$object] = $original
+            }
+            $record.profile = $null
+            $record.profile_scan.session_id = @('session')
+            { Invoke-HealthProjection $record $Role } | Should -Throw -ExceptionType ([FormatException])
+            $record.profile_scan = $null
+            $record.profile_observation.schema_version = '1'
+            { Invoke-HealthProjection $record $Role } | Should -Throw -ExceptionType ([FormatException])
+        }
     }
 }
 

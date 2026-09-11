@@ -7,13 +7,32 @@ $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
 Import-Module (Join-Path $PSScriptRoot 'ScheduledContracts.psm1')
 
+function Assert-TriageProfileSchema {
+    param([hashtable] $Record, [string[]] $Fields)
+    # Validate representations before equality or hashing: a self-consistent digest is not
+    # schema proof, and PowerShell comparisons otherwise coerce numbers, strings and arrays.
+    if ($Record.Count -ne $Fields.Count) { throw [FormatException]::new('Unexpected profile observation fields.') }
+    foreach ($field in $Fields) {
+        $value = $Record[$field]
+        if ($field -ceq 'schema_version') {
+            if (($value -isnot [int] -and $value -isnot [long]) -or $value -ne 1) {
+                throw [FormatException]::new('Unsupported profile observation schema.')
+            }
+        } elseif ($value -isnot [string] -or [string]::IsNullOrWhiteSpace($value)) {
+            throw [FormatException]::new("Profile observation needs a nonempty string for $field.")
+        } elseif (($field -ceq 'digest' -or $field.EndsWith('_digest', [StringComparison]::Ordinal)) -and
+            $value -cnotmatch '^[0-9a-f]{64}$') {
+            throw [FormatException]::new("Profile observation has a malformed $field.")
+        }
+    }
+}
+
 function Get-ScheduledTriageProfileObservation {
     param([AllowNull()][hashtable] $NativeProfile, [ValidateSet('scan', 'dispatch')][string] $Kind,
-        [string] $Token, [string] $SessionId)
+        $Token, $SessionId)
     if ($null -eq $NativeProfile) { return $null }
-    if ($NativeProfile.Count -ne 2 -or -not $NativeProfile.ContainsKey('automation_id') -or
-        -not $NativeProfile.ContainsKey('prompt_digest') -or $NativeProfile.automation_id -isnot [string] -or
-        [string]::IsNullOrWhiteSpace($NativeProfile.automation_id) -or $NativeProfile.prompt_digest -cnotmatch '^[0-9a-f]{64}$' -or
+    Assert-TriageProfileSchema $NativeProfile @('automation_id', 'prompt_digest')
+    if ($Token -isnot [string] -or $SessionId -isnot [string] -or
         [string]::IsNullOrWhiteSpace($Token) -or [string]::IsNullOrWhiteSpace($SessionId)) {
         throw [FormatException]::new('Native profile observation needs concrete automation and prompt identities.')
     }
@@ -26,20 +45,17 @@ function Get-ScheduledTriageProfileObservation {
 }
 
 function Assert-ScheduledTriageProfileObservation {
-    param([AllowNull()][hashtable] $Observation, [string] $Kind, [string] $Token, [string] $SessionId)
+    param([AllowNull()][hashtable] $Observation, [string] $Kind, $Token, $SessionId)
     if ($null -eq $Observation) { return }
-    foreach ($field in @('schema_version', 'kind', 'token', 'session_id', 'automation_id', 'prompt_digest', 'digest')) {
-        if (-not $Observation.ContainsKey($field)) { throw [FormatException]::new("Native observation is missing $field.") }
-    }
+    Assert-TriageProfileSchema $Observation @('schema_version', 'kind', 'token', 'session_id', 'automation_id', 'prompt_digest', 'digest')
     $payload = @{
         schema_version = $Observation.schema_version; kind = $Observation.kind; token = $Observation.token
         session_id = $Observation.session_id; automation_id = $Observation.automation_id; prompt_digest = $Observation.prompt_digest
     }
-    if ($Observation.Count -ne 7 -or $Observation.schema_version -ne 1 -or $Observation.kind -cne $Kind -or
+    if ($Observation.kind -cne $Kind -or $Token -isnot [string] -or $SessionId -isnot [string] -or
         $Kind -cnotin @('scan', 'dispatch') -or [string]::IsNullOrWhiteSpace($Token) -or
         [string]::IsNullOrWhiteSpace($SessionId) -or $Observation.token -cne $Token -or
-        $Observation.session_id -cne $SessionId -or [string]::IsNullOrWhiteSpace($Observation.automation_id) -or
-        $Observation.prompt_digest -cnotmatch '^[0-9a-f]{64}$' -or
+        $Observation.session_id -cne $SessionId -or
         $Observation.digest -cne (Get-ScheduledDigest $payload)) {
         throw [FormatException]::new('Native profile observation is stale, foreign, or changed.')
     }
@@ -47,7 +63,7 @@ function Assert-ScheduledTriageProfileObservation {
 
 function Test-ScheduledTriageProfileObservation {
     param([AllowNull()][hashtable] $RegisteredProfile, [AllowNull()][hashtable] $Observation,
-        [string] $Kind, [string] $Token, [string] $SessionId)
+        [string] $Kind, $Token, $SessionId)
     Assert-ScheduledTriageProfileObservation $Observation $Kind $Token $SessionId
     return $null -ne $RegisteredProfile -and $null -ne $Observation -and
         $RegisteredProfile.ContainsKey('automation_id') -and $RegisteredProfile.ContainsKey('prompt_digest') -and
@@ -64,7 +80,7 @@ function Get-ScheduledTriageProfileBindingDigest {
 function Get-ScheduledTriageHealthObservation {
     param([AllowNull()][hashtable] $Observation)
     if ($null -eq $Observation) { return $null }
-    Assert-ScheduledTriageProfileObservation $Observation scan $Observation.token $Observation.session_id
+    Assert-ScheduledTriageProfileObservation $Observation scan $Observation['token'] $Observation['session_id']
     # Published health needs an ownership fingerprint, not the local authorization token.
     $public = @{
         schema_version = 1; kind = 'scan'; session_id = $Observation.session_id
@@ -78,19 +94,22 @@ function Get-ScheduledTriageHealthObservation {
 function Test-ScheduledTriageHealthObservation {
     param([AllowNull()][hashtable] $RegisteredProfile, [AllowNull()][hashtable] $Observation,
         [AllowNull()][hashtable] $Scan)
+    # Every present object must be well formed even when another observation is unavailable.
+    if ($null -ne $Scan) {
+        Assert-TriageProfileSchema $Scan @('binding_digest', 'session_id')
+    }
+    if ($null -ne $Observation) {
+        Assert-TriageProfileSchema $Observation @('schema_version', 'kind', 'session_id', 'binding_digest', 'automation_id', 'prompt_digest', 'digest')
+        $payload = @{
+            schema_version = $Observation.schema_version; kind = $Observation.kind; session_id = $Observation.session_id
+            binding_digest = $Observation.binding_digest; automation_id = $Observation.automation_id; prompt_digest = $Observation.prompt_digest
+        }
+        if ($Observation.kind -cne 'scan' -or $Observation.digest -cne (Get-ScheduledDigest $payload)) {
+            throw [FormatException]::new('Invalid published native profile observation.')
+        }
+    }
     if ($null -eq $Observation -or $null -eq $Scan -or $null -eq $RegisteredProfile) { return $false }
-    foreach ($field in @('schema_version', 'kind', 'session_id', 'binding_digest', 'automation_id', 'prompt_digest', 'digest')) {
-        if (-not $Observation.ContainsKey($field)) { throw [FormatException]::new("Published native observation is missing $field.") }
-    }
-    $payload = @{
-        schema_version = $Observation.schema_version; kind = $Observation.kind; session_id = $Observation.session_id
-        binding_digest = $Observation.binding_digest; automation_id = $Observation.automation_id; prompt_digest = $Observation.prompt_digest
-    }
-    if ($Observation.Count -ne 7 -or $Observation.schema_version -ne 1 -or $Observation.kind -cne 'scan' -or
-        $Observation.binding_digest -cnotmatch '^[0-9a-f]{64}$' -or
-        $Observation.binding_digest -cne $Scan['binding_digest'] -or $Observation.session_id -cne $Scan['session_id'] -or
-        [string]::IsNullOrWhiteSpace($Observation.session_id) -or $Observation.prompt_digest -cnotmatch '^[0-9a-f]{64}$' -or
-        $Observation.digest -cne (Get-ScheduledDigest $payload)) {
+    if ($Observation.binding_digest -cne $Scan['binding_digest'] -or $Observation.session_id -cne $Scan['session_id']) {
         throw [FormatException]::new('Published native profile observation does not belong to this scan.')
     }
     return $RegisteredProfile['automation_id'] -ceq $Observation.automation_id -and
