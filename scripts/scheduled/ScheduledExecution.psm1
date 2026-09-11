@@ -522,7 +522,11 @@ function Get-ScheduledPhaseSummary {
         elseif ($status -is [hashtable] -and $status.ContainsKey('Failure')) {
             # Failure(i32) preserves native Windows statuses as signed values. The sign does
             # not distinguish a completed test failure from a timeout or a build failure.
-            if ($status.Failure -eq 0) { throw [FormatException]::new('Invalid failure exit code.') }
+            $failure = $status.Failure
+            if (($failure -isnot [int] -and $failure -isnot [long]) -or
+                $failure -lt [int]::MinValue -or $failure -gt [int]::MaxValue -or $failure -eq 0) {
+                throw [FormatException]::new('Invalid failure exit code.')
+            }
             if ($phase.phase -cne 'Test') { $buildFailed = $true }
         } elseif ($status -cne 'Success') {
             throw [FormatException]::new('Unclassified process termination.')

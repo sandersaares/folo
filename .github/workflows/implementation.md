@@ -335,8 +335,8 @@ visible; successful intake of failures does not turn the source check green.
 Raw mutation outcomes come from `mutants.out`, not from a full-run `--json` option.
 An unmutated baseline is mandatory and a replay that matches no mutation is an error.
 Timeouts remain findings.
-The pinned cargo-mutants `Failure(i32)` status accepts any nonzero signed native exit code,
-including Windows exception statuses. Build failures, test failures and timeouts retain their
+The pinned cargo-mutants `Failure(i32)` status requires a nonzero integer within the signed
+native range, including Windows exception statuses. Build failures, test failures and timeouts retain their
 distinct phase meanings; only a successful unmutated baseline establishes actionable mutations.
 Miri target discovery retains unsupported proc-macro unit harnesses as explicit not-applicable
 evidence, without invoking them. Supported integration targets in those packages still run.

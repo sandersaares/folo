@@ -659,6 +659,7 @@ Describe 'Pinned cargo-mutants output classification' {
 
     It 'accepts caught and unviable mutants with native failure status <FailureCode>' -ForEach @(
         @{ FailureCode = 101 }, @{ FailureCode = -1073740791 }, @{ FailureCode = -1073741571 }
+        @{ FailureCode = [int]::MinValue }, @{ FailureCode = [int]::MaxValue }
     ) {
         $check = New-Check
         $path = New-Evidence $check 0
@@ -708,6 +709,33 @@ Describe 'Pinned cargo-mutants output classification' {
                 missing-build { $scenario.phase_results = @($scenario.phase_results[1]) }
                 failed-build-before-test { $scenario.phase_results[0].process_status = @{ Failure = -1073741571 } }
             }
+        }
+        $result = Get-ScheduledCheckResult $check $path $script:context
+        $result.outcome | Should -Be incomplete
+        $result.findings.Count | Should -Be 0
+    }
+
+    It 'rejects non-i32 failure evidence: <Case>' -ForEach @(
+        @{ Case = 'below minimum'; FailureValue = -2147483649L }
+        @{ Case = 'above maximum'; FailureValue = 2147483648L }
+        @{ Case = 'positive fraction'; FailureValue = 1.5 }
+        @{ Case = 'negative fraction'; FailureValue = -1.5 }
+        @{ Case = 'numeric string'; FailureValue = '101' }
+        @{ Case = 'true'; FailureValue = $true }
+        @{ Case = 'false'; FailureValue = $false }
+        @{ Case = 'empty array'; FailureValue = @() }
+        @{ Case = 'singleton array'; FailureValue = @(101) }
+        @{ Case = 'multiple values'; FailureValue = @(101, -1073740791) }
+        @{ Case = 'null'; FailureValue = $null }
+        @{ Case = 'zero'; FailureValue = 0 }
+    ) {
+        $check = New-Check
+        $path = New-Evidence $check 2
+        Set-Lab $path {
+            param($lab)
+            $lab.outcomes[2].summary = 'CaughtMutant'
+            $lab.outcomes[2].phase_results[1].process_status = @{ Failure = $FailureValue }
+            $lab.timeout = 0; $lab.caught = 1
         }
         $result = Get-ScheduledCheckResult $check $path $script:context
         $result.outcome | Should -Be incomplete
