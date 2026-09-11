@@ -5,6 +5,7 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
+Import-Module (Join-Path $PSScriptRoot 'ScheduledJson.psm1')
 Import-Module (Join-Path $PSScriptRoot 'ScheduledContracts.psm1')
 Import-Module (Join-Path $PSScriptRoot 'ScheduledRecordTool.psm1')
 
@@ -14,7 +15,7 @@ function Get-ScheduledTriageCheckpointValidation {
         if (-not $Checkpoint.ContainsKey($name)) { throw [FormatException]::new("Checkpoint field is missing: $name") }
     }
     $inputDigest = Get-ScheduledDigest $Checkpoint
-    $snapshot = $Checkpoint | ConvertTo-Json -Depth 100 | ConvertFrom-Json -AsHashtable
+    $snapshot = $Checkpoint | ConvertTo-Json -Depth 100 | ConvertFrom-ScheduledJson
     $snapshot.analysis = Invoke-ScheduledRecordTool -Package scheduled-triage-record -Request @{
         op = 'validate_analysis'; analysis = $snapshot.analysis
         evidence = $snapshot.evidence; index = $snapshot.index; basis = $snapshot.basis

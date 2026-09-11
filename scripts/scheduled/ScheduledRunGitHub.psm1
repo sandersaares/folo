@@ -9,6 +9,7 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
+Import-Module (Join-Path $PSScriptRoot 'ScheduledJson.psm1')
 Import-Module (Join-Path $PSScriptRoot 'ScheduledTransport.psm1')
 Import-Module (Join-Path $PSScriptRoot 'ScheduledContracts.psm1')
 Import-Module (Join-Path $PSScriptRoot 'ScheduledExecution.psm1')
@@ -245,7 +246,7 @@ function Sync-ScheduledRunIntake {
         stage = 'prepared'; issue_number = $null; operation_id = $null; pending_pages = @{}
     }
     if (Test-Path -LiteralPath $journalPath) {
-        $journal = Get-Content -LiteralPath $journalPath -Raw | ConvertFrom-Json -AsHashtable
+        $journal = Get-Content -LiteralPath $journalPath -Raw | ConvertFrom-ScheduledJson
         if ($journal.schema_version -ne 1 -or $journal.pending_pages -isnot [hashtable] -or
             (Get-ScheduledDigest $journal.identity) -cne (Get-ScheduledDigest $prepared.identity)) {
             throw [FormatException]::new('Publication journal identity or schema is invalid.')

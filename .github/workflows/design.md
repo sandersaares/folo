@@ -89,6 +89,10 @@ incomplete attempt invalidates it. Setup failures are execution problems, not a 
 package that setup prevented from running.
 Missing initial coverage remains unavailable, not a passing baseline. Nightly planning
 freshness belongs to automatic full checks; unrelated selected plans cannot refresh it.
+Checker failures remain failures through command wrappers independently of successful evidence
+preservation and reporting. Unsupported test targets are visible exclusions, not tests that
+passed. Consuming persisted evidence preserves its exact JSON string values and verifies its
+original identity rather than accepting a rewritten payload under a new checksum.
 An intentionally inactive, unenrolled Local executor is not an expected hosted-health component,
 while enrolled executors still require fresh successful heartbeats.
 Actual Actions jobs and steps are inventoried independently of checker artifacts.

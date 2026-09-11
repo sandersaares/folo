@@ -123,7 +123,8 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
 Import-Module .\scripts\scheduled\LocalSetup.psm1 -Force
-$inputData = Get-Content -LiteralPath "{{SETUP_INPUT_PATH}}" -Raw | ConvertFrom-Json -AsHashtable
+Import-Module .\scripts\scheduled\ScheduledJson.psm1
+$inputData = Get-Content -LiteralPath "{{SETUP_INPUT_PATH}}" -Raw | ConvertFrom-ScheduledJson
 Get-ScheduledRoleSetupDecision -Role $inputData.role -Desired $inputData.desired `
     -Workflows $inputData.workflows -MetadataComplete $inputData.metadata_complete `
     -RegisteredProfile $inputData.registered_profile -SetupJournal $inputData.setup_journal |
@@ -149,7 +150,8 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
 Import-Module .\scripts\scheduled\LocalSetupState.psm1 -Force
-$inputData = Get-Content -LiteralPath "{{SETUP_INPUT_PATH}}" -Raw | ConvertFrom-Json -AsHashtable
+Import-Module .\scripts\scheduled\ScheduledJson.psm1
+$inputData = Get-Content -LiteralPath "{{SETUP_INPUT_PATH}}" -Raw | ConvertFrom-ScheduledJson
 $path = Get-ScheduledSetupJournalPath -RepositoryId {{REPOSITORY_ID}}
 Invoke-ScheduledSetupJournal -Path $path -RepositoryId {{REPOSITORY_ID}} `
     -Role $inputData.role -Action begin-create `

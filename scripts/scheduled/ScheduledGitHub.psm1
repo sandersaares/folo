@@ -12,6 +12,7 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
+Import-Module (Join-Path $PSScriptRoot 'ScheduledJson.psm1')
 Import-Module (Join-Path $PSScriptRoot 'ScheduledContracts.psm1')
 Import-Module (Join-Path $PSScriptRoot 'ScheduledPlan.psm1')
 Import-Module (Join-Path $PSScriptRoot 'ScheduledReport.psm1')
@@ -35,7 +36,7 @@ function Invoke-ScheduledGhJson {
         throw [IO.IOException]::new('GitHub API request failed.', $_.Exception)
     }
     if ($LASTEXITCODE -ne 0) { throw [IO.IOException]::new('GitHub API request failed.') }
-    return ConvertFrom-Json -InputObject ($json -join "`n") -AsHashtable
+    return ConvertFrom-ScheduledJson -InputObject ($json -join "`n")
 }
 
 function Invoke-ScheduledGitHubApi {
@@ -286,7 +287,7 @@ function Restore-ScheduledRunPublicationState {
     }
     $reportPath = Join-Path $directory 'report.json'
     if (Test-Path -LiteralPath $reportPath) {
-        $report = Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json -AsHashtable
+        $report = Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-ScheduledJson
         $hasRunIssue = $report.ContainsKey('run_intake') -and $null -ne $report.run_intake -and
             $report.run_intake.ContainsKey('number')
         if ($report.status -cin @('passed', 'not-run', 'reported') -and -not $hasRunIssue) { return }
@@ -446,7 +447,7 @@ function Sync-ScheduledIssue {
             if (-not (Test-Path -LiteralPath $PublicationJournalPath -PathType Leaf)) {
                 throw [IO.IOException]::new("Coverage publication journal is not an existing file: $PublicationJournalPath")
             }
-            $journal = Get-Content -LiteralPath $PublicationJournalPath -Raw | ConvertFrom-Json -AsHashtable
+            $journal = Get-Content -LiteralPath $PublicationJournalPath -Raw | ConvertFrom-ScheduledJson
             if ($journal.schema_version -ne 1 -or $journal.identity.repository_id -ne $Policy.repository_id) {
                 throw [FormatException]::new('Coverage publication journal identity is invalid.')
             }
@@ -521,7 +522,7 @@ function Invoke-ScheduledReporting {
         applied = $false; writes_authorized = $false
     }
     try {
-        $workflowEvent = Get-Content -LiteralPath $EventPath -Raw | ConvertFrom-Json -AsHashtable
+        $workflowEvent = Get-Content -LiteralPath $EventPath -Raw | ConvertFrom-ScheduledJson
         $eventRun = $workflowEvent.workflow_run
         $run = Invoke-ScheduledGitHubApi "repos/$Repository/actions/runs/$($eventRun.id)/attempts/$($eventRun.run_attempt)"
         $workflow = Invoke-ScheduledGitHubApi "repos/$Repository/actions/workflows/$($run.workflow_id)"
@@ -616,7 +617,7 @@ function Invoke-ScheduledReporting {
             $null = New-Item -ItemType Directory -Path $downloadRoot
             $planDirectory = Get-ScheduledArtifact -Run $run -Artifacts $artifacts -Policy $policy `
                 -Name "scheduled-plan-$($run.id)-$($run.run_attempt)" -OutputDirectory $downloadRoot
-            $plan = Get-Content -LiteralPath (Join-Path $planDirectory 'plan.json') -Raw | ConvertFrom-Json -AsHashtable
+            $plan = Get-Content -LiteralPath (Join-Path $planDirectory 'plan.json') -Raw | ConvertFrom-ScheduledJson
             foreach ($key in @('run_id', 'run_attempt', 'run_number')) {
                 if ($plan[$key] -ne $context[$key]) { throw [FormatException]::new('Plan belongs to another run attempt.') }
             }
@@ -746,7 +747,7 @@ function Invoke-ScheduledReporting {
                     }
                 }
                 if ($null -eq $confirmation) { continue }
-                $incoming = $entry.record | ConvertTo-Json -Depth 100 | ConvertFrom-Json -AsHashtable
+                $incoming = $entry.record | ConvertTo-Json -Depth 100 | ConvertFrom-ScheduledJson
                 $incoming.source_sha = $manifest.source_sha
                 $incoming.controller_sha = $manifest.controller_sha
                 $incoming.check_contract_digest = $manifest.check_contract_digest

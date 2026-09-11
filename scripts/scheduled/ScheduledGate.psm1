@@ -11,6 +11,7 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
+Import-Module (Join-Path $PSScriptRoot 'ScheduledJson.psm1')
 Import-Module (Join-Path $PSScriptRoot 'ScheduledContracts.psm1')
 Import-Module (Join-Path $PSScriptRoot 'ScheduledPlan.psm1')
 
@@ -170,7 +171,7 @@ function Invoke-ScheduledReadApi {
     $arguments = @('api', $Endpoint)
     if ($Paginate) { $arguments += @('--paginate', '--slurp') }
     $json = & gh @arguments
-    return ConvertFrom-Json -InputObject ($json -join "`n") -AsHashtable
+    return ConvertFrom-ScheduledJson -InputObject ($json -join "`n")
 }
 
 function Get-ScheduledQueueEntry {
@@ -194,7 +195,7 @@ query($owner:String!,$name:String!,$cursor:String) {
     do {
         $arguments = @('api', 'graphql', '-f', "query=$query", '-f', "owner=$($parts[0])", '-f', "name=$($parts[1])")
         if ($cursor) { $arguments += @('-f', "cursor=$cursor") }
-        $response = (& gh @arguments) -join "`n" | ConvertFrom-Json -AsHashtable
+        $response = (& gh @arguments) -join "`n" | ConvertFrom-ScheduledJson
         if ($response.ContainsKey('errors')) { throw 'Cannot establish merge queue membership.' }
         $connection = $response.data.repository.mergeQueue.entries
         $entries += $connection.nodes

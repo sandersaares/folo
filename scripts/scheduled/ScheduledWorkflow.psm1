@@ -11,6 +11,7 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
+Import-Module (Join-Path $PSScriptRoot 'ScheduledJson.psm1')
 Import-Module (Join-Path $PSScriptRoot 'ScheduledContracts.psm1')
 Import-Module (Join-Path $PSScriptRoot 'ScheduledPlan.psm1')
 Import-Module (Join-Path $PSScriptRoot 'ScheduledGate.psm1')
@@ -113,7 +114,7 @@ function Invoke-ScheduledPlanning {
         [Parameter(Mandatory)][string] $OutputDirectory,
         [datetimeoffset] $Now = [datetimeoffset]::UtcNow
     )
-    $workflowEvent = Get-Content -LiteralPath $EventPath -Raw | ConvertFrom-Json -AsHashtable
+    $workflowEvent = Get-Content -LiteralPath $EventPath -Raw | ConvertFrom-ScheduledJson
     $policy = Get-ScheduledPolicy
     if ($workflowEvent.repository.id -ne $policy.repository_id) { throw 'Wrong repository for scheduled controller.' }
     if ($Mode -ne 'validation' -and $env:GITHUB_REF -cne 'refs/heads/main') {
@@ -295,7 +296,7 @@ function Invoke-ScheduledGate {
         [Parameter(Mandatory)][int] $RunAttempt
     )
     if ($ContextResult -cne 'success') { throw 'Scheduled context did not succeed.' }
-    $plan = Get-Content -LiteralPath $PlanPath -Raw | ConvertFrom-Json -AsHashtable
+    $plan = Get-Content -LiteralPath $PlanPath -Raw | ConvertFrom-ScheduledJson
     if (-not $plan.managed) {
         Write-Verbose 'Ordinary validation: no managed repair evidence required.'
         return
@@ -303,7 +304,7 @@ function Invoke-ScheduledGate {
     if ($DeepResult -cne 'success') { throw "Relevant deep execution was $DeepResult." }
     $results = @()
     foreach ($file in Get-ChildItem -LiteralPath $ResultsDirectory -Filter evidence.json -Recurse -File) {
-        $results += Get-Content -LiteralPath $file.FullName -Raw | ConvertFrom-Json -AsHashtable
+        $results += Get-Content -LiteralPath $file.FullName -Raw | ConvertFrom-ScheduledJson
     }
     $verdict = Test-ScheduledRepairEvidence -Manifest $plan.manifest -Results $results -RunId $RunId -RunAttempt $RunAttempt
     if (-not $verdict.successful) { throw "Managed repair evidence rejected: $($verdict.problems -join '; ')" }

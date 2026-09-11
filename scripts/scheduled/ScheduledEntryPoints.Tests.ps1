@@ -1,18 +1,25 @@
 #Requires -Modules @{ ModuleName = 'Pester'; ModuleVersion = '5.0' }
 # Protects the entrypoint scripts' own contract with their calling workflow: launched as real
-# `pwsh` processes (not dot-sourced) against stub modules, so a mistake in exit-code mapping or
-# output-file writing - invisible to a module-level Pester test that only calls functions in
-# process - still fails here.
+# `pwsh` processes, directly and through the actual Just recipes, against stub modules.
+# Exit-code mapping or output-file mistakes invisible to an in-process module test still fail here.
 BeforeAll {
-    $script:entryRoot = Join-Path $TestDrive 'entrypoints'
-    New-Item -ItemType Directory -Path $entryRoot | Out-Null
+    $script:fixtureRoot = Join-Path $TestDrive 'entrypoints'
+    $script:entryRoot = Join-Path $fixtureRoot 'scripts\scheduled'
+    New-Item -ItemType Directory -Path $entryRoot -Force | Out-Null
+    $repository = Join-Path $PSScriptRoot '..\..'
+    Copy-Item -LiteralPath (Join-Path $repository 'justfile'), (Join-Path $repository 'constants.env') -Destination $fixtureRoot
+    Copy-Item -LiteralPath (Join-Path $repository 'justfiles') -Destination $fixtureRoot -Recurse
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'Invoke-ScheduledCheck.ps1'),
+        (Join-Path $PSScriptRoot 'ScheduledJson.psm1'),
         (Join-Path $PSScriptRoot 'Invoke-ScheduledPlan.ps1'),
         (Join-Path $PSScriptRoot 'Invoke-ScheduledHealth.ps1'),
         (Join-Path $PSScriptRoot 'Invoke-ScheduledReport.ps1') -Destination $entryRoot
     @'
 function Invoke-ScheduledCheck {
     param($Check, $SourceRoot, $OutputDirectory, $Toolchain, $RunContext)
+    $null = New-Item -ItemType Directory -Path $OutputDirectory -Force
+    @{ outcome = $env:SCHEDULED_TEST_OUTCOME } | ConvertTo-Json |
+        Set-Content -LiteralPath (Join-Path $OutputDirectory 'evidence.json')
     return @{ outcome = $env:SCHEDULED_TEST_OUTCOME }
 }
 function Get-ScheduledToolchain { param($Kind) return 'fixture-toolchain' }
@@ -35,23 +42,42 @@ Export-ModuleMember -Function Get-ScheduledGitHubHealth, Invoke-ScheduledReporti
     @'
 function Invoke-ScheduledPlanning {
     param($Mode, $EventPath, $OutputDirectory)
+    if ($env:SCHEDULED_TEST_OUTCOME -eq 'incomplete') { throw 'Planner failure canary.' }
     @{ mode = $Mode; event_path = $EventPath; output_directory = $OutputDirectory } | ConvertTo-Json -Compress
 }
 Export-ModuleMember -Function Invoke-ScheduledPlanning
 '@ | Set-Content -LiteralPath (Join-Path $entryRoot 'ScheduledWorkflow.psm1')
+    # PowerShell 7 versions without native-error preference support still need the recipe's
+    # explicit exit. Disable only that feature in a copy of the actual recipe configuration.
+    $justfile = Get-Content -LiteralPath (Join-Path $fixtureRoot justfile) -Raw
+    $justfile.Replace("import 'justfiles/just_scheduled.just'", "import 'justfiles/just_scheduled_legacy.just'") |
+        Set-Content -LiteralPath (Join-Path $fixtureRoot justfile-legacy)
+    $recipes = Get-Content -LiteralPath (Join-Path $fixtureRoot 'justfiles\just_scheduled.just') -Raw
+    $recipes.Replace('$PSNativeCommandUseErrorActionPreference = $true', '$PSNativeCommandUseErrorActionPreference = $false') |
+        Set-Content -LiteralPath (Join-Path $fixtureRoot 'justfiles\just_scheduled_legacy.just')
 
     function Invoke-EntryPointFixture {
-        param([string] $Name, [string] $Outcome, [string[]] $Arguments = @())
+        param([string] $Name, [string] $Outcome, [string[]] $Arguments = @(), [string] $Recipe = '',
+            [switch] $WithoutNativeErrors)
         $start = [Diagnostics.ProcessStartInfo]::new()
         $start.FileName = (Get-Command pwsh).Source
         $start.UseShellExecute = $false
         $start.RedirectStandardOutput = $true
         $start.RedirectStandardError = $true
+        $start.WorkingDirectory = $fixtureRoot
         $start.Environment['SCHEDULED_TEST_OUTCOME'] = $Outcome
         $start.Environment['SCHEDULED_CHECK'] = '{"kind":"miri"}'
         $start.Environment['SCHEDULED_MANIFEST'] = '{"source_sha":"source","controller_sha":"controller","check_contract_digest":"digest"}'
         $start.Environment['GITHUB_STEP_SUMMARY'] = Join-Path $entryRoot "summary-$Outcome.md"
-        foreach ($argument in @('-NoProfile', '-File', (Join-Path $entryRoot $Name)) + $Arguments) {
+        $invocation = if ($Recipe -eq '') { @('-File', (Join-Path $entryRoot $Name)) + $Arguments }
+            else {
+                # The workflow's pwsh step invokes Just, whose [script] recipe invokes the
+                # entrypoint. Keep both process boundaries, not a rewritten recipe stand-in.
+                $justArguments = if ($WithoutNativeErrors) { '--justfile justfile-legacy' } else { '' }
+                @('-Command', "Set-StrictMode -Version Latest; `$ErrorActionPreference = 'Stop'; " +
+                    "`$PSNativeCommandUseErrorActionPreference = `$true; just $justArguments $Recipe; exit `$LASTEXITCODE")
+            }
+        foreach ($argument in @('-NoProfile') + $invocation) {
             $start.ArgumentList.Add($argument)
         }
         $process = [Diagnostics.Process]::new()
@@ -71,6 +97,51 @@ Export-ModuleMember -Function Invoke-ScheduledPlanning
 }
 
 Describe 'Hosted entrypoint exit contracts' {
+    It 'propagates <Recipe> outcome <Outcome> without native-error preference support' -TestCases @(
+        @{ Recipe = 'scheduled-check'; Outcome = 'passed'; Code = 0 }
+        @{ Recipe = 'scheduled-check'; Outcome = 'findings'; Code = 1 }
+        @{ Recipe = 'scheduled-check'; Outcome = 'incomplete'; Code = 1 }
+        @{ Recipe = 'scheduled-check'; Outcome = 'blocked'; Code = 1 }
+        @{ Recipe = 'scheduled-check'; Outcome = 'execution-error'; Code = 1 }
+        @{ Recipe = 'scheduled-check'; Outcome = 'not-applicable'; Code = 1 }
+        @{ Recipe = 'scheduled-report'; Outcome = 'reported'; Code = 0 }
+        @{ Recipe = 'scheduled-report'; Outcome = 'incomplete'; Code = 1 }
+        @{ Recipe = 'scheduled-plan'; Outcome = 'planned'; Code = 0 }
+        @{ Recipe = 'scheduled-plan'; Outcome = 'incomplete'; Code = 1 }
+    ) {
+        param($Recipe, $Outcome, $Code)
+        (Invoke-EntryPointFixture -Recipe $Recipe -Outcome $Outcome -WithoutNativeErrors).code | Should -Be $Code
+    }
+    It 'propagates <Outcome> through workflow PowerShell and the actual scheduled-check recipe' -TestCases @(
+        @{ Outcome = 'passed'; Code = 0 }
+        @{ Outcome = 'findings'; Code = 1 }
+        @{ Outcome = 'incomplete'; Code = 1 }
+        @{ Outcome = 'blocked'; Code = 1 }
+        @{ Outcome = 'execution-error'; Code = 1 }
+        @{ Outcome = 'not-applicable'; Code = 1 }
+    ) {
+        param($Outcome, $Code)
+        $result = Invoke-EntryPointFixture -Recipe scheduled-check -Outcome $Outcome
+        $result.code | Should -Be $Code
+        $result.stdout | Should -Match ('"outcome": "' + $Outcome + '"')
+        $evidence = Get-Content -LiteralPath (Join-Path $fixtureRoot '.scheduled-result\evidence.json') -Raw |
+            ConvertFrom-Json
+        $evidence.outcome | Should -Be $Outcome
+    }
+    It 'propagates reporting status <Outcome> through the actual scheduled-report recipe' -TestCases @(
+        @{ Outcome = 'reported'; Code = 0 }
+        @{ Outcome = 'incomplete'; Code = 1 }
+    ) {
+        param($Outcome, $Code)
+        (Invoke-EntryPointFixture -Recipe scheduled-report -Outcome $Outcome).code | Should -Be $Code
+    }
+    It 'propagates planner status <Outcome> through the actual scheduled-plan recipe' -TestCases @(
+        @{ Outcome = 'planned'; Code = 0 }
+        @{ Outcome = 'incomplete'; Code = 1 }
+    ) {
+        param($Outcome, $Code)
+        (Invoke-EntryPointFixture -Recipe scheduled-plan -Outcome $Outcome).code | Should -Be $Code
+    }
     It 'invokes the planner without extra permission switches for <Mode>' -TestCases @(
         @{ Mode = 'selected' }, @{ Mode = 'full' }, @{ Mode = 'validation' }
     ) {

@@ -189,7 +189,8 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
 Import-Module "{{TRUSTED_CONTROLLER_ROOT}}\scripts\scheduled\ScheduledVersion.psm1" -Force
-$evidence = Get-Content -LiteralPath "{{VERSION_EVIDENCE_PATH}}" -Raw | ConvertFrom-Json -AsHashtable
+Import-Module "{{TRUSTED_CONTROLLER_ROOT}}\scripts\scheduled\ScheduledJson.psm1"
+$evidence = Get-Content -LiteralPath "{{VERSION_EVIDENCE_PATH}}" -Raw | ConvertFrom-ScheduledJson
 Assert-ScheduledCanonicalVersion -Root (Get-Location).Path -HeadSha '{{HEAD_SHA}}' `
     -BaseSha '{{BASE_SHA}}' -Evidence $evidence -ReleasePlanExecutable "{{RELEASE_PLAN_EXE}}" `
     -TrustedControllerRoot "{{TRUSTED_CONTROLLER_ROOT}}" -TemporaryRoot "{{TEMP_ROOT}}"
@@ -233,7 +234,8 @@ $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
 Import-Module .\scripts\scheduled\LocalState.psm1 -Force
 Import-Module .\scripts\scheduled\ScheduledContracts.psm1 -Force
-$state = Get-Content -LiteralPath "{{STATE_PATH}}" -Raw | ConvertFrom-Json -AsHashtable
+Import-Module .\scripts\scheduled\ScheduledJson.psm1
+$state = Get-Content -LiteralPath "{{STATE_PATH}}" -Raw | ConvertFrom-ScheduledJson
 $policy = Get-ScheduledPolicy
 $worker = Get-ScheduledWorkerRecord -State $state -AttemptId '{{ATTEMPT_ID}}'
 $repair = Get-ScheduledRepairRecord -State $state -AttemptId '{{ATTEMPT_ID}}' -Policy $policy

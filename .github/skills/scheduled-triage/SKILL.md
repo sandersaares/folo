@@ -84,7 +84,8 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
 Import-Module .\scripts\scheduled\LocalTriagePolicy.psm1 -Force
-$native = Get-Content -LiteralPath "{{NATIVE_PROFILE_PATH}}" -Raw | ConvertFrom-Json -AsHashtable
+Import-Module .\scripts\scheduled\ScheduledJson.psm1
+$native = Get-Content -LiteralPath "{{NATIVE_PROFILE_PATH}}" -Raw | ConvertFrom-ScheduledJson
 @{
     automation_id = $native.automation_id
     prompt_digest = Get-ScheduledTriagePromptDigest $native.prompt
