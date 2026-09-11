@@ -28,6 +28,7 @@ function Assert-ScheduledTriageState {
         $Triage.analyses -isnot [System.Collections.IDictionary]) {
         throw 'Corrupt triage state; recover ownership and accounting instead of resetting.'
     }
+    Assert-ScheduledTriageRegisteredProfile $Triage.profile
     foreach ($entry in $Triage.analyses.GetEnumerator()) {
         $analysis = $entry.Value
         $identityFields = @('id', 'revision', 'session_id', 'claim_token', 'started_at',
@@ -292,19 +293,10 @@ function Invoke-ScheduledTriageStateChange {
         }
         'triage-register-profile' {
             Assert-TriageField $Data @('operator_approved', 'profile')
-            $fields = @('automation_id', 'project_id', 'host_id', 'executor_id',
-                'login', 'user_id', 'cadence_cron', 'timezone', 'enabled', 'policy_digest',
-                'controller_digest', 'prompt_digest', 'model', 'reasoning_effort')
-            Assert-TriageField $Data.profile $fields
-            if (@($Data.profile.Keys | Where-Object { $_ -cnotin $fields }).Count -gt 0 -or
-                $Data.profile.enabled -isnot [bool]) {
-                throw 'Profile contains unsupported fields; credentials and inferred billing fields are not profile data.'
-            }
+            if ($null -eq $Data.profile) { throw [FormatException]::new('Registration needs a complete native profile.') }
+            Assert-ScheduledTriageRegisteredProfile $Data.profile
             if ($Data.operator_approved -ne $true -or $Data.profile.executor_id -cne $State.executor_id -or
-                $Data.profile.login -cne $State.login -or $Data.profile.user_id -le 0 -or
-                [string]::IsNullOrWhiteSpace($Data.profile.host_id) -or
-                [string]::IsNullOrWhiteSpace($Data.profile.model) -or
-                $Data.profile.prompt_digest -cnotmatch '^[0-9a-f]{64}$') {
+                $Data.profile.login -cne $State.login) {
                 throw 'An operator-selected native triage profile must match enrollment.'
             }
             if ($null -ne $triage.profile -and

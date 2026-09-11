@@ -49,6 +49,10 @@ Native and published observations retain strict scalar representations: schema
 versions are supported integers, identifiers are nonempty strings, and digests are
 canonical strings. Malformed present observations remain invalid even when a sibling
 observation is absent; absence does not establish a successful profile observation.
+Complete registered profiles are likewise validated before storage, on restoration
+and before comparison. Native IDs, model and cadence remain strings, the account ID
+is a positive integer, enabled is boolean, and an explicit null effort selects the
+model default.
 
 The default three-hour schedule has a distinct offset from repair. This separates
 the entries, not their correctness: publication is the handoff, never timer order.

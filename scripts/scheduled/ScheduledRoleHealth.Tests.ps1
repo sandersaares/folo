@@ -26,6 +26,8 @@ Describe 'Complete <Role> health observations' -ForEach @(@{ Role = 'repair' }, 
             executor_id = 'executor'; last_successful_scan = '2026-09-10T12:00:00Z'; blocked_conditions = @()
             profile = @{ policy_digest = Get-ScheduledTriagePolicyDigest $policy $triagePolicy
                 cadence_cron = $triagePolicy.cadence_cron; controller_digest = Get-ScheduledTriageControllerDigest
+                project_id = 'project'; host_id = 'local'; executor_id = 'executor'
+                login = $policy.worker_login; user_id = 10; timezone = 'UTC'
                 model = 'chosen'; reasoning_effort = $null; enabled = $false
                 automation_id = 'entry'; prompt_digest = Get-ScheduledTriagePromptDigest 'Native prompt' }
             profile_scan = @{ binding_digest = Get-ScheduledTriageProfileBindingDigest scan 'scan-token' 'session'; session_id = 'session' }
@@ -85,8 +87,7 @@ Describe 'Complete <Role> health observations' -ForEach @(@{ Role = 'repair' }, 
         $triagePolicy.mode = 'triage'; $triagePolicy.model = 'chosen'; $triagePolicy.reasoning_effort = 'medium'
         $record.profile.policy_digest = Get-ScheduledTriagePolicyDigest $policy $triagePolicy
         $record.profile.enabled = $true; $record.profile.reasoning_effort = 'medium'
-        foreach ($field in @('policy_digest', 'controller_digest', 'cadence_cron', 'automation_id',
-                'prompt_digest', 'model', 'reasoning_effort', 'enabled')) {
+        foreach ($field in @($record.profile.Keys)) {
             $original = $record.profile[$field]
             foreach ($damage in @('missing', 'object', 'array', 'number', 'empty', 'null')) {
                 if ($damage -ceq 'null' -and $field -ceq 'reasoning_effort') { continue }
@@ -94,7 +95,7 @@ Describe 'Complete <Role> health observations' -ForEach @(@{ Role = 'repair' }, 
                     missing { $original }
                     object { @{} }
                     array { ,@($original) }
-                    number { 42 }
+                    number { if ($field -ceq 'user_id') { -1 } else { 42 } }
                     empty { '' }
                     null { $null }
                 }

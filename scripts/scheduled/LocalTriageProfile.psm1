@@ -18,6 +18,15 @@ function Assert-TriageProfileSchema {
             if (($value -isnot [int] -and $value -isnot [long]) -or $value -ne 1) {
                 throw [FormatException]::new('Unsupported profile observation schema.')
             }
+        } elseif ($field -ceq 'enabled') {
+            if ($value -isnot [bool]) { throw [FormatException]::new('Profile enabled must be a boolean.') }
+        } elseif ($field -ceq 'user_id') {
+            if (($value -isnot [int] -and $value -isnot [long]) -or $value -le 0) {
+                throw [FormatException]::new('Profile user identity must be a positive integer.')
+            }
+        } elseif ($field -ceq 'reasoning_effort' -and $Record.ContainsKey($field) -and $null -eq $value) {
+            # Explicit null selects the model default; a missing field is not that decision.
+            continue
         } elseif ($value -isnot [string] -or [string]::IsNullOrWhiteSpace($value)) {
             throw [FormatException]::new("Profile observation needs a nonempty string for $field.")
         } elseif (($field -ceq 'digest' -or $field.EndsWith('_digest', [StringComparison]::Ordinal)) -and
@@ -25,6 +34,15 @@ function Assert-TriageProfileSchema {
             throw [FormatException]::new("Profile observation has a malformed $field.")
         }
     }
+}
+
+function Assert-ScheduledTriageRegisteredProfile {
+    param($RegisteredProfile)
+    if ($null -eq $RegisteredProfile) { return }
+    if ($RegisteredProfile -isnot [hashtable]) { throw [FormatException]::new('Registered profile must be an object.') }
+    Assert-TriageProfileSchema $RegisteredProfile @('automation_id', 'project_id', 'host_id', 'executor_id',
+        'login', 'user_id', 'cadence_cron', 'timezone', 'enabled', 'policy_digest',
+        'controller_digest', 'prompt_digest', 'model', 'reasoning_effort')
 }
 
 function Get-ScheduledTriageProfileObservation {
@@ -64,10 +82,9 @@ function Assert-ScheduledTriageProfileObservation {
 function Test-ScheduledTriageProfileObservation {
     param([AllowNull()][hashtable] $RegisteredProfile, [AllowNull()][hashtable] $Observation,
         [string] $Kind, $Token, $SessionId)
+    Assert-ScheduledTriageRegisteredProfile $RegisteredProfile
     Assert-ScheduledTriageProfileObservation $Observation $Kind $Token $SessionId
     return $null -ne $RegisteredProfile -and $null -ne $Observation -and
-        $RegisteredProfile.ContainsKey('automation_id') -and $RegisteredProfile.ContainsKey('prompt_digest') -and
-        $RegisteredProfile.prompt_digest -cmatch '^[0-9a-f]{64}$' -and
         $RegisteredProfile.automation_id -ceq $Observation.automation_id -and
         $RegisteredProfile.prompt_digest -ceq $Observation.prompt_digest
 }
@@ -94,6 +111,7 @@ function Get-ScheduledTriageHealthObservation {
 function Test-ScheduledTriageHealthObservation {
     param([AllowNull()][hashtable] $RegisteredProfile, [AllowNull()][hashtable] $Observation,
         [AllowNull()][hashtable] $Scan)
+    Assert-ScheduledTriageRegisteredProfile $RegisteredProfile
     # Every present object must be well formed even when another observation is unavailable.
     if ($null -ne $Scan) {
         Assert-TriageProfileSchema $Scan @('binding_digest', 'session_id')
@@ -118,4 +136,4 @@ function Test-ScheduledTriageHealthObservation {
 
 Export-ModuleMember -Function Get-ScheduledTriageProfileObservation, Assert-ScheduledTriageProfileObservation,
 Test-ScheduledTriageProfileObservation, Get-ScheduledTriageProfileBindingDigest,
-Get-ScheduledTriageHealthObservation, Test-ScheduledTriageHealthObservation
+Get-ScheduledTriageHealthObservation, Test-ScheduledTriageHealthObservation, Assert-ScheduledTriageRegisteredProfile

@@ -1338,6 +1338,8 @@ Describe 'Read-only health adapter' {
             $script:healthTriage = $healthLocal.Clone()
             $healthTriage.role = 'triage'; $healthTriage.last_successful_scan = '2026-09-01T11:00:00Z'
             $healthTriage.profile = @{
+                project_id = 'project'; host_id = 'local'; executor_id = 'executor'
+                login = 'sandersaares'; user_id = 10; timezone = 'UTC'
                 policy_digest = Get-ScheduledTriagePolicyDigest $healthPolicy $healthTriagePolicy
                 cadence_cron = $healthTriagePolicy.cadence_cron; model = 'chosen'; reasoning_effort = 'medium'; enabled = $true
                 controller_digest = Get-ScheduledTriageControllerDigest

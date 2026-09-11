@@ -5,6 +5,7 @@ BeforeAll {
     Import-Module (Join-Path $PSScriptRoot 'fixtures\TriageFixture.psm1')
     Import-Module (Join-Path $PSScriptRoot 'LocalTriagePublication.psm1')
     Import-Module (Join-Path $PSScriptRoot 'LocalTriageProfile.psm1')
+    Import-Module (Join-Path $PSScriptRoot 'LocalTriage.psm1')
     Import-Module (Join-Path $PSScriptRoot 'LocalTriagePolicy.psm1')
     Import-Module (Join-Path $PSScriptRoot 'LocalHealth.psm1')
     Import-Module (Join-Path $PSScriptRoot 'ScheduledRoleHealth.psm1')
@@ -12,6 +13,47 @@ BeforeAll {
 }
 
 Describe 'Owned native profile observations' {
+    It 'rejects collection-valued registered fields before storage or restored-state transport' {
+        $fixture = Initialize-TriageFixture -Root (Join-Path $TestDrive 'registered-schema')
+        $state = Invoke-TriageTransaction $fixture.context read
+        $original = Copy-TriageFixtureValue $state.triage.profile
+        $path = Join-Path $fixture.context.state_root state.json
+        $before = Get-Content -LiteralPath $path -Raw
+        { Invoke-TriageTransaction $fixture.context triage-register-profile @{
+            operator_approved = $true; profile = $null
+        } } | Should -Throw -ExceptionType ([FormatException])
+        $requestPath = Join-Path $TestDrive 'registered-recovery.json'
+        @{ action = 'recovery'; executor_id = 'executor'; data = @{} } |
+            ConvertTo-Json | Set-Content -LiteralPath $requestPath
+        Mock Get-ScheduledPolicy -ModuleName LocalTriage { $fixture.context.policy }
+        Mock Get-ScheduledTriagePolicy -ModuleName LocalTriage { $fixture.context.triage_policy }
+        Mock Get-ScheduledStateRoot -ModuleName LocalTriage { $fixture.context.state_root }
+        Mock Invoke-ScheduledTriageRead -ModuleName LocalTriage { throw 'Unexpected identity transport.' }
+        foreach ($field in @($original.Keys)) {
+            $invalid = Copy-TriageFixtureValue $original
+            $invalid[$field] = @($original[$field])
+            { Invoke-TriageTransaction $fixture.context triage-register-profile @{
+                operator_approved = $true; profile = $invalid
+            } } | Should -Throw -ExceptionType ([FormatException])
+            (Get-Content -LiteralPath $path -Raw) | Should -BeExactly $before
+            $state.triage.profile = $invalid
+            $state | ConvertTo-Json -Depth 100 | Set-Content -LiteralPath $path
+            { Invoke-ScheduledTriageRequest -RequestPath $requestPath -Now $fixture.context.now } |
+                Should -Throw -ExceptionType ([FormatException])
+            Should -Invoke Invoke-ScheduledTriageRead -ModuleName LocalTriage -Exactly -Times 0
+            $before | Set-Content -LiteralPath $path -NoNewline
+        }
+        $original.reasoning_effort = $null
+        Assert-ScheduledTriageRegisteredProfile $original
+        foreach ($userId in @('10', 10.0, $true, 0)) {
+            $invalid = $original.Clone(); $invalid.user_id = $userId
+            { Assert-ScheduledTriageRegisteredProfile $invalid } | Should -Throw -ExceptionType ([FormatException])
+        }
+        foreach ($invalid in @('not-a-profile', @{}, @($original))) {
+            { Assert-ScheduledTriageRegisteredProfile $invalid } | Should -Throw -ExceptionType ([FormatException])
+        }
+    }
+
     It 'requires native and restored observation identities to retain their scalar types' {
         $native = @{ automation_id = 'entry'; prompt_digest = 'a' * 64 }
         foreach ($field in @('automation_id', 'prompt_digest')) {
@@ -35,7 +77,12 @@ Describe 'Owned native profile observations' {
         $valid.schema_version = [long]1
         Assert-ScheduledTriageProfileObservation $valid scan 'token' 'session'
         $public = Get-ScheduledTriageHealthObservation $valid
-        Test-ScheduledTriageHealthObservation $native $public @{
+        $registered = $native + @{
+            project_id = 'project'; host_id = 'local'; executor_id = 'executor'; login = 'worker'; user_id = 10
+            cadence_cron = '17 */3 * * *'; timezone = 'UTC'; enabled = $true; policy_digest = 'b' * 64
+            controller_digest = 'c' * 64; model = 'chosen'; reasoning_effort = $null
+        }
+        Test-ScheduledTriageHealthObservation $registered $public @{
             session_id = 'session'; binding_digest = $public.binding_digest
         } | Should -BeTrue
     }
