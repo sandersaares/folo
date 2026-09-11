@@ -71,6 +71,12 @@ function Read-ScheduledRecord {
     if (-not $record.ContainsKey('schema_version') -or $record.schema_version -ne 1) {
         throw [FormatException]::new('Unsupported scheduled record schema.')
     }
+    if ($Kind -ceq 'health' -and $record.ContainsKey('role') -and (
+        $record.role -isnot [string] -or $record.role -cnotin @('repair', 'triage'))) {
+        # Only absence identifies legacy repair health. An array must never compare as
+        # both role identities in the independent hosted and Local projections.
+        throw [FormatException]::new('Health role must be a supported scalar string.')
+    }
     return $record
 }
 

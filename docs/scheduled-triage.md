@@ -245,6 +245,10 @@ Ambiguous matches cannot complete or create competing canonical problems.
 The role's state entry allows `triage-read` and explicit lifecycle transitions.
 Scans use `triage-acquire-scan`,
 `triage-record-scan` and `triage-release-scan`; new ownership uses `triage-claim`.
+Claim admission verifies exact revision membership in the owning scan's pinned
+pending inventory before consuming a start. The cache read runs outside the state
+lock; the transaction rechecks the validated revision and snapshot pin before
+committing ownership.
 Resume uses `triage-reconcile-dispatch` when accepted work is proven quiescent,
 then `triage-reserve-continuation`, `triage-begin-dispatch` and
 `triage-accept-dispatch`. `triage-block` retains a specific blocker even before a

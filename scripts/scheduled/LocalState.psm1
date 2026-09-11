@@ -416,6 +416,16 @@ function Invoke-ScheduledLocalAction {
         Assert-LocalField $Data @('checkpoint')
         $checkpointValidation = Get-ScheduledTriageCheckpointValidation $Data.checkpoint
     }
+    if ($Action -ceq 'triage-claim') {
+        $claimState = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json -AsHashtable
+        Assert-ScheduledLocalState $claimState
+        $claimValidation = Get-ScheduledTriageClaimValidation $StateRoot $claimState.triage.scan $Data
+        $claimData = @{}
+        foreach ($field in $Data.Keys) { $claimData[$field] = $Data[$field] }
+        # These are helper-derived facts, not fields accepted from the requesting model.
+        $claimData.claim_validation = $claimValidation
+        $Data = $claimData
+    }
     # No retry loop: contention is visible, and a future repository poll can retry the scan.
     $lock = [IO.File]::Open((Join-Path $StateRoot 'transaction.lock'),
         [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)

@@ -7,6 +7,7 @@ BeforeAll {
     Import-Module (Join-Path $PSScriptRoot 'LocalTriageView.psm1') -Force
     Import-Module (Join-Path $PSScriptRoot 'LocalTriageInbox.psm1')
     Import-Module (Join-Path $PSScriptRoot 'LocalTriagePublication.psm1')
+    Import-Module (Join-Path $PSScriptRoot 'LocalTriageCache.psm1')
 
     function Invoke-EntryFixtureRequest($Action, $Data, [switch] $ObserveOnly) {
         if ($Action -ceq 'scan' -and $Data.Count -eq 0 -and -not $ObserveOnly) { $Data = $identity.Clone() }
@@ -131,6 +132,51 @@ Describe 'Local triage JSON entry point' {
         $state = Invoke-EntryFixtureRequest state @{ action = 'triage-complete-dispatch'
             fields = $owner + @{ reason = 'Collection remains blocked' } }
         $state.triage.analyses[$analysis.id].dispatch.status | Should -Be completed
+    }
+
+    It 'rejects a claim outside the pinned pending inventory without reserving ownership or budget' {
+        $script:fixture = Initialize-TriageFixture -Root (Join-Path $TestDrive 'invalid-claim') -Unclaimed
+        $path = Join-Path $fixture.context.state_root state.json
+        $before = Get-Content -LiteralPath $path -Raw
+        foreach ($field in @('repository_id', 'workflow_id', 'run_id', 'run_attempt', 'digest', 'issue_number', 'extra')) {
+            $revision = Copy-TriageFixtureValue $fixture.revision
+            $revision[$field] = if ($field -ceq 'digest') { 'f' * 64 } else { 999 }
+            { Invoke-EntryFixtureRequest state @{ action = 'triage-claim'; fields = @{
+                scan_token = $fixture.context.scan_token; session_id = $fixture.context.session_id
+                native_verified = $true; revision = $revision
+                claim_validation = @{ snapshot_id = 'f' * 64; revision_digest = 'f' * 64 }
+            } } } | Should -Throw
+            (Get-Content -LiteralPath $path -Raw) | Should -BeExactly $before
+        }
+        $state = Invoke-TriageTransaction $fixture.context read
+        $state.triage.active_analysis_id | Should -BeNullOrEmpty
+        $state.triage.analyses.Count | Should -Be 0
+        $fixture.store.writes.Count | Should -Be 0
+    }
+
+    It 'requires a pinned snapshot and fences replacement after the lock-free membership read' {
+        $script:fixture = Initialize-TriageFixture -Root (Join-Path $TestDrive 'replaced-claim') -Unclaimed
+        $scanOwner = @{ analysis_id = $null; session_id = $fixture.context.session_id; scan_token = $fixture.context.scan_token }
+        $script:validateClaim = (Get-Command Get-ScheduledTriageClaimValidation).ScriptBlock
+        $script:replacement = Copy-TriageFixtureValue $fixture.snapshot
+        $replacement.observation_label = 'replaced before claim commit'
+        Mock Get-ScheduledTriageClaimValidation -ModuleName LocalState {
+            $validated = & $validateClaim $StateRoot $Scan $Data
+            $null = Save-ScheduledTriageSnapshot $fixture.context $replacement $scanOwner
+            $validated
+        }
+        { Invoke-EntryFixtureRequest state @{ action = 'triage-claim'; fields = @{
+            scan_token = $fixture.context.scan_token; session_id = $fixture.context.session_id
+            native_verified = $true; revision = $fixture.revision
+        } } } | Should -Throw
+        (Invoke-TriageTransaction $fixture.context read).triage.analyses.Count | Should -Be 0
+        $null = Invoke-TriageTransaction $fixture.context triage-release-scan @{ scan_token = $fixture.context.scan_token }
+        $state = Invoke-TriageTransaction $fixture.context triage-acquire-scan @{ session_id = 'new-scan' }
+        { Invoke-EntryFixtureRequest state @{ action = 'triage-claim'; fields = @{
+            scan_token = $state.triage.scan.token; session_id = 'new-scan'
+            native_verified = $true; revision = $fixture.revision
+        } } } | Should -Throw
+        (Invoke-TriageTransaction $fixture.context read).triage.analyses.Count | Should -Be 0
     }
 
     It 'exposes health and recovery without impersonating the registered analysis owner' {

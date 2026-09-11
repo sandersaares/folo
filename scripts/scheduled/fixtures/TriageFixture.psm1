@@ -240,10 +240,14 @@ function Initialize-TriageFixture {
         scan_token = $state.triage.scan.token
         profile_observation = @{ automation_id = $installed.automation_id; prompt_digest = $installed.prompt_digest }
     }
+    $snapshot = Get-ScheduledTriageInbox -Policy $policy -State $state -Api $api
+    $null = Save-ScheduledTriageSnapshot $context $snapshot @{
+        analysis_id = $null; session_id = $context.session_id; scan_token = $context.scan_token
+    }
     if ($Unclaimed) {
         return @{
             context = $context; api = $api; store = $store; evidence = $prepared.evidence
-            revision = $revision; snapshot = Get-ScheduledTriageInbox -Policy $policy -State $state -Api $api
+            revision = $revision; snapshot = $snapshot
         }
     }
     $state = Invoke-ScheduledLocalAction -StateRoot $Root -Policy $policy -TriagePolicy $triagePolicy `

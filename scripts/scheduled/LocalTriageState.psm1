@@ -355,9 +355,14 @@ function Invoke-ScheduledTriageStateChange {
         'triage-claim' {
             Assert-TriageScan $triage $Data $Now
             Assert-TriageAdmission $State $Policy $TriagePolicy $Data -Scan
-            Assert-TriageField $Data @('revision', 'session_id', 'native_verified')
+            Assert-TriageField $Data @('revision', 'session_id', 'native_verified', 'claim_validation')
             Assert-TriageField $Data.revision @('repository_id', 'workflow_id', 'run_id',
                 'run_attempt', 'digest', 'issue_number')
+            if ($null -eq $triage.scan.snapshot_id -or
+                $triage.scan.snapshot_id -cne $Data.claim_validation.snapshot_id -or
+                (Get-ScheduledDigest $Data.revision) -cne $Data.claim_validation.revision_digest) {
+                throw 'Claim inputs changed after exact pending-snapshot validation.'
+            }
             if ($null -ne $triage.active_analysis_id -or $null -ne $triage.scan.started_analysis_id -or
                 $Data.session_id -cne $triage.scan.session_id -or $Data.native_verified -ne $true -or
                 $Data.revision.repository_id -ne $Policy.repository_id -or

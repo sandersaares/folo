@@ -46,6 +46,16 @@ Describe 'Complete <Role> health observations' -ForEach @(@{ Role = 'repair' }, 
         $blocked.blocked_conditions | Should -Be @('evidence-unavailable')
     }
 
+    It 'never accepts one malformed record as independent role heartbeats' {
+        foreach ($invalid in @(@{ value = @('repair', 'triage') }, @{ value = @($Role) },
+                @{ value = $null }, @{ value = 1 }, @{ value = $true }, @{ value = @{} },
+                @{ value = '' }, @{ value = 'TRIAGE' }, @{ value = 'unknown' })) {
+            $record.role = $invalid.value
+            { Invoke-HealthProjection $record repair } | Should -Throw -ExceptionType ([FormatException])
+            { Invoke-HealthProjection $record triage } | Should -Throw -ExceptionType ([FormatException])
+        }
+    }
+
     It 'rejects missing and malformed inventories instead of inferring successful observation' {
         $record.Remove('blocked_conditions')
         { Invoke-HealthProjection $record $Role } | Should -Throw -ExceptionType ([FormatException])

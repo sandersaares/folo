@@ -38,6 +38,30 @@ function Read-ScheduledTriageSnapshot {
     return $snapshot
 }
 
+function Get-ScheduledTriageClaimValidation {
+    param([string] $StateRoot, $Scan, $Data)
+    if ($null -eq $Scan -or $null -eq $Scan.snapshot_id -or
+        $Scan.token -cne $Data['scan_token'] -or $Scan.session_id -cne $Data['session_id']) {
+        throw [FormatException]::new('Claim admission needs the owning scan and its pinned snapshot.')
+    }
+    $snapshot = Read-ScheduledTriageSnapshot $StateRoot $Scan.snapshot_id
+    $fields = @('repository_id', 'workflow_id', 'run_id', 'run_attempt', 'digest', 'issue_number')
+    if ($Data['revision'] -isnot [hashtable] -or $Data.revision.Count -ne $fields.Count) {
+        throw [FormatException]::new('Claim revision must contain exactly its identity fields.')
+    }
+    $revisionDigest = Get-ScheduledDigest $Data.revision
+    $pending = @($snapshot.pending | Where-Object {
+        $identity = @{}
+        foreach ($field in $fields) { $identity[$field] = $_[$field] }
+        (Get-ScheduledDigest $identity) -ceq $revisionDigest
+    })
+    if ($snapshot.successful_scan -ne $true -or $pending.Count -ne 1) {
+        throw [FormatException]::new('Claim revision is not an exact pending member of the pinned scan.')
+    }
+    # The transaction rechecks these immutable inputs after the potentially large cache read.
+    return @{ snapshot_id = $Scan.snapshot_id; revision_digest = $revisionDigest }
+}
+
 function Write-ScheduledTriageSnapshotFile {
     param([string] $StateRoot, [hashtable] $Snapshot, [ValidateSet('scan', 'analysis')][string] $OwnerKind,
         [ValidatePattern('^[0-9a-f-]{36}$')][string] $OwnerToken)
@@ -106,4 +130,4 @@ function Invoke-ScheduledTriageCacheCleanup {
 
 Export-ModuleMember -Function Get-ScheduledTriageCacheProjection, Get-ScheduledTriageSnapshotPath,
 Read-ScheduledTriageSnapshot, Write-ScheduledTriageSnapshotFile, Complete-ScheduledTriageSnapshotFile,
-Invoke-ScheduledTriageCacheCleanup
+Invoke-ScheduledTriageCacheCleanup, Get-ScheduledTriageClaimValidation

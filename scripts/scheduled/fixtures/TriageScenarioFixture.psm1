@@ -89,6 +89,9 @@ function Invoke-TriageFixtureNextAnalysis {
     foreach ($field in @('repository_id', 'workflow_id', 'run_id', 'run_attempt', 'issue_number', 'digest')) {
         $revision[$field] = $pending[0][$field]
     }
+    $null = Save-ScheduledTriageSnapshot $context $snapshot @{
+        analysis_id = $null; session_id = $context.session_id; scan_token = $context.scan_token
+    }
     $state = Invoke-TriageTransaction $context triage-claim @{
         scan_token = $context.scan_token; revision = $revision; native_verified = $true
     }
