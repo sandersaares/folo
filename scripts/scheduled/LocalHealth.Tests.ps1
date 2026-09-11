@@ -88,6 +88,22 @@ Describe 'Independent Local health publication' {
         { Sync-ScheduledRoleHealth $healthContext $fixture.api } | Should -Throw
     }
 
+    It 'does not create a replacement for a same-role comment from another repository or enrollment' {
+        $state = Invoke-TriageTransaction $fixture.context read
+        foreach ($field in @('repository_id', 'repository', 'executor_id')) {
+            $record = Get-ScheduledRoleHealthRecord $state triage
+            $record[$field] = if ($field -ceq 'repository_id') { 124 } else { 'foreign' }
+            $fixture.store.comments[10L].Clear()
+            $fixture.store.comments[10L].Add(@{
+                id = 900; body = Write-ScheduledRecord $record health; user = @{ login = 'worker' }
+                issue_url = 'https://api.github.com/repos/owner/repository/issues/10'
+            })
+            { Sync-ScheduledRoleHealth $healthContext $fixture.api } | Should -Throw -ExceptionType ([FormatException])
+            $fixture.store.comments[10L].Count | Should -Be 1
+            $fixture.store.writes.Count | Should -Be 0
+        }
+    }
+
     It 'rejects wrong role, stale scan and unenrolled health publication' {
         $invalid = $healthContext.Clone(); $invalid.role = 'unknown'
         { Sync-ScheduledRoleHealth $invalid $fixture.api } | Should -Throw

@@ -39,7 +39,9 @@ Describe 'Triage publication state requirements' {
             operation_key = $operation.key; target_id = 32
         } } | Should -Throw
         $op = $state.triage.analyses[$fixture.context.analysis_id].operations[$operation.key]
-        $receipt = @{ operation_id = $op.id; target_id = 31; payload_digest = 'not-the-payload' }
+        $target = @{ number = 31; body = $operation.payload.body }
+        $receipt = @{ operation_id = $op.id; target_id = 31; payload_digest = 'not-the-payload'
+            target = $target; target_digest = Get-ScheduledDigest $target }
         { Invoke-TriageTransaction $fixture.context triage-confirm-operation @{
             operation_key = $operation.key; receipt = $receipt
         } } | Should -Throw
@@ -87,9 +89,11 @@ Describe 'Triage publication state requirements' {
         $null = Invoke-TriageTransaction $fixture.context triage-prepare-operation @{ operation = $operation }
         $state = Invoke-TriageTransaction $fixture.context triage-begin-operation @{ operation_key = $operation.key }
         $op = $state.triage.analyses[$fixture.context.analysis_id].operations[$operation.key]
+        $target = @{ number = 31; body = $op.payload.body }
         $null = Invoke-TriageTransaction $fixture.context triage-confirm-operation @{
             operation_key = $operation.key
-            receipt = @{ operation_id = $op.id; target_id = 31; payload_digest = Get-ScheduledDigest $op.payload }
+            receipt = @{ operation_id = $op.id; target_id = 31; payload_digest = Get-ScheduledDigest $op.payload
+                target = $target; target_digest = Get-ScheduledDigest $target }
         }
         $state = Invoke-TriageTransaction $fixture.context triage-record-repair-hold @{
             issue_number = 31; operation_key = $operation.key; reason = 'Scope changed'

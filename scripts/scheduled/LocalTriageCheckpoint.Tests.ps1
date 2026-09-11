@@ -95,4 +95,15 @@ Describe 'Restored analysis and plan integrity' {
         (Invoke-TriageTransaction $fixture.context read).triage.analyses[$fixture.context.analysis_id].checkpoint.analysis.checkpoint |
             Should -Be 1
     }
+
+    It 'rejects an impossible native issue title before replacing the checkpoint or publication plan' {
+        $candidate = Copy-TriageFixtureValue $state.triage.analyses[$fixture.context.analysis_id].checkpoint
+        $candidate.analysis.checkpoint = 2
+        # Exceed GitHub's title boundary without producing an oversized body or other failure.
+        $candidate.analysis.problems[0].diagnosis.title = 'x' * 257
+        $before = Get-Content -LiteralPath $path -Raw
+        { Invoke-TriageTransaction $fixture.context triage-checkpoint @{ checkpoint = $candidate } } | Should -Throw
+        (Get-Content -LiteralPath $path -Raw) | Should -BeExactly $before
+        $access.Count | Should -Be 0
+    }
 }

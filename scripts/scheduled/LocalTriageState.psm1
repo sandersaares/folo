@@ -145,7 +145,12 @@ function Assert-TriageOperation {
         throw 'Restored triage publication differs from its immutable intent.'
     }
     if ($null -ne $Operation.receipt) {
-        Assert-TriageField $Operation.receipt @('target_id', 'payload_digest', 'operation_id')
+        Assert-TriageField $Operation.receipt @('target_id', 'payload_digest', 'operation_id', 'target', 'target_digest')
+        if ($Operation.receipt.target -isnot [hashtable] -or
+            $Operation.receipt.target_digest -isnot [string] -or
+            $Operation.receipt.target_digest -cne (Get-ScheduledDigest $Operation.receipt.target)) {
+            throw 'Restored publication readback differs from its confirmed target snapshot.'
+        }
         if ($Operation.stage -cnotin @('confirmed', 'superseded') -or $null -eq $Operation.target_id -or
             $Operation.receipt.target_id -ne $Operation.target_id -or
             $Operation.receipt.operation_id -cne $Operation.id -or

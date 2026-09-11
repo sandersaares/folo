@@ -6,6 +6,9 @@ use crate::analysis::validate_citations;
 use crate::protocol::require;
 use crate::scope::Scope;
 
+/// GitHub's issue-title limit is checked before a non-repeatable creation can be prepared.
+const MAX_ISSUE_TITLE_CHARACTERS: usize = 256;
+
 /// Evidence-backed diagnosis supplied by AI, independently of canonical issue identity.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -27,6 +30,10 @@ impl Diagnosis {
                 .iter()
                 .all(|text| !text.trim().is_empty()),
             "diagnosis and repair disposition need reasoning",
+        )?;
+        require(
+            self.title.chars().count() <= MAX_ISSUE_TITLE_CHARACTERS,
+            "diagnosis title must fit the GitHub issue-title limit",
         )?;
         validate_citations(&self.citations, evidence)?;
         require(
@@ -64,4 +71,32 @@ pub(crate) enum RepairDisposition {
     NeedsHuman,
     OperatorRecovery,
     Unresolved,
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn issue_titles_are_bounded_by_characters_before_publication() {
+        let mut diagnosis: Diagnosis = serde_json::from_value(json!({
+            "title":"Defect","summary":"A source defect","cause":"Invalid access","category":"code",
+            "repair_disposition":"actionable","repair_reason":"Correct the access",
+            "citations":["/failure"],"scope":[{
+                "operation":"checker","package":null,"check_id":null,"platform":null,
+                "replay":null,"citations":["/failure"]
+            }]
+        }))
+        .unwrap();
+        let evidence = json!({"failure":"retained diagnostic"});
+        for character in ["x", "\u{e9}"] {
+            diagnosis.title = character.repeat(MAX_ISSUE_TITLE_CHARACTERS);
+            diagnosis.validate(&evidence).unwrap();
+            diagnosis.title.push_str(character);
+            _ = diagnosis.validate(&evidence).unwrap_err();
+        }
+    }
 }

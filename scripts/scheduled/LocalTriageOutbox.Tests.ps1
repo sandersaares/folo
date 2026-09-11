@@ -86,9 +86,11 @@ Describe 'Restored triage publication authority' {
         $state = Invoke-TriageTransaction $fixture.context read
         $state.triage.analyses[$fixture.context.analysis_id].operations[$specification.key].spec_digest |
             Should -BeExactly $operation.spec_digest
+        $target = @{ id = 900; body = $specification.payload.body }
         $null = Invoke-TriageTransaction $fixture.context triage-confirm-operation @{
             operation_key = $specification.key
-            receipt = @{ target_id = 900; operation_id = $operation.id; payload_digest = Get-ScheduledDigest $specification.payload }
+            receipt = @{ target_id = 900; operation_id = $operation.id; payload_digest = Get-ScheduledDigest $specification.payload
+                target = $target; target_digest = Get-ScheduledDigest $target }
         }
         $state = Invoke-TriageTransaction $fixture.context read
         $state.triage.analyses[$fixture.context.analysis_id].operations[$specification.key].stage | Should -Be confirmed

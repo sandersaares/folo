@@ -109,6 +109,8 @@ retain ownership and require reconciliation.
 
 Retained checkpoints, comparison baselines, publication plans and health intents
 carry integrity digests. Restoring state checks those digests before transport.
+Confirmed target snapshots also retain their digest before they can establish
+that an index change came from the analysis's own publication.
 Typed checkpoint validation and tool preparation run outside the short lock; the
 validated owner and checkpoint digest are rechecked under the lock before use.
 Observed creation IDs do not rewrite immutable intents.
@@ -230,6 +232,7 @@ package/check/platform/replay and citations. Absence is explicit for failures th
 precede package/check/source selection. Preserve execution qualifiers in the scope;
 operation changes participate in required-scope revision even when the optional
 attribution fields are unchanged. Citation-only changes do not change required scope.
+Diagnosis titles must fit GitHub's issue-title limit before a checkpoint is accepted.
 
 An actionable diagnosis requires an actionable disposition linked to that problem.
 A duplicate-only reference may instead preserve an existing actionable cause and

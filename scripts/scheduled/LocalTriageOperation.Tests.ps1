@@ -28,6 +28,31 @@ Describe 'Evidence-bound publication operations' {
         $fixture.store.writes.Count | Should -Be 1
     }
 
+    It 'rejects restored readback <Damage> before any transport or own-write comparison' -ForEach @(
+        @{ Damage = 'target' }, @{ Damage = 'missing-digest' }, @{ Damage = 'array-digest' }, @{ Damage = 'scalar-target' }
+    ) {
+        $null = Invoke-ScheduledTriageOperation $fixture.context $spec $fixture.api
+        $state = Invoke-TriageTransaction $fixture.context read
+        $receipt = $state.triage.analyses[$fixture.context.analysis_id].operations[$spec.key].receipt
+        switch ($Damage) {
+            target { $receipt.target.body = 'An external change is not our confirmed write' }
+            missing-digest { $receipt.Remove('target_digest') }
+            array-digest { $receipt.target_digest = @($receipt.target_digest) }
+            scalar-target {
+                $receipt.target = 'not a target snapshot'
+                $receipt.target_digest = Get-ScheduledDigest $receipt.target
+            }
+        }
+        $path = Join-Path $fixture.context.state_root state.json
+        $state | ConvertTo-Json -Depth 100 | Set-Content -LiteralPath $path
+        $before = Get-Content -LiteralPath $path -Raw
+        $access = [Collections.Generic.List[string]]::new()
+        $transport = { param($Endpoint) $access.Add($Endpoint); throw 'Unexpected transport.' }
+        { Invoke-ScheduledTriageOperation $fixture.context $spec $transport } | Should -Throw
+        $access.Count | Should -Be 0
+        (Get-Content -LiteralPath $path -Raw) | Should -BeExactly $before
+    }
+
     It 'blocks ambiguous identical comments rather than selecting one to acknowledge' {
         foreach ($id in @(900, 901)) {
             $fixture.store.comments[20L].Add(@{

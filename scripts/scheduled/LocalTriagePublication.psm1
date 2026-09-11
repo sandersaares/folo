@@ -163,7 +163,8 @@ function Complete-TriageOperationReceipt {
     $null = Invoke-TriageTransaction $Context triage-confirm-operation @{
         operation_key = $Operation.key
         receipt = @{ operation_id = $Operation.id; target_id = $id
-            payload_digest = Get-ScheduledDigest $Operation.payload; target = $Target }
+            payload_digest = Get-ScheduledDigest $Operation.payload; target = $Target
+            target_digest = Get-ScheduledDigest $Target }
     }
     return @{ action = 'confirmed'; target_id = $id; operation_key = $Operation.key }
 }

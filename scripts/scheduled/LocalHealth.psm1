@@ -86,10 +86,11 @@ function Find-RoleHealthComment {
             if ($comment.issue_url -cne "https://api.github.com/repos/$($Context.policy.repository)/issues/$IssueNumber") {
                 throw [FormatException]::new('Health comment belongs to another issue.')
             }
-            if ($record.repository_id -eq $Context.policy.repository_id -and
-                $record.repository -ceq $Context.policy.repository -and $record.executor_id -ceq $Context.executor_id) {
-                $comment
+            if ($record.repository_id -ne $Context.policy.repository_id -or
+                $record.repository -cne $Context.policy.repository -or $record.executor_id -cne $Context.executor_id) {
+                throw [FormatException]::new('Existing role health belongs to a different repository or enrollment.')
             }
+            $comment
         }
     )
     if ($owned.Count -gt 1) { throw [FormatException]::new('Role health comment ownership is ambiguous.') }
