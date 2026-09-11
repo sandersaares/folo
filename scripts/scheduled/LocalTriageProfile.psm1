@@ -11,7 +11,8 @@ function Assert-TriageProfileSchema {
     param([hashtable] $Record, [string[]] $Fields)
     # Validate representations before equality or hashing: a self-consistent digest is not
     # schema proof, and PowerShell comparisons otherwise coerce numbers, strings and arrays.
-    if ($Record.Count -ne $Fields.Count) { throw [FormatException]::new('Unexpected profile observation fields.') }
+    # PSBase prevents a payload key named Count from masking dictionary cardinality.
+    if ($Record.PSBase.Count -ne $Fields.Count) { throw [FormatException]::new('Unexpected profile observation fields.') }
     foreach ($field in $Fields) {
         $value = $Record[$field]
         if ($field -ceq 'schema_version') {

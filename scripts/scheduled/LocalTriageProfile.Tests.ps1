@@ -43,6 +43,9 @@ Describe 'Owned native profile observations' {
             Should -Invoke Invoke-ScheduledTriageRead -ModuleName LocalTriage -Exactly -Times 0
             $before | Set-Content -LiteralPath $path -NoNewline
         }
+        $extra = $original.Clone()
+        $extra['Count'] = $original.PSBase.Count
+        { Assert-ScheduledTriageRegisteredProfile $extra } | Should -Throw -ExceptionType ([FormatException])
         $original.reasoning_effort = $null
         Assert-ScheduledTriageRegisteredProfile $original
         foreach ($userId in @('10', 10.0, $true, 0)) {
