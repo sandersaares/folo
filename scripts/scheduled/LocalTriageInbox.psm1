@@ -280,10 +280,22 @@ function Get-ScheduledTriageInbox {
             } }
             $full = @{ issue = $issue; comments = $comments; problem = $problem; legacy = $legacy; details = $details }
             $recordDigest = Get-ScheduledDigest $full
+            # Duplicate-only repair eligibility needs occurrence-specific facts from the
+            # restored full problem, never a summary or a model-supplied support flag.
+            # The typed validator also requires the matching completed full-read receipt.
+            $priorSupport = if ($null -ne $problem) {
+                @{
+                    full_read_digest = $recordDigest; current_diagnosis = $problem.diagnosis
+                    occurrences = @($problem.evidence | ForEach-Object {
+                        @{ generation = $_.generation; diagnosis = $_.diagnosis }
+                    })
+                }
+            } else { $null }
             $problems[[string]$issue.number] = @{ record = $full; full_read_digest = $recordDigest }
             @{
                 issue_number = $issue.number; generation = $generation; scope_revision = $scopeRevision
                 record_digest = $recordDigest; summary = $summary; full_read_digest = $null
+                prior_support = $priorSupport
             }
         }
     )

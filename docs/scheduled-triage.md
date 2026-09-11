@@ -227,6 +227,14 @@ precede package/check/source selection. Preserve execution qualifiers in the sco
 operation changes participate in required-scope revision even when the optional
 attribution fields are unchanged. Citation-only changes do not change required scope.
 
+An actionable diagnosis requires an actionable disposition linked to that problem.
+A duplicate-only reference may instead preserve an existing actionable cause and
+already supported scope, established from its fully read canonical record and
+applicable occurrence. The helper supplies this prior evidence, not the model or
+an abbreviated index summary. New causes, promotion of non-actionable diagnoses,
+and unsupported scope expansion need current actionable evidence. Infrastructure,
+blocked and cancelled consequences do not establish source-repair eligibility.
+
 Matching is `new` with separation reasoning and closest full-read candidates,
 `existing` with canonical issue number, expected generation/scope revision, target
 generation, record/full-read digests, relation and reasoning, or `ambiguous` with

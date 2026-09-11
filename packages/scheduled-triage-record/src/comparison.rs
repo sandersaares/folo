@@ -5,6 +5,7 @@ use ohno::AppError;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::problem::{Diagnosis, RepairDisposition};
 use crate::protocol::require;
 
 /// A complete API-derived index and full-read receipts supplied by the read-only helper.
@@ -64,6 +65,25 @@ pub(crate) struct IndexEntry {
     pub(crate) record_digest: String,
     pub(crate) summary: Value,
     pub(crate) full_read_digest: Option<String>,
+    /// The helper projects this from the verified full problem, not the discovery summary.
+    pub(crate) prior_support: Option<PriorSupport>,
+}
+
+/// Factual occurrence diagnoses bound to the full record the model finished reading.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PriorSupport {
+    full_read_digest: String,
+    current_diagnosis: Diagnosis,
+    occurrences: Vec<OccurrenceSupport>,
+}
+
+/// Retains the occurrence of a prior diagnosis so historical scope cannot authorize newer work.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct OccurrenceSupport {
+    generation: NonZero<u64>,
+    diagnosis: Diagnosis,
 }
 
 /// The AI must state why candidates match or differ; the helper never chooses a cause.
@@ -91,6 +111,49 @@ pub(crate) enum MatchDecision {
 }
 
 impl MatchDecision {
+    pub(crate) fn supports_actionable(
+        &self,
+        diagnosis: &Diagnosis,
+        index: &ComparisonIndex,
+    ) -> Result<bool, AppError> {
+        let Self::Existing {
+            issue_number,
+            target_generation,
+            full_read_digest,
+            ..
+        } = self
+        else {
+            return Ok(false);
+        };
+        let entry = index.read(*issue_number, full_read_digest)?;
+        let Some(support) = &entry.prior_support else {
+            return Ok(false);
+        };
+        let same_cause = |prior: &Diagnosis| {
+            prior.repair_disposition == RepairDisposition::Actionable
+                && prior.category == diagnosis.category
+                && prior.cause == diagnosis.cause
+        };
+        // Equality preserves an already stated claim; different causal wording remains an AI
+        // assertion requiring current actionable support, not deterministic semantic matching.
+        if support.full_read_digest != *full_read_digest
+            || entry.record_digest != *full_read_digest
+            || (*target_generation == entry.generation && !same_cause(&support.current_diagnosis))
+        {
+            return Ok(false);
+        }
+        Ok(diagnosis.scope.iter().all(|scope| {
+            support
+                .occurrences
+                .iter()
+                .filter(|prior| {
+                    prior.generation == *target_generation && same_cause(&prior.diagnosis)
+                })
+                .flat_map(|prior| &prior.diagnosis.scope)
+                .any(|prior| scope.same_verification_scope(prior))
+        }))
+    }
+
     pub(crate) fn validate(&self, index: &ComparisonIndex) -> Result<(), AppError> {
         match self {
             Self::New {
@@ -205,6 +268,7 @@ mod tests {
                 record_digest: "record".to_owned(),
                 summary: json!({}),
                 full_read_digest: Some("read".to_owned()),
+                prior_support: None,
             }],
         };
         index.validate("snapshot", &[issue]).unwrap();
@@ -221,5 +285,54 @@ mod tests {
         };
         decision.validate(&index).unwrap();
         _ = index.read(issue, "stale").unwrap_err();
+    }
+
+    #[test]
+    fn prior_actionability_is_occurrence_scoped_and_ignores_only_citation_changes() {
+        let diagnosis: Diagnosis = serde_json::from_value(json!({
+            "title":"Checker defect","summary":"An independently diagnosed defect","cause":"Invalid access",
+            "category":"code","repair_disposition":"actionable","repair_reason":"Correct the access",
+            "citations":["/diagnostic"],"scope":[{
+                "operation":"checker","package":null,"check_id":null,"platform":null,
+                "replay":null,"citations":["/diagnostic"]
+            }]
+        }))
+        .unwrap();
+        let mut index: ComparisonIndex = serde_json::from_value(json!({
+            "digest":"index","complete":true,"entries":[{
+                "issue_number":7,"generation":2,"scope_revision":1,"record_digest":"full",
+                "summary":{},"full_read_digest":"full","prior_support":{
+                    "full_read_digest":"full","current_diagnosis":diagnosis,
+                    "occurrences":[{"generation":1,"diagnosis":diagnosis}]
+                }
+            }]
+        }))
+        .unwrap();
+        let matching: MatchDecision = serde_json::from_value(json!({
+            "kind":"existing","issue_number":7,"expected_generation":2,"expected_scope_revision":1,
+            "target_generation":1,"record_digest":"full","full_read_digest":"full",
+            "relation":"historical","reason":"Late evidence for the established earlier occurrence"
+        }))
+        .unwrap();
+        matching.validate(&index).unwrap();
+        let mut cited = diagnosis;
+        cited.scope.first_mut().unwrap().citations = vec!["/another-diagnostic".to_owned()];
+        assert!(matching.supports_actionable(&cited, &index).unwrap());
+        let entry = index.entries.first_mut().unwrap();
+        let support = entry.prior_support.as_mut().unwrap();
+        support.current_diagnosis.repair_disposition = RepairDisposition::NeedsHuman;
+        assert!(matching.supports_actionable(&cited, &index).unwrap());
+        let occurrence = index
+            .entries
+            .first_mut()
+            .unwrap()
+            .prior_support
+            .as_mut()
+            .unwrap()
+            .occurrences
+            .first_mut()
+            .unwrap();
+        occurrence.generation = NonZero::new(2).unwrap();
+        assert!(!matching.supports_actionable(&cited, &index).unwrap());
     }
 }

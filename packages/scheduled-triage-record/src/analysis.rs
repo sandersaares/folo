@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::iter;
 use std::num::NonZero;
 
 use ohno::AppError;
@@ -197,7 +198,7 @@ impl AnalysisRecord {
                 )?;
             }
         }
-        let sources: BTreeMap<_, _> = std::iter::once((self.revision.digest.as_str(), evidence))
+        let sources: BTreeMap<_, _> = iter::once((self.revision.digest.as_str(), evidence))
             .chain(
                 basis
                     .supporting_revisions
@@ -291,23 +292,48 @@ impl AnalysisRecord {
                 "supporting diagnostics and collection differences need explicit reasoning",
             )?;
         }
-        for key in problems.keys() {
+        self.validate_problem_links(index)
+    }
+
+    fn validate_problem_links(&self, index: &ComparisonIndex) -> Result<(), AppError> {
+        for problem in &self.problems {
+            let key = &problem.key;
             require(
-                self.jobs
-                    .iter()
-                    .flat_map(|job| {
-                        std::iter::once(&job.disposition)
-                            .chain(job.steps.iter().map(|step| &step.disposition))
-                    })
-                    .chain(self.results.iter().map(|result| &result.disposition))
-                    .chain(self.gaps.iter().map(|gap| &gap.disposition))
-                    .chain(self.support_dispositions.values())
-                    .chain(self.workflow.iter())
+                self.dispositions()
                     .any(|disposition| disposition.problem_keys.contains(key)),
                 "problem is not linked to an analyzed failure",
             )?;
+            if problem.diagnosis.repair_disposition == RepairDisposition::Actionable {
+                let linked = || {
+                    self.dispositions()
+                        .filter(|disposition| disposition.problem_keys.contains(key))
+                };
+                // Consequences cannot establish repair eligibility. A duplicate only references
+                // prior cause/scope proof, never promotes or extends it without actionable input.
+                require(
+                    linked().any(|disposition| disposition.kind == DispositionKind::Actionable)
+                        || (linked()
+                            .any(|disposition| disposition.kind == DispositionKind::Duplicate)
+                            && problem
+                                .matching
+                                .supports_actionable(&problem.diagnosis, index)?),
+                    "actionable diagnosis needs actionable evidence or verified prior cause/scope support",
+                )?;
+            }
         }
         Ok(())
+    }
+
+    fn dispositions(&self) -> impl Iterator<Item = &Disposition> {
+        self.jobs
+            .iter()
+            .flat_map(|job| {
+                iter::once(&job.disposition).chain(job.steps.iter().map(|step| &step.disposition))
+            })
+            .chain(self.results.iter().map(|result| &result.disposition))
+            .chain(self.gaps.iter().map(|gap| &gap.disposition))
+            .chain(self.support_dispositions.values())
+            .chain(self.workflow.iter())
     }
 }
 

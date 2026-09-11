@@ -273,6 +273,120 @@ fn serializes_complete_setup_analysis_without_manufacturing_a_code_repair() {
     assert!(output["problems"][0]["diagnosis"]["scope"][0]["replay"].is_null());
 }
 
+fn actionable_request() -> Value {
+    let mut input = request();
+    input["analysis"]["problems"][0]["diagnosis"]["category"] = json!("code");
+    input["analysis"]["problems"][0]["diagnosis"]["repair_disposition"] = json!("actionable");
+    input
+}
+
+fn duplicate_actionable_request() -> Value {
+    let mut input = actionable_request();
+    let diagnosis = input["analysis"]["problems"][0]["diagnosis"].clone();
+    input["analysis"]["results"][0]["disposition"]["kind"] = json!("duplicate");
+    input["index"]["entries"] = json!([{
+        "issue_number":99,"generation":1,"scope_revision":1,"record_digest":"full",
+        "summary":diagnosis,"full_read_digest":"full",
+        "prior_support":{
+            "full_read_digest":"full","current_diagnosis":diagnosis,
+            "occurrences":[{"generation":1,"diagnosis":diagnosis}]
+        }
+    }]);
+    input["analysis"]["considered_issues"] = json!([99]);
+    input["analysis"]["problems"][0]["matching"] = json!({
+        "kind":"existing","issue_number":99,"expected_generation":1,"expected_scope_revision":1,
+        "target_generation":1,"record_digest":"full","full_read_digest":"full",
+        "relation":"repeat","reason":"The full prior record establishes the same cause and scope"
+    });
+    input
+}
+
+#[test]
+#[cfg_attr(
+    miri,
+    ignore = "full producer snapshots and canonical hashing exceed the interpreter budget; typed support tests retain Miri coverage"
+)]
+fn actionable_diagnoses_need_actionable_links_not_only_consequences_or_new_duplicates() {
+    for kind in ["infrastructure", "blocked", "cancelled", "duplicate"] {
+        let mut input = actionable_request();
+        input["analysis"]["jobs"][0]["disposition"]["kind"] = json!(kind);
+        input["analysis"]["jobs"][0]["steps"][0]["disposition"]["kind"] = json!(kind);
+        input["analysis"]["results"][0]["disposition"]["kind"] = json!(kind);
+        _ = execute(&input.to_string()).unwrap_err();
+        input["analysis"]["results"][0]["disposition"]["kind"] = json!("actionable");
+        _ = execute(&input.to_string()).unwrap();
+    }
+}
+
+#[test]
+#[cfg_attr(
+    miri,
+    ignore = "full producer snapshots and canonical hashing exceed the interpreter budget; typed support tests retain Miri coverage"
+)]
+fn duplicate_only_existing_actionability_needs_full_record_cause_and_occurrence_scope_proof() {
+    let input = duplicate_actionable_request();
+    _ = execute(&input.to_string()).unwrap();
+    for (pointer, value) in [
+        ("/index/entries/0/prior_support", Value::Null),
+        ("/index/entries/0/full_read_digest", Value::Null),
+        (
+            "/index/entries/0/prior_support/full_read_digest",
+            json!("stale"),
+        ),
+        (
+            "/index/entries/0/prior_support/current_diagnosis/repair_disposition",
+            json!("needs-human"),
+        ),
+        (
+            "/index/entries/0/prior_support/current_diagnosis/cause",
+            json!("A different cause"),
+        ),
+        (
+            "/index/entries/0/prior_support/occurrences/0/generation",
+            json!(2),
+        ),
+        (
+            "/index/entries/0/prior_support/occurrences/0/diagnosis/repair_disposition",
+            json!("unresolved"),
+        ),
+        (
+            "/analysis/problems/0/diagnosis/scope/0/operation",
+            json!("An additional execution qualifier"),
+        ),
+        (
+            "/analysis/problems/0/diagnosis/cause",
+            json!("A newly asserted source defect"),
+        ),
+        (
+            "/analysis/results/0/disposition/kind",
+            json!("infrastructure"),
+        ),
+    ] {
+        let mut invalid = input.clone();
+        *invalid.pointer_mut(pointer).unwrap() = value;
+        _ = execute(&invalid.to_string()).unwrap_err();
+    }
+    let mut human = input;
+    human["index"]["entries"][0]["prior_support"]["current_diagnosis"]["repair_disposition"] =
+        json!("needs-human");
+    human["analysis"]["problems"][0]["diagnosis"]["repair_disposition"] = json!("needs-human");
+    _ = execute(&human.to_string()).unwrap();
+}
+
+#[test]
+#[cfg_attr(
+    miri,
+    ignore = "full producer snapshots and canonical hashing exceed the interpreter budget; typed support tests retain Miri coverage"
+)]
+fn current_actionable_evidence_can_establish_expanded_scope_without_borrowing_prior_support() {
+    let mut input = duplicate_actionable_request();
+    input["analysis"]["problems"][0]["diagnosis"]["scope"][0]["operation"] =
+        json!("An independently evidenced additional execution qualifier");
+    _ = execute(&input.to_string()).unwrap_err();
+    input["analysis"]["jobs"][0]["steps"][0]["disposition"]["kind"] = json!("actionable");
+    _ = execute(&input.to_string()).unwrap();
+}
+
 #[test]
 #[cfg_attr(
     miri,

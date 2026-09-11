@@ -28,6 +28,14 @@ explain collection recovery and diagnostic differences. Citations address the
 primary evidence, the API evidence, or an explicitly identified supporting record.
 Reading support does not acknowledge that supporting revision or another attempt.
 
+Actionable proposals require a linked actionable disposition or a duplicate link
+with verified prior cause/scope support. The comparison input projects typed
+occurrence diagnoses from the restored full problem and binds them to its complete
+read digest. Scope equality ignores citations but retains execution qualifiers;
+prior evidence from another occurrence cannot establish the target's scope.
+Current non-actionable diagnoses cannot be promoted through older actionable
+contributions. These are reference-preservation checks, not causal classification.
+
 Problem snapshots retain their contributing completion bases so a crash between
 problem publication and final triage publication does not lose diagnostic context.
 Original reporter evidence remains referenced by its exact run/attempt/digest.

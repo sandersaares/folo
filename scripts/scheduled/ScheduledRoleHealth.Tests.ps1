@@ -156,6 +156,26 @@ Describe 'Complete <Role> health observations' -ForEach @(@{ Role = 'repair' }, 
         }
     }
 
+    It 'rejects invalid digest strings, observation kinds and unexpected nested fields' {
+        if ($Role -ceq 'triage') {
+            foreach ($object in @('profile_scan', 'profile_observation')) {
+                $original = $record[$object].Clone()
+                $record[$object].extra = 'unexpected'
+                { Invoke-HealthProjection $record $Role } | Should -Throw -ExceptionType ([FormatException])
+                $record[$object] = $original.Clone()
+                foreach ($field in @($original.Keys | Where-Object { $_ -like '*digest' })) {
+                    $record[$object][$field] = 'not-a-digest'
+                    { Invoke-HealthProjection $record $Role } | Should -Throw -ExceptionType ([FormatException])
+                    $record[$object][$field] = $original[$field]
+                }
+            }
+            $record.profile_observation.kind = 'dispatch'
+            $payload = $record.profile_observation.Clone(); $payload.Remove('digest')
+            $record.profile_observation.digest = Get-ScheduledDigest $payload
+            { Invoke-HealthProjection $record $Role } | Should -Throw -ExceptionType ([FormatException])
+        }
+    }
+
     It 'validates present siblings before treating absent observations as unavailable' {
         if ($Role -ceq 'triage') {
             foreach ($object in @('profile_scan', 'profile_observation')) {
