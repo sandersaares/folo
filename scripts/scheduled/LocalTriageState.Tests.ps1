@@ -31,6 +31,17 @@ Describe 'Durable triage ownership and budgets' {
             operator_approved = $true; profile = $state.triage.profile
         }
         (Get-Content -LiteralPath (Join-Path $fixture.context.state_root state.json) -Raw) | Should -BeExactly $before
+        foreach ($field in @('executor_id', 'login')) {
+            $foreign = Copy-TriageFixtureValue $state.triage.profile
+            $foreign[$field] = 'foreign'
+            { Invoke-TriageTransaction $fixture.context triage-register-profile @{
+                operator_approved = $true; profile = $foreign
+            } } | Should -Throw
+        }
+        { Invoke-TriageTransaction $fixture.context triage-register-profile @{
+            operator_approved = $false; profile = $state.triage.profile
+        } } | Should -Throw
+        (Get-Content -LiteralPath (Join-Path $fixture.context.state_root state.json) -Raw) | Should -BeExactly $before
         $invalid = Copy-TriageFixtureValue $state.triage.profile
         $invalid.billing = 'unsupported'
         { Invoke-TriageTransaction $fixture.context triage-register-profile @{
