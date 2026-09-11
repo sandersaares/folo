@@ -144,10 +144,20 @@ Describe 'Durable triage ownership and budgets' {
         $analysis.phase = 'retired'; $triage.active_analysis_id = $null; $triage.scan.started_analysis_id = $null
         $data = @{ revision = Copy-TriageFixtureValue $analysis.revision; session_id = $analysis.session_id
             scan_token = $fixture.context.scan_token; native_verified = $true }
+        # Bind the internal transition's prepared input so these cases exercise its own
+        # identity/budget guards rather than merely rejecting absent cache validation.
+        $data.claim_validation = @{ snapshot_id = $triage.scan.snapshot_id
+            revision_digest = Get-ScheduledDigest $data.revision }
+        $data.native_verified = $false
+        { Invoke-ScheduledTriageStateChange $state $fixture.context.policy $fixture.context.triage_policy `
+            triage-claim $data $fixture.context.now } | Should -Throw
+        $data.native_verified = $true
         $data.revision.workflow_id = 0
+        $data.claim_validation.revision_digest = Get-ScheduledDigest $data.revision
         { Invoke-ScheduledTriageStateChange $state $fixture.context.policy $fixture.context.triage_policy `
             triage-claim $data $fixture.context.now } | Should -Throw
         $data.revision.workflow_id = 456
+        $data.claim_validation.revision_digest = Get-ScheduledDigest $data.revision
         { Invoke-ScheduledTriageStateChange $state $fixture.context.policy $fixture.context.triage_policy `
             triage-claim $data $fixture.context.now } | Should -Throw
         foreach ($index in 1..7) {
@@ -155,6 +165,7 @@ Describe 'Durable triage ownership and budgets' {
             $triage.analyses[$copy.id] = $copy
         }
         $data.revision.run_id = 790
+        $data.claim_validation.revision_digest = Get-ScheduledDigest $data.revision
         { Invoke-ScheduledTriageStateChange $state $fixture.context.policy $fixture.context.triage_policy `
             triage-claim $data $fixture.context.now } | Should -Throw
     }
