@@ -1,13 +1,13 @@
 #requires -Version 7
 
-# deep-checks.yml and just scheduled-check use this process boundary to propagate checker failures.
-# Only the selected check and actual source SHA are inputs; summary.md is the reporter's input.
-# Ref: .github/workflows/implementation.md#immutable-execution.
+# Deep validation invokes this entrypoint in its main checkout and propagates its exit code.
+# The matrix supplies the check; GitHub supplies the run's commit. Summary.md feeds reporting.
+# Ref: .github/workflows/implementation.md#deep-execution.
 [CmdletBinding()]
 param(
     [string] $CheckJson = $env:SCHEDULED_CHECK,
-    [string] $SourceSha = $env:SCHEDULED_SOURCE_SHA,
-    [string] $SourceRoot = 'candidate',
+    [string] $SourceSha = $env:GITHUB_SHA,
+    [string] $SourceRoot = '.',
     [string] $OutputDirectory = '.scheduled-result'
 )
 Set-StrictMode -Version Latest

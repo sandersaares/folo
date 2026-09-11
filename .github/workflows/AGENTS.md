@@ -72,9 +72,7 @@ high-level design in `design.md` and per-job mechanics in inline YAML comments.
   `!= 'pull_request'`, or a `merge_group` run would take the full matrix.
 - Keep PR/push CI shallow. Repair PRs use ordinary required checks and human review of relevant
   deep-check results; do not introduce a repair registry or special merge gate.
-- Preserve the `scheduled-repair-` branch exclusion in credentialed Azure tests and production
-  PR benchmarks. It must apply on the first PR event, including drafts.
-- Privileged scheduled reporting must check out the default-branch controller, not a triggering
-  candidate. Treat downloaded diagnostics as data, never executable code.
+- Keep deep validation full-scope and main-only, with failure reporting in the same workflow.
+- Treat repair branches like other same-repository branches; do not add naming-based gates.
 - Keep issue handoffs human-readable and all ownership on GitHub. App setup must not implicitly
   enable or run automations. See [Scheduled validation](../../docs/scheduled-validation.md).

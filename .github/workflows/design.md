@@ -11,8 +11,10 @@ The [scheduled validation contract](../../docs/scheduled-validation.md) separate
 check execution, failure triage and repair. Each handoff is an ordinary GitHub issue
 that a human or Local Copilot App agent can understand and act on.
 
-GitHub Actions files a readable **Scheduled validation failed on &lt;date&gt;** report
-for each unsuccessful deep-validation attempt. A triager investigates all reported
+The **Deep validation** workflow runs the full suite against merged `main` on its
+schedule, or when started manually on `main`. It is not triggered by PRs or forks.
+Its failure-reporting job files a readable **Scheduled validation failed on &lt;date&gt;**
+issue when planning or checks fail. A triager investigates all reported
 failures and creates or updates separate problem issues. The report closes when its
 failures have been accounted for; the problem issues stay open until resolved.
 
@@ -30,13 +32,11 @@ GitHub-hosted workflows do not invoke AI. Final approval and merge remain human.
 ### Shallow and deep validation
 
 **Standard validation** runs the ordinary shallow PR, push and merge-queue checks.
-**Full deep validation** runs the full deep suite on immutable main; **Selected deep
-validation** runs manually selected checks and crates at an optional source commit.
+**Deep validation** runs the full deep suite at the main commit selected by its event.
 Deep validation covers ordinary Miri, many-seed Miri, mutation testing and careful checks.
-**Deep checks** is their reusable execution helper, not a separate user-started
-validation workflow.
+Planning, check jobs and failure reporting belong to that same workflow.
 The local entry points have fixed meanings: `validate-local` is shallow and
-`validate-deep-local` is deep. Repair authors run relevant deep checks against the
+`validate-deep-local` is deep. Repair authors run relevant local deep checks against the
 reviewed commit and link their results for human review. Repair PRs use the same
 required checks and version validation as other PRs, without a special merge gate.
 
@@ -51,6 +51,7 @@ Independent matrix jobs continue so one failed shard does not cancel the others.
 Readable reports include useful diagnostics, source and direct job links; full logs
 and tool artifacts supplement rather than replace the explanation. Setup failures
 are reported even when no checker artifact exists.
+Successful runs and cancellation without a failed job do not create failure issues.
 
 An empty mutation shard is explicitly reported as no work, not a passing baseline.
 Cargo-mutants owns configuration and baseline execution for nonempty shards.
@@ -58,14 +59,9 @@ Missing output is not proof of an empty shard. Reproduction instructions preserv
 known invocation scope; interleaved Miri output does not justify inventing a failing
 test or seed. An unexplained intermittent failure is not resolved by a green retry.
 
-### External-service safeguards
-
-Branches whose names contain `scheduled-repair-` opt out of production-backed PR
-benchmarks and credentialed Azure tests, including on the first opening event and
-for drafts. The repair skill applies this naming convention before creating a PR;
-humans can use the same convention. It does not establish ownership, authorize a
-repair or alter the required validation gate. Emulator and other ordinary validation
-remain. Excluding hosted credentials does not make a local worktree a sandbox.
+Repair branches follow the same validation and benchmark conditions as other
+same-repository branches. Ordinary repository/event conditions apply; branch names
+do not select permissions or opt out of jobs.
 
 ## Job granularity and gating
 

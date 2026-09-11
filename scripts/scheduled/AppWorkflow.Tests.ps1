@@ -15,6 +15,8 @@ BeforeAll {
     }
     $setupPath = Join-Path $root '.github\prompts\setup-scheduled-remediation.prompt.md'
     $script:setup = Get-Content -LiteralPath $setupPath -Raw
+    $guidePath = Join-Path $root 'docs\scheduled-validation.md'
+    $script:guide = Get-Content -LiteralPath $guidePath -Raw
 }
 
 Describe 'Scheduled App entry-point routing' {
@@ -36,16 +38,29 @@ Describe 'Scheduled App entry-point routing' {
         $skills['scheduled-repair'] | Should -Match '`reply_and_resolve_review_thread`'
     }
 
-    It 'names the repair branch before the first PR to preserve side-effect exclusions' {
-        $repair = $skills['scheduled-repair']
-        $repair | Should -Match '`rename_branch`'
-        $repair | Should -Match 'scheduled-repair-<issue-number>'
-        $repair.IndexOf('`rename_branch`') | Should -BeLessThan $repair.IndexOf('`create_pull_request`')
-        $setup | Should -Match 'scheduled-repair-<issue-number>'
+    It 'uses ordinary branches without hosted PR scope selection' {
+        $allText = ($skills.Values -join "`n") + $setup + $guide
+        $allText | Should -Not -Match 'scheduled-repair-|rename_branch|source_sha|check_ids'
+        $allText | Should -Not -Match 'full-deep-validation|selected-deep-validation|deep-checks\.yml'
+        $allText | Should -Not -Match 'scheduled-report\.yml|Scheduled reporting|workflow_run'
+        $skills['scheduled-repair'] | Should -Match 'ordinary repair'
+    }
+
+    It 'documents one no-input full hosted run on main and same-workflow report recovery' {
+        $commands = @([regex]::Matches($guide, '(?m)^gh workflow run[^\r\n]+'))
+        $commands.Count | Should -Be 1
+        $commands[0].Value | Should -BeExactly 'gh workflow run deep-validation.yml --ref main'
+        $guide | Should -Match 'gh run rerun --job'
+        ($guide -replace '\s+', ' ') | Should -Match 'may also rerun failed checks'
     }
 
     It 'keeps deep verification and the complete PR lifecycle in the worker instructions' {
         $repair = $skills['scheduled-repair'] -replace '\s+', ' '
+        $repair | Should -Match 'just package="\{\{PACKAGES\}\}" validate-deep-local'
+        $repair | Should -Match 'same commands in WSL'
+        $repair | Should -Match 'not PR-head validation evidence'
+        $repair | Should -Match 'Human review may resolve that limitation'
+        $repair | Should -Match '`needs-human`'
         $repair | Should -Match 'tested commit and scope'
         $repair | Should -Match 'normal required checks'
         $repair | Should -Match 'top-level comments, review summaries and inline threads'
@@ -84,7 +99,7 @@ Describe 'Scheduled App entry-point routing' {
     }
 
     It 'keeps the affected Markdown links within existing repository documents' {
-        $documents = @($setupPath, (Join-Path $root 'docs\scheduled-validation.md'))
+        $documents = @($setupPath, $guidePath)
         foreach ($role in $skills.Keys) {
             $documents += Join-Path $root ".github\skills\$role\SKILL.md"
         }

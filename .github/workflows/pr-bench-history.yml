@@ -47,12 +47,9 @@ jobs:
   # like bench-history.yml's fork gate they are skipped silently; because every downstream job
   # `needs` this one, a skipped delta cascades to skip them too.
   delta:
-    # The repair branch convention excludes production-backed collection before the first PR event.
-    # Ref: .github/workflows/design.md#external-service-safeguards.
     if: >-
       github.repository == 'folo-rs/folo'
       && github.event.pull_request.head.repo.full_name == github.repository
-      && !contains(github.head_ref, 'scheduled-repair-')
     runs-on: ubuntu-latest
     outputs:
       packages: ${{ steps.compute.outputs.packages }}

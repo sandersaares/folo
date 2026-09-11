@@ -1,7 +1,7 @@
 #requires -Version 7
-# The trusted scheduled-report.yml controller collects exact-attempt diagnostics and publishes
-# readable run reports. It uses the runner's PowerShell/gh rather than Rust so setup failures
-# remain reportable. GitHub owns report identity; downloaded files are disposable diagnostics.
+# The report job in deep-validation.yml publishes readable failures from its own workflow.
+# It uses the runner's PowerShell/gh rather than Rust so setup failures remain reportable.
+# GitHub owns report identity; downloaded files are disposable diagnostics.
 # Ref: ../../.github/workflows/implementation.md#failure-reporting.
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -128,8 +128,7 @@ function Read-ScheduledArtifactText {
     param(
         [Parameter(Mandatory)][string] $Repository,
         [Parameter(Mandatory)][hashtable] $Artifact,
-        [Parameter(Mandatory)][string] $OutputDirectory,
-        [Parameter(Mandatory)][ValidateSet('summary.md', 'plan.json')][string] $Name
+        [Parameter(Mandatory)][string] $OutputDirectory
     )
     if ($Artifact.expired) { throw 'The artifact has expired.' }
     $path = Join-Path $OutputDirectory "$([long]$Artifact.id).zip"
@@ -138,17 +137,13 @@ function Read-ScheduledArtifactText {
         $null = Save-ScheduledGitHubFile "repos/$Repository/actions/artifacts/$([long]$Artifact.id)/zip" $path
         $archive = [IO.Compression.ZipFile]::OpenRead($path)
         try {
-            # Read only the agreed text entry, in place. Never extract candidate paths into either
-            # the controller or diagnostics directory, including symlink/path-traversal entries.
-            $entries = @($archive.Entries | Where-Object FullName -CEQ $Name)
-            if ($entries.Count -ne 1) { throw "Artifact must contain one root $Name entry." }
+            # Read only the summary in place; extraction is unnecessary for reporting.
+            $entries = @($archive.Entries | Where-Object FullName -CEQ 'summary.md')
+            if ($entries.Count -ne 1) { throw 'Artifact must contain one root summary.md entry.' }
             $source = $entries[0].Open()
             $content = [IO.MemoryStream]::new()
             try {
                 $truncated = Copy-ScheduledLimitedStream $source $content $script:TextByteLimit
-                if ($truncated -and $Name -ceq 'plan.json') {
-                    throw "Planning metadata exceeded the $script:TextByteLimit byte limit; partial JSON is not used."
-                }
                 $text = [Text.Encoding]::UTF8.GetString($content.GetBuffer(), 0, [int]$content.Length).TrimStart([char]0xFEFF)
                 if ($truncated) {
                     $text += "`n`nCheck summary truncated at the $script:TextByteLimit byte limit. Remaining diagnostics are unavailable here; see the original artifact linked above."
@@ -168,18 +163,41 @@ function Invoke-ScheduledReporting {
         [Parameter(Mandatory)][string] $OutputDirectory
     )
     $endpoint = "repos/$Repository/actions/runs/$RunId"
-    $run = Invoke-ScheduledGitHubJson "$endpoint/attempts/$RunAttempt"
-    if ($run.id -ne $RunId -or $run.run_attempt -ne $RunAttempt -or $run.status -cne 'completed' -or
-        $run.path -cnotin @('.github/workflows/full-deep-validation.yml', '.github/workflows/selected-deep-validation.yml')) {
-        throw 'Expected a completed deep-validation workflow attempt.'
+    $run = Invoke-ScheduledGitHubJson $endpoint
+    if ($run.id -ne $RunId -or $run.run_attempt -ne $RunAttempt -or $run.head_sha -cnotmatch '^[a-f0-9]{40}$') {
+        throw 'The run must identify the requested current attempt and tested commit.'
     }
-    if ($run.conclusion -ceq 'success') { return 'Validation succeeded; earlier reports are unchanged.' }
+
+    # Read every attempt so cached dependencies survive reporter-only and failed-job reruns.
+    # https://docs.github.com/en/rest/actions/workflow-jobs#list-jobs-for-a-workflow-run
+    $jobs = @(Get-ScheduledGitHubCollection "$endpoint/jobs?filter=all" -Property jobs)
+    foreach ($job in $jobs) {
+        if ($job.run_id -ne $RunId -or $job['run_attempt'] -lt 1) {
+            throw 'Job results must identify this run and a positive execution attempt.'
+        }
+    }
+    $jobs = @($jobs | Where-Object run_attempt -LE $RunAttempt |
+        Group-Object name -CaseSensitive | ForEach-Object {
+            $versions = @($_.Group | Sort-Object run_attempt -Descending)
+            $latest = $versions[0]
+            # GitHub also copies cached jobs into new attempts with new IDs but unchanged
+            # execution timestamps. The original row identifies the artifact-producing attempt.
+            if ($latest.status -ceq 'completed' -and $latest['started_at'] -and $latest['completed_at']) {
+                $versions | Where-Object {
+                    $_.conclusion -ceq $latest.conclusion -and
+                        $_['started_at'] -ceq $latest.started_at -and $_['completed_at'] -ceq $latest.completed_at
+                } | Sort-Object run_attempt | Select-Object -First 1
+            } else { $latest }
+        })
+    $failedJobs = @($jobs | Where-Object {
+        $_.name -cne 'report' -and $_.status -ceq 'completed' -and
+            $_.conclusion -cin @('failure', 'timed_out', 'action_required')
+    })
+    if ($failedJobs.Count -eq 0) { return 'No failed validation jobs; earlier reports are unchanged.' }
 
     $null = New-Item -ItemType Directory -Path $OutputDirectory -Force
     $OutputDirectory = (Resolve-Path -LiteralPath $OutputDirectory).Path
     $attemptUrl = "https://github.com/$Repository/actions/runs/$RunId/attempts/$RunAttempt"
-    # A jobs API failure is not an empty execution. Let it fail the reporter, preserving retry.
-    $jobs = @(Get-ScheduledGitHubCollection "$endpoint/attempts/$RunAttempt/jobs" -Property jobs)
     $issues = @(Get-ScheduledGitHubCollection "repos/$Repository/issues?state=all&labels=scheduled-run-failure")
     $linkBoundary = '(?=$|[\s<>)\].,;!?])'
     $attemptPattern = [regex]::Escape($attemptUrl) + $linkBoundary
@@ -201,133 +219,50 @@ function Invoke-ScheduledReporting {
     $artifacts = @()
     try { $artifacts = @(Get-ScheduledGitHubCollection "$endpoint/artifacts" -Property artifacts) }
     catch { $notices.Add("Result artifact inventory is unavailable: $($_.Exception.Message)") }
-    $plan = $null
-    # Failed-job reruns retain successful planning outputs. This run's event inputs and
-    # controller SHA are immutable, so its latest plan at or before this attempt still identifies
-    # the selected source. This does not authorize reuse of prior checker results or logs.
-    # Ref: ../../.github/workflows/implementation.md#immutable-execution.
-    $planArtifacts = @($artifacts | Where-Object {
-        $attempt = 0
-        $_.name -cmatch "^scheduled-plan-$RunId-([1-9][0-9]*)$" -and
-            [int]::TryParse($Matches[1], [ref]$attempt) -and $attempt -le $RunAttempt
-    } | Sort-Object { [int]($_.name -split '-')[-1] } -Descending)
-    $planAttempt = $RunAttempt
-    if ($planArtifacts.Count -gt 0) {
-        $planName = $planArtifacts[0].name
-        $planAttempt = [int]($planName -split '-')[-1]
-        $planArtifacts = @($planArtifacts | Where-Object name -CEQ $planName)
-    }
-    $sourceDescription = 'Unavailable: planning diagnostics do not establish the selected tested source. See [run inputs and logs](' + $attemptUrl + '). Workflow/controller commit (not the tested-source identity): `' + $run.head_sha + '`.'
-    if ($planArtifacts.Count -eq 1) {
-        try {
-            $plan = Read-ScheduledArtifactText $Repository $planArtifacts[0] $OutputDirectory plan.json |
-                ConvertFrom-Json -AsHashtable
-            if ($plan.source_sha -cnotmatch '^[a-f0-9]{40}$' -or -not $plan.ContainsKey('checks')) {
-                throw 'Plan has no full source commit or check declarations.'
-            }
-            if ($plan.controller_sha -cne $run.head_sha) {
-                throw 'Plan controller commit does not match the originating workflow run.'
-            }
-            foreach ($check in $plan.checks) {
-                if ($check.id -cnotmatch '^[A-Za-z0-9_-]+$' -or [string]::IsNullOrWhiteSpace($check.platform)) {
-                    throw 'Plan has an invalid check declaration.'
-                }
-            }
-            $sourceDescription = '`' + $plan.source_sha + '`'
-            if ($planAttempt -lt $RunAttempt) {
-                $notices.Add("Tested-source metadata comes from the retained [planning artifact from attempt $planAttempt](https://github.com/$Repository/actions/runs/$RunId/artifacts/$($planArtifacts[0].id)). Workflow inputs and the controller commit are unchanged across reruns; checker results and logs below belong only to attempt $RunAttempt.")
-            }
-        } catch {
-            $plan = $null
-            $notices.Add("Tested-source plan is unavailable: $($_.Exception.Message) Original artifact: https://github.com/$Repository/actions/runs/$RunId/artifacts/$($planArtifacts[0].id)")
-        }
-    } elseif ($planArtifacts.Count -gt 1) {
-        $notices.Add("Multiple planning artifacts identify attempt $planAttempt; the tested commit cannot be established.")
-    }
-    $failedJobs = @($jobs | Where-Object conclusion -CNE 'success')
     $failures = [Collections.Generic.List[hashtable]]::new()
-    $readResults = [Collections.Generic.HashSet[long]]::new()
     foreach ($job in $failedJobs) {
         $diagnostics = [Collections.Generic.List[string]]::new()
-        $conclusion = if ([string]::IsNullOrWhiteSpace($job.conclusion)) { 'incomplete' } else { $job.conclusion }
-        $steps = @($job.steps | Where-Object { $_.conclusion -cnotin @('success', 'skipped') })
+        $steps = @($job['steps'] | Where-Object { $null -ne $_ -and $_.conclusion -cnotin @('success', 'skipped') })
         $summary = if ($steps.Count -gt 0) {
             'Unsuccessful steps: ' + (($steps | ForEach-Object { "$($_.name) ($($_.conclusion))" }) -join '; ')
-        } elseif ($job.conclusion -ceq 'skipped') {
-            'Did not run. A prerequisite failure or cancellation may have prevented execution.'
-        } else { "Job concluded ${conclusion}; no failed step was recorded." }
+        } else { "Job concluded $($job.conclusion); no failed step was recorded." }
         $diagnostics.Add($summary)
-        $scope = if ($job.ContainsKey('labels') -and @($job.labels).Count -gt 0) {
-            $job.labels -join ', '
-        } else { 'Not available' }
-        if ($null -ne $plan) {
-            foreach ($check in $plan.checks) {
-                if ($job.name -cmatch ('(?<![A-Za-z0-9_-])' + [regex]::Escape($check.id) + '(?![A-Za-z0-9_-])')) {
-                    $scope = "$($check.platform) / $($check.id)"
-                }
+        $logPath = Join-Path $OutputDirectory "job-$([long]$job.id).log"
+        try {
+            $truncated = Save-ScheduledGitHubFile "repos/$Repository/actions/jobs/$([long]$job.id)/logs" `
+                $logPath -ByteLimit $script:TextByteLimit -AllowPartial
+            if ($truncated) {
+                $diagnostics.Add("Job log truncated at the $script:TextByteLimit byte limit. Remaining diagnostics are unavailable here; full log: $($job.html_url)")
             }
-        }
-        if ($job.conclusion -cne 'skipped') {
-            $logPath = Join-Path $OutputDirectory "job-$([long]$job.id).log"
-            try {
-                $truncated = Save-ScheduledGitHubFile "repos/$Repository/actions/jobs/$([long]$job.id)/logs" `
-                    $logPath -ByteLimit $script:TextByteLimit -AllowPartial
-                if ($truncated) {
-                    $diagnostics.Add("Job log truncated at the $script:TextByteLimit byte limit. Remaining diagnostics are unavailable here; full log: $($job.html_url)")
-                }
-                $excerpt = Get-ScheduledLogExcerpt (Get-Content -LiteralPath $logPath -Raw)
-                if ([string]::IsNullOrWhiteSpace($excerpt)) { throw 'The job log is empty.' }
-                $diagnostics.Add("Observed job log excerpt:`n$excerpt")
-                $errorLine = @($excerpt -split '\r?\n' | Where-Object {
-                    $_ -match '(?i)##\[error\]|\berror\b|failed|panicked|MISSED|TIMEOUT|timed out|undefined behavior'
-                } | Select-Object -First 1)
-                if ($errorLine.Count -gt 0) { $summary = $errorLine[0] }
-            } catch { $diagnostics.Add("Job logs unavailable: $($_.Exception.Message) Full log: $($job.html_url)") }
-            finally { [IO.File]::Delete($logPath) }
-        }
-        $resultArtifacts = @($artifacts | Where-Object {
-            $prefix = "scheduled-result-$RunId-$RunAttempt-"
-            $_.name.StartsWith($prefix, [StringComparison]::Ordinal) -and
-                $job.name -cmatch ('(?<![A-Za-z0-9_-])' + [regex]::Escape($_.name.Substring($prefix.Length)) + '(?![A-Za-z0-9_-])')
-        })
+            $excerpt = Get-ScheduledLogExcerpt (Get-Content -LiteralPath $logPath -Raw)
+            if ([string]::IsNullOrWhiteSpace($excerpt)) { throw 'The job log is empty.' }
+            $diagnostics.Add("Observed job log excerpt:`n$excerpt")
+            $errorLine = @($excerpt -split '\r?\n' | Where-Object {
+                $_ -match '(?i)##\[error\]|\berror\b|failed|panicked|MISSED|TIMEOUT|timed out|undefined behavior'
+            } | Select-Object -First 1)
+            if ($errorLine.Count -gt 0) { $summary = $errorLine[0] }
+        } catch { $diagnostics.Add("Job logs unavailable: $($_.Exception.Message) Full log: $($job.html_url)") }
+        finally { [IO.File]::Delete($logPath) }
+        $diagnostics.Add("Job execution attempt: $($job.run_attempt)")
+        $resultArtifacts = @($artifacts | Where-Object name -CEQ "scheduled-result-$RunId-$($job.run_attempt)-$($job.name)")
         foreach ($artifact in $resultArtifacts) {
-            $null = $readResults.Add([long]$artifact.id)
             $diagnostics.Add("Result artifact: https://github.com/$Repository/actions/runs/$RunId/artifacts/$($artifact.id)")
             try {
-                $text = Read-ScheduledArtifactText $Repository $artifact $OutputDirectory summary.md
+                $text = Read-ScheduledArtifactText $Repository $artifact $OutputDirectory
                 if ([string]::IsNullOrWhiteSpace($text)) { throw 'The check summary is empty.' }
                 $diagnostics.Add($text)
             } catch { $diagnostics.Add("Check summary unavailable: $($_.Exception.Message)") }
         }
-        if ($resultArtifacts.Count -eq 0 -and $job.conclusion -cne 'skipped') {
-            $diagnostics.Add('No check-summary artifact identifies this job in this attempt. Setup may have failed before the checker ran.')
+        if ($resultArtifacts.Count -eq 0) {
+            $diagnostics.Add('No check-summary artifact identifies this job execution. Setup may have failed before the checker ran.')
         }
         $failures.Add(@{
-            name = $job.name; url = $job.html_url; conclusion = [string]$conclusion
-            scope = $scope; summary = $summary; diagnostics = $diagnostics.ToArray()
+            name = $job.name; url = $job.html_url; conclusion = $job.conclusion
+            summary = $summary; diagnostics = $diagnostics.ToArray()
         })
     }
-    $unmatched = @($artifacts | Where-Object {
-        $prefix = "scheduled-result-$RunId-$RunAttempt-"
-        if (-not $_.name.StartsWith($prefix, [StringComparison]::Ordinal)) { return $false }
-        $pattern = '(?<![A-Za-z0-9_-])' + [regex]::Escape($_.name.Substring($prefix.Length)) + '(?![A-Za-z0-9_-])'
-        -not $readResults.Contains([long]$_.id) -and
-            @($jobs | Where-Object { $_.name -cmatch $pattern }).Count -eq 0
-    })
-    foreach ($artifact in $unmatched) {
-        $notices.Add("Check-summary artifact could not be associated with an Actions job: $($artifact.name). See https://github.com/$Repository/actions/runs/$RunId/artifacts/$($artifact.id).")
-        try {
-            $text = Read-ScheduledArtifactText $Repository $artifact $OutputDirectory summary.md
-            if ([string]::IsNullOrWhiteSpace($text)) { throw 'The check summary is empty.' }
-            $failures.Add(@{
-                name = $artifact.name; url = $attemptUrl; scope = 'Job association unavailable'
-                conclusion = 'Unknown'; summary = 'Check summary has no matching Actions job.'
-                diagnostics = @($text)
-            })
-        } catch { $notices.Add("Unassociated check summary unavailable: $($_.Exception.Message)") }
-    }
     $messages = @(Format-ScheduledReport -Run $run -AttemptUrl $attemptUrl `
-        -SourceDescription $sourceDescription -Failures $failures.ToArray() -Notices $notices.ToArray())
+        -Failures $failures.ToArray() -Notices $notices.ToArray())
     for ($index = 0; $index -lt $messages.Count; $index++) {
         Set-Content -LiteralPath (Join-Path $OutputDirectory "report-$index.md") -Value $messages[$index] -Encoding utf8 -NoNewline
     }

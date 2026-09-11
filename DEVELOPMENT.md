@@ -88,7 +88,7 @@ current platform. PR/push workflows stay shallow, while scheduled workflows own
 recurring deep checks. Repair authors link relevant deep-check results for review.
 The ordinary `just test-scripts` and `just validate-scripts` commands cover the
 workflow helpers. The App uses supported native operations and no local
-coordination database. See the chapter for setup and external-service safeguards.
+coordination database. See the chapter for setup and GitHub issue handoffs.
 
 # Testing Azure functionality
 

@@ -47,6 +47,8 @@ automatically yours because it uses the same account.
 For claims assigned to this automation or explicitly handed to it, read each PR's
 current checks, relevant deep results, conflicts, top-level discussion, **review
 summaries and inline threads**. Read previous resolutions before repeating work.
+Relevant premerge deep results come from local native/WSL checks at the PR head.
+Hosted **Deep validation** tests main only and is not PR-head validation evidence.
 `needs-human` blocks continuation until the stated requirement is satisfied; fresh
 decisions or other material information can resolve a blocker, but elapsed time
 cannot. Routine waiting for checks, review or merge needs no new agent turn.
@@ -93,7 +95,8 @@ Inspect the actual Local session and branch, then follow the
 [ownership convention](../../../docs/scheduled-validation.md#ownership-and-handoff):
 assign the responsible GitHub user, add `in-progress`, and post a short comment
 naming the owner, actual session and branch. Once available, link the GitHub branch
-and PR. All authored posts start with `[Copilot speaking]`.
+and PR. Repair branches follow ordinary repository conventions. All authored posts
+start with `[Copilot speaking]`.
 
 Reread after claiming and before starting work. The earlier unreleased claim wins
 a collision; withdraw without removing its assignment or label. Claims are an

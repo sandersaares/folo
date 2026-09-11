@@ -1,0 +1,105 @@
+name: Deep validation
+
+on:
+  schedule:
+    - cron: 41 2 * * *
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    # Scheduled and manual runs validate merged main, never a PR or fork.
+    # Ref: .github/workflows/design.md#scheduled-validation.
+    if: github.repository == 'folo-rs/folo' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Plan the full deep-check matrix
+        id: plan
+        shell: pwsh
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          Import-Module ./scripts/scheduled/ScheduledPlan.psm1 -Force
+          $matrix = @{ include = @(Get-ScheduledCheck) } | ConvertTo-Json -Depth 10 -Compress
+          "matrix=$matrix" | Add-Content -LiteralPath $env:GITHUB_OUTPUT
+
+  checks:
+    needs: plan
+    name: ${{ matrix.id }}
+    # Independent checks continue after a failure, preserving the full nightly scope.
+    # Ref: .github/workflows/design.md#failure-diagnostics.
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    runs-on: ${{ matrix.platform }}
+    # Mutation work needs its execution allowance plus cold-cache environment setup.
+    # Ref: .github/workflows/implementation.md#deep-execution.
+    timeout-minutes: 270
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-environment
+      - name: Execute the deep check
+        shell: pwsh
+        env:
+          SCHEDULED_CHECK: ${{ toJSON(matrix) }}
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          ./scripts/scheduled/Invoke-ScheduledCheck.ps1
+          exit $LASTEXITCODE
+      - name: Preserve readable diagnostics
+        # Setup failures have job logs but may never reach the summary-writing check.
+        # Ref: .github/workflows/implementation.md#failure-reporting.
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: scheduled-result-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.id }}
+          path: .scheduled-result
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 30
+
+  report:
+    # This is a normal failure-reporting job in the same run, including planning/setup failures.
+    # Ref: .github/workflows/implementation.md#failure-reporting.
+    needs: [plan, checks]
+    if: failure()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: File the failure report
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          ./scripts/scheduled/Invoke-ScheduledReport.ps1
+      - name: Preserve reporting diagnostics
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: scheduled-report-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .scheduled-report
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 30

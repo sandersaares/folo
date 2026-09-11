@@ -12,38 +12,35 @@ BeforeAll {
 
 Describe 'Readable failure rendering' {
     BeforeEach {
-        $script:run = @{ name = 'Full deep validation'; run_started_at = '2026-09-11T01:02:03Z'; conclusion = 'failure' }
+        $script:run = @{
+            name = 'Deep validation'; run_started_at = '2026-09-11T01:02:03Z'
+            status = 'in_progress'; head_sha = 'a' * 40
+        }
         $script:attempt = 'https://github.com/example/repo/actions/runs/10/attempts/1'
         $script:failure = @{
-            name = 'miri / miri-linux'; url = "$attempt/jobs/20"; scope = 'ubuntu-latest / miri-linux'
+            name = 'miri-linux'; url = "$attempt/jobs/20"
             conclusion = 'failure'; summary = 'error: test failed'
             diagnostics = @("test example::failed_test ... FAILED`nseed: 17`nReplay: just package=events miri")
         }
     }
     It 'renders identity, linked failed-job table and useful diagnostics' {
-        $text = @(Format-ScheduledReport $run $attempt ('a' * 40) @($failure)) -join "`n"
+        $text = @(Format-ScheduledReport $run $attempt @($failure)) -join "`n"
         $text | Should -Match '^\[Copilot speaking\]'
         $text | Should -Match ([regex]::Escape($attempt))
         $text | Should -Match 'UTC start: 2026-09-11 01:02:03'
         $text | Should -Match 'a{40}'
-        $text | Should -Match '\| Job / check \| Platform / shard \| Conclusion \| Observed error summary \|'
+        $text | Should -Match '\| Job / check \| Conclusion \| Observed error summary \|'
+        $text | Should -Match 'Workflow status: in_progress'
         $text | Should -Match 'example::failed_test'
         $text | Should -Match 'seed: 17'
         $text | Should -Match 'Replay: just package=events miri'
         $text | Should -Not -Match '<!--|base64|schema_version'
     }
-    It 'describes absent execution without inventing a source defect' {
-        $run.conclusion = 'cancelled'
-        $text = @(Format-ScheduledReport $run $attempt 'Not established' @()) -join "`n"
-        $text | Should -Match 'No unsuccessful jobs were returned'
-        $text | Should -Match 'no checker result is inferred'
-        $text | Should -Match 'cancelled'
-    }
     It 'retains the first and last failures in lengthy ordinary continuation comments' {
         $failure.diagnostics = @((1..2000 | ForEach-Object {
             "MISSED mutant $_ in example::operation - replace return expression with a different value"
         }) -join "`n")
-        $messages = @(Format-ScheduledReport $run $attempt ('a' * 40) @($failure))
+        $messages = @(Format-ScheduledReport $run $attempt @($failure))
         $messages.Count | Should -BeGreaterThan 1
         foreach ($message in $messages) {
             $message.Length | Should -BeLessOrEqual 60000
@@ -59,17 +56,17 @@ Describe 'Readable failure rendering' {
     It 'escapes table content and keeps artifact HTML visible rather than active' {
         $failure.name = 'miri | <script>'
         $failure.diagnostics = @('<!-- not an ownership marker -->')
-        $text = @(Format-ScheduledReport $run $attempt ('a' * 40) @($failure)) -join "`n"
+        $text = @(Format-ScheduledReport $run $attempt @($failure)) -join "`n"
         $text | Should -Match 'miri &#124; &lt;script&gt;'
         $text | Should -Match '(?m)^    <!-- not an ownership marker -->'
     }
     It 'keeps every failed job when the unsuccessful-job table spans comments' {
         $failures = @(1..250 | ForEach-Object { @{
-            name = "check-$_"; url = "$attempt/jobs/$_"; scope = 'ubuntu-latest'
+            name = "check-$_"; url = "$attempt/jobs/$_"
             conclusion = 'failure'; summary = 'An unsuccessful step was observed.'
             diagnostics = @("Observed error for check $_")
         } })
-        $messages = @(Format-ScheduledReport $run $attempt ('a' * 40) $failures)
+        $messages = @(Format-ScheduledReport $run $attempt $failures)
         $messages.Count | Should -BeGreaterThan 1
         @([regex]::Matches(($messages -join "`n"), '\| \[check-(\d+)\]') | ForEach-Object {
             [int]$_.Groups[1].Value
@@ -100,23 +97,24 @@ Describe 'Failure log excerpts' {
     }
 }
 
-Describe 'Completion reporting workflow' {
+Describe 'Same-workflow reporting' {
     BeforeAll {
-        $script:workflow = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\..\.github\workflows\scheduled-report.yml') -Raw
+        $script:workflowDirectory = Join-Path $PSScriptRoot '..\..\.github\workflows'
+        $script:workflow = Get-Content -LiteralPath (Join-Path $script:workflowDirectory 'deep-validation.yml') -Raw
     }
-    It 'runs the default-branch controller with diagnostics outside its checkout' {
-        $workflow | Should -Match 'workflow_run:'
-        $workflow | Should -Match 'types: \[completed\]'
-        $workflow | Should -Match 'ref: \$\{\{ github.event.repository.default_branch \}\}'
-        $workflow | Should -Match 'path: controller'
-        $workflow | Should -Match '\./controller/scripts/scheduled/Invoke-ScheduledReport.ps1'
-        $workflow | Should -Match 'path: \.scheduled-report'
-        $workflow | Should -Not -Match 'setup-environment|Install-Rust|cargo run|rustup'
+    It 'reports dependency failures as a job of Deep validation' {
+        $workflow | Should -Match '(?m)^name: Deep validation\r?$'
+        $workflow | Should -Match '(?m)^  report:'
+        $workflow | Should -Match 'needs: \[plan, checks\]'
+        $workflow | Should -Match 'if: failure\(\)'
+        $workflow | Should -Match '\./scripts/scheduled/Invoke-ScheduledReport.ps1'
+        $workflow | Should -Not -Match 'workflow_run:|path: controller|path: candidate'
     }
-    It 'uses the Actions token and serializes the originating attempt independently of other runs' {
+    It 'uses ordinary Actions issue permission without separate reporting workflows' {
         $workflow | Should -Match 'issues: write'
         $workflow | Should -Match 'GH_TOKEN: \$\{\{ github.token \}\}'
-        $workflow | Should -Match 'group: scheduled-report-\$\{\{ github.event.workflow_run.id \}\}-\$\{\{ github.event.workflow_run.run_attempt \}\}'
-        $workflow | Should -Not -Match 'pull-requests: write|contents: write'
+        foreach ($name in @('full-deep-validation.yml', 'selected-deep-validation.yml', 'deep-checks.yml', 'scheduled-report.yml')) {
+            Test-Path -LiteralPath (Join-Path $script:workflowDirectory $name) | Should -BeFalse
+        }
     }
 }

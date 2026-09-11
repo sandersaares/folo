@@ -1,5 +1,5 @@
 #requires -Version 7
-# Formats the completion reporter's observed failures as ordinary Markdown. No issue payload
+# Formats the report job's observed failures as ordinary Markdown. No issue payload
 # schema is required by readers or by human authors. PowerShell is necessary here because a
 # Rust setup failure must still be reportable by ScheduledGitHub.psm1.
 # Ref: ../../.github/workflows/implementation.md#failure-reporting.
@@ -67,8 +67,7 @@ function Format-ScheduledReport {
     param(
         [Parameter(Mandatory)][hashtable] $Run,
         [Parameter(Mandatory)][string] $AttemptUrl,
-        [Parameter(Mandatory)][string] $SourceDescription,
-        [Parameter(Mandatory)][AllowEmptyCollection()][hashtable[]] $Failures,
+        [Parameter(Mandatory)][hashtable[]] $Failures,
         [string[]] $Notices = @()
     )
 
@@ -79,26 +78,23 @@ function Format-ScheduledReport {
     $prefix = "[Copilot speaking]`n`nWorkflow attempt: $AttemptUrl"
     $blocks = [Collections.Generic.List[string]]::new()
     $started = ([datetimeoffset]$Run.run_started_at).UtcDateTime.ToString('yyyy-MM-dd HH:mm:ss')
-    $blocks.Add("Workflow: $(ConvertTo-ScheduledTableCell $Run.name)`n`nUTC start: $started`n`nTested commit: $SourceDescription`n`nWorkflow conclusion: $($Run.conclusion)`n`n[Full attempt logs and result artifacts]($AttemptUrl)")
+    $blocks.Add("Workflow: $(ConvertTo-ScheduledTableCell $Run.name)`n`nUTC start: $started`n`nTested commit: ``$($Run.head_sha)```n`nWorkflow status: $($Run.status)`n`n[Workflow logs and result artifacts]($AttemptUrl)")
     foreach ($notice in $Notices) { $blocks.Add($notice) }
-    if ($Failures.Count -eq 0) {
-        $blocks.Add('No unsuccessful jobs were returned for this unsuccessful attempt. Execution may not have started; no checker result is inferred.')
-    }
-    $tableHeader = "## Unsuccessful jobs`n`n| Job / check | Platform / shard | Conclusion | Observed error summary |`n| --- | --- | --- | --- |"
+    $tableHeader = "## Failed jobs`n`n| Job / check | Conclusion | Observed error summary |`n| --- | --- | --- |"
     $table = $tableHeader
     foreach ($failure in $Failures) {
         $summary = [string]$failure.summary
         if ($summary.Length -gt 400) {
             $summary = $summary.Substring(0, 400) + ' ... See the diagnostics below for the complete excerpt.'
         }
-        $row = "| [$(ConvertTo-ScheduledTableCell $failure.name)]($($failure.url)) | $(ConvertTo-ScheduledTableCell $failure.scope) | $(ConvertTo-ScheduledTableCell $failure.conclusion) | $(ConvertTo-ScheduledTableCell $summary) |"
+        $row = "| [$(ConvertTo-ScheduledTableCell $failure.name)]($($failure.url)) | $(ConvertTo-ScheduledTableCell $failure.conclusion) | $(ConvertTo-ScheduledTableCell $summary) |"
         if ($table.Length + $row.Length -gt $sectionLimit) {
             $blocks.Add($table)
             $table = $tableHeader
         }
         $table += "`n$row"
     }
-    if ($Failures.Count -gt 0) { $blocks.Add($table) }
+    $blocks.Add($table)
     foreach ($failure in $Failures) {
         $heading = "## $(ConvertTo-ScheduledTableCell $failure.name)`n`n[Job and full logs]($($failure.url))"
         foreach ($diagnostic in $failure.diagnostics) {

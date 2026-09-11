@@ -1,11 +1,12 @@
 #requires -Version 7
-# Called by scheduled-report.yml after deep validation completes. Use only the trusted
-# default-branch controller and runner-provided PowerShell/gh: Rust setup may itself have failed.
+# Called by deep-validation.yml after plan/check failures, while its report job is running.
+# Runner-provided PowerShell/gh remain usable even when Rust setup failed.
 # Ref: ../../.github/workflows/implementation.md#failure-reporting.
 [CmdletBinding()]
 param(
     [string] $Repository = $env:GH_REPO,
-    [string] $EventPath = $env:GITHUB_EVENT_PATH,
+    [long] $RunId = $env:GITHUB_RUN_ID,
+    [int] $RunAttempt = $env:GITHUB_RUN_ATTEMPT,
     [string] $OutputDirectory = '.scheduled-report'
 )
 Set-StrictMode -Version Latest
@@ -14,6 +15,5 @@ $PSNativeCommandUseErrorActionPreference = $true
 $VerbosePreference = 'Continue'
 
 Import-Module (Join-Path $PSScriptRoot 'ScheduledGitHub.psm1')
-$payload = Get-Content -LiteralPath $EventPath -Raw | ConvertFrom-Json -AsHashtable
-Invoke-ScheduledReporting -Repository $Repository -RunId $payload.workflow_run.id `
-    -RunAttempt $payload.workflow_run.run_attempt -OutputDirectory $OutputDirectory
+Invoke-ScheduledReporting -Repository $Repository -RunId $RunId `
+    -RunAttempt $RunAttempt -OutputDirectory $OutputDirectory

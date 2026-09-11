@@ -69,7 +69,7 @@ Describe 'Bounded GitHub downloads' {
                 $script:ArchiveByteLimit = 16
                 $script:responseBytes = 17
                 $failure = {
-                    Read-ScheduledArtifactText example/repo @{ id = 30; expired = $false } $script:directory summary.md
+                    Read-ScheduledArtifactText example/repo @{ id = 30; expired = $false } $script:directory
                 } | Should -Throw -PassThru
                 $failure.Exception.Message | Should -Match 'limit'
                 Test-Path -LiteralPath (Join-Path $script:directory '30.zip') | Should -BeFalse
@@ -107,28 +107,21 @@ Describe 'Bounded decompressed artifact text' {
             @{ Count = 0 }, @{ Count = 15 }, @{ Count = 16 }
         ) {
             $script:entryText = 'x' * $Count
-            Read-ScheduledArtifactText example/repo @{ id = 30; expired = $false } $script:directory summary.md |
+            Read-ScheduledArtifactText example/repo @{ id = 30; expired = $false } $script:directory |
                 Should -BeExactly $script:entryText
             Test-Path -LiteralPath (Join-Path $script:directory '30.zip') | Should -BeFalse
         }
         It 'preserves a bounded prefix of an oversized summary with an explicit diagnostic gap' {
             $script:entryText = 'x' * 17
-            $text = Read-ScheduledArtifactText example/repo @{ id = 30; expired = $false } $script:directory summary.md
+            $text = Read-ScheduledArtifactText example/repo @{ id = 30; expired = $false } $script:directory
             $text | Should -Match ('^' + ('x' * 16) + '\s')
             $text | Should -Match 'Check summary truncated at the 16 byte limit'
             $text | Should -Match 'Remaining diagnostics are unavailable'
             Test-Path -LiteralPath (Join-Path $script:directory '30.zip') | Should -BeFalse
         }
-        It 'rejects oversized planning JSON even if its retained prefix would parse' {
-            $script:entryText = '{}' + (' ' * 16)
-            $script:entryName = 'plan.json'
-            { Read-ScheduledArtifactText example/repo @{ id = 30; expired = $false } $script:directory plan.json } |
-                Should -Throw
-            Test-Path -LiteralPath (Join-Path $script:directory '30.zip') | Should -BeFalse
-        }
         It 'counts UTF-8 bytes rather than decoded characters' {
             $script:entryText = [string]::new([char]0x00E9, 9)
-            $text = Read-ScheduledArtifactText example/repo @{ id = 30; expired = $false } $script:directory summary.md
+            $text = Read-ScheduledArtifactText example/repo @{ id = 30; expired = $false } $script:directory
             $text | Should -Match 'Check summary truncated'
         }
         It 'deletes invalid ZIP data when opening the archive fails' {
@@ -137,13 +130,13 @@ Describe 'Bounded decompressed artifact text' {
                 Set-Content -LiteralPath $Path -Value 'not a ZIP'
                 return $false
             }
-            { Read-ScheduledArtifactText example/repo @{ id = 30; expired = $false } $script:directory summary.md } |
+            { Read-ScheduledArtifactText example/repo @{ id = 30; expired = $false } $script:directory } |
                 Should -Throw
             Test-Path -LiteralPath (Join-Path $script:directory '30.zip') | Should -BeFalse
         }
         It 'deletes archives that lack the selected entry' {
             $script:entryName = 'other.txt'
-            { Read-ScheduledArtifactText example/repo @{ id = 30; expired = $false } $script:directory summary.md } |
+            { Read-ScheduledArtifactText example/repo @{ id = 30; expired = $false } $script:directory } |
                 Should -Throw
             Test-Path -LiteralPath (Join-Path $script:directory '30.zip') | Should -BeFalse
         }
@@ -153,7 +146,7 @@ Describe 'Bounded decompressed artifact text' {
                 Set-Content -LiteralPath $Path -Value 'incomplete transfer'
                 throw [IO.IOException]::new()
             }
-            { Read-ScheduledArtifactText example/repo @{ id = 30; expired = $false } $script:directory summary.md } |
+            { Read-ScheduledArtifactText example/repo @{ id = 30; expired = $false } $script:directory } |
                 Should -Throw
             Test-Path -LiteralPath (Join-Path $script:directory '30.zip') | Should -BeFalse
         }

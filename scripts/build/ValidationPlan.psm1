@@ -19,7 +19,6 @@ $script:RecipeDomains = @{
     'just_quality.just' = @('build', 'scheduled')
     'just_quality_mutants.just' = @('build', 'scheduled')
     'just_release.just' = @('release')
-    'just_scheduled.just' = @('scheduled')
 }
 
 function Get-ValidationPlan {

@@ -1,7 +1,7 @@
 #requires -Version 7
 
-# ScheduledEntryPoints.Tests.ps1 copies this stand-in to an isolated controller tree to verify
-# real script/Just exit propagation without launching expensive candidate checks.
+# ScheduledEntryPoints.Tests.ps1 uses this stand-in to verify the main-checkout inputs and
+# real script/workflow exit propagation without launching expensive checks.
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
@@ -15,6 +15,9 @@ function Invoke-ScheduledCheck {
         [string] $OutputDirectory,
         [string] $SourceSha
     )
+    if ($SourceRoot -cne (Get-Location).Path -or $SourceSha -cne $env:GITHUB_SHA) {
+        throw 'The workflow must pass its current checkout and GitHub commit to the checker.'
+    }
     Write-Verbose "Fixture $($Check.id) source=$SourceRoot sha=$SourceSha output=$OutputDirectory"
     return [int]$env:SCHEDULED_TEST_EXIT
 }

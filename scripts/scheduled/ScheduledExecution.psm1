@@ -1,9 +1,9 @@
 #requires -Version 7
 
-# The read-only deep-check job invokes tools in the candidate checkout from this controller.
+# Deep validation invokes checker tools in its main checkout.
 # Exit codes, incomplete mutation execution and baseline failures fail the job; readable summaries
 # and ordinary tool files survive for the separate reporter, including when preparation fails.
-# Ref: .github/workflows/implementation.md#immutable-execution.
+# Ref: .github/workflows/implementation.md#deep-execution.
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
@@ -83,7 +83,7 @@ function Invoke-ScheduledCheck {
             if ($exitCode -eq 0 -and $inventory.Count -eq 0 -and -not (Test-Path -LiteralPath $outcomesPath)) {
                 # An empty shard has no mutation work. Leave configuration and baseline behavior
                 # with cargo-mutants instead of reimplementing its test runner.
-                # Ref: .github/workflows/implementation.md#immutable-execution.
+                # Ref: .github/workflows/implementation.md#deep-execution.
                 Add-Content -LiteralPath $summary -Value "`nNo mutants selected for this shard; no mutation tests or baseline were run."
             } else {
                 $mutationExit = Write-ScheduledMutationSummary -OutputDirectory $OutputDirectory -Inventory $inventory

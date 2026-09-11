@@ -260,7 +260,7 @@ validate-local:
     just package="{{ package }}" clippy release
     just package="{{ package }}" build release
 
-# Run explicit deep checks without rerunning shallow checks or reading scheduling policy.
+# Run explicit deep checks without rerunning shallow checks.
 # Ref: .github/workflows/design.md#shallow-and-deep-validation.
 [group('quality')]
 validate-deep-local:

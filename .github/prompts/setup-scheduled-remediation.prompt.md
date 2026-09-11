@@ -42,11 +42,8 @@ placeholder or inferred model. Keep the prompts short and refer to the checked-i
 skills rather than copying their procedures. There is no installation marker,
 enrollment, policy file, profile registration or local-state migration.
 
-The repair skill uses native `rename_branch` before the first PR to include
-`scheduled-repair-<issue-number>` in its branch name. This is solely an
-external-service/production-benchmark opt-out, available to humans too, not an
-automation identity or ownership protocol. Do not add a setup registry or body
-marker for it.
+Repair work uses ordinary branches and local native/WSL deep checks. Hosted
+**Deep validation** runs only on main; App setup does not add hosted PR-head checks.
 
 ## Stage 2: Save disabled entries through supported controls
 

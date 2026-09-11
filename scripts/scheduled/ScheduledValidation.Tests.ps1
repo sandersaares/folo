@@ -1,39 +1,44 @@
 #Requires -Modules @{ ModuleName = 'Pester'; ModuleVersion = '5.0' }
 
-# Protects the workflow boundaries: nightly fresh execution, immutable controller/candidate
-# checkouts, read-only candidate permissions and unconditional diagnostic preservation.
+# Protects the single main-only workflow, complete matrix execution and same-run failure report.
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
 
-BeforeAll { $script:workflows = Join-Path $PSScriptRoot '..\..\.github\workflows' }
+BeforeAll {
+    $script:workflows = Join-Path $PSScriptRoot '..\..\.github\workflows'
+    $script:workflow = Get-Content -LiteralPath (Join-Path $workflows 'deep-validation.yml') -Raw
+}
 
-Describe 'Hosted deep execution wiring' {
-    It 'keeps nightly and manual full execution without source-success reuse gates' {
-        $workflow = Get-Content -LiteralPath (Join-Path $workflows 'full-deep-validation.yml') -Raw
+Describe 'Hosted deep validation wiring' {
+    It 'runs only the full main scope on its schedule or a no-input manual dispatch' {
+        $workflow | Should -Match '(?m)^name: Deep validation\r?$'
         $workflow | Should -Match '(?m)^  schedule:'
         $workflow | Should -Match '(?m)^  workflow_dispatch:'
-        $workflow | Should -Match '(?m)^      source_sha:'
-        $workflow | Should -Not -Match 'needs\.plan\.outputs\.run|coverage|receipt|manifest|issues:'
+        $workflow | Should -Match "github.repository == 'folo-rs/folo' && github.ref == 'refs/heads/main'"
+        $workflow | Should -Not -Match '(?m)^  (workflow_run|workflow_call|push|pull_request):'
+        $workflow | Should -Not -Match 'source_sha|controller_sha|inputs:|coverage|receipt|plan\.json'
     }
 
-    It 'keeps selected execution manual and independent of PR and main push gates' {
-        $workflow = Get-Content -LiteralPath (Join-Path $workflows 'selected-deep-validation.yml') -Raw
-        $workflow | Should -Match '(?m)^  workflow_dispatch:'
-        $workflow | Should -Not -Match '(?m)^  (push|pull_request|schedule):'
-        $workflow | Should -Not -Match 'managed|registration|issues:|pull-requests:'
+    It 'keeps planning, execution and reporting in one workflow' {
+        foreach ($removed in @('full-deep-validation.yml', 'selected-deep-validation.yml', 'deep-checks.yml', 'scheduled-report.yml')) {
+            Test-Path -LiteralPath (Join-Path $workflows $removed) | Should -BeFalse
+        }
+        $workflow | Should -Match '(?m)^  plan:'
+        $workflow | Should -Match '(?m)^  checks:'
+        $workflow | Should -Match '(?m)^  report:'
+        $workflow | Should -Match 'needs: \[plan, checks\]'
+        $workflow | Should -Match 'if: failure\(\)'
+        $workflow | Should -Match 'issues: write'
+        $workflow | Should -Not -Match 'path: (controller|candidate)|uses: \./\.github/workflows/'
     }
 
-    It 'pins both checkouts, uses read-only authority and preserves failed-job diagnostics' {
-        $workflow = Get-Content -LiteralPath (Join-Path $workflows 'deep-checks.yml') -Raw
-        $workflow | Should -Match 'ref: \$\{\{ inputs\.controller_sha \}\}'
-        $workflow | Should -Match 'ref: \$\{\{ inputs\.source_sha \}\}'
-        $workflow | Should -Match 'path: candidate'
-        $workflow | Should -Match 'contents: read'
-        $workflow | Should -Not -Match ':\s*write|continue-on-error|secrets: inherit'
+    It 'continues independent checks and preserves failures and diagnostics' {
         $workflow | Should -Match 'fail-fast: false'
+        $workflow | Should -Not -Match 'continue-on-error'
         $workflow | Should -Match 'if: always\(\)'
         $workflow | Should -Match 'name: scheduled-result-\$\{\{ github.run_id \}\}-\$\{\{ github.run_attempt \}\}-\$\{\{ matrix.id \}\}'
-        $workflow | Should -Match 'SCHEDULED_SOURCE_SHA: \$\{\{ inputs.source_sha \}\}'
+        $workflow | Should -Match 'Invoke-ScheduledCheck\.ps1\r?\n\s+exit \$LASTEXITCODE'
+        $workflow | Should -Not -Match 'just scheduled-'
     }
 }

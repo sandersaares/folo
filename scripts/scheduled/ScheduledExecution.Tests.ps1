@@ -17,7 +17,8 @@ BeforeAll {
 
 Describe 'Scheduled command scope' {
     It 'uses the pinned toolchain, a real mutation baseline, exclusions and shards' {
-        $check = @(Get-ScheduledCheck -Packages cpulist -CheckIds mutants-windows-latest-2)[0]
+        $check = @(Get-ScheduledCheck | Where-Object id -EQ 'mutants-windows-latest-2')[0]
+        $check.packages = @('cpulist')
         $pin = Get-ScheduledToolchain -Kind mutants
         $command = Get-ScheduledCommand -Check $check -OutputDirectory $TestDrive -Toolchain $pin
         $command.arguments[0] | Should -Be "+$pin"
@@ -27,14 +28,14 @@ Describe 'Scheduled command scope' {
         $command.arguments | Should -Contain '--package=cpulist'
         $command.arguments | Should -Contain '1/8'
         $command.arguments | Should -Contain '**/*linux.rs'
-        $command.arguments | Should -Contain '--config'
+        $command.arguments | Should -Not -Contain '--config'
         $command.environment.MUTATION_TESTING | Should -Be '1'
         $command.environment.RUSTFLAGS | Should -Be '--cfg mutants'
         $command.environment.CARGO_TARGET_DIR | Should -BeNullOrEmpty
     }
 
     It 'restricts many-seed execution to library tests and the selected range' {
-        $check = @(Get-ScheduledCheck -Packages events -CheckIds miri-many-events-2)[0]
+        $check = @(Get-ScheduledCheck | Where-Object id -EQ 'miri-many-events-2')[0]
         $command = Get-ScheduledCommand -Check $check -OutputDirectory $TestDrive -Toolchain (Get-ScheduledToolchain -Kind miri)
         $command.arguments | Should -Contain '--lib'
         $command.arguments | Should -Contain '--all-features'
@@ -44,7 +45,7 @@ Describe 'Scheduled command scope' {
 
     It 'preserves ordinary Miri enabled lib/bin/integration targets and careful packages' {
         $metadata = Get-Content -LiteralPath (Join-Path $fixtures 'target-metadata.json') -Raw | ConvertFrom-Json -AsHashtable
-        $check = @(Get-ScheduledCheck -CheckIds miri-ubuntu-latest)[0]
+        $check = @(Get-ScheduledCheck | Where-Object id -EQ 'miri-ubuntu-latest')[0]
         $scopes = @(Get-ScheduledTestScope -Check $check -Metadata $metadata)
         $scopes.Count | Should -Be 4
         $scopes.target.name | Should -Be @('example', 'example-cli', 'round_trip', 'binary-only')
@@ -63,7 +64,7 @@ Describe 'Scheduled command scope' {
                 @{ name = 'integration'; kind = @('test'); test = $true }
             ) })
         }
-        $check = @(Get-ScheduledCheck -CheckIds miri-ubuntu-latest)[0]
+        $check = @(Get-ScheduledCheck | Where-Object id -EQ 'miri-ubuntu-latest')[0]
         $scopes = @(Get-ScheduledTestScope -Check $check -Metadata $metadata)
         $scopes.Count | Should -Be 1
         $scopes[0].target.name | Should -Be 'integration'
@@ -85,7 +86,8 @@ Describe 'Scheduled command scope' {
 Describe 'Checker outcome propagation and diagnostics' {
     BeforeEach {
         $script:output = Join-Path $TestDrive ([guid]::NewGuid().ToString())
-        $script:check = @(Get-ScheduledCheck -Packages example -CheckIds miri-ubuntu-latest)[0]
+        $script:check = @(Get-ScheduledCheck | Where-Object id -EQ 'miri-ubuntu-latest')[0]
+        $script:check.packages = @('example')
         Mock Assert-ScheduledPlatform -ModuleName ScheduledExecution {}
         Mock Invoke-ScheduledProcess -ModuleName ScheduledExecution {
             param($OutputDirectory, $Name)
@@ -216,7 +218,8 @@ Describe 'Mutation completion and findings' {
 Describe 'Native mutation execution' {
     BeforeEach {
         $script:output = Join-Path $TestDrive ([guid]::NewGuid().ToString())
-        $script:check = @(Get-ScheduledCheck -Packages example -CheckIds mutants-ubuntu-latest-1)[0]
+        $script:check = @(Get-ScheduledCheck | Where-Object id -EQ 'mutants-ubuntu-latest-1')[0]
+        $script:check.packages = @('example')
         Mock Assert-ScheduledPlatform -ModuleName ScheduledExecution {}
         Mock Resolve-CargoExecutable -ModuleName ScheduledExecution { (Get-Command pwsh).Source }
         Mock Invoke-ScheduledProcess -ModuleName ScheduledExecution {

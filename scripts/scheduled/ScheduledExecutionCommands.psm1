@@ -1,8 +1,8 @@
 #requires -Version 7
 
-# ScheduledExecution invokes these controller-owned commands with argument arrays, never a shell.
+# ScheduledExecution invokes these commands with argument arrays, never a shell.
 # PowerShell owns process setup and capture; each checker owns its configuration and baselines.
-# Ref: .github/workflows/implementation.md#immutable-execution.
+# Ref: .github/workflows/implementation.md#deep-execution.
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
@@ -16,12 +16,12 @@ function Get-ScheduledToolchain {
     if ($Kind -ceq 'mutants') {
         $text = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\..\rust-toolchain.toml') -Raw
         $pins = [regex]::Matches($text, '(?m)^\s*channel\s*=\s*"(\d+\.\d+\.\d+)"\s*$')
-        if ($pins.Count -ne 1) { throw 'Expected one stable controller toolchain pin.' }
+        if ($pins.Count -ne 1) { throw 'Expected one stable toolchain pin.' }
         return $pins[0].Groups[1].Value
     }
     $text = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\..\constants.env') -Raw
     $pins = [regex]::Matches($text, '(?m)^RUST_NIGHTLY=(nightly-\d{4}-\d{2}-\d{2})\s*$')
-    if ($pins.Count -ne 1) { throw 'Expected one nightly controller toolchain pin.' }
+    if ($pins.Count -ne 1) { throw 'Expected one nightly toolchain pin.' }
     return $pins[0].Groups[1].Value
 }
 
@@ -63,9 +63,8 @@ function Get-ScheduledCommand {
         $arguments += @(Get-MutantsExcludeArgument -IsWindowsPlatform ($Check.platform -like 'windows-*') `
                 -IsLinuxPlatform ($Check.platform -like 'ubuntu-*') -Literal)
         $arguments += @(Get-MutantsShardArgument -Spec $Check.shard)
-        # The baseline and mutants share the reviewed configuration, not candidate overrides.
-        $arguments += @('--config', [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\.cargo\mutants.toml')),
-            '--baseline=run', '--timeout=60', '--no-shuffle', '--caught', '--unviable', '--jobs=1',
+        # Match the local mutants recipe's test budget; cargo-mutants reads its own configuration.
+        $arguments += @('--baseline=run', '--timeout=60', '--no-shuffle', '--caught', '--unviable', '--jobs=1',
             '--output', $OutputDirectory)
         $environment.MUTATION_TESTING = '1'
         $environment.RUSTFLAGS = '--cfg mutants'

@@ -59,15 +59,15 @@ distinction between local and combined CI benchmark smoke passes.
 `just validate-local` is always shallow validation. Use
 `just package="foo bar" validate-deep-local` to run Miri, mutation testing,
 many-seed Miri and careful checking on the current platform. These recipes are
-independent: neither reads scheduling policy, and deep validation does not
+independent: deep validation does not
 implicitly rerun the shallow suite.
 
 The **Standard validation** workflow performs shallow PR/push/merge-queue checks;
-**Full deep validation** and **Selected deep validation** perform deep checks.
+**Deep validation** runs the full deep suite on merged `main`.
 CI composes their constituent commands into separately reported jobs
 and diagnostic-producing matrix entries rather than running one monolithic local
 recipe. Repair authors also run the particular deep checks needed to verify
-their repair and link the results for review. Scheduling belongs to workflow orchestration, not
+their repair locally and link the results for review. Scheduling belongs to workflow orchestration, not
 to the definitions of the local recipes. To run just mutation testing, use
 `just package="foo bar" mutants`. Mutation timeouts and missed mutations remain
 anomalies; changing enforcement cadence does not relax test-quality requirements.
@@ -143,19 +143,14 @@ than treating familiarity with shell scripting as justification.
 Keep the distinction between logic and process orchestration clear. A thin
 PowerShell wrapper can prepare command arguments, invoke a trusted Rust utility and
 propagate its outcome. Parsing and semantic decisions belong in the utility when
-that environment can execute it. Tool identity follows the workflow's authority:
-a reporter with issue-write permission executes automation code from the reviewed
-default branch, not code supplied by the run it is reporting.
+that environment can execute it.
 
-For example, `scheduled-report.yml` checks out the repository's default branch
-into its controller directory. The PowerShell reporter must work even when Rust
-setup failed, so it uses the runner's existing PowerShell and GitHub CLI rather
-than building a reporting executable. It downloads the triggering run's
-diagnostics into a separate directory and treats them as data. It must not execute
-the triggering run's scripts or let artifact extraction overwrite the controller.
-A repair's edits to reporting code cannot grant themselves issue-write authority.
-See [immutable execution](../.github/workflows/implementation.md#immutable-execution)
-for the controller/candidate separation.
+For example, the failure-reporting job inside `deep-validation.yml` must work even
+when Rust setup failed. It uses the runner's existing PowerShell and GitHub CLI
+rather than building a reporting executable. Like the check jobs, it runs from the
+workflow's main checkout; it simply needs Actions-read and issue-write permissions
+to collect diagnostics and file an issue. See
+[failure reporting](../.github/workflows/implementation.md#failure-reporting).
 
 ## Scripting
 

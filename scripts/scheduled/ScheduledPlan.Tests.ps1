@@ -1,6 +1,6 @@
 #Requires -Modules @{ ModuleName = 'Pester'; ModuleVersion = '5.0' }
 
-# Protects the nightly check scope and manual selection rules without executing expensive tools.
+# Protects the complete nightly check scope without executing expensive tools.
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
@@ -34,26 +34,16 @@ Describe 'Fresh deep check catalog' {
         }
     }
 
-    It 'selects requested checks and applies package scope' {
-        $checks = @(Get-ScheduledCheck -Packages cpulist -CheckIds miri-ubuntu-latest, mutants-windows-latest-2)
-        $checks.Count | Should -Be 2
-        foreach ($check in $checks) { $check.packages | Should -Be @('cpulist') }
-    }
-
-    It 'rejects invalid or unsupported selections' -ForEach @(
-        @{ packages = @('cpulist'); ids = @('missing-check') }
-        @{ packages = @('cpulist'); ids = @('miri-many-events-1') }
-        @{ packages = @('events', 'cpulist'); ids = @('miri-many-events-1') }
-        @{ packages = @('--workspace'); ids = @() }
-        @{ packages = @('foo*'); ids = @() }
-        @{ packages = @(''); ids = @() }
-    ) {
-        { Get-ScheduledCheck -Packages $packages -CheckIds $ids } | Should -Throw
+    It 'uses workspace scope except for the declared many-seed families' {
+        $checks = @(Get-ScheduledCheck | Where-Object kind -NE 'miri-many')
+        foreach ($check in $checks) { $check.packages | Should -BeNullOrEmpty }
     }
 
     It 'returns independent plain declarations without coordination metadata' {
-        $check = @(Get-ScheduledCheck -Packages events -CheckIds miri-many-events-2)[0]
+        $check = @(Get-ScheduledCheck | Where-Object id -EQ 'miri-many-events-2')[0]
         @($check.Keys | Sort-Object) | Should -Be @('id', 'kind', 'packages', 'platform', 'seed_range', 'shard')
         $check.seed_range | Should -Be '32..64'
+        $check.packages = @('fixture')
+        @(Get-ScheduledCheck | Where-Object id -EQ 'miri-many-events-2')[0].packages | Should -Be @('events')
     }
 }

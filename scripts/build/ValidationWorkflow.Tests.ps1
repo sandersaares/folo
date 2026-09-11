@@ -1,6 +1,6 @@
 #Requires -Modules @{ ModuleName = 'Pester'; ModuleVersion = '5.0' }
 
-# Protects the Standard validation fan-in and first-event external-service exclusions.
+# Protects the Standard validation fan-in and ordinary same-repository job conditions.
 # These source contracts complement actionlint's YAML validation without invoking GitHub jobs.
 # Ref: .github/workflows/implementation.md#merge-blocking-result.
 Set-StrictMode -Version Latest
@@ -22,7 +22,7 @@ BeforeAll {
 
 Describe 'Standard validation integration' {
     It 'keeps deep execution and repair registration out of ordinary PR validation' {
-        $standard | Should -Not -Match 'scheduled-context|scheduled-repair-gate|scheduled-version-check|deep-checks\.yml'
+        $standard | Should -Not -Match 'scheduled-context|scheduled-repair-gate|scheduled-version-check|deep-validation\.yml'
         $standard | Should -Not -Match 'scripts/scheduled/|<!-- scheduled-repair:'
     }
 
@@ -47,18 +47,18 @@ Describe 'Standard validation integration' {
         Get-WorkflowJob $standard 'validate-versions' | Should -Not -Match '(?m)^    if:'
     }
 
-    It 'excludes repair branches from credentialed job <_> without a registry' -ForEach @('test-azure', 'test-azure-gh') {
+    It 'uses normal repository and event conditions for <_> regardless of branch names' -ForEach @('test-azure', 'test-azure-gh') {
         $job = Get-WorkflowJob $standard $_
-        $job | Should -Match "!contains\(github\.head_ref, 'scheduled-repair-'\)"
+        $job | Should -Not -Match 'scheduled-repair|github\.head_ref'
         $job | Should -Match "github\.event_name != 'merge_group'"
         $job | Should -Match 'github\.event\.pull_request\.head\.repo\.full_name == github\.repository'
         $job | Should -Not -Match 'scheduled-context|pull_request\.body'
         $job | Should -Match '(?m)^    needs: delta\r?$'
     }
 
-    It 'excludes repair branches from production benchmarks before any dependent job starts' {
+    It 'uses the same production benchmark conditions for every same-repository branch' {
         $job = Get-WorkflowJob $benchmarks 'delta'
-        $job | Should -Match "!contains\(github\.head_ref, 'scheduled-repair-'\)"
+        $job | Should -Not -Match 'scheduled-repair|github\.head_ref'
         $job | Should -Match 'github\.event\.pull_request\.head\.repo\.full_name == github\.repository'
         $job | Should -Not -Match 'pull_request\.body|sandersaares-scheduled'
     }

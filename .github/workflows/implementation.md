@@ -11,17 +11,12 @@ the installed App's scheduling controls.
 
 | Workflow | What starts it | Responsibility |
 |---|---|---|
-| `full-deep-validation.yml` / **Full deep validation** | Daily at 02:41 UTC, or manual dispatch on `main` with an optional source SHA. | Execute the full deep suite against immutable main or the manually selected commit. |
-| `selected-deep-validation.yml` / **Selected deep validation** | Manual dispatch on `main`, with checks, packages and an optional source SHA. | Execute selected deep checks for investigation or PR review. |
-| `deep-checks.yml` / **Deep checks** | Reusable workflow call from either deep-validation workflow. | Execute the matrix and preserve readable summaries and raw diagnostics. |
-| `scheduled-report.yml` / **Scheduled reporting** | Completion of either deep-validation workflow. | File a readable issue for an unsuccessful attempt, including setup failures. |
+| `deep-validation.yml` / **Deep validation** | Daily at 02:41 UTC, or no-input manual dispatch on `main`. | Plan and execute the full main-branch suite, preserve diagnostics and report failures within one run. |
 | `standard-validation.yml` / **Standard validation** | Push to `main`, PR opened/synchronized/reopened/ready for review, and merge-queue events. | Shallow checks feeding the single required `required-checks` result. |
-| `pr-bench-history.yml` / **PR Benchmark history** | PR opened/synchronized/reopened. | Advisory production-backed benchmark feedback, excluding repair branches. |
+| `pr-bench-history.yml` / **PR Benchmark history** | PR opened/synchronized/reopened. | Advisory production-backed benchmark feedback for same-repository PRs. |
 
 ```text
-Nightly / manual full run --+
-                           +-> Deep checks -> completion reporter -> run report issue
-Manual selected run -------+
+Deep validation on main: plan -> check matrix -> report failures -> run report issue
 
 Local App triage -> run report -> existing or new problem issues
 Local App repair -> claimed problem issue -> PR -> human review and merge
@@ -33,13 +28,6 @@ Hosted reporting does not invoke AI or wait for triage. App automations discover
 work through ordinary GitHub issues. Closing a triaged run report is independent
 of resolving its linked problems. A merged repair closes its issue through the
 normal PR relationship, not a main-push confirmation workflow.
-
-### Workflow identity
-
-The reporter's completion trigger names only the full and selected deep workflows.
-It reports the triggering run and attempt, never its own run. Reporter retries use
-the same source attempt; they do not rerun validation. The visible attempt URL in
-an issue is the duplicate lookup key, including for human-created equivalent reports.
 
 Standard validation and its close companion share the `standard-validation-`
 ref-specific concurrency group. The merge-blocking job/check name and ruleset
@@ -207,26 +195,26 @@ that its must-succeed list names but the payload omits. A name that drifts out o
 list therefore fails the fan-in instead of silently disappearing from it.
 
 Azure OIDC test jobs are among the legitimate queue skips because their federated identity
-trusts pull-request and `main` subjects, not merge-group subjects. Repair branches also
-skip credentialed Azure jobs and production PR benchmarks under the
-[external-service safeguard](design.md#external-service-safeguards).
+trusts pull-request and `main` subjects, not merge-group subjects. Repair branches
+use the same repository/event conditions as other branches.
 
-## Scheduled controller ownership
+## Scheduled validation implementation
 
 The scheduled scripts own planning, check invocation and readable reporting.
 The App skills own diagnosis and ordinary issue/PR work. There is no shared state
 machine connecting these components; their handoffs are GitHub reports and issues.
 
-### Immutable execution
+### Deep execution
 
-The check plan selects a fixed tested source, controller, packages, platforms,
-shards and seed ranges. The reusable workflow checks out controller and candidate
-separately with read permissions. Controller scripts invoke the check tools against
-candidate source. Candidate artifacts are data, never reporting code.
+The workflow's `plan` job reads the full check catalog and supplies the matrix as
+a job output. Each `checks` job uses an ordinary checkout of the workflow's main
+commit, installs the environment and invokes its checker in that checkout.
+The catalog defines the platforms, mutation shards and many-seed families; there
+is no hosted selection of a different source commit or reduced scope.
 
 Each execution leg runs independently with fail-fast disabled. Always-upload steps
 preserve its readable summary and raw diagnostics even after failure. A native
-command's failure status must cross all wrappers into Actions; successful artifact
+command's failure status must reach Actions; successful artifact
 preservation does not turn failed validation green.
 
 Cargo-mutants reads its own configuration and runs its own unmutated baseline.
@@ -238,34 +226,35 @@ successful-run reuse. Ordinary dependency/build caches remain available.
 
 ### Manual checks
 
-Full and selected workflows run from `main`. A manual run's optional source SHA
-chooses the code under test, not a privileged reporting implementation. Invalid
-check/package combinations fail explicitly. The plan and summaries identify the
-actual tested commit, including when it differs from the workflow commit.
+Manually starting **Deep validation** on `main` runs the same full suite as the
+schedule. The workflow has no selection inputs and does not run on PR heads.
 
-Repair authors link relevant results and their tested SHA in the PR discussion.
+Repair authors run relevant local checks and link results with their tested SHA in the PR discussion.
 These are reviewed alongside normal required checks; Standard validation does not
-run a special repair gate or recreate a worker's version edits.
+run a special repair gate or recreate a worker's version edits. Unavailable local
+platform coverage is disclosed for human review, not claimed as a passing result.
 
 ### Failure reporting
 
-The completion reporter checks out trusted default-branch code. Its PowerShell
-implementation uses the runner's existing GitHub CLI because reporting must remain
-possible when Rust/toolchain setup failed. Downloaded diagnostics stay outside the
-controller checkout.
+The `report` job depends on planning and the check matrix and runs on failure.
+It uses the same main checkout as the other jobs. Its normal GitHub permissions
+allow reading Actions results and writing an issue. Preinstalled PowerShell and
+the GitHub CLI are sufficient, even when checker/toolchain setup failed.
 
-The reporter collects jobs for the source attempt, reads available human-readable
-check summaries and obtains failed-job log excerpts. Missing artifacts or
+The reporter reads the run's effective job results, including executions reused by
+a job rerun, and collects available check summaries and failed-job log excerpts.
+It does not require the overall workflow to finish before reporting. Missing artifacts or
 inaccessible logs are explicit gaps in the report, not reasons to omit a failure.
 Issue content contains observed failures and direct links, not serialized API
 inventories. Ordinary continuation comments can retain long diagnostic lists
 without an encoding or reassembly protocol.
 
 An exact visible attempt link identifies an existing report in open or closed
-issues. Failed source reruns get separate reports; reporter retries reuse the
-source attempt's report. Successful validation does not close earlier reports.
+issues. The current workflow attempt identifies the report, while each job's
+execution identifies its diagnostic artifact. Successful validation does not close earlier reports.
 Reporting errors fail the reporter job and remain visible in Actions. Recovery
-reruns that reporter, without triggering deep checks or restoring a journal.
+can rerun that job through normal Actions controls. Rerunning all failed jobs may
+also rerun checks; neither path needs a separate reporting workflow or journal.
 
 Triage and repair use the workflows described in
 [scheduled validation](../../docs/scheduled-validation.md). Their GitHub comments,

@@ -36,21 +36,20 @@ The local shallow and deep validation commands retain their separate meanings.
 
 ## Checks and readable failure reports
 
-**Standard validation** runs ordinary required checks. **Full deep validation**
-runs the complete Miri platform matrix, many-seed Miri cases, mutation shards and
-careful checks nightly at a fixed main commit. Every nightly run executes the
-checks; previous success does not skip a night. Ordinary dependency/build caches
-remain available.
+**Standard validation** runs ordinary required checks.
+**[Deep validation](../.github/workflows/deep-validation.yml)** runs the complete
+Miri platform matrix, many-seed Miri cases, mutation shards and careful checks
+nightly on main. Every nightly run executes the checks; previous success does not
+skip a night. Ordinary dependency/build caches remain available.
 
 A checker finding fails its Actions job and the validation run. Missed mutations,
 mutation timeouts, setup failures and incomplete execution remain failures.
 Independent matrix jobs continue after another job fails, and diagnostic uploads
 run even on failure.
 
-The completion-triggered **Scheduled reporting** workflow runs trusted
-default-branch code with issue-write permission. Candidate check execution does
-not have that permission. Reporting works even if planning or toolchain setup
-fails before checker artifacts exist.
+Planning, checks and failure reporting are jobs in the same main-only workflow.
+The report job has ordinary issue-write permission and can report planning or
+toolchain setup failures before checker artifacts exist.
 
 Each failed run attempt gets a normal `scheduled-run-failure` issue titled
 **Scheduled validation failed on &lt;UTC date&gt;**. It contains the workflow and
@@ -68,51 +67,62 @@ logs do not belong in issues.
 The visible run URL and attempt identify a report. Reporter retries search open
 and closed reports for that attempt before creating one. Each failed rerun gets
 its own report; a successful rerun neither files a failure nor silently closes
-older reports or problems. If reporting fails, its own Actions run fails visibly.
-Rerunning it retries reporting, not the expensive checks. Resolve an ambiguous
-duplicate with an ordinary linked duplicate explanation.
+older reports or problems. If reporting fails, the report job's failure remains
+visible in **Deep validation**. Resolve an ambiguous duplicate with an ordinary
+linked duplicate explanation.
 
 ## Running checks manually
 
 Manual checks need permission to run repository Actions, not Local App setup,
-models or repair ownership. **Deep checks** is a reusable helper, not a manually
-dispatched workflow.
+models or repair ownership. Open **Actions -> Deep validation -> Run workflow**
+on **main**, or run:
 
-To test a selected scope:
+```powershell
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+$PSNativeCommandUseErrorActionPreference = $true
+gh workflow run deep-validation.yml --ref main
+```
 
-1. Open **Actions -> Selected deep validation -> Run workflow**.
-2. Keep **Use workflow from** set to **main**.
-3. Leave `source_sha` blank to test the fixed main commit selected for this run,
-   or provide the full SHA of a repository branch/PR commit.
-4. Enter check IDs in `check_ids` and exact crate names in `packages`, separated
-   by commas. For example, `miri-ubuntu-latest` and `cpulist`.
-5. Run the workflow and inspect its tested-commit summary, job results and
-   diagnostic artifacts.
+This command has no placeholders or workflow inputs. Every run tests the full
+scope at main; it cannot select a PR, branch, source commit, package or subset of
+checks. Inspect the resulting run's tested commit, jobs and diagnostic artifacts.
+A nonzero command exit is a dispatch failure, not a successful check.
 
-| Check | Supported IDs |
+If reporting fails, reopen that **Deep validation** run and use the standard
+Actions rerun controls. **Re-run failed jobs** may also rerun failed checks.
+To request a rerun of the report job through the CLI, first find its database ID:
+
+```powershell
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+$PSNativeCommandUseErrorActionPreference = $true
+gh run view "{{RUN_ID}}" --json jobs --jq '.jobs[] | {name, databaseId}'
+gh run rerun --job "{{JOB_ID}}"
+```
+
+| Placeholder | Value |
 |---|---|
-| Miri | `miri-ubuntu-latest`, `miri-windows-latest`, `miri-ubuntu-24.04-arm`, `miri-windows-11-arm` |
-| Mutation testing | `mutants-ubuntu-latest-1` through `mutants-ubuntu-latest-8`, or `mutants-windows-latest-1` through `mutants-windows-latest-8`; each ID selects one shard |
-| Careful checking | `careful-ubuntu-latest`, `careful-windows-latest` |
-| Many-seed Miri | `miri-many-events_once-1` through `miri-many-events_once-4`; `miri-many-events-1` through `miri-many-events-2`; `miri-many-awaiter_set-1` through `miri-many-awaiter_set-2`; `miri-many-nm_impl-1` through `miri-many-nm_impl-2`; each ID selects its named crate |
+| `RUN_ID` | The failed Deep validation run's ID. |
+| `JOB_ID` | The report job's `databaseId` from the first command, not a number inferred from its browser URL. |
 
-Every requested crate must be covered by a selected check. Unknown checks,
-unknown crates and incompatible selections fail rather than creating successful
-empty runs. The optional source SHA selects the code under test, not the workflow
-or reporter code.
+Inspect the first command's output before submitting the second. Reruns follow
+GitHub's job dependency rules; do not assume only reporting executes. Check the
+result in the same workflow. Failed-run reporting and successful reruns do not
+themselves close triage reports or problem issues.
 
-For the complete deep suite, open **Full deep validation** and retain
-**Use workflow from: main**. Leave `source_sha` blank to test the selected main
-commit, or provide a full repository commit SHA to run the entire suite there.
-Manual full and selected runs execute fresh checks and may produce failed-run
-issues just like nightly runs. Their results do not themselves close reports or
-problem issues.
+## Checking repairs locally
 
-For local execution, use the existing [build commands](build-and-tooling.md):
-`just package="cpulist" validate-local` is shallow validation;
-`just package="cpulist" validate-deep-local` runs the deep checks available on the
-current platform. Use Selected deep validation when the required platform is not
-available locally.
+Use the existing [build commands](build-and-tooling.md) at the PR commit:
+`just package="cpulist" validate-local` runs shallow validation, and
+`just package="cpulist" validate-deep-local` runs deep checks on the current
+platform. Use targeted just recipes for the particular deep checks relevant to a
+repair, and use WSL when Linux execution is required.
+
+The main-only hosted workflow is not PR-head validation evidence. If a required
+platform is unavailable locally, disclose the missing scope and add `needs-human`
+for the needed decision. Human review may resolve that limitation; it is not a
+successful check. Do not introduce hosted scope selection to bypass it.
 
 ## Triage
 
@@ -198,12 +208,12 @@ Confirm the failure, implement the correction and create a normal PR with
 and the complete current **Version/release plan**. There is no separate version
 attestation or managed-repair merge gate.
 
-Normal required PR checks run. The worker also runs relevant deep checks at the
-current PR commit and records the tested commit, scope, outcomes and command or
-job links in a PR comment. Use Selected deep validation for unavailable local
-platforms. Relevant subsequent changes require fresh results at the reviewed
-head; unrelated green checks do not establish the fix. Reviewers assess the
-targeted results alongside ordinary required checks and version validation.
+Normal required PR checks run. The worker also runs relevant deep checks locally
+at the current PR commit and records the tested commit, scope, commands, outcomes
+and any limitations in a PR comment. Relevant subsequent changes require fresh
+local results at the reviewed head; unrelated green checks do not establish the
+fix. Reviewers assess these results and limitations alongside ordinary required
+checks and version validation.
 
 Follow the same PR through CI/deep failures, conflicts and review feedback. Read
 top-level discussion, review summaries and inline threads, including valid
@@ -212,13 +222,8 @@ the exception permitting responses to the original user's own human comments.
 Every authored post begins with `[Copilot speaking]`. Request human decisions for
 design changes or unsafe ambiguity; do not call blocked work complete.
 
-Before the first PR is created, the repair worker uses native `rename_branch` to
-name its branch `scheduled-repair-<issue-number>` (with the App's normal prefix)
-and verifies the resulting branch contains `scheduled-repair-`. Branch names
-containing this token opt out of external-service tests and production-backed PR
-benchmarks from the initial PR event. Humans can use the same convention. This is
-solely a side-effect safeguard, not repair identity, ownership, admission or
-validation evidence; no account-specific prefix, body marker or registry is needed.
+Repair branches follow ordinary repository conventions. Normal same-repository
+and fork job rules apply; branch names do not grant special treatment.
 
 Final approval and merge remain human actions. A merged linked PR closes its
 problem issue through normal GitHub behavior. A PR closed without merging does
