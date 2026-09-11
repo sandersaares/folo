@@ -122,13 +122,4 @@ Describe 'Typed mutation arguments' {
         $values | Should -Contain 'packages/dure/**/*.rs'
         $values | ForEach-Object { $_ | Should -Not -Match "^'" }
     }
-
-    It 'anchors the complete mutant name without interpreting shell syntax' {
-        $name = 'src/lib.rs:1:2: replace a$();[x] -> u8 with 0'
-        $arguments = Get-MutantsReplayArgument -Mutant @{ name = $name }
-        $arguments.Count | Should -Be 2
-        $arguments[0] | Should -Be '--re'
-        $name | Should -Match $arguments[1]
-        "$name suffix" | Should -Not -Match $arguments[1]
-    }
 }

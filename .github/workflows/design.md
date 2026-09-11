@@ -52,7 +52,8 @@ Readable reports include useful diagnostics, source and direct job links; full l
 and tool artifacts supplement rather than replace the explanation. Setup failures
 are reported even when no checker artifact exists.
 
-An empty mutation shard requires successful discovery and an unmutated baseline.
+An empty mutation shard is explicitly reported as no work, not a passing baseline.
+Cargo-mutants owns configuration and baseline execution for nonempty shards.
 Missing output is not proof of an empty shard. Reproduction instructions preserve
 known invocation scope; interleaved Miri output does not justify inventing a failing
 test or seed. An unexplained intermittent failure is not resolved by a green retry.

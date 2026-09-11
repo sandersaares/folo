@@ -69,32 +69,6 @@ Describe 'Scheduled command scope' {
         $scopes[0].target.name | Should -Be 'integration'
     }
 
-    It 'mirrors unmutated baseline configuration for build and test' {
-        $check = @(Get-ScheduledCheck -Packages cpulist -CheckIds mutants-ubuntu-latest-1)[0]
-        $mutation = Get-ScheduledCommand -Check $check -OutputDirectory $TestDrive -Toolchain (Get-ScheduledToolchain -Kind mutants)
-        $configuration = @{
-            test_tool = 'nextest'; profile = 'mutants'; all_features = $true; no_default_features = $true
-            features = @('extra'); additional_cargo_args = @('--locked')
-            additional_cargo_test_args = @('--tests'); cap_lints = $true
-        }
-        $build = Get-ScheduledBaselineCommand -Check $check -MutationCommand $mutation -Configuration $configuration -Phase Build
-        $test = Get-ScheduledBaselineCommand -Check $check -MutationCommand $mutation -Configuration $configuration -Phase Test
-        $build.arguments | Should -Contain '--no-run'
-        $build.arguments | Should -Not -Contain '--tests'
-        $test.arguments | Should -Contain '--tests'
-        $test.arguments | Should -Contain '--cargo-profile=mutants'
-        $test.arguments | Should -Contain '--features=extra'
-        $test.arguments | Should -Contain '--no-default-features'
-        $test.arguments | Should -Contain '--all-features'
-        $test.arguments | Should -Contain '--locked'
-        $test.environment.INSTA_UPDATE | Should -Be 'no'
-        $test.environment.INSTA_FORCE_PASS | Should -Be '0'
-        $test.environment.MUTATION_TESTING | Should -Be '1'
-        $test.environment.CARGO_ENCODED_RUSTFLAGS | Should -Be (@('--cfg', 'mutants', '--cap-lints=warn') -join [char]0x1f)
-        $test.timeout_seconds | Should -Be 60
-        $build.ContainsKey('timeout_seconds') | Should -BeFalse
-    }
-
     It 'passes literal arguments through a real child process without a shell' {
         $values = @('spaces and quotes "here"', 'literal*', 'x; Write-Host injected', 'café')
         $command = @{
@@ -121,7 +95,7 @@ Describe 'Checker outcome propagation and diagnostics' {
                 Copy-Item -LiteralPath (Join-Path $fixtures 'target-metadata.json') -Destination $stdout
             } else { 'test ordinary ... ok' | Set-Content -LiteralPath $stdout }
             '' | Set-Content -LiteralPath $stderr
-            return @{ exit_code = 0; timed_out = $false; stdout_path = $stdout; stderr_path = $stderr }
+            return @{ exit_code = 0; stdout_path = $stdout; stderr_path = $stderr }
         }
     }
 
@@ -144,7 +118,7 @@ Describe 'Checker outcome propagation and diagnostics' {
             $stderr = Join-Path $OutputDirectory "$Name.stderr"
             Copy-Item -LiteralPath (Join-Path $fixtures 'miri.stdout') -Destination $stdout
             Copy-Item -LiteralPath (Join-Path $fixtures 'miri.stderr') -Destination $stderr
-            return @{ exit_code = 101; timed_out = $false; stdout_path = $stdout; stderr_path = $stderr }
+            return @{ exit_code = 101; stdout_path = $stdout; stderr_path = $stderr }
         }
         Invoke-ScheduledCheck -Check $check -SourceRoot $TestDrive -OutputDirectory $output -SourceSha $sourceSha | Should -Be 101
         $summary = Get-Content -LiteralPath (Join-Path $output 'summary.md') -Raw
@@ -239,19 +213,12 @@ Describe 'Mutation completion and findings' {
     }
 }
 
-Describe 'Mutation execution baseline discipline' {
+Describe 'Native mutation execution' {
     BeforeEach {
         $script:output = Join-Path $TestDrive ([guid]::NewGuid().ToString())
         $script:check = @(Get-ScheduledCheck -Packages example -CheckIds mutants-ubuntu-latest-1)[0]
         Mock Assert-ScheduledPlatform -ModuleName ScheduledExecution {}
         Mock Resolve-CargoExecutable -ModuleName ScheduledExecution { (Get-Command pwsh).Source }
-        Mock Get-ScheduledMutationConfig -ModuleName ScheduledExecution {
-            @{
-                test_tool = 'cargo'; profile = 'mutants'; all_features = $true; no_default_features = $false
-                features = @(); additional_cargo_args = @('--locked')
-                additional_cargo_test_args = @('--tests'); cap_lints = $false
-            }
-        }
         Mock Invoke-ScheduledProcess -ModuleName ScheduledExecution {
             param($OutputDirectory, $Name)
             $stdout = Join-Path $OutputDirectory "$Name.stdout"
@@ -262,38 +229,35 @@ Describe 'Mutation execution baseline discipline' {
                 $null = New-Item -ItemType Directory -Path (Join-Path $OutputDirectory 'mutants.out') -Force
                 '[]' | Set-Content -LiteralPath (Join-Path $OutputDirectory 'mutants.out\mutants.json')
             }
-            return @{ exit_code = 0; timed_out = $false; stdout_path = $stdout; stderr_path = $stderr }
+            return @{ exit_code = 0; stdout_path = $stdout; stderr_path = $stderr }
         }
     }
 
-    It 'executes unmutated build and test when cargo-mutants selects an empty shard' {
+    It 'reports an empty shard as no work without emulating a baseline' {
         Invoke-ScheduledCheck -Check $check -SourceRoot $TestDrive -OutputDirectory $output -SourceSha $sourceSha | Should -Be 0
-        Should -Invoke Invoke-ScheduledProcess -ModuleName ScheduledExecution -ParameterFilter { $Name -eq 'baseline-build' } -Times 1 -Exactly
-        Should -Invoke Invoke-ScheduledProcess -ModuleName ScheduledExecution -ParameterFilter { $Name -eq 'baseline-test' } -Times 1 -Exactly
+        Should -Invoke Invoke-ScheduledProcess -ModuleName ScheduledExecution -ParameterFilter { $Name -like 'baseline-*' } -Times 0 -Exactly
+        Should -Invoke Invoke-ScheduledProcess -ModuleName ScheduledExecution -ParameterFilter { $Name -eq 'check' } -Times 1 -Exactly
         $summary = Get-Content -LiteralPath (Join-Path $output 'summary.md') -Raw
-        $summary | Should -Match 'No mutants selected; the unmutated baseline passed'
+        $summary | Should -Match 'No mutants selected for this shard'
+        $summary | Should -Match 'no mutation tests or baseline were run'
     }
 
-    It 'fails an empty-shard baseline <phase> failure' -ForEach @(
-        @{ phase = 'baseline-build'; timedOut = $false }
-        @{ phase = 'baseline-test'; timedOut = $false }
-        @{ phase = 'baseline-test'; timedOut = $true }
-    ) {
-        Mock Invoke-ScheduledProcess -ModuleName ScheduledExecution -ParameterFilter { $Name -eq $phase } {
+    It 'does not treat missing outcomes for a nonempty shard as no work' {
+        Mock Invoke-ScheduledProcess -ModuleName ScheduledExecution -ParameterFilter { $Name -eq 'check' } {
             param($OutputDirectory, $Name)
             $stdout = Join-Path $OutputDirectory "$Name.stdout"
             $stderr = Join-Path $OutputDirectory "$Name.stderr"
-            'baseline test failure canary' | Set-Content -LiteralPath $stdout
+            '' | Set-Content -LiteralPath $stdout
             '' | Set-Content -LiteralPath $stderr
-            return @{ exit_code = 1; timed_out = $timedOut; stdout_path = $stdout; stderr_path = $stderr }
+            $null = New-Item -ItemType Directory -Path (Join-Path $OutputDirectory 'mutants.out') -Force
+            '[{"name":"example mutant"}]' | Set-Content -LiteralPath (Join-Path $OutputDirectory 'mutants.out\mutants.json')
+            return @{ exit_code = 0; stdout_path = $stdout; stderr_path = $stderr }
         }
         Invoke-ScheduledCheck -Check $check -SourceRoot $TestDrive -OutputDirectory $output -SourceSha $sourceSha | Should -Be 1
-        $summary = Get-Content -LiteralPath (Join-Path $output 'summary.md') -Raw
-        $summary | Should -Match 'baseline test failure canary'
-        $summary | Should -Match 'Final result: FAILED'
+        Get-Content -LiteralPath (Join-Path $output 'summary.md') -Raw | Should -Match 'Final result: FAILED'
     }
 
-    It 'does not mask a mutation process failure with a successful empty-shard baseline' {
+    It 'does not mask a mutation process failure with an empty inventory' {
         Mock Invoke-ScheduledProcess -ModuleName ScheduledExecution -ParameterFilter { $Name -eq 'check' } {
             param($OutputDirectory, $Name)
             $stdout = Join-Path $OutputDirectory "$Name.stdout"
@@ -302,10 +266,10 @@ Describe 'Mutation execution baseline discipline' {
             'mutation setup error' | Set-Content -LiteralPath $stderr
             $null = New-Item -ItemType Directory -Path (Join-Path $OutputDirectory 'mutants.out') -Force
             '[]' | Set-Content -LiteralPath (Join-Path $OutputDirectory 'mutants.out\mutants.json')
-            return @{ exit_code = 1; timed_out = $false; stdout_path = $stdout; stderr_path = $stderr }
+            return @{ exit_code = 1; stdout_path = $stdout; stderr_path = $stderr }
         }
         Invoke-ScheduledCheck -Check $check -SourceRoot $TestDrive -OutputDirectory $output -SourceSha $sourceSha | Should -Be 1
-        Should -Invoke Get-ScheduledMutationConfig -ModuleName ScheduledExecution -Times 0 -Exactly
+        Get-Content -LiteralPath (Join-Path $output 'summary.md') -Raw | Should -Match 'mutation setup error'
     }
 
     It 'fails findings even if a mutation process incorrectly reports success' {
@@ -320,9 +284,55 @@ Describe 'Mutation execution baseline discipline' {
             $inventory = @($lab.outcomes | Where-Object { $_.scenario -is [hashtable] } | ForEach-Object { $_.scenario.Mutant })
             ConvertTo-Json -InputObject $inventory -Depth 20 | Set-Content -LiteralPath (Join-Path $OutputDirectory 'mutants.out\mutants.json')
             $lab | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath (Join-Path $OutputDirectory 'mutants.out\outcomes.json')
-            return @{ exit_code = 0; timed_out = $false; stdout_path = $stdout; stderr_path = $stderr }
+            return @{ exit_code = 0; stdout_path = $stdout; stderr_path = $stderr }
         }
+
         Invoke-ScheduledCheck -Check $check -SourceRoot $TestDrive -OutputDirectory $output -SourceSha $sourceSha | Should -Be 1
         Get-Content -LiteralPath (Join-Path $output 'summary.md') -Raw | Should -Match 'MissedMutant'
+    }
+}
+
+Describe 'Child process lifetime' {
+    It 'terminates the child and disposes captures when an output copy fails before exit' {
+        $faultingStream = [pscustomobject]@{}
+        $faultingStream | Add-Member ScriptMethod CopyToAsync {
+            param($Destination)
+            $Destination.CanWrite | Should -BeTrue
+            return [Threading.Tasks.Task]::FromException([IO.IOException]::new('capture failure canary'))
+        }
+        $pendingStream = [pscustomobject]@{}
+        $pendingStream | Add-Member ScriptMethod CopyToAsync {
+            param($Destination)
+            $Destination.CanWrite | Should -BeTrue
+            return [Threading.Tasks.TaskCompletionSource[object]]::new().Task
+        }
+        $process = [pscustomobject]@{
+            StartInfo = $null; HasExited = $false; Killed = $false; Waited = $false; Disposed = $false
+            StandardOutput = [pscustomobject]@{ BaseStream = $faultingStream }
+            StandardError = [pscustomobject]@{ BaseStream = $pendingStream }
+        }
+        $process | Add-Member ScriptMethod Start { return $true }
+        $process | Add-Member ScriptMethod WaitForExitAsync {
+            return [Threading.Tasks.TaskCompletionSource[object]]::new().Task
+        }
+        $process | Add-Member ScriptMethod Kill {
+            param([bool] $EntireProcessTree)
+            $this.Killed = $EntireProcessTree
+            $this.HasExited = $true
+        }
+        $process | Add-Member ScriptMethod WaitForExit { $this.Waited = $true }
+        $process | Add-Member ScriptMethod Dispose { $this.Disposed = $true }
+        Mock Get-ScheduledProcess -ModuleName ScheduledExecutionCommands { return $process }
+        $command = @{ file = 'unused'; arguments = @(); environment = @{} }
+        {
+            Invoke-ScheduledProcess -Command $command -SourceRoot $TestDrive -OutputDirectory $TestDrive -Name 'capture'
+        } | Should -Throw '*capture failure canary*'
+        $process.Killed | Should -BeTrue
+        $process.Waited | Should -BeTrue
+        $process.Disposed | Should -BeTrue
+        foreach ($name in @('capture.stdout', 'capture.stderr')) {
+            $stream = [IO.File]::Open((Join-Path $TestDrive $name), 'Open', 'ReadWrite', 'None')
+            $stream.Dispose()
+        }
     }
 }

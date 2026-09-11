@@ -1,15 +1,12 @@
 #requires -Version 7
 
 # ScheduledExecution invokes these controller-owned commands with argument arrays, never a shell.
-# PowerShell owns process setup and capture; the small Rust TOML utility is built lazily only when
-# cargo-mutants omits an empty shard's baseline. No checker tooling is needed during planning.
+# PowerShell owns process setup and capture; each checker owns its configuration and baselines.
 # Ref: .github/workflows/implementation.md#immutable-execution.
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
 Import-Module (Join-Path $PSScriptRoot '..\build\Mutants.psm1')
-Import-Module (Join-Path $PSScriptRoot '..\build\Miri.psm1')
-Import-Module (Join-Path $PSScriptRoot '..\build\CargoExecutable.psm1')
 
 function Get-ScheduledToolchain {
     [CmdletBinding()]
@@ -84,8 +81,9 @@ function Get-ScheduledCommand {
                     else { "--$($Check.target.kind)=$($Check.target.name)" }
             } elseif ($Check.kind -ceq 'miri-many') { $arguments += '--lib' }
             else { $arguments += '--tests' }
-            $environment.MIRIFLAGS = @(Get-MiriFlag -SeedRange $Check.seed_range `
-                    -Shard $Check.shard -Many:($Check.kind -ceq 'miri-many')) -join ' '
+            if ($Check.kind -ceq 'miri-many') {
+                $environment.MIRIFLAGS = "-Zmiri-many-seeds=$($Check.seed_range)"
+            }
         } else { throw "Unknown check kind: $($Check.kind)" }
         $arguments += @('--', '--test-threads=1')
     }
@@ -113,42 +111,61 @@ function Invoke-ScheduledProcess {
     $start.UseShellExecute = $false
     $start.RedirectStandardOutput = $true
     $start.RedirectStandardError = $true
-    $start.RedirectStandardInput = $Command.ContainsKey('input_text')
     foreach ($argument in $Command.arguments) { $start.ArgumentList.Add($argument) }
     foreach ($key in $Command.environment.Keys) {
         if ($null -eq $Command.environment[$key]) { $null = $start.Environment.Remove($key) }
         else { $start.Environment[$key] = $Command.environment[$key] }
     }
-    $process = [Diagnostics.Process]::new()
+    $process = Get-ScheduledProcess
     $process.StartInfo = $start
     $stdoutPath = Join-Path $OutputDirectory "$Name.stdout"
     $stderrPath = Join-Path $OutputDirectory "$Name.stderr"
-    $stdout = [IO.File]::Create($stdoutPath)
-    $stderr = [IO.File]::Create($stderrPath)
+    $stdout = $null
+    $stderr = $null
+    $started = $false
     try {
-        if (-not $process.Start()) { throw 'Could not start the check.' }
+        $stdout = [IO.File]::Create($stdoutPath)
+        $stderr = [IO.File]::Create($stderrPath)
+        $started = $process.Start()
+        if (-not $started) { throw 'Could not start the check.' }
         $copyOut = $process.StandardOutput.BaseStream.CopyToAsync($stdout)
         $copyErr = $process.StandardError.BaseStream.CopyToAsync($stderr)
-        if ($start.RedirectStandardInput) {
-            $process.StandardInput.Write($Command.input_text)
-            $process.StandardInput.Close()
+        # Observe a failed capture immediately: waiting only for exit can leave a child blocked
+        # on a full pipe after the reader failed. The finally block owns that child's lifetime.
+        $pending = [Collections.Generic.List[Threading.Tasks.Task]]::new(
+            [Threading.Tasks.Task[]]@($copyOut, $copyErr, $process.WaitForExitAsync()))
+        while ($pending.Count -gt 0) {
+            $completed = [Threading.Tasks.Task]::WhenAny([Threading.Tasks.Task[]]$pending).GetAwaiter().GetResult()
+            $null = $completed.GetAwaiter().GetResult()
+            $null = $pending.Remove($completed)
         }
-        $timedOut = $false
-        if ($Command.ContainsKey('timeout_seconds')) {
-            $timedOut = -not $process.WaitForExit([int]($Command.timeout_seconds * 1000))
-            if ($timedOut) { $process.Kill($true); $process.WaitForExit() }
-        } else { $process.WaitForExit() }
-        $null = $copyOut.GetAwaiter().GetResult()
-        $null = $copyErr.GetAwaiter().GetResult()
         return @{
-            exit_code = if ($timedOut) { 1 } else { $process.ExitCode }
-            timed_out = $timedOut; stdout_path = $stdoutPath; stderr_path = $stderrPath
+            exit_code = $process.ExitCode; stdout_path = $stdoutPath; stderr_path = $stderrPath
         }
     } finally {
-        $stdout.Dispose()
-        $stderr.Dispose()
-        $process.Dispose()
+        try {
+            if ($started -and -not $process.HasExited) {
+                try { $process.Kill($true) }
+                catch [InvalidOperationException] {
+                    # The child can exit between HasExited and Kill.
+                    if (-not $process.HasExited) { throw }
+                }
+                $process.WaitForExit()
+            }
+        } finally {
+            if ($null -ne $stdout) { $stdout.Dispose() }
+            if ($null -ne $stderr) { $stderr.Dispose() }
+            $process.Dispose()
+        }
     }
+}
+
+function Get-ScheduledProcess {
+    # Isolate construction so lifetime/error handling can use deterministic process doubles.
+    [CmdletBinding()]
+    [OutputType([Diagnostics.Process])]
+    param()
+    return [Diagnostics.Process]::new()
 }
 
 function Get-ScheduledTestScope {
@@ -186,78 +203,5 @@ function Get-ScheduledTestScope {
     }
 }
 
-function Get-ScheduledMutationConfig {
-    [CmdletBinding()]
-    [OutputType([hashtable])]
-    param([Parameter(Mandatory)][string] $OutputDirectory)
-
-    $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
-    $toolchain = Get-ScheduledToolchain -Kind mutants
-    $command = @{
-        file = (Get-Command cargo -CommandType Application | Select-Object -First 1).Source
-        arguments = @("+$toolchain", 'build', '--locked', '--package', 'scheduled-mutation-config',
-            '--target-dir', (Join-Path $root 'target\scheduled-mutation-config'), '--message-format=json')
-        environment = @{ RUSTUP_TOOLCHAIN = $toolchain; RUSTFLAGS = ''; CARGO_ENCODED_RUSTFLAGS = $null }
-    }
-    $build = Invoke-ScheduledProcess -Command $command -SourceRoot $root `
-        -OutputDirectory $OutputDirectory -Name 'mutation-config-build'
-    if ($build.exit_code -ne 0) {
-        throw "Could not build mutation configuration parser: $(Get-Content -LiteralPath $build.stderr_path -Raw)"
-    }
-    $executable = Resolve-CargoExecutable -CargoMessage @(Get-Content -LiteralPath $build.stdout_path) `
-        -TargetName 'scheduled-mutation-config'
-    $configPath = Join-Path $root '.cargo\mutants.toml'
-    Copy-Item -LiteralPath $configPath -Destination (Join-Path $OutputDirectory 'mutation-config.toml')
-    $decode = @{
-        file = $executable; arguments = @(); environment = @{}
-        input_text = Get-Content -LiteralPath $configPath -Raw
-    }
-    $result = Invoke-ScheduledProcess -Command $decode -SourceRoot $root `
-        -OutputDirectory $OutputDirectory -Name 'mutation-config'
-    if ($result.exit_code -ne 0) {
-        throw "Could not decode baseline configuration: $(Get-Content -LiteralPath $result.stderr_path -Raw)"
-    }
-    return Get-Content -LiteralPath $result.stdout_path -Raw | ConvertFrom-Json -AsHashtable
-}
-
-function Get-ScheduledBaselineCommand {
-    [CmdletBinding()]
-    [OutputType([hashtable])]
-    param(
-        [Parameter(Mandatory)][hashtable] $Check,
-        [Parameter(Mandatory)][hashtable] $MutationCommand,
-        [Parameter(Mandatory)][hashtable] $Configuration,
-        [Parameter(Mandatory)][ValidateSet('Build', 'Test')][string] $Phase
-    )
-
-    # Mirror cargo-mutants' baseline settings, including cfg, feature/profile selection,
-    # nextest support, snapshot safeguards and test timeout. Empty shards still test real code.
-    $arguments = @($MutationCommand.arguments[0])
-    $arguments += if ($Configuration.test_tool -ceq 'nextest') { @('nextest', 'run') } else { 'test' }
-    if ($Phase -ceq 'Build') { $arguments += '--no-run' }
-    if ($null -ne $Configuration.profile) {
-        $arguments += if ($Configuration.test_tool -ceq 'nextest') { "--cargo-profile=$($Configuration.profile)" }
-            else { "--profile=$($Configuration.profile)" }
-    }
-    $arguments += '--verbose'
-    if ($Check.packages.Count -eq 0) { $arguments += '--workspace' }
-    foreach ($packageName in $Check.packages) { $arguments += "--package=$packageName" }
-    if ($Configuration.no_default_features) { $arguments += '--no-default-features' }
-    if ($Configuration.all_features) { $arguments += '--all-features' }
-    foreach ($feature in $Configuration.features) { $arguments += "--features=$feature" }
-    $arguments += @($Configuration.additional_cargo_args)
-    if ($Phase -ceq 'Test') { $arguments += @($Configuration.additional_cargo_test_args) }
-    $environment = $MutationCommand.environment.Clone()
-    $environment.INSTA_UPDATE = 'no'
-    $environment.INSTA_FORCE_PASS = '0'
-    if ($Configuration.cap_lints) {
-        $environment.CARGO_ENCODED_RUSTFLAGS = (@('--cfg', 'mutants', '--cap-lints=warn') -join [char]0x1f)
-    }
-    $command = @{ file = $MutationCommand.file; arguments = [string[]]$arguments; environment = $environment }
-    # Same explicit test budget as the mutation command; baseline builds have no tool timeout.
-    if ($Phase -ceq 'Test') { $command.timeout_seconds = 60 }
-    return $command
-}
-
 Export-ModuleMember -Function Get-ScheduledToolchain, Assert-ScheduledPlatform, Get-ScheduledCommand,
-Invoke-ScheduledProcess, Get-ScheduledTestScope, Get-ScheduledMutationConfig, Get-ScheduledBaselineCommand
+Invoke-ScheduledProcess, Get-ScheduledTestScope

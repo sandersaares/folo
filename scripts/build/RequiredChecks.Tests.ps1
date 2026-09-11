@@ -183,9 +183,9 @@ Describe 'Planned tooling results' {
     }
 
     It 'requires integration tests for an affected native helper' {
-        $needs.delta.outputs.packages_json = '["scheduled-mutation-config"]'
+        $needs.delta.outputs.packages_json = '["release-target-check"]'
         { Assert-PlannedResult } | Should -Throw
-        $needs.delta.outputs.script_domains = '["scheduled"]'
+        $needs.delta.outputs.script_domains = '["release"]'
         { Assert-PlannedResult } | Should -Throw
         $needs['test-scripts'].result = 'success'
         { Assert-PlannedResult } | Should -Not -Throw

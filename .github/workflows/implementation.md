@@ -229,6 +229,10 @@ preserve its readable summary and raw diagnostics even after failure. A native
 command's failure status must cross all wrappers into Actions; successful artifact
 preservation does not turn failed validation green.
 
+Cargo-mutants reads its own configuration and runs its own unmutated baseline.
+A successful empty shard is reported as no mutation work; the wrapper does not
+reconstruct a test invocation or claim that a baseline ran.
+
 The full workflow executes every night, without persistent coverage receipts or
 successful-run reuse. Ordinary dependency/build caches remain available.
 

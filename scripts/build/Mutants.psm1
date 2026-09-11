@@ -165,19 +165,4 @@ function Get-MutantsShardArgument {
     return @('--shard', ('{0}/{1}' -f ($shard.Index - 1), $shard.Count))
 }
 
-function Get-MutantsReplayArgument {
-    # Names include the source location for exact selection; incident identities deliberately do
-    # not. The discovery pass must confirm that this name still denotes the intended mutation.
-    [CmdletBinding()]
-    [OutputType([string[]])]
-    param([Parameter(Mandatory)][hashtable] $Mutant)
-
-    if (-not $Mutant.ContainsKey('name') -or [string]::IsNullOrWhiteSpace($Mutant.name)) {
-        throw [ArgumentException]::new('A replay requires the name from cargo-mutants discovery.')
-    }
-    # Escape Rust regex metacharacters, not shell syntax. Arguments are never shell expressions.
-    $pattern = [regex]::Replace($Mutant.name, '([\\.^$|?*+()[\]{}])', '\$1')
-    return @('--re', "^$pattern`$")
-}
-
-Export-ModuleMember -Function Get-MutantsExcludeArgument, Get-MutantsShardArgument, Get-MutantsReplayArgument
+Export-ModuleMember -Function Get-MutantsExcludeArgument, Get-MutantsShardArgument

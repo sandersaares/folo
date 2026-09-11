@@ -81,19 +81,10 @@ function Invoke-ScheduledCheck {
             $inventory = Get-Content -LiteralPath $inventoryPath -Raw | ConvertFrom-Json -AsHashtable -NoEnumerate
             if ($inventory -isnot [array]) { throw 'Mutation inventory is not an array.' }
             if ($exitCode -eq 0 -and $inventory.Count -eq 0 -and -not (Test-Path -LiteralPath $outcomesPath)) {
-                # cargo-mutants exits before its baseline for empty shards. Run real unmutated
-                # build/test phases with the same controller configuration instead of calling
-                # an empty inventory a passing baseline.
+                # An empty shard has no mutation work. Leave configuration and baseline behavior
+                # with cargo-mutants instead of reimplementing its test runner.
                 # Ref: .github/workflows/implementation.md#immutable-execution.
-                $configuration = Get-ScheduledMutationConfig -OutputDirectory $OutputDirectory
-                foreach ($phase in @('Build', 'Test')) {
-                    $baseline = Get-ScheduledBaselineCommand -Check $Check -MutationCommand $command `
-                        -Configuration $configuration -Phase $phase
-                    $step = Invoke-ScheduledStage -Command $baseline -SourceRoot $SourceRoot `
-                        -OutputDirectory $OutputDirectory -Name "baseline-$($phase.ToLowerInvariant())"
-                    if ($step.exit_code -ne 0) { throw "Unmutated baseline $phase failed; no mutations were tested." }
-                }
-                Add-Content -LiteralPath $summary -Value "`nNo mutants selected; the unmutated baseline passed."
+                Add-Content -LiteralPath $summary -Value "`nNo mutants selected for this shard; no mutation tests or baseline were run."
             } else {
                 $mutationExit = Write-ScheduledMutationSummary -OutputDirectory $OutputDirectory -Inventory $inventory
                 if ($mutationExit -ne 0) { $exitCode = 1 }
@@ -174,7 +165,7 @@ function Invoke-ScheduledStage {
     Write-Host "Starting $Name in $SourceRoot"
     $result = Invoke-ScheduledProcess -Command $Command -SourceRoot $SourceRoot `
         -OutputDirectory $OutputDirectory -Name $Name
-    Add-Content -LiteralPath $summary -Value "Exit code: $($result.exit_code). Timed out: $($result.timed_out)."
+    Add-Content -LiteralPath $summary -Value "Exit code: $($result.exit_code)."
     if ($result.exit_code -ne 0) {
         Write-ScheduledLogExcerpt -Path $result.stdout_path, $result.stderr_path -SummaryPath $summary
     } else {
