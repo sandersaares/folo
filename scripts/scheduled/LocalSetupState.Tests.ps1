@@ -11,7 +11,7 @@ Describe 'Durable disabled setup intent' {
     BeforeEach {
         $script:path = Join-Path $TestDrive "$([guid]::NewGuid().ToString('N')).json"
         $script:desired = @{
-            repository = 'owner/repository'; project_id = 'project'; host_id = 'local'
+            repository = 'owner/repository'; repository_id = 123; project_id = 'project'; host_id = 'local'
             executor_id = 'executor'; login = 'operator'; name = 'triage'
             marker = 'folo-scheduled-triage:v1'; cadence_cron = '7 */3 * * *'
             prompt = 'folo-scheduled-triage:v1 Run scheduled-triage'; model = 'chosen'
@@ -23,6 +23,35 @@ Describe 'Durable disabled setup intent' {
         Test-Path -LiteralPath $path | Should -BeFalse
         { Invoke-ScheduledSetupJournal $path 123 begin-create triage @{ desired = $desired } } | Should -Throw
         Test-Path -LiteralPath $path | Should -BeFalse
+    }
+
+    It 'rejects non-Boolean approval and ownership facts before changing the journal' {
+        foreach ($invalid in @(@{ value = @($true) }, @{ value = 'true' }, @{ value = 1 })) {
+            { Invoke-ScheduledSetupJournal $path 123 begin-create triage @{
+                operator_approved = $invalid.value; desired = $desired
+            } } | Should -Throw
+            Test-Path -LiteralPath $path | Should -BeFalse
+        }
+        $null = Invoke-ScheduledSetupJournal $path 123 begin-create triage @{ operator_approved = $true; desired = $desired }
+        $before = Get-Content -LiteralPath $path -Raw
+        foreach ($invalid in @(@{ value = @($true) }, @{ value = 'true' }, @{ value = 1 })) {
+            { Invoke-ScheduledSetupJournal $path 123 confirm triage @{
+                operator_approved = $true; ownership_verified = $invalid.value; automation_id = 'observed'
+            } } | Should -Throw
+            (Get-Content -LiteralPath $path -Raw) | Should -BeExactly $before
+        }
+    }
+
+    It 'rejects a well-formed journal from another independently identified repository' {
+        $foreign = $desired.Clone(); $foreign.repository_id = 124; $foreign.repository = 'owner/another'
+        $journal = Invoke-ScheduledSetupJournal $path 124 begin-create triage @{
+            operator_approved = $true; desired = $foreign
+        }
+        { Get-ScheduledRoleSetupDecision -Role triage -Desired $desired -Workflows @() `
+            -MetadataComplete $true -SetupJournal $journal } | Should -Throw
+        $missing = $desired.Clone(); $missing.Remove('repository_id')
+        { Get-ScheduledRoleSetupDecision -Role triage -Desired $missing -Workflows @() `
+            -MetadataComplete $true -SetupJournal $journal } | Should -Throw
     }
 
     It 'fences a lost native create even when a complete lookup currently contains no entry' {

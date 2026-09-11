@@ -6,7 +6,7 @@ BeforeAll { Import-Module (Join-Path $PSScriptRoot 'LocalSetup.psm1') -Force }
 Describe 'Independent disabled role setup' {
     BeforeEach {
         $script:desired = @{
-            repository = 'owner/repository'; project_id = 'project'; host_id = 'observed-local'
+            repository = 'owner/repository'; repository_id = 123; project_id = 'project'; host_id = 'observed-local'
             executor_id = 'executor'; login = 'operator'; name = 'Folo scheduled failure triage'
             marker = 'folo-scheduled-triage:v1'; cadence_cron = '7 */3 * * *'
             prompt = 'folo-scheduled-triage:v1 Run scheduled-triage'; model = $null

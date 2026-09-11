@@ -129,7 +129,11 @@ function Get-ScheduledRoleSetupDecision {
     # Ref: ../../docs/scheduled-triage.md#independent-configuration.
     $markers = @{ triage = 'folo-scheduled-triage:v1'; repair = 'folo-scheduled-remediation:v1' }
     if ($null -ne $SetupJournal) {
-        Assert-ScheduledSetupJournal $SetupJournal $SetupJournal.repository_id
+        if (($Desired['repository_id'] -isnot [int] -and $Desired['repository_id'] -isnot [long]) -or
+            $Desired.repository_id -le 0) {
+            throw 'Setup reconciliation requires an independently verified repository ID.'
+        }
+        Assert-ScheduledSetupJournal $SetupJournal $Desired.repository_id
     }
     if ($Desired.marker -cne $markers[$Role]) {
         throw 'Desired automation marker does not identify its role.'

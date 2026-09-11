@@ -258,6 +258,7 @@ function Assert-TriageRetirement {
 
 function Invoke-ScheduledTriageStateChange {
     param($State, $Policy, $TriagePolicy, [string] $Action, $Data, [DateTimeOffset] $Now, $CheckpointValidation)
+    Assert-ScheduledBooleanInput $Data
     $stamp = $Now.ToUniversalTime().ToString('o')
     if (-not $State.Contains('triage')) {
         if ($Action -ceq 'triage-read') { return }

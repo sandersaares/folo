@@ -60,7 +60,10 @@ function Invoke-ScheduledTriageRequest {
         throw "Unsupported triage request action: $($request.action)"
     }
     if ($request.data -isnot [hashtable]) { throw [FormatException]::new('Triage request data must be an object.') }
+    Assert-ScheduledBooleanInput $request.data
     if ($request.action -ceq 'state') {
+        if ($request.data['fields'] -isnot [hashtable]) { throw [FormatException]::new('State transition fields must be an object.') }
+        Assert-ScheduledBooleanInput $request.data.fields
         # The AI-facing entry accepts lifecycle decisions, not operator configuration or
         # helper-internal receipts. Reject these before reading shared state or using GitHub.
         # Ref: ../../docs/scheduled-triage.md#helper-interface.

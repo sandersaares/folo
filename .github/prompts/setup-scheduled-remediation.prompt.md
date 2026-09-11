@@ -89,7 +89,7 @@ Prepare a JSON artifact containing `role`, `desired`, `workflows`,
 
 | Object | Required content |
 |---|---|
-| `desired` | Verified repository/project/Local host, existing executor/login when enrolled, reviewed name/marker/cron and prompt. Repair uses its existing `coordinator_model` and optional supported `coordinator_effort`; triage uses operator-selected `model` and optional `reasoning_effort`. |
+| `desired` | Verified repository name and numeric `repository_id`, project/Local host, existing executor/login when enrolled, reviewed name/marker/cron and prompt. Repair uses its existing `coordinator_model` and optional supported `coordinator_effort`; triage uses operator-selected `model` and optional `reasoning_effort`. |
 | `workflows` | Normalized actual native entries, including all candidate roles and renamed entries. |
 | `registered_profile` | That role's existing profile, not the other role's; null only when absence/recovery is established. |
 | `metadata_complete` | True only when all facts needed for matching and comparison are available. |

@@ -52,6 +52,18 @@ function Get-ScheduledDigest {
         [Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($json))).ToLowerInvariant()
 }
 
+function Assert-ScheduledBooleanInput {
+    param([System.Collections.IDictionary] $Data)
+    if ($null -eq $Data) { throw [FormatException]::new('Scheduled action data must be an object.') }
+    # Operator decisions and native facts are Boolean data, not coercible strings or lists.
+    foreach ($field in @('operator_approved', 'ownership_verified', 'native_verified',
+            'native_idle_verified', 'successful', 'hosted_confirmation')) {
+        if ($Data.Contains($field) -and $Data[$field] -isnot [bool]) {
+            throw [FormatException]::new("Scheduled action field $field must be a scalar Boolean.")
+        }
+    }
+}
+
 function Read-ScheduledRecord {
     [CmdletBinding()]
     [OutputType([hashtable])]
@@ -214,4 +226,4 @@ function ConvertTo-ScheduledIncident {
 }
 
 Export-ModuleMember -Function Get-ScheduledDigest, Read-ScheduledRecord, Write-ScheduledRecord,
-Assert-ScheduledSha, Get-ScheduledPolicy, ConvertTo-ScheduledIncident
+Assert-ScheduledSha, Get-ScheduledPolicy, ConvertTo-ScheduledIncident, Assert-ScheduledBooleanInput

@@ -116,6 +116,7 @@ function Assert-LocalAdmission {
 
 function Invoke-LocalStateChange {
     param($State, $Policy, [string] $Action, $Data, [DateTimeOffset] $Now, $TriagePolicy, $CheckpointValidation)
+    Assert-ScheduledBooleanInput $Data
     if ($Action.StartsWith('health-', [StringComparison]::Ordinal)) {
         Invoke-ScheduledHealthStateChange $State $Policy $Action $Data $Now
         return
@@ -396,6 +397,7 @@ function Invoke-ScheduledLocalAction {
         [System.Collections.IDictionary] $Data = @{},
         [AllowNull()][hashtable] $TriagePolicy
     )
+    Assert-ScheduledBooleanInput $Data
     if (-not [IO.Path]::IsPathFullyQualified($StateRoot) -or
         [string]::IsNullOrWhiteSpace($ExecutorId) -or [string]::IsNullOrWhiteSpace($Login) -or
         [string]$Policy.repository_id -cnotmatch '^[1-9][0-9]*$') {

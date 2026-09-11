@@ -7,6 +7,20 @@ BeforeAll {
 }
 
 Describe 'Scheduled records' {
+    It 'requires scalar Boolean decision and observation fields without inferring missing facts' {
+        Assert-ScheduledBooleanInput @{}
+        { Assert-ScheduledBooleanInput $null } | Should -Throw -ExceptionType ([FormatException])
+        foreach ($field in @('operator_approved', 'ownership_verified', 'native_verified',
+                'native_idle_verified', 'successful', 'hosted_confirmation')) {
+            Assert-ScheduledBooleanInput @{ $field = $true }
+            Assert-ScheduledBooleanInput @{ $field = $false }
+            foreach ($invalid in @(@{ value = @($true) }, @{ value = 'true' }, @{ value = 1 }, @{ value = $null })) {
+                { Assert-ScheduledBooleanInput @{ $field = $invalid.value } } |
+                    Should -Throw -ExceptionType ([FormatException])
+            }
+        }
+    }
+
     It 'round trips evidence without allowing a comment terminator' {
         $record = @{ schema_version = 1; summary = 'x --> y'; nullable = $null; list = @('seed') }
         $marker = Write-ScheduledRecord -Kind reporter -Record $record

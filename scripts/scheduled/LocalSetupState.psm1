@@ -19,7 +19,9 @@ function Get-ScheduledSetupJournalPath {
 
 function Assert-ScheduledSetupJournal {
     param([hashtable] $Journal, [long] $RepositoryId)
-    if ($Journal.schema_version -ne 1 -or $Journal.repository_id -ne $RepositoryId -or
+    if (($Journal['schema_version'] -isnot [int] -and $Journal['schema_version'] -isnot [long]) -or
+        ($Journal['repository_id'] -isnot [int] -and $Journal['repository_id'] -isnot [long]) -or
+        $Journal.schema_version -ne 1 -or $Journal.repository_id -ne $RepositoryId -or
         $RepositoryId -le 0 -or $Journal.roles -isnot [hashtable]) {
         throw 'Setup journal is corrupt or belongs to another repository; do not recreate entries.'
     }
@@ -41,6 +43,10 @@ function Assert-ScheduledSetupJournal {
         }
         if ($null -ne $record.desired) {
             if ($record.desired -isnot [hashtable]) { throw 'Setup desired entry must be a verified object.' }
+            if (($record.desired['repository_id'] -isnot [int] -and $record.desired['repository_id'] -isnot [long]) -or
+                $record.desired.repository_id -ne $RepositoryId) {
+                throw 'Setup desired entry must match the independently verified repository identity.'
+            }
             foreach ($field in @('repository', 'project_id', 'host_id', 'name', 'marker', 'cadence_cron', 'prompt')) {
                 if (-not $record.desired.ContainsKey($field) -or $record.desired[$field] -isnot [string] -or
                     [string]::IsNullOrWhiteSpace($record.desired[$field])) {
@@ -70,6 +76,7 @@ function Invoke-ScheduledSetupJournal {
         [ValidateSet('triage', 'repair')][string] $Role,
         [hashtable] $Data = @{}
     )
+    Assert-ScheduledBooleanInput $Data
     if (-not [IO.Path]::IsPathFullyQualified($Path) -or $RepositoryId -le 0) {
         throw 'Setup journal requires an absolute path and canonical repository identity.'
     }

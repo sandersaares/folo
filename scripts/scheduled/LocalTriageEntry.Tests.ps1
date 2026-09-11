@@ -76,6 +76,17 @@ Describe 'Local triage JSON entry point' {
         { Invoke-EntryFixtureRequest unknown $identity } | Should -Throw
     }
 
+    It 'rejects collection-valued native facts before state or identity access' {
+        foreach ($field in @('native_verified', 'native_idle_verified', 'ownership_verified', 'operator_approved',
+                'successful', 'hosted_confirmation')) {
+            { Invoke-EntryFixtureRequest state @{
+                action = 'triage-read'; fields = @{ $field = @($true) }
+            } } | Should -Throw -ExceptionType ([FormatException])
+        }
+        Should -Invoke Get-ScheduledStateRoot -ModuleName LocalTriage -Exactly -Times 0
+        Should -Invoke Invoke-ScheduledTriageRead -ModuleName LocalTriage -Exactly -Times 0
+    }
+
     It 'rejects <Transition> before shared state or API access despite a claimed operator approval' -ForEach @(
         @{ Transition = 'triage-authorize-publication' }, @{ Transition = 'triage-verify-checkpoint' }
         @{ Transition = 'triage-authorize-snapshot' }, @{ Transition = 'triage-authorize-retirement' }
