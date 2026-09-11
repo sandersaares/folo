@@ -79,6 +79,7 @@ Describe 'Completed attempt reporting' {
             $issue.body | Should -Match 'No check-summary artifact'
             $issue.body | Should -Match 'do not establish the selected tested source'
             $issue.body | Should -Not -Match 'independent-success'
+            Test-Path -LiteralPath (Join-Path $script:directory 'job-20.log') | Should -BeFalse
             Should -Invoke Read-ScheduledArtifactText -Times 0
         }
         It 'reports cancellation and checks that never ran' {
@@ -196,9 +197,78 @@ Describe 'Completed attempt reporting' {
                 number = 42; state = 'closed'; html_url = 'https://github.com/example/repo/issues/42'
                 body = 'Investigate this attempt: https://github.com/example/repo/actions/runs/10/attempts/1'
             })
+            $script:comments = @(@{ body = 'Compare https://github.com/example/repo/actions/runs/10/attempts/2' })
             $null = Invoke-ScheduledReporting example/repo 10 1 $script:directory
             $script:writes.Count | Should -Be 1
             $script:writes[0].endpoint | Should -BeExactly 'repos/example/repo/issues/42/comments'
+        }
+        It 'does not reuse a closed <BodyAttempt> report because a comment links a newer failure' -ForEach @(
+            @{ BodyAttempt = 'https://github.com/example/repo/actions/runs/10/attempts/1' }
+            @{ BodyAttempt = 'https://github.com/example/repo/actions/runs/9/attempts/2' }
+        ) {
+            $script:run.run_attempt = 2
+            $script:issues = @(@{
+                number = 42; state = 'closed'; html_url = 'https://github.com/example/repo/issues/42'
+                body = "Failed attempt: $BodyAttempt"; comments = 1
+            })
+            $script:comments = @(@{ body = 'Compare https://github.com/example/repo/actions/runs/10/attempts/2' })
+            $null = Invoke-ScheduledReporting example/repo 10 2 $script:directory
+            $script:writes.Count | Should -Be 1
+            $script:writes[0].endpoint | Should -BeExactly 'repos/example/repo/issues'
+            $script:writes[0].body.body | Should -Match '/runs/10/attempts/2'
+            Should -Invoke Invoke-ScheduledGitHubJson -Times 0 -Exactly -ParameterFilter {
+                $Endpoint -match '/issues/42/comments'
+            }
+        }
+        It 'reuses a human report whose exact attempt link appears on a later discussion page' {
+            $script:issues = @(@{
+                number = 42; state = 'closed'; html_url = 'https://github.com/example/repo/issues/42'
+                body = 'Planning failed before any checker ran. See the discussion for the run.'; comments = 101
+            })
+            Mock Invoke-ScheduledGitHubJson {
+                return ,@(1..100 | ForEach-Object { @{ body = "Investigation note $_" } })
+            } -ParameterFilter {
+                $Endpoint -ceq 'repos/example/repo/issues/42/comments?per_page=100&page=1'
+            }
+            Mock Invoke-ScheduledGitHubJson {
+                return ,@(@{ body = 'Failed attempt: https://github.com/example/repo/actions/runs/10/attempts/1' })
+            } -ParameterFilter {
+                $Endpoint -ceq 'repos/example/repo/issues/42/comments?per_page=100&page=2'
+            }
+            $null = Invoke-ScheduledReporting example/repo 10 1 $script:directory
+            $script:writes.Count | Should -Be 1
+            $script:writes[0].endpoint | Should -BeExactly 'repos/example/repo/issues/42/comments'
+        }
+        It 'does not fetch nonexistent discussions on unrelated reports' {
+            $script:issues = @(@{
+                number = 42; state = 'open'; html_url = 'https://github.com/example/repo/issues/42'
+                body = 'An unrelated failed run'; comments = 0
+            })
+            $null = Invoke-ScheduledReporting example/repo 10 1 $script:directory
+            $script:writes[0].endpoint | Should -BeExactly 'repos/example/repo/issues'
+            Should -Invoke Invoke-ScheduledGitHubJson -Times 0 -Exactly -ParameterFilter {
+                $Endpoint -match '/issues/42/comments'
+            }
+        }
+        It 'does not confuse a different attempt linked in discussion with the current attempt' {
+            $script:issues = @(@{
+                number = 42; state = 'open'; html_url = 'https://github.com/example/repo/issues/42'
+                body = 'Run details are in the discussion.'; comments = 1
+            })
+            $script:comments = @(@{ body = 'https://github.com/example/repo/actions/runs/10/attempts/12' })
+            $null = Invoke-ScheduledReporting example/repo 10 1 $script:directory
+            $script:writes[0].endpoint | Should -BeExactly 'repos/example/repo/issues'
+        }
+        It 'does not create another report when an existing report discussion cannot be searched' {
+            $script:issues = @(@{
+                number = 42; state = 'open'; html_url = 'https://github.com/example/repo/issues/42'
+                body = 'Run details are in the discussion.'; comments = 1
+            })
+            Mock Invoke-ScheduledGitHubJson { throw [IO.IOException]::new() } -ParameterFilter {
+                $Endpoint -match '/issues/42/comments'
+            }
+            { Invoke-ScheduledReporting example/repo 10 1 $script:directory } | Should -Throw
+            $script:writes.Count | Should -Be 0
         }
         It 'does not repeat an already published report when the reporter is rerun' {
             $null = Invoke-ScheduledReporting example/repo 10 1 $script:directory
@@ -208,6 +278,22 @@ Describe 'Completed attempt reporting' {
             })
             $script:writes.Clear()
             $null = Invoke-ScheduledReporting example/repo 10 1 $script:directory
+            $script:writes.Count | Should -Be 0
+        }
+        It 'reuses an issue created before its create response was lost' {
+            Mock Invoke-ScheduledGitHubJson {
+                param($Body)
+                $script:issues = @(@{
+                    number = 50; state = 'open'; comments = 0
+                    html_url = 'https://github.com/example/repo/issues/50'; body = $Body.body
+                })
+                throw [IO.IOException]::new()
+            } -ParameterFilter { $Method -ceq 'POST' -and $Endpoint -ceq 'repos/example/repo/issues' }
+            { Invoke-ScheduledReporting example/repo 10 1 $script:directory } | Should -Throw
+            Invoke-ScheduledReporting example/repo 10 1 $script:directory | Should -Match '/issues/50'
+            Should -Invoke Invoke-ScheduledGitHubJson -Times 1 -Exactly -ParameterFilter {
+                $Method -ceq 'POST' -and $Endpoint -ceq 'repos/example/repo/issues'
+            }
             $script:writes.Count | Should -Be 0
         }
         It 'creates a separate report for a failed source rerun' {
@@ -241,6 +327,49 @@ Describe 'Completed attempt reporting' {
             $script:writes[0].body.body | Should -Match 'Job logs unavailable'
             $script:writes[0].body.body | Should -Match 'Result artifact inventory is unavailable'
         }
+        It 'keeps a useful partial log and links its explicit truncation gap before deleting the download' {
+            Mock Save-ScheduledGitHubFile {
+                param($Path)
+                Set-Content -LiteralPath $Path -Value '##[error]Retained diagnostic before the log limit'
+                return $true
+            }
+            $null = Invoke-ScheduledReporting example/repo 10 1 $script:directory
+            $text = $script:writes[0].body.body
+            $text | Should -Match 'Retained diagnostic before the log limit'
+            $text | Should -Match 'Job log truncated at the \d+ byte limit'
+            $text | Should -Match 'Remaining diagnostics are unavailable'
+            $text | Should -Match 'full log: https://github.com/example/repo/actions/runs/10/job/20'
+            Test-Path -LiteralPath (Join-Path $script:directory 'job-20.log') | Should -BeFalse
+        }
+        It 'deletes failed downloads and still reports the diagnostic gap with its original link' {
+            Mock Save-ScheduledGitHubFile {
+                param($Path)
+                Set-Content -LiteralPath $Path -Value 'incomplete download'
+                throw [IO.IOException]::new()
+            }
+            $null = Invoke-ScheduledReporting example/repo 10 1 $script:directory
+            $text = $script:writes[0].body.body
+            $text | Should -Match 'Job logs unavailable'
+            $text | Should -Match 'Full log: https://github.com/example/repo/actions/runs/10/job/20'
+            Test-Path -LiteralPath (Join-Path $script:directory 'job-20.log') | Should -BeFalse
+        }
+        It 'reports oversized artifact gaps with original plan and result links' {
+            $script:jobs[0].name = 'miri-linux'
+            $script:artifacts = @(
+                @{ id = 30; name = 'scheduled-plan-10-1'; expired = $false }
+                @{ id = 31; name = 'scheduled-result-10-1-miri-linux'; expired = $false }
+            )
+            Mock Read-ScheduledArtifactText {
+                throw [IO.InvalidDataException]::new('Download exceeded the byte limit; complete artifact unavailable.')
+            }
+            $null = Invoke-ScheduledReporting example/repo 10 1 $script:directory
+            $text = $script:writes[0].body.body
+            $text | Should -Match 'Tested-source plan is unavailable'
+            $text | Should -Match 'Check summary unavailable'
+            $text | Should -Match 'byte limit'
+            $text | Should -Match 'Original artifact: https://github.com/example/repo/actions/runs/10/artifacts/30'
+            $text | Should -Match 'Result artifact: https://github.com/example/repo/actions/runs/10/artifacts/31'
+        }
         It 'does not reinterpret failed job-list or issue-list API calls as empty work' {
             Mock Invoke-ScheduledGitHubJson { throw [IO.IOException]::new() } -ParameterFilter { $Endpoint -match '/jobs\?' }
             { Invoke-ScheduledReporting example/repo 10 1 $script:directory } | Should -Throw
@@ -254,6 +383,43 @@ Describe 'Completed attempt reporting' {
         It 'propagates issue publication failures' {
             Mock Invoke-ScheduledGitHubJson { throw [IO.IOException]::new() } -ParameterFilter { $Method -ceq 'POST' }
             { Invoke-ScheduledReporting example/repo 10 1 $script:directory } | Should -Throw
+        }
+        It 'accepts a concurrently created <LabelName> label without changing its metadata' -ForEach @(
+            @{ LabelName = 'scheduled-run-failure' }, @{ LabelName = 'Scheduled-Run-Failure' }
+        ) {
+            $script:labelName = $LabelName
+            Mock Invoke-ScheduledGitHubJson { return ,@() } -ParameterFilter {
+                $Endpoint -ceq 'repos/example/repo/labels?per_page=100&page=1'
+            }
+            Mock Invoke-ScheduledGitHubJson { throw [IO.IOException]::new() } -ParameterFilter {
+                $Method -ceq 'POST' -and $Endpoint -ceq 'repos/example/repo/labels'
+            }
+            Mock Invoke-ScheduledGitHubJson {
+                return @{ name = $script:labelName; color = '123456'; description = 'Existing description' }
+            } -ParameterFilter { $Endpoint -ceq 'repos/example/repo/labels/scheduled-run-failure' }
+            $null = Invoke-ScheduledReporting example/repo 10 1 $script:directory
+            $script:writes[0].endpoint | Should -BeExactly 'repos/example/repo/issues'
+            Should -Invoke Invoke-ScheduledGitHubJson -Times 1 -Exactly -ParameterFilter {
+                $Endpoint -ceq 'repos/example/repo/labels/scheduled-run-failure'
+            }
+            Should -Invoke Invoke-ScheduledGitHubJson -Times 0 -Exactly -ParameterFilter {
+                $Method -ceq 'PATCH' -and $Endpoint -match '/labels'
+            }
+        }
+        It 'preserves the original label creation failure when the exact label is still unavailable' {
+            $script:creationFailure = [IO.IOException]::new()
+            Mock Invoke-ScheduledGitHubJson { return ,@() } -ParameterFilter {
+                $Endpoint -ceq 'repos/example/repo/labels?per_page=100&page=1'
+            }
+            Mock Invoke-ScheduledGitHubJson { throw $script:creationFailure } -ParameterFilter {
+                $Method -ceq 'POST' -and $Endpoint -ceq 'repos/example/repo/labels'
+            }
+            Mock Invoke-ScheduledGitHubJson { throw [InvalidOperationException]::new() } -ParameterFilter {
+                $Endpoint -ceq 'repos/example/repo/labels/scheduled-run-failure'
+            }
+            $failure = { Invoke-ScheduledReporting example/repo 10 1 $script:directory } | Should -Throw -PassThru
+            $failure.Exception | Should -Be $script:creationFailure
+            $script:writes.Count | Should -Be 0
         }
         It 'propagates continuation publication failures' {
             Mock Read-ScheduledArtifactText {
@@ -364,7 +530,7 @@ Describe 'Artifact controller isolation' {
             }
             $text = Read-ScheduledArtifactText example/repo @{ id = 1; expired = $false } $script:directory summary.md
             $text | Should -BeExactly 'Readable summary.md'
-            @(Get-ChildItem -LiteralPath $script:directory -Recurse -File).Count | Should -Be 1
+            @(Get-ChildItem -LiteralPath $script:directory -Recurse -File).Count | Should -Be 0
         }
         It 'reports expired archives without attempting a download' {
             Mock Save-ScheduledGitHubFile { throw 'Unexpected download' }

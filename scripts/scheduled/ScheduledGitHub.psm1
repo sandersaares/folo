@@ -8,6 +8,13 @@ $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
 Import-Module (Join-Path $PSScriptRoot 'ScheduledReport.psm1')
 
+# Result archives include raw tool output as well as summaries. Bound their transfer and disk
+# footprint so an ordinary verbose check cannot consume the reporter's available storage.
+$script:ArchiveByteLimit = 64MB
+# Decode only bounded log prefixes and selected ZIP entries into memory for issue assembly.
+# Longer diagnostics remain available through the original job/artifact links.
+$script:TextByteLimit = 4MB
+
 function Invoke-ScheduledGitHubJson {
     [CmdletBinding()]
     param(
@@ -44,33 +51,75 @@ function Get-ScheduledGitHubCollection {
     } while ($items.Count -eq 100)
 }
 
-function Save-ScheduledGitHubFile {
+function Get-ScheduledDownloadStartInfo {
     [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)][string] $Endpoint,
-        [Parameter(Mandatory)][string] $Path
-    )
-    # Binary ZIP responses must bypass PowerShell's text pipeline. Concurrent stderr draining
-    # prevents a failed download from blocking on a full pipe; no downloaded code is executed.
+    param([Parameter(Mandatory)][string] $Endpoint)
+
+    # Binary responses bypass PowerShell's text pipeline. gh errors go directly to the runner
+    # log rather than an accumulating stderr buffer; no downloaded code is executed.
     $start = [Diagnostics.ProcessStartInfo]::new()
     $start.FileName = (Get-Command gh -CommandType Application | Select-Object -First 1).Source
     $start.UseShellExecute = $false
     $start.RedirectStandardOutput = $true
-    $start.RedirectStandardError = $true
     foreach ($argument in @('api', $Endpoint, '--allow-escape-sequences')) { $start.ArgumentList.Add($argument) }
+    return $start
+}
+
+function Copy-ScheduledLimitedStream {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][IO.Stream] $Source,
+        [Parameter(Mandatory)][IO.Stream] $Destination,
+        [Parameter(Mandatory)][ValidateRange(1, [long]::MaxValue)][long] $ByteLimit
+    )
+    # Count bytes actually read, not HTTP headers or ZIP entry metadata. One extra byte
+    # distinguishes a complete response exactly at the limit from a truncated response.
+    $buffer = [byte[]]::new([int][Math]::Min(81920L, $ByteLimit)) # .NET's normal copy buffer size.
+    $remaining = $ByteLimit
+    while ($remaining -gt 0) {
+        $count = $Source.Read($buffer, 0, [int][Math]::Min($buffer.Length, $remaining))
+        if ($count -eq 0) { return $false }
+        $Destination.Write($buffer, 0, $count)
+        $remaining -= $count
+    }
+    return $Source.ReadByte() -ne -1
+}
+
+function Save-ScheduledGitHubFile {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string] $Endpoint,
+        [Parameter(Mandatory)][string] $Path,
+        [ValidateRange(1, [long]::MaxValue)][long] $ByteLimit = $script:ArchiveByteLimit,
+        [switch] $AllowPartial
+    )
     $process = [Diagnostics.Process]::new()
-    $process.StartInfo = $start
-    $file = [IO.File]::Create($Path)
+    $process.StartInfo = Get-ScheduledDownloadStartInfo $Endpoint
+    $file = $null
+    $started = $false
+    # Callers remove complete downloads and allowed text prefixes after reading. Failed
+    # transfers are removed here, before an archive can be mistaken for a complete ZIP.
+    $keepFile = $false
     try {
-        if (-not $process.Start()) { throw 'Could not start the GitHub download.' }
-        $errorTask = $process.StandardError.ReadToEndAsync()
-        $process.StandardOutput.BaseStream.CopyTo($file)
+        $file = [IO.File]::Create($Path)
+        $started = $process.Start()
+        if (-not $started) { throw 'Could not start the GitHub download.' }
+        $truncated = Copy-ScheduledLimitedStream $process.StandardOutput.BaseStream $file $ByteLimit
+        if ($truncated -and -not $process.HasExited) { $process.Kill($true) }
         $process.WaitForExit()
-        $diagnostic = $errorTask.GetAwaiter().GetResult()
-        if ($process.ExitCode -ne 0) { throw "GitHub download failed for ${Endpoint}: $diagnostic" }
+        if ($truncated -and -not $AllowPartial) {
+            throw "Download exceeded the $ByteLimit byte limit; the complete artifact is unavailable."
+        }
+        if (-not $truncated -and $process.ExitCode -ne 0) {
+            throw "GitHub download failed for $Endpoint (exit $($process.ExitCode)); see the reporter's Actions log."
+        }
+        $keepFile = $true
+        return $truncated
     } finally {
-        $file.Dispose()
+        if ($started -and -not $process.HasExited) { $process.Kill($true); $process.WaitForExit() }
+        if ($null -ne $file) { $file.Dispose() }
         $process.Dispose()
+        if (-not $keepFile) { [IO.File]::Delete($Path) }
     }
 }
 
@@ -84,16 +133,30 @@ function Read-ScheduledArtifactText {
     )
     if ($Artifact.expired) { throw 'The artifact has expired.' }
     $path = Join-Path $OutputDirectory "$([long]$Artifact.id).zip"
-    Save-ScheduledGitHubFile "repos/$Repository/actions/artifacts/$([long]$Artifact.id)/zip" $path
-    $archive = [IO.Compression.ZipFile]::OpenRead($path)
     try {
-        # Read only the agreed text entry, in place. Never extract candidate paths into either
-        # the controller or diagnostics directory, including symlink/path-traversal entries.
-        $entries = @($archive.Entries | Where-Object FullName -CEQ $Name)
-        if ($entries.Count -ne 1) { throw "Artifact must contain one root $Name entry." }
-        $reader = [IO.StreamReader]::new($entries[0].Open())
-        try { return $reader.ReadToEnd() } finally { $reader.Dispose() }
-    } finally { $archive.Dispose() }
+        # A partial archive is never opened, even when its first entries look usable.
+        $null = Save-ScheduledGitHubFile "repos/$Repository/actions/artifacts/$([long]$Artifact.id)/zip" $path
+        $archive = [IO.Compression.ZipFile]::OpenRead($path)
+        try {
+            # Read only the agreed text entry, in place. Never extract candidate paths into either
+            # the controller or diagnostics directory, including symlink/path-traversal entries.
+            $entries = @($archive.Entries | Where-Object FullName -CEQ $Name)
+            if ($entries.Count -ne 1) { throw "Artifact must contain one root $Name entry." }
+            $source = $entries[0].Open()
+            $content = [IO.MemoryStream]::new()
+            try {
+                $truncated = Copy-ScheduledLimitedStream $source $content $script:TextByteLimit
+                if ($truncated -and $Name -ceq 'plan.json') {
+                    throw "Planning metadata exceeded the $script:TextByteLimit byte limit; partial JSON is not used."
+                }
+                $text = [Text.Encoding]::UTF8.GetString($content.GetBuffer(), 0, [int]$content.Length).TrimStart([char]0xFEFF)
+                if ($truncated) {
+                    $text += "`n`nCheck summary truncated at the $script:TextByteLimit byte limit. Remaining diagnostics are unavailable here; see the original artifact linked above."
+                }
+                return $text
+            } finally { $source.Dispose(); $content.Dispose() }
+        } finally { $archive.Dispose() }
+    } finally { [IO.File]::Delete($path) }
 }
 
 function Invoke-ScheduledReporting {
@@ -118,9 +181,20 @@ function Invoke-ScheduledReporting {
     # A jobs API failure is not an empty execution. Let it fail the reporter, preserving retry.
     $jobs = @(Get-ScheduledGitHubCollection "$endpoint/attempts/$RunAttempt/jobs" -Property jobs)
     $issues = @(Get-ScheduledGitHubCollection "repos/$Repository/issues?state=all&labels=scheduled-run-failure")
-    $attemptPattern = [regex]::Escape($attemptUrl) + '(?=$|[\s<>)\].,;!?])'
+    $linkBoundary = '(?=$|[\s<>)\].,;!?])'
+    $attemptPattern = [regex]::Escape($attemptUrl) + $linkBoundary
+    $bodyAttemptPattern = 'https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/actions/runs/[1-9][0-9]*/attempts/[1-9][0-9]*' + $linkBoundary
     $reports = @($issues | Where-Object {
-        -not $_.ContainsKey('pull_request') -and [string]$_.body -cmatch $attemptPattern
+        if ($_.ContainsKey('pull_request')) { return $false }
+        if ([string]$_.body -cmatch $attemptPattern) { return $true }
+        # A body identifying another attempt takes precedence over comparison links in comments.
+        # Otherwise a closed report could absorb a new failure instead of creating triage work.
+        if ([string]$_.body -cmatch $bodyAttemptPattern) { return $false }
+        if ($_.ContainsKey('comments') -and $_.comments -eq 0) { return $false }
+        # Human reports may identify the attempt in their discussion rather than the body.
+        # An unavailable discussion must fail lookup, not authorize another issue.
+        $discussion = @(Get-ScheduledGitHubCollection "repos/$Repository/issues/$($_.number)/comments")
+        return @($discussion | Where-Object body -CMatch $attemptPattern).Count -gt 0
     } | Sort-Object number)
 
     $notices = [Collections.Generic.List[string]]::new()
@@ -165,7 +239,7 @@ function Invoke-ScheduledReporting {
             }
         } catch {
             $plan = $null
-            $notices.Add("Tested-source plan is unavailable: $($_.Exception.Message)")
+            $notices.Add("Tested-source plan is unavailable: $($_.Exception.Message) Original artifact: https://github.com/$Repository/actions/runs/$RunId/artifacts/$($planArtifacts[0].id)")
         }
     } elseif ($planArtifacts.Count -gt 1) {
         $notices.Add("Multiple planning artifacts identify attempt $planAttempt; the tested commit cannot be established.")
@@ -194,9 +268,13 @@ function Invoke-ScheduledReporting {
             }
         }
         if ($job.conclusion -cne 'skipped') {
+            $logPath = Join-Path $OutputDirectory "job-$([long]$job.id).log"
             try {
-                $logPath = Join-Path $OutputDirectory "job-$([long]$job.id).log"
-                Save-ScheduledGitHubFile "repos/$Repository/actions/jobs/$([long]$job.id)/logs" $logPath
+                $truncated = Save-ScheduledGitHubFile "repos/$Repository/actions/jobs/$([long]$job.id)/logs" `
+                    $logPath -ByteLimit $script:TextByteLimit -AllowPartial
+                if ($truncated) {
+                    $diagnostics.Add("Job log truncated at the $script:TextByteLimit byte limit. Remaining diagnostics are unavailable here; full log: $($job.html_url)")
+                }
                 $excerpt = Get-ScheduledLogExcerpt (Get-Content -LiteralPath $logPath -Raw)
                 if ([string]::IsNullOrWhiteSpace($excerpt)) { throw 'The job log is empty.' }
                 $diagnostics.Add("Observed job log excerpt:`n$excerpt")
@@ -204,7 +282,8 @@ function Invoke-ScheduledReporting {
                     $_ -match '(?i)##\[error\]|\berror\b|failed|panicked|MISSED|TIMEOUT|timed out|undefined behavior'
                 } | Select-Object -First 1)
                 if ($errorLine.Count -gt 0) { $summary = $errorLine[0] }
-            } catch { $diagnostics.Add("Job logs unavailable: $($_.Exception.Message)") }
+            } catch { $diagnostics.Add("Job logs unavailable: $($_.Exception.Message) Full log: $($job.html_url)") }
+            finally { [IO.File]::Delete($logPath) }
         }
         $resultArtifacts = @($artifacts | Where-Object {
             $prefix = "scheduled-result-$RunId-$RunAttempt-"
@@ -254,10 +333,19 @@ function Invoke-ScheduledReporting {
     }
     if ($reports.Count -eq 0) {
         $labels = @(Get-ScheduledGitHubCollection "repos/$Repository/labels")
-        if (@($labels | Where-Object name -CEQ 'scheduled-run-failure').Count -eq 0) {
+        if (@($labels | Where-Object name -EQ 'scheduled-run-failure').Count -eq 0) {
             # Error-red distinguishes the failed-run triage queue from repair work.
-            $null = Invoke-ScheduledGitHubJson "repos/$Repository/labels" -Method POST -Body @{
-                name = 'scheduled-run-failure'; color = 'B60205'; description = 'A failed deep-validation attempt awaiting triage'
+            try {
+                $null = Invoke-ScheduledGitHubJson "repos/$Repository/labels" -Method POST -Body @{
+                    name = 'scheduled-run-failure'; color = 'B60205'; description = 'A failed deep-validation attempt awaiting triage'
+                }
+            } catch {
+                # Other run reporters can create the label concurrently. Only its observed
+                # presence permits continuing; never overwrite its existing metadata.
+                $creationFailure = $_
+                try { $label = Invoke-ScheduledGitHubJson "repos/$Repository/labels/scheduled-run-failure" }
+                catch { throw $creationFailure }
+                if ($null -eq $label -or $label['name'] -ne 'scheduled-run-failure') { throw $creationFailure }
             }
         }
         $date = ([datetimeoffset]$run.run_started_at).UtcDateTime.ToString('yyyy-MM-dd')
