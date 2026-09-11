@@ -156,6 +156,10 @@ established resolution requires human review.
 Triage never silently retargets or consolidates an owned repair. Scope-invalidating
 diagnosis requires reconciliation with that ownership. Complete analysis may still
 record a human repair decision without claiming that the problem is repair-ready.
+Operator reconciliation retains a digest-bound baseline for the particular repair
+attempt, occurrence, scope revision and repair disposition. Repeated publication
+within that baseline does not recreate the hold; a later scope or disposition
+change requires reconciliation again.
 
 ## Readiness and health
 

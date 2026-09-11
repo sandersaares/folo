@@ -84,8 +84,11 @@ Describe 'Triage publication state requirements' {
 
     It 'binds repair-scope holds to confirmed problem updates and requires operator release' {
         { Invoke-TriageTransaction $fixture.context triage-record-repair-hold @{
-            issue_number = 31; operation_key = 'missing'; reason = 'Scope changed'
+            issue_number = 31; operation_key = 'missing'; reason = 'Scope changed'; repair_attempt_id = 'retained'
         } } | Should -Throw
+        $operation.payload.body = Write-ScheduledRecord -Kind problem -Record @{
+            schema_version = 1; generation = 1; scope_revision = 2; repair_disposition = 'actionable'
+        }
         $null = Invoke-TriageTransaction $fixture.context triage-prepare-operation @{ operation = $operation }
         $state = Invoke-TriageTransaction $fixture.context triage-begin-operation @{ operation_key = $operation.key }
         $op = $state.triage.analyses[$fixture.context.analysis_id].operations[$operation.key]
@@ -96,7 +99,7 @@ Describe 'Triage publication state requirements' {
                 target = $target; target_digest = Get-ScheduledDigest $target }
         }
         $state = Invoke-TriageTransaction $fixture.context triage-record-repair-hold @{
-            issue_number = 31; operation_key = $operation.key; reason = 'Scope changed'
+            issue_number = 31; operation_key = $operation.key; reason = 'Scope changed'; repair_attempt_id = 'retained'
         }
         $state.triage.repair_holds['31'].reason | Should -Be 'Scope changed'
         { Invoke-TriageTransaction $fixture.context triage-release-repair-hold @{
@@ -105,6 +108,13 @@ Describe 'Triage publication state requirements' {
         (Invoke-TriageTransaction $fixture.context triage-release-repair-hold @{
             issue_number = 31; operator_approved = $true
         }).triage.repair_holds.Count | Should -Be 0
+        $state = Invoke-TriageTransaction $fixture.context triage-release-repair-hold @{
+            issue_number = 31; operator_approved = $true
+        }
+        $state.triage.repair_reconciliations['31'].scope_revision | Should -Be 2
+        { Invoke-TriageTransaction $fixture.context triage-release-repair-hold @{
+            issue_number = 32; operator_approved = $true
+        } } | Should -Throw
     }
 
     It 'rejects unconfirmed comparison baselines and missing reconsideration reasons' {

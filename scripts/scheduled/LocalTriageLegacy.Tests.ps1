@@ -67,6 +67,36 @@ Describe 'Retained registration publication' {
         { Get-ScheduledTriageInbox $fixture.context.policy $state $fixture.api } | Should -Throw
     }
 
+    It 'preserves approved reconciliation across repeats and holds only a later scope change' {
+        $fixture.proposal.checkpoint = 2
+        $fixture.proposal.problems[0].matching = @{
+            kind = 'existing'; issue_number = 30; target_generation = 1; relation = 'repeat'
+            reason = 'The existing retained repair owns the diagnosed source-access scope.'
+        }
+        Invoke-TriageFixtureCheckpoint $fixture
+        $null = Publish-TriageFixtureProblem $fixture download
+        $null = Invoke-TriageTransaction $fixture.context triage-release-repair-hold @{
+            issue_number = 30; operator_approved = $true
+        }
+        $fixture.proposal.checkpoint = 3
+        Invoke-TriageFixtureCheckpoint $fixture
+        $null = Publish-TriageFixtureProblem $fixture download
+        $state = Invoke-TriageTransaction $fixture.context read
+        $state.triage.repair_holds.ContainsKey('30') | Should -BeFalse
+        $state.triage.repair_reconciliations['30'].scope_revision | Should -Be 2
+        $fixture.proposal.checkpoint = 4
+        $fixture.proposal.problems[0].diagnosis.scope[0].operation = 'dependency download with another required qualifier'
+        Invoke-TriageFixtureCheckpoint $fixture
+        $null = Publish-TriageFixtureProblem $fixture download
+        $state = Invoke-TriageTransaction $fixture.context read
+        $state.triage.repair_holds['30'].scope_revision | Should -Be 3
+        $state.triage.repair_reconciliations['30'].scope_revision | Should -Be 2
+        $state.triage.repair_reconciliations['30'].scope_revision = 999
+        $path = Join-Path $fixture.context.state_root state.json
+        $state | ConvertTo-Json -Depth 100 | Set-Content -LiteralPath $path
+        { Invoke-TriageTransaction $fixture.context read } | Should -Throw
+    }
+
     It 'observes an existing applicable confirmation before reopening a new occurrence on later source' {
         $fixture.proposal.checkpoint = 2
         $fixture.proposal.problems[0].diagnosis.scope = @(@{

@@ -23,12 +23,33 @@ function Assert-TriageField {
 function Assert-ScheduledTriageState {
     param([System.Collections.IDictionary] $Triage)
     Assert-TriageField $Triage @('schema_version', 'mode', 'profile', 'scan', 'health',
-        'active_analysis_id', 'analyses', 'known_run_issues', 'known_problem_issues', 'health_publication', 'repair_holds', 'cache_digest')
+        'active_analysis_id', 'analyses', 'known_run_issues', 'known_problem_issues', 'health_publication',
+        'repair_holds', 'repair_reconciliations', 'repair_scope_digest', 'cache_digest')
     if ($Triage.schema_version -ne 1 -or $Triage.mode -cnotin @('observe', 'paused', 'triage') -or
         $Triage.analyses -isnot [System.Collections.IDictionary]) {
         throw 'Corrupt triage state; recover ownership and accounting instead of resetting.'
     }
     Assert-ScheduledTriageRegisteredProfile $Triage.profile
+    if ($Triage.repair_holds -isnot [hashtable] -or $Triage.repair_reconciliations -isnot [hashtable] -or
+        (Get-ScheduledDigest @{ holds = $Triage.repair_holds; reconciled = $Triage.repair_reconciliations }) -cne
+            $Triage.repair_scope_digest) {
+        throw 'Retained repair-scope ownership or operator reconciliation changed.'
+    }
+    foreach ($scopes in @($Triage.repair_holds, $Triage.repair_reconciliations)) {
+        foreach ($entry in $scopes.GetEnumerator()) {
+            Assert-TriageField $entry.Value @('repair_attempt_id', 'generation', 'scope_revision', 'repair_disposition')
+            if ($entry.Value.repair_attempt_id -isnot [string] -or [string]::IsNullOrWhiteSpace($entry.Value.repair_attempt_id) -or
+                $entry.Value.repair_disposition -isnot [string] -or
+                $entry.Value.repair_disposition -cnotin @('actionable', 'needs-human', 'operator-recovery', 'unresolved')) {
+                throw 'Repair-scope reconciliation has no valid retained repair identity or disposition.'
+            }
+            foreach ($field in @('generation', 'scope_revision')) {
+                if (($entry.Value[$field] -isnot [int] -and $entry.Value[$field] -isnot [long]) -or $entry.Value[$field] -le 0) {
+                    throw 'Repair-scope reconciliation has an invalid occurrence or scope revision.'
+                }
+            }
+        }
+    }
     foreach ($entry in $Triage.analyses.GetEnumerator()) {
         $analysis = $entry.Value
         $identityFields = @('id', 'revision', 'session_id', 'claim_token', 'started_at',
@@ -246,7 +267,7 @@ function Invoke-ScheduledTriageStateChange {
         $State.triage = @{
             schema_version = 1; mode = 'observe'; profile = $null; scan = $null
             active_analysis_id = $null; analyses = @{}; known_run_issues = @(); known_problem_issues = @()
-            health_publication = @{}; repair_holds = @{}
+            health_publication = @{}; repair_holds = @{}; repair_reconciliations = @{}; repair_scope_digest = $null
             cache_digest = $null
             health = @{
                 last_scan_at = $null; last_successful_scan = $null; backlog_count = $null
@@ -507,21 +528,44 @@ function Invoke-ScheduledTriageStateChange {
         }
         'triage-record-repair-hold' {
             $analysis = Get-TriageOwnedAnalysis $triage $Data
-            Assert-TriageField $Data @('issue_number', 'reason', 'operation_key')
+            Assert-TriageField $Data @('issue_number', 'reason', 'operation_key', 'repair_attempt_id')
             if ([string]::IsNullOrWhiteSpace($Data.reason) -or
+                $Data.repair_attempt_id -isnot [string] -or [string]::IsNullOrWhiteSpace($Data.repair_attempt_id) -or
                 -not $analysis.operations.ContainsKey($Data.operation_key) -or
                 $analysis.operations[$Data.operation_key].stage -cne 'confirmed' -or
-                $analysis.operations[$Data.operation_key].target_id -ne $Data.issue_number) {
+                $analysis.operations[$Data.operation_key].target_id -ne $Data.issue_number -or
+                -not $analysis.operations[$Data.operation_key].purpose.StartsWith('problem-root:', [StringComparison]::Ordinal)) {
                 throw 'A repair hold must refer to a confirmed canonical problem update.'
             }
-            $triage.repair_holds[[string]$Data.issue_number] = @{
+            $root = Read-ScheduledRecord $analysis.operations[$Data.operation_key].payload.body problem
+            $scope = @{ repair_attempt_id = $Data.repair_attempt_id; generation = $root.generation
+                scope_revision = $root.scope_revision; repair_disposition = $root.repair_disposition }
+            $issueKey = [string]$Data.issue_number
+            $reconciled = $triage.repair_reconciliations[$issueKey]
+            if ($null -ne $reconciled -and $reconciled.repair_attempt_id -ceq $scope.repair_attempt_id -and
+                $reconciled.generation -eq $scope.generation -and $scope.scope_revision -le $reconciled.scope_revision -and
+                $reconciled.repair_disposition -ceq $scope.repair_disposition) {
+                return
+            }
+            $triage.repair_holds[$issueKey] = $scope + @{
                 reason = $Data.reason; analysis_id = $analysis.id; operation_key = $Data.operation_key
             }
         }
         'triage-release-repair-hold' {
             Assert-TriageField $Data @('operator_approved', 'issue_number')
             if ($Data.operator_approved -ne $true) { throw 'Repair scope reconciliation requires operator approval.' }
-            $triage.repair_holds.Remove([string]$Data.issue_number)
+            $issueKey = [string]$Data.issue_number
+            if ($triage.repair_holds.ContainsKey($issueKey)) {
+                $hold = $triage.repair_holds[$issueKey]
+                # Retain the approved baseline independently of the analysis payload lifetime.
+                $triage.repair_reconciliations[$issueKey] = @{
+                    repair_attempt_id = $hold.repair_attempt_id; generation = $hold.generation
+                    scope_revision = $hold.scope_revision; repair_disposition = $hold.repair_disposition
+                }
+                $triage.repair_holds.Remove($issueKey)
+            } elseif (-not $triage.repair_reconciliations.ContainsKey($issueKey)) {
+                throw 'No retained repair hold is available for operator reconciliation.'
+            }
         }
         'triage-prepare-operation' {
             Assert-TriageAdmission $State $Policy $TriagePolicy $Data
@@ -727,6 +771,7 @@ function Invoke-ScheduledTriageStateChange {
         default { throw "Unsupported triage state action: $Action" }
     }
     $triage.cache_digest = Get-ScheduledDigest (Get-ScheduledTriageCacheProjection $triage)
+    $triage.repair_scope_digest = Get-ScheduledDigest @{ holds = $triage.repair_holds; reconciled = $triage.repair_reconciliations }
     Assert-ScheduledTriageState $triage
 }
 

@@ -24,6 +24,21 @@ Describe 'Durable triage ownership and budgets' {
         (Get-Content -LiteralPath $path -Raw) | Should -BeExactly $before
     }
 
+    It 'rejects malformed rehashed repair reconciliation identities' {
+        $original = Invoke-TriageTransaction $fixture.context read
+        foreach ($field in @('repair_attempt_id', 'generation', 'scope_revision', 'repair_disposition')) {
+            $state = Copy-TriageFixtureValue $original
+            $scope = @{ repair_attempt_id = 'retained'; generation = 1; scope_revision = 2
+                repair_disposition = 'actionable' }
+            $scope[$field] = @($scope[$field])
+            $state.triage.repair_reconciliations['31'] = $scope
+            $state.triage.repair_scope_digest = Get-ScheduledDigest @{
+                holds = $state.triage.repair_holds; reconciled = $state.triage.repair_reconciliations
+            }
+            { Assert-ScheduledTriageState $state.triage } | Should -Throw
+        }
+    }
+
     It 'preserves repair state while registering a role profile and rejecting unsupported profile data' {
         $state = Invoke-TriageTransaction $fixture.context read
         $before = Get-Content -LiteralPath (Join-Path $fixture.context.state_root state.json) -Raw

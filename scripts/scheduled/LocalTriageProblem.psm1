@@ -230,7 +230,9 @@ function Invoke-ScheduledTriageProblemPreparation {
         issue_number = $number; document = $document; original_block = $originalBlock
         expected_index = $expectedIndex; operation_id = $contribution[0].operation_id
         original_state = $issue.state; reopen = $relation -ceq 'recurrence'
-        owned_repair = $null -ne $legacy -and $null -ne $legacy.validated_worker
+        repair_attempt_id = if ($null -ne $legacy -and $null -ne $legacy.validated_worker) {
+            $legacy.validated_worker.attempt_id
+        } else { $null }
         original_issue = $issue; original_comments = $originalComments; creation_payload = $creationPayload
     }
     $null = Invoke-TriageTransaction $Context triage-prepare-document @{ key = "problem:$ProblemKey"; document = $plan }
@@ -277,9 +279,10 @@ function Publish-ScheduledTriageProblem {
     }
     if ($plan.reopen) { $specification.expected_state = $plan.original_state }
     $null = Invoke-ScheduledTriageOperation -Context $Context -Specification $specification -Api $Api
-    if ($plan.owned_repair -and ($disposition -cne 'actionable' -or $plan.document.scope_revision -gt 1)) {
+    if ($null -ne $plan.repair_attempt_id -and ($disposition -cne 'actionable' -or $plan.document.scope_revision -gt 1)) {
         $null = Invoke-TriageTransaction $Context triage-record-repair-hold @{
             issue_number = $plan.issue_number
+            repair_attempt_id = $plan.repair_attempt_id
             reason = if ($plan.document.scope_revision -gt 1) {
                 'Required verification scope differs from the retained repair registration.'
             } else { $plan.document.diagnosis.repair_reason }
