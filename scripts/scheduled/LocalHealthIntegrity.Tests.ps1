@@ -27,7 +27,7 @@ Describe 'Durable health publication integrity' {
 
     It 'rejects <Damage> before any GitHub access and leaves corrupt state untouched' -ForEach @(
         @{ Damage = 'body' }, @{ Damage = 'record' }, @{ Damage = 'kind' }, @{ Damage = 'stage' }
-        @{ Damage = 'target' }, @{ Damage = 'receipt' }, @{ Damage = 'role' }
+        @{ Damage = 'target' }, @{ Damage = 'positive-target' }, @{ Damage = 'receipt' }, @{ Damage = 'role' }
         @{ Damage = 'rehashed-owner' }, @{ Damage = 'rehashed-body' }, @{ Damage = 'rehashed-marker' }
     ) {
         $operation = $state.health_publications.triage
@@ -37,6 +37,7 @@ Describe 'Durable health publication integrity' {
             kind { $operation.kind = 'update-issue' }
             stage { $operation.stage = 'unknown' }
             target { $operation.comment_id = 0 }
+            positive-target { $operation.comment_id = 900 }
             receipt { $operation.stage = 'complete' }
             role { $state.health_publications['foreign'] = $operation; $state.health_publications.Remove('triage') }
             rehashed-owner {

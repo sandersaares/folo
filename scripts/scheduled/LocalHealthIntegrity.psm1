@@ -35,6 +35,7 @@ function Assert-ScheduledHealthJournal {
         }
         $kind = if ($null -eq $intent.comment_id) { 'create-comment' } else { 'update-comment' }
         if ($operation.kind -cne $kind -or
+            ($operation.stage -ceq 'prepared' -and $operation.comment_id -ne $intent.comment_id) -or
             ($null -ne $intent.comment_id -and (
                 [string]$intent.comment_id -cnotmatch '^[1-9][0-9]*$' -or $operation.comment_id -ne $intent.comment_id)) -or
             ($null -ne $operation.comment_id -and [string]$operation.comment_id -cnotmatch '^[1-9][0-9]*$')) {

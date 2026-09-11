@@ -52,7 +52,8 @@ Describe 'Quiescent analysis compaction' {
         }
         $retired.continuations.Count | Should -Be 1
         $retired.phase | Should -Be retired
-        Test-Path (Get-ScheduledTriageSnapshotPath $fixture.context.state_root $snapshotId) | Should -BeFalse
+        # Retirement releases the analysis, not the scan that independently pinned its input.
+        Test-Path (Get-ScheduledTriageSnapshotPath $fixture.context.state_root $snapshotId) | Should -BeTrue
         $state = Invoke-TriageTransaction $fixture.context read
         (Get-ScheduledTriageInbox $fixture.context.policy $state $fixture.api).backlog_count | Should -Be 0
         (Get-ScheduledTriageRecovery $fixture.context.policy $state $fixture.api).active | Should -BeNullOrEmpty
@@ -60,7 +61,11 @@ Describe 'Quiescent analysis compaction' {
         $corrupt.analyses[$fixture.context.analysis_id].checkpoint = @{}
         { Assert-ScheduledTriageState $corrupt } | Should -Throw
         $null = Invoke-TriageTransaction $fixture.context triage-release-scan @{ scan_token = $fixture.context.scan_token }
+        Test-Path (Get-ScheduledTriageSnapshotPath $fixture.context.state_root $snapshotId) | Should -BeFalse
         $state = Invoke-TriageTransaction $fixture.context triage-acquire-scan @{ session_id = 'next-poll' }
+        $null = Save-ScheduledTriageSnapshot $fixture.context $fixture.snapshot @{
+            analysis_id = $null; session_id = 'next-poll'; scan_token = $state.triage.scan.token
+        }
         { Invoke-TriageTransaction $fixture.context triage-claim @{
             scan_token = $state.triage.scan.token; session_id = 'next-poll'; native_verified = $true; revision = $retired.revision
         } } | Should -Throw
