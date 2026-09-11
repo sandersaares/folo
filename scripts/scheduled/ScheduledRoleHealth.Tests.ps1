@@ -58,6 +58,27 @@ Describe 'Complete <Role> health observations' -ForEach @(@{ Role = 'repair' }, 
         }
     }
 
+    It 'requires scalar identities without hiding a known other role heartbeat' {
+        $otherRole = if ($Role -ceq 'triage') { 'repair' } else { 'triage' }
+        $other = $record.Clone(); $other.role = $otherRole
+        foreach ($field in @('schema_version', 'repository_id', 'repository', 'executor_id')) {
+            $invalid = $record.Clone(); $invalid[$field] = @($record[$field])
+            $body = "<!-- scheduled-health:v1 $($invalid | ConvertTo-Json -Depth 100 -Compress) -->"
+            $comments = @(@{ user = @{ login = $policy.worker_login }; body = $body })
+            { Get-ScheduledRoleScan $policy $triagePolicy $comments $Role } |
+                Should -Throw -ExceptionType ([FormatException])
+            $comments += @{ user = @{ login = $policy.worker_login }; body = Write-ScheduledRecord $other health }
+            (Get-ScheduledRoleScan $policy $triagePolicy $comments $otherRole).outcome | Should -Be passed
+        }
+        foreach ($field in @('schema_version', 'repository_id')) {
+            foreach ($value in @([string]$record[$field], [double]$record[$field], $true, 0)) {
+                $invalid = $record.Clone(); $invalid[$field] = $value
+                $body = "<!-- scheduled-health:v1 $($invalid | ConvertTo-Json -Depth 100 -Compress) -->"
+                { Read-ScheduledRecord $body health } | Should -Throw -ExceptionType ([FormatException])
+            }
+        }
+    }
+
     It 'rejects missing and malformed inventories instead of inferring successful observation' {
         $record.Remove('blocked_conditions')
         { Invoke-HealthProjection $record $Role } | Should -Throw -ExceptionType ([FormatException])

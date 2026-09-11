@@ -81,12 +81,12 @@ function Find-RoleHealthComment {
         foreach ($comment in $comments) {
             if ($comment.user.login -cne $Context.login -or
                 -not ([string]$comment.body).Contains('<!-- scheduled-health:v1 ')) { continue }
-            $record = Read-ScheduledRecord $comment.body health
+            $record = Read-ScheduledRecord $comment.body health -HealthRole $Context.role
+            if ($null -eq $record) { continue }
             if ($comment.issue_url -cne "https://api.github.com/repos/$($Context.policy.repository)/issues/$IssueNumber") {
                 throw [FormatException]::new('Health comment belongs to another issue.')
             }
-            $role = if ($record.ContainsKey('role')) { $record.role } else { 'repair' }
-            if ($role -ceq $Context.role -and $record.repository_id -eq $Context.policy.repository_id -and
+            if ($record.repository_id -eq $Context.policy.repository_id -and
                 $record.repository -ceq $Context.policy.repository -and $record.executor_id -ceq $Context.executor_id) {
                 $comment
             }

@@ -17,9 +17,8 @@ function Get-ScheduledRoleScan {
         foreach ($comment in $Comments) {
             if ($comment.user.login -cne $Policy.worker_login -or
                 -not ([string]$comment.body).Contains('<!-- scheduled-health:')) { continue }
-            $record = Read-ScheduledRecord $comment.body health
-            $recordRole = if ($record.ContainsKey('role')) { $record.role } else { 'repair' }
-            if ($recordRole -ceq $Role) { $record }
+            $record = Read-ScheduledRecord $comment.body health -HealthRole $Role
+            if ($null -ne $record) { $record }
         }
     )
     if ($records.Count -gt 1) { throw [FormatException]::new("Ambiguous $Role health ownership.") }

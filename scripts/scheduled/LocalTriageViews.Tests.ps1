@@ -60,6 +60,7 @@ Describe 'Bounded complete-index views' {
         $page = Get-ScheduledTriageIndexPage $snapshot 0
         $page.entries.Count | Should -Be 1
         $page.entries[0].issue_number | Should -Be 2
+        $page.entries[0].record_digest | Should -BeExactly $snapshot.index.entries[0].record_digest
         $page.entries[0].title.Length | Should -Be 128
         $page.entries[0].full_record_available | Should -BeTrue
     }

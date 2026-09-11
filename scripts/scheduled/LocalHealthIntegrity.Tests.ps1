@@ -29,6 +29,7 @@ Describe 'Durable health publication integrity' {
         @{ Damage = 'body' }, @{ Damage = 'record' }, @{ Damage = 'kind' }, @{ Damage = 'stage' }
         @{ Damage = 'target' }, @{ Damage = 'positive-target' }, @{ Damage = 'receipt' }, @{ Damage = 'role' }
         @{ Damage = 'rehashed-owner' }, @{ Damage = 'rehashed-body' }, @{ Damage = 'rehashed-marker' }
+        @{ Damage = 'rehashed-identity' }
     ) {
         $operation = $state.health_publications.triage
         switch ($Damage) {
@@ -52,6 +53,11 @@ Describe 'Durable health publication integrity' {
             }
             rehashed-marker {
                 $operation.intent.body = '[Copilot speaking] Missing health record'
+                $operation.intent_digest = Get-ScheduledDigest $operation.intent
+            }
+            rehashed-identity {
+                $operation.intent.record.repository_id = @($operation.intent.record.repository_id)
+                $operation.intent.body = "[Copilot speaking]`n$(Write-ScheduledRecord $operation.intent.record health)"
                 $operation.intent_digest = Get-ScheduledDigest $operation.intent
             }
         }

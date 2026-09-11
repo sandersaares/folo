@@ -146,7 +146,7 @@ function Get-ScheduledRoleSetupDecision {
     $comparison = $Desired.Clone()
     if ($Role -ceq 'triage') {
         $comparison.coordinator_model = $Desired['model']
-        if ($Desired.ContainsKey('reasoning_effort') -and $null -ne $Desired.reasoning_effort) {
+        if ($Desired.ContainsKey('reasoning_effort')) {
             $comparison.coordinator_effort = $Desired.reasoning_effort
         }
     }

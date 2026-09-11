@@ -59,9 +59,13 @@ function Read-ScheduledRecord {
         [Parameter(Mandatory)][AllowEmptyString()][string] $Text,
         [Parameter(Mandatory)][ValidateSet('reporter', 'worker', 'repair', 'coverage', 'health', 'run', 'run-evidence', 'run-publication',
             'triage', 'problem', 'triage-detail', 'problem-detail', 'triage-operation')]
-        [string] $Kind
+        [string] $Kind,
+        [ValidateSet('', 'repair', 'triage')][string] $HealthRole = ''
     )
 
+    if ($HealthRole -ne '' -and $Kind -cne 'health') {
+        throw [ArgumentException]::new('Role filtering applies only to health records.')
+    }
     $records = [regex]::Matches($Text, "<!-- scheduled-${Kind}:v1 (\{[^\r\n]*\}) -->")
     if ($records.Count -ne 1) { throw [FormatException]::new("Expected exactly one scheduled $Kind record.") }
     try {
@@ -69,14 +73,28 @@ function Read-ScheduledRecord {
     } catch [ArgumentException] {
         throw [FormatException]::new('Invalid scheduled record JSON.', $_.Exception)
     }
+    if ($Kind -ceq 'health') {
+        if ($record.ContainsKey('role') -and (
+            $record.role -isnot [string] -or $record.role -cnotin @('repair', 'triage'))) {
+            throw [FormatException]::new('Health role must be a supported scalar string.')
+        }
+        $role = if ($record.ContainsKey('role')) { $record.role } else { 'repair' }
+        # A known other role can be skipped without returning its invalid data. Its failed
+        # identity must not hide an independently fresh heartbeat for the requested role.
+        if ($HealthRole -ne '' -and $role -cne $HealthRole) { return $null }
+        if (($record['schema_version'] -isnot [int] -and $record['schema_version'] -isnot [long]) -or
+            ($record['repository_id'] -isnot [int] -and $record['repository_id'] -isnot [long]) -or
+            $record.repository_id -le 0) {
+            throw [FormatException]::new('Health schema and repository identity must be integers.')
+        }
+        foreach ($field in @('repository', 'executor_id')) {
+            if ($record[$field] -isnot [string] -or [string]::IsNullOrWhiteSpace($record[$field])) {
+                throw [FormatException]::new("Health identity needs a nonempty scalar $field.")
+            }
+        }
+    }
     if (-not $record.ContainsKey('schema_version') -or $record.schema_version -ne 1) {
         throw [FormatException]::new('Unsupported scheduled record schema.')
-    }
-    if ($Kind -ceq 'health' -and $record.ContainsKey('role') -and (
-        $record.role -isnot [string] -or $record.role -cnotin @('repair', 'triage'))) {
-        # Only absence identifies legacy repair health. An array must never compare as
-        # both role identities in the independent hosted and Local projections.
-        throw [FormatException]::new('Health role must be a supported scalar string.')
     }
     return $record
 }

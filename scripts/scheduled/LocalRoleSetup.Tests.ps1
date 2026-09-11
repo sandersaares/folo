@@ -44,6 +44,28 @@ Describe 'Independent disabled role setup' {
         $decision.workflow_id | Should -Be triage
         $decision.changes.Count | Should -Be 0
     }
+    It 'clears an explicit effort only when model-default effort is selected for an approved update' {
+        $triage = $repair.Clone(); $triage.id = 'triage'; $triage.prompt = $desired.prompt
+        $triage.cron_expression = $desired.cadence_cron
+        $desired.model = $triage.model; $desired.reasoning_effort = $null
+        $unchanged = Get-ScheduledRoleSetupDecision -Role triage -Desired $desired `
+            -Workflows @($triage) -MetadataComplete $true
+        $unchanged.action | Should -Be unchanged
+        $review = Get-ScheduledRoleSetupDecision -Role triage -Desired $desired `
+            -Workflows @($triage) -MetadataComplete $true -UpdateModel
+        $review.reason | Should -Be review-profile-differences
+        $approved = Get-ScheduledRoleSetupDecision -Role triage -Desired $desired `
+            -Workflows @($triage) -MetadataComplete $true -UpdateModel -ApproveProfileChange
+        $approved.action | Should -Be update
+        $approved.changes.ContainsKey('reasoning_effort') | Should -BeTrue
+        $approved.changes.reasoning_effort | Should -BeNullOrEmpty
+        $triage.reasoning_effort = $null
+        (Get-ScheduledRoleSetupDecision -Role triage -Desired $desired -Workflows @($triage) `
+            -MetadataComplete $true -UpdateModel -ApproveProfileChange).action | Should -Be unchanged
+        $desired.Remove('reasoning_effort'); $triage.reasoning_effort = 'medium'
+        (Get-ScheduledRoleSetupDecision -Role triage -Desired $desired -Workflows @($triage) `
+            -MetadataComplete $true -UpdateModel -ApproveProfileChange).action | Should -Be unchanged
+    }
     It 'does not infer a missing entry from incomplete native metadata' {
         (Get-ScheduledRoleSetupDecision -Role triage -Desired $desired -Workflows @() `
             -MetadataComplete $false).reason | Should -Be native-metadata-unavailable

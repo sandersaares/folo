@@ -72,6 +72,7 @@ function Get-ScheduledTriageIndexPage {
         if ($bytes -gt $budget) {
             $summary = @{
                 issue_number = $entry.issue_number; generation = $entry.generation; scope_revision = $entry.scope_revision
+                record_digest = $entry.record_digest
                 title = Get-TriageBriefText $full.issue.title 128; summary = Get-TriageBriefText $diagnosis.summary 128
                 issue_state = $full.issue.state; summary_is_abbreviated = $true; full_record_available = $true
             }

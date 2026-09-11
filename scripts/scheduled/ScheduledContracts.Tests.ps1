@@ -19,6 +19,8 @@ Describe 'Scheduled records' {
         $marker = Write-ScheduledRecord -Kind worker -Record @{ schema_version = 1 }
         { Read-ScheduledRecord -Kind worker -Text '' } | Should -Throw
         { Read-ScheduledRecord -Kind worker -Text "$marker`n$marker" } | Should -Throw
+        { Read-ScheduledRecord -Kind worker -Text $marker -HealthRole repair } |
+            Should -Throw -ExceptionType ([ArgumentException])
         { Read-ScheduledRecord -Kind worker -Text '<!-- scheduled-worker:v1 {"schema_version":2} -->' } | Should -Throw
     }
     It 'canonicalizes maps but retains case and array ordering' {

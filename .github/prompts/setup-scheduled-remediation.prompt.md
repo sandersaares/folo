@@ -137,7 +137,7 @@ Get-ScheduledRoleSetupDecision -Role $inputData.role -Desired $inputData.desired
 `unchanged` means no native write. `blocked` preserves work and reports the reason.
 Review proposed differences before applying an `update`; rerun the same comparison
 with `-ApproveProfileChange` after approval. Include `-UpdateModel` only for an
-explicitly requested model change. A paused role stays paused, a renamed entry
+explicitly requested model/effort change. A paused role stays paused, a renamed entry
 keeps its name, and an unexpectedly enabled entry requires operator reconciliation.
 
 ## Stage 4: Apply only approved disabled native changes
@@ -166,6 +166,10 @@ Use native `save_workflow` with only the helper's supported changes. Custom cron
 actual host/project; updates target only the verified `workflow_id`. Do not supply
 invented billing, spending-cap, `repair_model` or workspace fields. The repair
 session model belongs to its supported kickoff field, not `save_workflow`.
+
+For an approved update with an explicit null `reasoning_effort` change, clear the
+saved override with `clear_reasoning_effort: true` and omit `reasoning_effort` from
+the native call. An absent change key preserves the existing effort selection.
 
 Re-read the entry and verify identity, role marker and selected settings. Confirm
 the actual ID through `Invoke-ScheduledSetupJournal` with `-Action confirm` and
