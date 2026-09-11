@@ -231,6 +231,22 @@ Describe 'Durable local transactions' {
             session_id = 'worker-a'; native_idle_verified = $true
         } } | Should -Throw
     }
+    It 'retains a repair when triage requires its scope to be reconciled' {
+        Initialize-TestExecutor
+        Publish-TestRepair
+        $state = Invoke-TestAction read
+        InModuleScope LocalState -Parameters @{ State = $state; Policy = $script:policy; Now = $script:now
+            Attempt = $script:attemptId; Coordinator = $script:coordinator } {
+            # A triage hold is a continuation fence, not a mutation of the retained repair.
+            $State.triage = @{ repair_holds = @{ '1' = @{ reason = 'Required scope changed' } } }
+            $before = Get-ScheduledDigest $State.attempts
+            { Invoke-LocalStateChange $State $Policy reserve-continuation @{
+                coordinator_token = $Coordinator; attempt_id = $Attempt; evidence_key = 'new-evidence'
+                expected_head = 'b' * 40; session_id = 'worker-a'; native_idle_verified = $true
+            } $Now } | Should -Throw
+            (Get-ScheduledDigest $State.attempts) | Should -BeExactly $before
+        }
+    }
     It 'stops closed-unmerged attempts and requires hosted confirmation after a merge' {
         Initialize-TestExecutor
         Publish-TestRepair

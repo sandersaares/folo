@@ -19,6 +19,8 @@ Import-Module (Join-Path $PSScriptRoot 'ScheduledExecution.psm1')
 Import-Module (Join-Path $PSScriptRoot 'ScheduledGate.psm1')
 Import-Module (Join-Path $PSScriptRoot 'ScheduledTransport.psm1')
 Import-Module (Join-Path $PSScriptRoot 'ScheduledRunGitHub.psm1')
+Import-Module (Join-Path $PSScriptRoot 'LocalTriagePolicy.psm1')
+Import-Module (Join-Path $PSScriptRoot 'ScheduledRoleHealth.psm1')
 
 function Invoke-ScheduledGhJson {
     [CmdletBinding()]
@@ -408,6 +410,20 @@ function Sync-ScheduledIssue {
         }
         $body = ConvertTo-ScheduledOwnedText -Text $live.body -Record $Record -Kind $Kind
         $state = if ($Kind -ceq 'reporter' -and $Record.status -ceq 'confirmed') { 'closed' } else { 'open' }
+        if ($state -ceq 'closed' -and ([string]$live.body).Contains('<!-- scheduled-problem:v1 ')) {
+            $problem = Read-ScheduledRecord -Text $live.body -Kind problem
+            if ($problem.repository_id -ne $Policy.repository_id -or $problem.issue_number -ne $Issue.number -or
+                $problem.role -cne 'triage') {
+                throw [FormatException]::new('Problem occurrence ownership is invalid; do not close it.')
+            }
+            # Confirmation still updates its reporter-owned occurrence, but cannot close a
+            # later occurrence or broader required scope tracked by the separate triager.
+            # Ref: ../../docs/scheduled-triage.md#ownership-and-recovery.
+            if ($problem.generation -gt $Record.generation -or $problem.scope_revision -gt 1 -or
+                $problem.repair_disposition -ceq 'needs-human') {
+                $state = 'open'
+            }
+        }
         if ($body -ceq $live.body -and $state -ceq $live.state) { return @{ action = 'unchanged'; number = $Issue.number } }
         $payload = @{ body = $body; state = $state }
         $endpoint = "repos/$($Policy.repository)/issues/$($Issue.number)"
@@ -825,6 +841,7 @@ function Get-ScheduledGitHubHealth {
         [Parameter(Mandatory)][datetimeoffset] $Now
     )
     $policy = Get-ScheduledPolicy
+    $triagePolicy = Get-ScheduledTriagePolicy
     if ($Repository -cne $policy.repository) { throw 'Repository differs from trusted policy.' }
     $staged = $policy.ContainsKey('rollout') -and
         $policy.rollout.hosted_execution_enabled -eq $false -and $policy.rollout.reporting_enabled -eq $false
@@ -833,11 +850,14 @@ function Get-ScheduledGitHubHealth {
     # Ref: ../../.github/workflows/implementation.md#independent-health.
     $localDisabled = [string]::IsNullOrWhiteSpace($policy.local.enrolled_machine_id) -and
         $policy.local.mode -cin @('observe', 'paused')
+    $triageDisabled = [string]::IsNullOrWhiteSpace($triagePolicy.enrolled_machine_id) -and
+        $triagePolicy.mode -cin @('observe', 'paused')
     $scheduler = $null
     $coverage = $null
     $planning = $null
     $reporting = $null
     $localScan = $null
+    $triageScan = $null
     $manifest = $null
     $problems = @()
     try {
@@ -849,7 +869,7 @@ function Get-ScheduledGitHubHealth {
         $issues = @(Get-ScheduledOwnedIssue -Policy $policy -Label scheduled-coverage)
         if ($issues.Count -eq 0 -and $staged) {
             $health = Get-ScheduledHealth -Scheduler $scheduler -Manifest $manifest -Now $Now `
-                -Staged -LocalDisabled:$localDisabled
+                -Staged -RepairDisabled:$localDisabled -TriageDisabled:$triageDisabled
             $health.rollout = $policy.rollout
             $health.problems = @()
             return $health
@@ -902,7 +922,7 @@ function Get-ScheduledGitHubHealth {
                 unresolved_runs = $unresolvedReports; latest_run = $reporting
             }
         }
-        if (-not $localDisabled) {
+        if (-not $localDisabled -or -not $triageDisabled) {
             $healthIssues = @(Get-ScheduledOwnedIssue -Policy $policy -Label scheduled-health)
             if ($healthIssues.Count -ne 1 -or $healthIssues[0].state -cne 'open') {
                 throw [FormatException]::new('The open reporter-owned health issue is absent or ambiguous.')
@@ -911,31 +931,23 @@ function Get-ScheduledGitHubHealth {
                 throw [FormatException]::new('Coverage and executor health must share the registered issue.')
             }
             $pages = Invoke-ScheduledGitHubApi "repos/$Repository/issues/$($healthIssues[0].number)/comments?per_page=100" -Paginate
-            $healthComments = @($pages | ForEach-Object { $_ } | Where-Object {
-                    $_.user.login -ceq $policy.worker_login -and ([string]$_.body).Contains('<!-- scheduled-health:')
-                })
-            if ($healthComments.Count -gt 1) { throw [FormatException]::new('Local health comment ownership is ambiguous.') }
-            if ($healthComments.Count -eq 1) {
-                $localRecord = Read-ScheduledRecord -Text $healthComments[0].body -Kind health
-                if ($localRecord.repository -ceq $Repository -and $localRecord.repository_id -eq $policy.repository_id -and
-                    -not [string]::IsNullOrWhiteSpace($policy.local.enrolled_machine_id) -and
-                    $localRecord.executor_id -ceq $policy.local.enrolled_machine_id) {
-                    if ($localRecord.ContainsKey('last_successful_scan')) {
-                        $localScan = @{
-                            completed_at = $localRecord.last_successful_scan
-                            outcome = if ($localRecord.blocked_conditions.Count -gt 0) { 'failed' } else { 'passed' }
-                            details = $localRecord
-                        }
-                    } else { $localScan = $localRecord }
-                }
+            $healthComments = @($pages | ForEach-Object { $_ })
+            if (-not $localDisabled) {
+                try { $localScan = Get-ScheduledRoleScan $policy $triagePolicy $healthComments repair }
+                catch [FormatException] { $problems += $_.Exception.Message }
+            }
+            if (-not $triageDisabled) {
+                try { $triageScan = Get-ScheduledRoleScan $policy $triagePolicy $healthComments triage }
+                catch [FormatException] { $problems += $_.Exception.Message }
             }
         }
     } catch [FormatException], [ArgumentException], [IO.IOException] { $problems += $_.Exception.Message }
     $health = Get-ScheduledHealth -Scheduler $scheduler -Coverage $coverage -Manifest $manifest `
-        -Planning $planning -Reporting $reporting -LocalScan $localScan -Now $Now `
+        -Planning $planning -Reporting $reporting -RepairScan $localScan -TriageScan $triageScan -Now $Now `
         -ExpectedPlanGapHours $policy.coverage.expected_plan_gap_hours `
         -ExpectedLocalGapMinutes $policy.local.expected_poll_gap_minutes -MaxAgeDays $policy.coverage.max_age_days `
-        -Staged:$staged -LocalDisabled:$localDisabled
+        -ExpectedTriageGapMinutes $triagePolicy.expected_poll_gap_minutes `
+        -Staged:$staged -RepairDisabled:$localDisabled -TriageDisabled:$triageDisabled
     $health.problems = $problems
     if ($problems.Count -gt 0) { $health.status = 'failed'; $health.healthy = $false }
     if ($policy.ContainsKey('rollout')) { $health.rollout = $policy.rollout }

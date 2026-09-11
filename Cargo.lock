@@ -3341,6 +3341,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "scheduled-triage-record"
+version = "0.0.0"
+dependencies = [
+ "jiff",
+ "ohno",
+ "scheduled-run-record",
+ "serde",
+ "serde_json",
+ "testing",
+]
+
+[[package]]
 name = "scoped-tls"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

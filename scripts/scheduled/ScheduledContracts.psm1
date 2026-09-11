@@ -18,14 +18,18 @@ function ConvertTo-ScheduledCanonicalValue {
     if ($null -eq $Value) { return $null }
     if ($Value -is [System.Collections.IDictionary]) {
         $result = [ordered]@{}
-        $keys = [string[]]@($Value.Keys)
+        # JSON member names are data, including Keys; they must not control enumeration.
+        $keys = [string[]]@($Value.PSBase.Keys)
         [Array]::Sort($keys, [StringComparer]::Ordinal)
         foreach ($key in $keys) {
             $result[$key] = ConvertTo-ScheduledCanonicalValue $Value[$key]
         }
         return $result
     }
-    if ($Value -is [pscustomobject]) {
+    # Pipeline values may gain a PSObject wrapper after property inspection. The -is
+    # operator then also identifies wrapped strings as custom objects; their actual
+    # runtime type preserves the same canonical value before and after JSON persistence.
+    if ($Value.GetType() -eq [System.Management.Automation.PSCustomObject]) {
         $values = @{}
         foreach ($property in $Value.PSObject.Properties) { $values[$property.Name] = $property.Value }
         return ConvertTo-ScheduledCanonicalValue $values
@@ -48,21 +52,58 @@ function Get-ScheduledDigest {
         [Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($json))).ToLowerInvariant()
 }
 
+function Assert-ScheduledBooleanInput {
+    param([System.Collections.IDictionary] $Data)
+    if ($null -eq $Data) { throw [FormatException]::new('Scheduled action data must be an object.') }
+    # Operator decisions and native facts are Boolean data, not coercible strings or lists.
+    foreach ($field in @('operator_approved', 'ownership_verified', 'native_verified',
+            'native_idle_verified', 'successful', 'hosted_confirmation')) {
+        if ($Data.Contains($field) -and $Data[$field] -isnot [bool]) {
+            throw [FormatException]::new("Scheduled action field $field must be a scalar Boolean.")
+        }
+    }
+}
+
 function Read-ScheduledRecord {
     [CmdletBinding()]
     [OutputType([hashtable])]
     param(
         [Parameter(Mandatory)][AllowEmptyString()][string] $Text,
-        [Parameter(Mandatory)][ValidateSet('reporter', 'worker', 'repair', 'coverage', 'health', 'run', 'run-evidence', 'run-publication')]
-        [string] $Kind
+        [Parameter(Mandatory)][ValidateSet('reporter', 'worker', 'repair', 'coverage', 'health', 'run', 'run-evidence', 'run-publication',
+            'triage', 'problem', 'triage-detail', 'problem-detail', 'triage-operation')]
+        [string] $Kind,
+        [ValidateSet('', 'repair', 'triage')][string] $HealthRole = ''
     )
 
+    if ($HealthRole -ne '' -and $Kind -cne 'health') {
+        throw [ArgumentException]::new('Role filtering applies only to health records.')
+    }
     $records = [regex]::Matches($Text, "<!-- scheduled-${Kind}:v1 (\{[^\r\n]*\}) -->")
     if ($records.Count -ne 1) { throw [FormatException]::new("Expected exactly one scheduled $Kind record.") }
     try {
         $record = ConvertFrom-Json -InputObject $records[0].Groups[1].Value -AsHashtable
     } catch [ArgumentException] {
         throw [FormatException]::new('Invalid scheduled record JSON.', $_.Exception)
+    }
+    if ($Kind -ceq 'health') {
+        if ($record.ContainsKey('role') -and (
+            $record.role -isnot [string] -or $record.role -cnotin @('repair', 'triage'))) {
+            throw [FormatException]::new('Health role must be a supported scalar string.')
+        }
+        $role = if ($record.ContainsKey('role')) { $record.role } else { 'repair' }
+        # A known other role can be skipped without returning its invalid data. Its failed
+        # identity must not hide an independently fresh heartbeat for the requested role.
+        if ($HealthRole -ne '' -and $role -cne $HealthRole) { return $null }
+        if (($record['schema_version'] -isnot [int] -and $record['schema_version'] -isnot [long]) -or
+            ($record['repository_id'] -isnot [int] -and $record['repository_id'] -isnot [long]) -or
+            $record.repository_id -le 0) {
+            throw [FormatException]::new('Health schema and repository identity must be integers.')
+        }
+        foreach ($field in @('repository', 'executor_id')) {
+            if ($record[$field] -isnot [string] -or [string]::IsNullOrWhiteSpace($record[$field])) {
+                throw [FormatException]::new("Health identity needs a nonempty scalar $field.")
+            }
+        }
     }
     if (-not $record.ContainsKey('schema_version') -or $record.schema_version -ne 1) {
         throw [FormatException]::new('Unsupported scheduled record schema.')
@@ -75,7 +116,8 @@ function Write-ScheduledRecord {
     [OutputType([string])]
     param(
         [Parameter(Mandatory)][hashtable] $Record,
-        [Parameter(Mandatory)][ValidateSet('reporter', 'worker', 'repair', 'coverage', 'health', 'run', 'run-evidence', 'run-publication')]
+        [Parameter(Mandatory)][ValidateSet('reporter', 'worker', 'repair', 'coverage', 'health', 'run', 'run-evidence', 'run-publication',
+            'triage', 'problem', 'triage-detail', 'problem-detail', 'triage-operation')]
         [string] $Kind
     )
 
@@ -184,4 +226,4 @@ function ConvertTo-ScheduledIncident {
 }
 
 Export-ModuleMember -Function Get-ScheduledDigest, Read-ScheduledRecord, Write-ScheduledRecord,
-Assert-ScheduledSha, Get-ScheduledPolicy, ConvertTo-ScheduledIncident
+Assert-ScheduledSha, Get-ScheduledPolicy, ConvertTo-ScheduledIncident, Assert-ScheduledBooleanInput

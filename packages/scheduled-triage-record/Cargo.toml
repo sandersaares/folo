@@ -1,0 +1,27 @@
+[package]
+name = "scheduled-triage-record"
+description = "Validates Local scheduled-triage analysis and publication records without external side effects"
+publish = false
+version = "0.0.0"
+
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
+
+[dependencies]
+jiff = { workspace = true }
+ohno = { workspace = true, features = ["app-err"] }
+scheduled-run-record = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+testing = { path = "../testing" }
+
+[lints]
+workspace = true

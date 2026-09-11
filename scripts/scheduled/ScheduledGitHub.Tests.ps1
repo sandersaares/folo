@@ -736,7 +736,7 @@ Describe 'Archive extraction boundaries' {
                     (Get-ScheduledDigest $report.coverage.last_plan) | Should -BeExactly (Get-ScheduledDigest $persisted.last_plan)
                     (Get-ScheduledDigest $report.coverage.planning) | Should -BeExactly (Get-ScheduledDigest $persisted.planning)
                     $health = Get-ScheduledHealth -Coverage $report.coverage -Manifest $expectedManifest `
-                        -Planning $report.coverage.planning -Now ([datetimeoffset]$apiRun.updated_at) -LocalDisabled
+                        -Planning $report.coverage.planning -Now ([datetimeoffset]$apiRun.updated_at) -RepairDisabled
                     $health.components.planning.status | Should -Be unavailable
                     $health.components.coverage.status | Should -Be fresh
                 }
@@ -1151,6 +1151,29 @@ Describe 'Merged repair confirmation authority' {
             $confirmation.merge_commit_sha | Should -BeExactly ('b' * 40)
             Should -Invoke Invoke-ScheduledGitHubApi -Times 0 -ParameterFilter { $Endpoint -like '*compare*' }
         }
+        It 'does not close a triage-owned later occurrence broader scope or human-held problem' -ForEach @(
+            @{ Generation = 2; ScopeRevision = 1; Disposition = 'actionable'; Expected = 'open' }
+            @{ Generation = 1; ScopeRevision = 2; Disposition = 'actionable'; Expected = 'open' }
+            @{ Generation = 1; ScopeRevision = 1; Disposition = 'needs-human'; Expected = 'open' }
+            @{ Generation = 1; ScopeRevision = 1; Disposition = 'actionable'; Expected = 'closed' }
+        ) {
+            $confirmationPolicy.rollout = @{ reporting_enabled = $false }
+            $problem = @{
+                schema_version = 1; repository_id = 850321188; issue_number = 2; role = 'triage'
+                generation = $Generation; scope_revision = $ScopeRevision; repair_disposition = $Disposition
+            }
+            $confirmationIssue.body += "`n$(Write-ScheduledRecord $problem problem)"
+            Mock Invoke-ScheduledGitHubApi { $confirmationIssue } -ParameterFilter { $Endpoint -ceq 'repos/folo-rs/folo/issues/2' }
+            $record = $confirmationRecord.Clone(); $record.status = 'confirmed'
+            $result = Sync-ScheduledIssue -Policy $confirmationPolicy -Issue $confirmationIssue -Record $record -Kind reporter
+            $result.payload.state | Should -Be $Expected
+            $result.payload.body | Should -Match 'scheduled-problem:v1'
+            $problem.repository_id = 124
+            $confirmationIssue.body = "$(Write-ScheduledRecord $confirmationRecord reporter)`n$(Write-ScheduledRecord $problem problem)"
+            { Sync-ScheduledIssue -Policy $confirmationPolicy -Issue $confirmationIssue -Record $record -Kind reporter } |
+                Should -Throw
+            Should -Invoke Invoke-ScheduledGitHubApi -Times 0 -ParameterFilter { $Method -in @('POST', 'PATCH') }
+        }
         It 'rejects original-head ancestry as a substitute for merge-commit reachability' {
             $confirmationPr.merge_commit_sha = 'e' * 40
             Get-ScheduledTrustedConfirmation $confirmationIssue $confirmationRecord `
@@ -1302,8 +1325,80 @@ Describe 'Read-only health adapter' {
             $health.problems | Should -BeNullOrEmpty
             $health.healthy | Should -BeTrue
             $health.components.coverage.status | Should -Be reused
-            $health.components.local_scan.status | Should -Be fresh
+            $health.components.repair_scan.status | Should -Be fresh
             Should -Invoke Invoke-ScheduledGitHubApi -Times 1 -ParameterFilter { $Endpoint -like '*/issues/1/comments?*' }
+            Should -Invoke Invoke-ScheduledGitHubApi -Times 0 -ParameterFilter { $Method -in @('POST', 'PATCH') }
+        }
+        It 'reports stalled or foreign triage independently of a current repair heartbeat' {
+            $healthPolicy.schema_version = 1
+            $script:healthTriagePolicy = Get-ScheduledTriagePolicy
+            $healthTriagePolicy.mode = 'triage'; $healthTriagePolicy.enrolled_machine_id = 'executor'
+            $healthTriagePolicy.model = 'chosen'; $healthTriagePolicy.reasoning_effort = 'medium'
+            Mock Get-ScheduledTriagePolicy { $healthTriagePolicy }
+            $script:healthTriage = $healthLocal.Clone()
+            $healthTriage.role = 'triage'; $healthTriage.last_successful_scan = '2026-09-01T11:00:00Z'
+            $healthTriage.profile = @{
+                project_id = 'project'; host_id = 'local'; executor_id = 'executor'
+                login = 'sandersaares'; user_id = 10; timezone = 'UTC'
+                policy_digest = Get-ScheduledTriagePolicyDigest $healthPolicy $healthTriagePolicy
+                cadence_cron = $healthTriagePolicy.cadence_cron; model = 'chosen'; reasoning_effort = 'medium'; enabled = $true
+                controller_digest = Get-ScheduledTriageControllerDigest
+                automation_id = 'entry'; prompt_digest = Get-ScheduledTriagePromptDigest 'Native prompt'
+            }
+            $binding = Get-ScheduledDigest @{ kind = 'scan'; token = 'private-scan'; session_id = 'session' }
+            $healthTriage.profile_scan = @{ binding_digest = $binding; session_id = 'session' }
+            $healthTriage.profile_observation = @{
+                schema_version = 1; kind = 'scan'; binding_digest = $binding; session_id = 'session'
+                automation_id = 'entry'; prompt_digest = $healthTriage.profile.prompt_digest
+            }
+            $healthTriage.profile_observation.digest = Get-ScheduledDigest $healthTriage.profile_observation
+            Mock Invoke-ScheduledGitHubApi {
+                @($healthLocal, $healthTriage) | ForEach-Object {
+                    @{ user = @{ login = 'sandersaares' }; body = Write-ScheduledRecord $_ health }
+                }
+            } -ParameterFilter { $Endpoint -like '*/comments?*' }
+            $health = Get-ScheduledGitHubHealth 'folo-rs/folo' ([datetimeoffset]'2026-09-08T12:00:00Z')
+            $health.components.repair_scan.status | Should -Be fresh
+            $health.components.triage_scan.status | Should -Be unavailable
+            $health.healthy | Should -BeFalse
+            $healthTriage.last_successful_scan = '2026-09-08T11:00:00Z'
+            $health = Get-ScheduledGitHubHealth 'folo-rs/folo' ([datetimeoffset]'2026-09-08T12:00:00Z')
+            $health.components.triage_scan.status | Should -Be fresh
+            $health.components.repair_scan.status | Should -Be fresh
+            foreach ($field in @('profile', 'profile_scan', 'profile_observation')) {
+                $original = $healthTriage[$field]
+                $healthTriage[$field] = 'not-an-object'
+                $health = Get-ScheduledGitHubHealth 'folo-rs/folo' ([datetimeoffset]'2026-09-08T12:00:00Z')
+                $health.components.triage_scan.status | Should -Be unavailable
+                $health.components.repair_scan.status | Should -Be fresh
+                $health.problems | Should -Not -BeNullOrEmpty
+                $healthTriage[$field] = $original
+            }
+            foreach ($field in @('policy_digest', 'controller_digest', 'cadence_cron', 'automation_id',
+                    'prompt_digest', 'model', 'reasoning_effort', 'enabled')) {
+                $original = $healthTriage.profile[$field]
+                $healthTriage.profile.Remove($field)
+                $health = Get-ScheduledGitHubHealth 'folo-rs/folo' ([datetimeoffset]'2026-09-08T12:00:00Z')
+                $health.components.triage_scan.status | Should -Be unavailable
+                $health.components.repair_scan.status | Should -Be fresh
+                $health.problems | Should -Not -BeNullOrEmpty
+                $healthTriage.profile[$field] = @{}
+                $health = Get-ScheduledGitHubHealth 'folo-rs/folo' ([datetimeoffset]'2026-09-08T12:00:00Z')
+                $health.components.triage_scan.status | Should -Be unavailable
+                $health.components.repair_scan.status | Should -Be fresh
+                $health.problems | Should -Not -BeNullOrEmpty
+                $healthTriage.profile[$field] = $original
+            }
+            $healthTriage.Remove('blocked_conditions')
+            $health = Get-ScheduledGitHubHealth 'folo-rs/folo' ([datetimeoffset]'2026-09-08T12:00:00Z')
+            $health.components.triage_scan.status | Should -Be unavailable
+            $health.problems | Should -Not -BeNullOrEmpty
+            $health.components.repair_scan.status | Should -Be fresh
+            $healthTriage.blocked_conditions = @()
+            $healthTriage.repository_id = 124
+            $health = Get-ScheduledGitHubHealth 'folo-rs/folo' ([datetimeoffset]'2026-09-08T12:00:00Z')
+            $health.problems | Should -Not -BeNullOrEmpty
+            $health.components.repair_scan.status | Should -Be fresh
             Should -Invoke Invoke-ScheduledGitHubApi -Times 0 -ParameterFilter { $Method -in @('POST', 'PATCH') }
         }
         It 'persists the health entrypoint observation for the workflow upload without GitHub writes' {
@@ -1326,7 +1421,12 @@ Describe 'Read-only health adapter' {
         It 'fails closed for GitHub outages or a different executor identity' {
             $healthLocal.executor_id = 'other'
             $health = Get-ScheduledGitHubHealth 'folo-rs/folo' ([datetimeoffset]'2026-09-08T12:00:00Z')
-            $health.components.local_scan.status | Should -Be unavailable
+            $health.components.repair_scan.status | Should -Be unavailable
+            $healthLocal.executor_id = 'executor'
+            $healthLocal.Remove('blocked_conditions')
+            $health = Get-ScheduledGitHubHealth 'folo-rs/folo' ([datetimeoffset]'2026-09-08T12:00:00Z')
+            $health.components.repair_scan.status | Should -Be unavailable
+            $health.problems | Should -Not -BeNullOrEmpty
             Mock Invoke-ScheduledGitHubApi { throw [IO.IOException]::new('GitHub unavailable.') }
             $health = Get-ScheduledGitHubHealth 'folo-rs/folo' ([datetimeoffset]'2026-09-08T12:00:00Z')
             $health.healthy | Should -BeFalse
@@ -1349,7 +1449,7 @@ Describe 'Read-only health adapter' {
                 -ParameterFilter { $Label -ceq 'scheduled-health' }
             $health = Get-ScheduledGitHubHealth 'folo-rs/folo' ([datetimeoffset]'2026-09-08T12:00:00Z')
             $health.healthy | Should -BeTrue
-            $health.components.local_scan.status | Should -Be disabled
+            $health.components.repair_scan.status | Should -Be disabled
             $health.components.coverage.status | Should -Be reused
             Should -Invoke Invoke-ScheduledGitHubApi -Times 0 -ParameterFilter { $Endpoint -like '*/comments*' }
         }
@@ -1364,7 +1464,7 @@ Describe 'Read-only health adapter' {
             } -ParameterFilter { $Endpoint -like '*/scheduled-report.yml/runs?*per_page=1' }
             $health = Get-ScheduledGitHubHealth 'folo-rs/folo' ([datetimeoffset]'2026-09-08T12:00:00Z')
             $health.healthy | Should -BeFalse
-            $health.components.local_scan.status | Should -Be disabled
+            $health.components.repair_scan.status | Should -Be disabled
             $health.components.coverage.status | Should -Be unavailable
             $health.components.planning.status | Should -Be unavailable
             $health.components.reporting.status | Should -Be failed
@@ -1388,12 +1488,12 @@ Describe 'Read-only health adapter' {
             $healthPolicy.local.mode = $Mode
             $healthLocal.last_successful_scan = '2026-09-01T11:00:00Z'
             $health = Get-ScheduledGitHubHealth 'folo-rs/folo' ([datetimeoffset]'2026-09-08T12:00:00Z')
-            $health.components.local_scan.status | Should -Be unavailable
+            $health.components.repair_scan.status | Should -Be unavailable
             $health.healthy | Should -BeFalse
             $healthLocal.last_successful_scan = '2026-09-08T11:00:00Z'
             $healthLocal.blocked_conditions = @('failed-scan')
             $health = Get-ScheduledGitHubHealth 'folo-rs/folo' ([datetimeoffset]'2026-09-08T12:00:00Z')
-            $health.components.local_scan.status | Should -Be failed
+            $health.components.repair_scan.status | Should -Be failed
         }
         It 'keeps cancelled and failed reporting origins visible after a later successful run' {
             Mock Invoke-ScheduledGitHubApi {
@@ -1438,7 +1538,7 @@ Describe 'Read-only health adapter' {
                 } -ParameterFilter { $Label -ceq 'scheduled-health' }
                 $health = Get-ScheduledGitHubHealth 'folo-rs/folo' ([datetimeoffset]'2026-09-08T12:00:00Z')
                 $health.status | Should -Be failed
-                $health.components.local_scan.status | Should -Be unavailable
+                $health.components.repair_scan.status | Should -Be unavailable
                 $health.problems.Count | Should -Be 1
             }
             Should -Invoke Invoke-ScheduledGitHubApi -Times 0 -ParameterFilter { $Method -in @('POST', 'PATCH') }
@@ -1455,7 +1555,7 @@ Describe 'Read-only health adapter' {
             $healthLocal.Remove('last_successful_scan')
             $health = Get-ScheduledGitHubHealth 'folo-rs/folo' ([datetimeoffset]'2026-09-08T12:00:00Z')
             $health.healthy | Should -BeFalse
-            $health.components.local_scan.status | Should -Be unavailable
+            $health.components.repair_scan.status | Should -Be unavailable
         }
     }
 }

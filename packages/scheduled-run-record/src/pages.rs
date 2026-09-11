@@ -22,8 +22,8 @@ pub(crate) const SCHEMA_VERSION: u8 = 1;
 
 /// Exact reporter-owned page prefix, distinct from run roots and future triage comments.
 const PAGE_PREFIX: &str = "[Copilot speaking]\n<!-- scheduled-run-evidence:v1 ";
-const DATA_PREFIX: &str = "\n```base64\n";
-const DATA_SUFFIX: &str = "\n```\n";
+pub(crate) const DATA_PREFIX: &str = "\n```base64\n";
+pub(crate) const DATA_SUFFIX: &str = "\n```\n";
 
 /// SHA-256 digests use two lowercase hexadecimal characters per digest byte.
 const DIGEST_HEX_LENGTH: usize = 64;
@@ -138,7 +138,7 @@ fn page_body(header: &PageHeader, bytes: &[u8]) -> Result<String, AppError> {
         header.run_attempt,
         header.page,
         header.page_count,
-        STANDARD.encode(bytes),
+        encode_fragment(bytes),
     );
     validate_body_size(&body)?;
     Ok(body)
@@ -156,11 +156,7 @@ pub(crate) fn decode(body: &str) -> Result<Option<DecodedPage>, AppError> {
     require(
         header.schema_version == SCHEMA_VERSION
             && header.page <= header.page_count
-            && header.digest.len() == DIGEST_HEX_LENGTH
-            && header
-                .digest
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
+            && valid_digest(&header.digest),
         "invalid page coordinates or digest",
     )?;
     let (_, payload) = rest
@@ -169,6 +165,27 @@ pub(crate) fn decode(body: &str) -> Result<Option<DecodedPage>, AppError> {
     let payload = payload
         .strip_suffix(DATA_SUFFIX)
         .ok_or_else(|| MalformedPageError::new("missing payload terminator".to_owned()))?;
+    let bytes = decode_fragment(payload)?;
+    // The exact rendering is part of page identity; a conflicting retry must not be accepted.
+    require(
+        page_body(&header, &bytes)? == body,
+        "evidence page rendering mismatch",
+    )?;
+    Ok(Some(DecodedPage { header, bytes }))
+}
+
+pub(crate) fn encode_fragment(bytes: &[u8]) -> String {
+    STANDARD.encode(bytes)
+}
+
+pub(crate) fn valid_digest(value: &str) -> bool {
+    value.len() == DIGEST_HEX_LENGTH
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+pub(crate) fn decode_fragment(payload: &str) -> Result<Vec<u8>, AppError> {
     let bytes = STANDARD
         .decode(payload)
         .map_err(DecodePageError::caused_by)?;
@@ -176,12 +193,7 @@ pub(crate) fn decode(body: &str) -> Result<Option<DecodedPage>, AppError> {
         !bytes.is_empty() && bytes.len() <= PAGE_BYTES,
         "empty or oversized evidence fragment",
     )?;
-    // The exact rendering is part of page identity; a conflicting retry must not be accepted.
-    require(
-        page_body(&header, &bytes)? == body,
-        "evidence page rendering mismatch",
-    )?;
-    Ok(Some(DecodedPage { header, bytes }))
+    Ok(bytes)
 }
 
 /// Identifies malformed reporter-owned page syntax rather than an unrelated comment.

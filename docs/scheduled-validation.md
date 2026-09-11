@@ -13,9 +13,11 @@ issues or invoke an AI session. The Local helper boundary rejects new repair
 admissions, including when policy mode and allowlists would otherwise permit them.
 Raw execution evidence is not source-edit authorization.
 
-AI triage and repair are separate downstream responsibilities. The consumer
-contract below describes the required handoff; it does not provide an executable
-triage automation or a way to bypass the new-admission restriction.
+AI triage and repair are separate Local responsibilities. The
+[triage skill](../.github/skills/scheduled-triage/SKILL.md) performs diagnosis in the
+App's selected model, with [durable helpers](scheduled-triage.md) enforcing evidence,
+ownership and publication requirements. Its implementation does not bypass the
+new-admission restriction.
 Existing registered repairs retain their state and can be reconciled and continued
 in their **repair session**: a visible issue-linked Local App session with its own
 worktree, branch and AI agent. Final approval and merge remain human actions.
@@ -25,7 +27,9 @@ Actions: fixed source -> complete job inventory + available checker evidence
                                                     |
                      "Deep validation failed" issue + durable evidence pages
                                                     |
-                            end of hosted intake; no automatic repair admission
+                        Local App AI triage -> canonical problem issues
+                                                    |
+                                new repair admission remains unavailable
 
 Existing registered repairs -> retained Local session -> human review/merge
                                                     |
@@ -54,8 +58,9 @@ that evidence's age. Missing baseline coverage remains explicitly unavailable un
 an automatic full run supplies complete successful evidence.
 
 Failures produce **Deep validation failed** issues with durable run evidence.
-Until AI triage is implemented, the operator reads these issues, diagnoses failures
-and handles any corrections manually. No Local installation or per-checker manual
+The separately implemented Local triage role remains inactive until operator setup
+and activation; without it, the operator diagnoses failures and handles corrections
+manually. No Local installation or per-checker manual
 pilot is required for hosted operation. Local mode remains `observe`, with no enrolled
 executor or active new-repair admission; the App's saved automation is not enabled.
 The recorded pilot assertions remain separate from hosted authorization and do not
@@ -124,7 +129,7 @@ check nor reporting its failure authorizes AI repairs.
 
 ## Problems and triage
 
-These are the requirements for a downstream AI triage consumer. Hosted intake
+These are the contracts implemented by the Local AI triage role. Hosted intake
 supplies the run records and evidence pages; it does not create triage or problem
 records. Neither a manually supplied record nor a label enables new Local repairs.
 
@@ -210,6 +215,16 @@ file or the AI's conversation:
 Each writer updates its own record without replacing human discussion or another
 writer's data. The triage comment starts with `[Copilot speaking]`; updates reuse
 that comment rather than posting another status comment each poll.
+The dedicated comment is a bounded root/checkpoint with losslessly paginated
+analysis detail. Problem bodies likewise reference committed detail rather than
+discarding scope or history to fit GitHub's body limit.
+
+Exact-attempt API evidence and supporting committed revisions can complete a partial
+collection without changing its primary digest. Every original gap and diagnostic
+remains accounted for. Supporting evidence must share the claimed attempt and
+applicable source/controller; it cannot acknowledge itself or a newer attempt.
+The [completion-basis contract](scheduled-triage.md#evidence-and-reasoning) defines
+the durable snapshot, conflict handling and recovery requirements.
 
 Hosted publication first establishes the run issue, then reconciles all evidence
 pages, and finally updates the run index with the confirmed page references.
@@ -393,20 +408,22 @@ Reconcile existing setup; do not run the automation or reset repair state.
 ```
 
 The [setup prompt](../.github/prompts/setup-scheduled-remediation.prompt.md) preserves
-the canonical project, actual Local host, existing repair entry and operator choices.
-It does not install or activate an AI triage role, and it cannot enable new repair
-admissions. The
+the canonical project, actual Local host, existing repair entry and operator choices,
+and reconciles a separately marked disabled triage entry. It does not activate either
+role or enable new repair admission. The
 [intake skill](../.github/skills/scheduled-intake/SKILL.md) and
 [repair skill](../.github/skills/scheduled-repair/SKILL.md) own repair admission and
-repair-session continuation, not failed-run triage.
+repair-session continuation, not failed-run triage. The separate
+[triage skill](../.github/skills/scheduled-triage/SKILL.md) owns failed-run analysis.
 No repository configuration file is needed merely to install these automations.
 Do not put cron in `.github/github-app.yml`, use `auto_issue_session` as a poller or
 attach heavyweight `session.create` scripts to empty polling sessions.
 
 The existing repair entry retains its reviewed cron, model, mode, budget and
 installed identity. Its cron is `17 */3 * * *`; it can inspect retained work but
-cannot admit a new repair. A downstream triage role requires its own supported
-implementation and operator authorization, not merely another timer.
+cannot admit a new repair. Triage has independent reviewed defaults in
+`scripts/scheduled/triage-policy.json`, including its own cadence and admission
+accounting. Its model remains unconfigured until the operator selects it.
 
 Native custom cron uses `interval: manual` plus `cron_expression`. Verify timezone
 and next-run preview for any installed entry in the App. Real `host_id`, project
@@ -529,7 +546,7 @@ source-run and issue identity.
 ### Repair admission
 
 New repair reservation is unavailable at this boundary. The inbox reports the
-missing AI triage capability and `reserve-attempt` rejects the operation even if
+unavailable evidence-bound admission handoff and `reserve-attempt` rejects the operation even if
 policy is set to repair mode with broad allowlists. It preserves registered work,
 consumed budgets and existing sessions; it does not reset state or fabricate a
 completed triage record.

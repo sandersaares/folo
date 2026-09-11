@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "automation_name": "Folo scheduled failure triage",
+  "automation_marker": "folo-scheduled-triage:v1",
+  "cadence_cron": "7 */3 * * *",
+  "mode": "observe",
+  "enrolled_machine_id": null,
+  "model": null,
+  "reasoning_effort": null,
+  "max_active_analyses": 1,
+  "max_starts_per_day": 8,
+  "max_continuations_per_day": 8,
+  "max_continuations_per_analysis": 12,
+  "scan_lease_minutes": 30,
+  "expected_poll_gap_minutes": 420
+}

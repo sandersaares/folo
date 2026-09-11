@@ -1,6 +1,7 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
+Import-Module (Join-Path $PSScriptRoot 'LocalSetupState.psm1')
 
 # Reconciles the desired native App automation profile (host, executor, repository) against the
 # App's own registered automations, for the one-time/occasional operator setup flow (not the
@@ -111,4 +112,66 @@ function ConvertTo-ScheduledNativeWorkflow {
     }
 }
 
-Export-ModuleMember -Function Get-ScheduledSetupDecision, ConvertTo-ScheduledNativeWorkflow
+function Get-ScheduledRoleSetupDecision {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][ValidateSet('triage', 'repair')][string] $Role,
+        [Parameter(Mandatory)][hashtable] $Desired,
+        [Parameter(Mandatory)][AllowEmptyCollection()][object[]] $Workflows,
+        [Parameter(Mandatory)][bool] $MetadataComplete,
+        [AllowNull()][hashtable] $RegisteredProfile,
+        [AllowNull()][hashtable] $SetupJournal,
+        [switch] $ApproveProfileChange,
+        [switch] $UpdateModel
+    )
+    # This is an installation decision, not admission or a live automation update. Distinct
+    # markers prevent either role from adopting the other's existing entry.
+    # Ref: ../../docs/scheduled-triage.md#independent-configuration.
+    $markers = @{ triage = 'folo-scheduled-triage:v1'; repair = 'folo-scheduled-remediation:v1' }
+    if ($null -ne $SetupJournal) {
+        if (($Desired['repository_id'] -isnot [int] -and $Desired['repository_id'] -isnot [long]) -or
+            $Desired.repository_id -le 0) {
+            throw 'Setup reconciliation requires an independently verified repository ID.'
+        }
+        Assert-ScheduledSetupJournal $SetupJournal $Desired.repository_id
+    }
+    if ($Desired.marker -cne $markers[$Role]) {
+        throw 'Desired automation marker does not identify its role.'
+    }
+    $otherRole = if ($Role -ceq 'triage') { 'repair' } else { 'triage' }
+    if ($MetadataComplete) {
+        foreach ($workflow in $Workflows) {
+            if ($workflow.repository -ceq $Desired.repository -and
+                $workflow.prompt.Contains($Desired.marker) -and $workflow.prompt.Contains($markers[$otherRole])) {
+                return @{ action = 'blocked'; reason = 'ambiguous-role-markers'; workflow_id = $workflow.id; changes = @{} }
+            }
+        }
+    }
+    $comparison = $Desired.Clone()
+    if ($Role -ceq 'triage') {
+        $comparison.coordinator_model = $Desired['model']
+        if ($Desired.ContainsKey('reasoning_effort')) {
+            $comparison.coordinator_effort = $Desired.reasoning_effort
+        }
+    }
+    $decision = Get-ScheduledSetupDecision -Desired $comparison -Workflows $Workflows `
+        -MetadataComplete $MetadataComplete -RegisteredProfile $RegisteredProfile `
+        -ApproveProfileChange:$ApproveProfileChange -UpdateModel:$UpdateModel
+    if ($decision.action -ceq 'create-disabled' -and $null -ne $SetupJournal -and
+        $SetupJournal.roles.ContainsKey($Role) -and $SetupJournal.roles[$Role].stage -ceq 'creating') {
+        return @{ action = 'blocked'; reason = 'unknown-native-create'; workflow_id = $null; changes = @{} }
+    }
+    if ($Role -ceq 'triage' -and ($decision.action -ceq 'create-disabled' -or $UpdateModel) -and
+        [string]::IsNullOrWhiteSpace($comparison.coordinator_model)) {
+        return @{ action = 'blocked'; reason = 'select-triage-model'; workflow_id = $decision.workflow_id; changes = @{} }
+    }
+    if ($null -ne $decision.workflow_id -and
+        @($Workflows | Where-Object { $_.id -ceq $decision.workflow_id -and $_.enabled }).Count -gt 0) {
+        return @{ action = 'blocked'; reason = 'pause-role-before-setup'; workflow_id = $decision.workflow_id; changes = @{} }
+    }
+    $decision.role = $Role
+    return $decision
+}
+
+Export-ModuleMember -Function Get-ScheduledSetupDecision, ConvertTo-ScheduledNativeWorkflow,
+Get-ScheduledRoleSetupDecision

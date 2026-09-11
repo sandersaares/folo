@@ -12,8 +12,7 @@ $PSNativeCommandUseErrorActionPreference = $true
 Import-Module (Join-Path $PSScriptRoot 'ScheduledTransport.psm1')
 Import-Module (Join-Path $PSScriptRoot 'ScheduledContracts.psm1')
 Import-Module (Join-Path $PSScriptRoot 'ScheduledExecution.psm1')
-Import-Module (Join-Path $PSScriptRoot '..\build\CargoExecutable.psm1')
-$script:runRecordExecutable = $null
+Import-Module (Join-Path $PSScriptRoot 'ScheduledRecordTool.psm1')
 
 # Retain a bounded diagnostic sample while leaving the original Actions log available by URL.
 # This prevents noisy failed jobs from making reporting storage or GitHub payloads unbounded.
@@ -24,32 +23,7 @@ function Invoke-ScheduledRunRecord {
     [CmdletBinding()]
     [OutputType([hashtable])]
     param([Parameter(Mandatory)][hashtable] $Request)
-    $root = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\..')).Path
-    if ($null -eq $script:runRecordExecutable -or
-        -not (Test-Path -LiteralPath $script:runRecordExecutable -PathType Leaf)) {
-        # Only the controller can supply the utility, its Cargo configuration and target root.
-        # Separate Windows/WSL binaries even when both environments share this checkout.
-        $platform = if ($IsWindows) { 'windows' } elseif ($IsLinux) { 'linux' } else { 'unsupported' }
-        $architecture = [Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
-        $target = Join-Path $root "target\scheduled-run-record\$platform-$architecture"
-        $toolchain = Get-ScheduledToolchain -Kind mutants
-        $cargo = (Get-Command cargo -CommandType Application | Select-Object -First 1).Source
-        $environment = @{
-            RUSTUP_TOOLCHAIN = $toolchain; RUSTUP_AUTO_INSTALL = '0'; CARGO_TARGET_DIR = $target
-            CARGO_BUILD_TARGET = $null; CARGO_ENCODED_RUSTFLAGS = $null; CARGO_TERM_COLOR = 'never'; NO_COLOR = '1'
-            RUSTFLAGS = ''; RUSTDOCFLAGS = ''; MIRIFLAGS = ''; MUTATION_TESTING = $null
-            RUSTC = $null; RUSTDOC = $null; RUSTC_WRAPPER = $null; RUSTC_WORKSPACE_WRAPPER = $null
-        }
-        $messages = Invoke-ScheduledJsonExecutable -Executable $cargo -Directory $root -InputText '' `
-            -Arguments @("+$toolchain", 'build', '--locked', '--package', 'scheduled-run-record',
-                '--bin', 'scheduled-run-record', '--manifest-path', (Join-Path $root 'Cargo.toml'),
-                '--target-dir', $target, '--message-format=json') -Environment $environment
-        $executable = Resolve-CargoExecutable -CargoMessage @($messages -split '\r?\n') -TargetName 'scheduled-run-record'
-        $script:runRecordExecutable = (Resolve-Path -LiteralPath $executable).Path
-    }
-    $json = Invoke-ScheduledJsonExecutable -Executable $script:runRecordExecutable -Directory $root `
-        -InputText ($Request | ConvertTo-Json -Depth 100 -Compress)
-    return ConvertFrom-Json -InputObject $json -AsHashtable
+    return Invoke-ScheduledRecordTool -Package scheduled-run-record -Request $Request
 }
 
 function Get-ScheduledRunJobEvidence {
@@ -220,7 +194,7 @@ function Write-ScheduledRunJournal {
     # Persist intent before each external write. The journal is part of the reporter artifact
     # and must be restored when recovering an uncertain write in a fresh workflow attempt.
     $temporary = "$Path.$([guid]::NewGuid().ToString('N')).tmp"
-    $bytes = [Text.Encoding]::UTF8.GetBytes(($Record | ConvertTo-Json -Depth 20 -Compress))
+    $bytes = [Text.Encoding]::UTF8.GetBytes(($Record | ConvertTo-Json -Depth 100 -Compress))
     $stream = [IO.File]::Open($temporary, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
     try { $stream.Write($bytes); $stream.Flush($true) } finally { $stream.Dispose() }
     [IO.File]::Move($temporary, $Path, $true)
@@ -395,7 +369,7 @@ function Sync-ScheduledRunIntake {
     if (-not $body.StartsWith('[Copilot speaking]')) { $body = "[Copilot speaking]`n`n$body" }
     if ($body.Length -gt 65536) { throw [FormatException]::new('Run issue body exceeds the GitHub limit; human text was not truncated.') }
     $reopen = $prepared.should_report -and (-not $alreadyComplete -or $pendingIndex)
-    $labels = @($live.labels | ForEach-Object { $_.name } | Where-Object { -not $reopen -or $_ -cne 'scheduled-triaged' })
+    $labels = @($live.labels | ForEach-Object { $_.name } | Where-Object { -not $reopen -or $_ -ine 'scheduled-triaged' })
     if ($body -cne $live.body -or ($reopen -and ($live.state -cne 'open' -or $labels.Count -ne $live.labels.Count))) {
         $payload = @{ body = $body }
         if ($reopen) { $payload.state = 'open'; $payload.labels = $labels }

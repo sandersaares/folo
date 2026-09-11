@@ -3,6 +3,12 @@ $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
 
 Import-Module (Join-Path $PSScriptRoot 'ScheduledContracts.psm1')
+Import-Module (Join-Path $PSScriptRoot 'LocalTriageState.psm1')
+Import-Module (Join-Path $PSScriptRoot 'LocalTriagePolicy.psm1')
+Import-Module (Join-Path $PSScriptRoot 'LocalHealthState.psm1')
+Import-Module (Join-Path $PSScriptRoot 'LocalHealthIntegrity.psm1')
+Import-Module (Join-Path $PSScriptRoot 'LocalTriageCheckpoint.psm1')
+Import-Module (Join-Path $PSScriptRoot 'LocalTriageCache.psm1')
 
 # The single mutation point for the executor's durable state (state.json under
 # %LOCALAPPDATA%\Folo\ScheduledRemediation\<repository_id>): every skill and entrypoint that reads
@@ -40,6 +46,8 @@ function Assert-ScheduledLocalState {
         $State.attempts -isnot [System.Collections.IDictionary]) {
         throw 'Unsupported or corrupt executor state; recover without resetting admission history.'
     }
+    if ($State.Contains('triage')) { Assert-ScheduledTriageState $State.triage }
+    Assert-ScheduledHealthJournal $State
     foreach ($entry in $State.attempts.GetEnumerator()) {
         $attempt = $entry.Value
         Assert-LocalField $attempt @('attempt_id', 'issue_number', 'finding_id', 'generation',
@@ -107,7 +115,16 @@ function Assert-LocalAdmission {
 }
 
 function Invoke-LocalStateChange {
-    param($State, $Policy, [string] $Action, $Data, [DateTimeOffset] $Now)
+    param($State, $Policy, [string] $Action, $Data, [DateTimeOffset] $Now, $TriagePolicy, $CheckpointValidation)
+    Assert-ScheduledBooleanInput $Data
+    if ($Action.StartsWith('health-', [StringComparison]::Ordinal)) {
+        Invoke-ScheduledHealthStateChange $State $Policy $Action $Data $Now
+        return
+    }
+    if ($Action.StartsWith('triage-', [StringComparison]::Ordinal)) {
+        Invoke-ScheduledTriageStateChange $State $Policy $TriagePolicy $Action $Data $Now $CheckpointValidation
+        return
+    }
     $stamp = $Now.ToUniversalTime().ToString('o')
     $day = $Now.UtcDateTime.Date
     switch -CaseSensitive ($Action) {
@@ -161,8 +178,8 @@ function Invoke-LocalStateChange {
             }
         }
         'reserve-attempt' {
-            # Completed AI triage is not an executable capability. Neither rollout assertions
-            # nor reporter/run records can authorize new repair ownership. Keep this boundary
+            # The evidence-bound new-admission handoff is unavailable. Neither completed triage,
+            # rollout assertions nor reporter/run records authorize new repair ownership. Keep this boundary
             # separate from continuation gates so persisted work and consumed budgets survive.
             # ../../docs/scheduled-validation.md#purpose-and-responsibility.
             throw [NotSupportedException]::new(
@@ -299,6 +316,9 @@ function Invoke-LocalStateChange {
             Assert-LocalCoordinator $State $Data $Now
             Assert-LocalAdmission $State $Policy
             $attempt = Get-LocalAttempt $State $Data
+            if ($State.Contains('triage') -and $State.triage.repair_holds.ContainsKey([string]$attempt.issue_number)) {
+                throw "Triage requires repair-scope reconciliation: $($State.triage.repair_holds[[string]$attempt.issue_number].reason)"
+            }
             Assert-LocalField $Data @('evidence_key', 'expected_head', 'session_id', 'native_idle_verified')
             if ($attempt.phase -cnotin @('pr-open', 'awaiting-review') -or
                 $attempt.dispatch.status -cne 'completed' -or $Data.native_idle_verified -ne $true -or
@@ -374,8 +394,10 @@ function Invoke-ScheduledLocalAction {
         [Parameter(Mandatory)][string] $Login,
         [Parameter(Mandatory)][DateTimeOffset] $Now,
         [Parameter(Mandatory)][string] $Action,
-        [System.Collections.IDictionary] $Data = @{}
+        [System.Collections.IDictionary] $Data = @{},
+        [AllowNull()][hashtable] $TriagePolicy
     )
+    Assert-ScheduledBooleanInput $Data
     if (-not [IO.Path]::IsPathFullyQualified($StateRoot) -or
         [string]::IsNullOrWhiteSpace($ExecutorId) -or [string]::IsNullOrWhiteSpace($Login) -or
         [string]$Policy.repository_id -cnotmatch '^[1-9][0-9]*$') {
@@ -391,6 +413,21 @@ function Invoke-ScheduledLocalAction {
     }
     $path = Join-Path $StateRoot 'state.json'
     $temporary = Join-Path $StateRoot ("state.$([guid]::NewGuid()).tmp")
+    $checkpointValidation = $null
+    if ($Action -ceq 'triage-checkpoint') {
+        Assert-LocalField $Data @('checkpoint')
+        $checkpointValidation = Get-ScheduledTriageCheckpointValidation $Data.checkpoint
+    }
+    if ($Action -ceq 'triage-claim') {
+        $claimState = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json -AsHashtable
+        Assert-ScheduledLocalState $claimState
+        $claimValidation = Get-ScheduledTriageClaimValidation $StateRoot $claimState.triage.scan $Data
+        $claimData = @{}
+        foreach ($field in $Data.Keys) { $claimData[$field] = $Data[$field] }
+        # These are helper-derived facts, not fields accepted from the requesting model.
+        $claimData.claim_validation = $claimValidation
+        $Data = $claimData
+    }
     # No retry loop: contention is visible, and a future repository poll can retry the scan.
     $lock = [IO.File]::Open((Join-Path $StateRoot 'transaction.lock'),
         [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
@@ -423,11 +460,26 @@ function Invoke-ScheduledLocalAction {
             (Get-ScheduledDigest $state.profile) -ceq (Get-ScheduledDigest $Data.profile)) {
             return $state
         }
-        if ($Action -cne 'initialize') { Invoke-LocalStateChange $state $Policy $Action $Data $Now }
-        if ($Action -ceq 'read') { return $state }
+        if ($Action.StartsWith('triage-', [StringComparison]::Ordinal) -and $null -eq $TriagePolicy) {
+            $TriagePolicy = Get-ScheduledTriagePolicy
+        }
+        $before = Get-ScheduledDigest $state
+        if ($Action -cne 'initialize') {
+            Invoke-LocalStateChange $state $Policy $Action $Data $Now $TriagePolicy $checkpointValidation
+        }
+        if ($Action -ceq 'triage-pin-snapshot') {
+            # Payload bytes were prepared before locking. Installation and the durable pin
+            # commit are serialized with cleanup so another poll cannot delete a new view.
+            Complete-ScheduledTriageSnapshotFile $StateRoot $Data.snapshot_id $Data.temporary_path $Data.owner_kind $Data.owner_token
+        }
+        if ($Action -cin @('read', 'triage-read', 'triage-authorize-publication', 'triage-verify-checkpoint',
+                'triage-authorize-snapshot', 'triage-authorize-retirement', 'health-authorize') -or
+            ($Action -ceq 'triage-register-profile' -and (Get-ScheduledDigest $state) -ceq $before)) {
+            return $state
+        }
         $state.revision++
         Assert-ScheduledLocalState $state
-        $bytes = [Text.Encoding]::UTF8.GetBytes(($state | ConvertTo-Json -Depth 40))
+        $bytes = [Text.Encoding]::UTF8.GetBytes(($state | ConvertTo-Json -Depth 100))
         $writer = [IO.File]::Open($temporary, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write,
             [IO.FileShare]::None)
         try {
@@ -435,6 +487,11 @@ function Invoke-ScheduledLocalAction {
             $writer.Flush($true)
         } finally { $writer.Dispose() }
         [IO.File]::Move($temporary, $path, $true)
+        # Acquisition can replace an expired scan's pin even if its poll never saves a view.
+        # The committed projection still protects every active worker/checkpoint and writer.
+        if ($Action -cin @('triage-acquire-scan', 'triage-pin-snapshot', 'triage-clean-cache', 'triage-release-scan', 'triage-retire')) {
+            Invoke-ScheduledTriageCacheCleanup $StateRoot $state.triage
+        }
         return $state
     } finally {
         $lock.Dispose()

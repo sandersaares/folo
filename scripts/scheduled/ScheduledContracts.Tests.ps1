@@ -7,6 +7,20 @@ BeforeAll {
 }
 
 Describe 'Scheduled records' {
+    It 'requires scalar Boolean decision and observation fields without inferring missing facts' {
+        Assert-ScheduledBooleanInput @{}
+        { Assert-ScheduledBooleanInput $null } | Should -Throw -ExceptionType ([FormatException])
+        foreach ($field in @('operator_approved', 'ownership_verified', 'native_verified',
+                'native_idle_verified', 'successful', 'hosted_confirmation')) {
+            Assert-ScheduledBooleanInput @{ $field = $true }
+            Assert-ScheduledBooleanInput @{ $field = $false }
+            foreach ($invalid in @(@{ value = @($true) }, @{ value = 'true' }, @{ value = 1 }, @{ value = $null })) {
+                { Assert-ScheduledBooleanInput @{ $field = $invalid.value } } |
+                    Should -Throw -ExceptionType ([FormatException])
+            }
+        }
+    }
+
     It 'round trips evidence without allowing a comment terminator' {
         $record = @{ schema_version = 1; summary = 'x --> y'; nullable = $null; list = @('seed') }
         $marker = Write-ScheduledRecord -Kind reporter -Record $record
@@ -19,6 +33,8 @@ Describe 'Scheduled records' {
         $marker = Write-ScheduledRecord -Kind worker -Record @{ schema_version = 1 }
         { Read-ScheduledRecord -Kind worker -Text '' } | Should -Throw
         { Read-ScheduledRecord -Kind worker -Text "$marker`n$marker" } | Should -Throw
+        { Read-ScheduledRecord -Kind worker -Text $marker -HealthRole repair } |
+            Should -Throw -ExceptionType ([ArgumentException])
         { Read-ScheduledRecord -Kind worker -Text '<!-- scheduled-worker:v1 {"schema_version":2} -->' } | Should -Throw
     }
     It 'canonicalizes maps but retains case and array ordering' {
@@ -26,6 +42,27 @@ Describe 'Scheduled records' {
             Should -Be (Get-ScheduledDigest @{ a = @{ c = 3; d = 4 }; b = 2 })
         (Get-ScheduledDigest @('a', 'b')) | Should -Not -Be (Get-ScheduledDigest @('b', 'a'))
         (Get-ScheduledDigest 'Path') | Should -Not -Be (Get-ScheduledDigest 'path')
+    }
+    It 'preserves dictionary-member names as ordinary evidence keys' {
+        # Count deliberately differs from the payload cardinality; neither name is metadata.
+        $record = @{ schema_version = 1; payload = @{ Keys = @('a'); Count = 2; a = 'first'; b = 'visible' } }
+        $parsed = Read-ScheduledRecord -Kind reporter -Text (Write-ScheduledRecord -Kind reporter -Record $record)
+        $parsed.payload['Keys'] | Should -Be @('a')
+        $parsed.payload['Count'] | Should -Be 2
+        $parsed.payload.b | Should -Be visible
+        $changed = $record.Clone(); $changed.payload = $record.payload.Clone(); $changed.payload.b = 'different'
+        (Get-ScheduledDigest $record) | Should -Not -Be (Get-ScheduledDigest $changed)
+    }
+    It 'preserves pipeline-wrapped primitives through record and JSON round trips' {
+        $name = 'scheduled-finding' | ForEach-Object { $_ }
+        $null = $name.PSObject.Properties
+        $record = @{ schema_version = 1; labels = @(@{ name = $name }); metadata = [pscustomobject]@{ a = 1 } }
+        $copy = $record | ConvertTo-Json -Depth 10 | ConvertFrom-Json -AsHashtable
+        (Get-ScheduledDigest $record) | Should -BeExactly (Get-ScheduledDigest $copy)
+        $parsed = Read-ScheduledRecord -Kind problem -Text (Write-ScheduledRecord -Kind problem -Record $record)
+        $parsed.labels[0].name | Should -BeExactly 'scheduled-finding'
+        $parsed.metadata.a | Should -Be 1
+        (Get-ScheduledDigest $parsed) | Should -BeExactly (Get-ScheduledDigest $record)
     }
     It 'preserves empty singleton nested and null array entries' {
         InModuleScope ScheduledContracts {
