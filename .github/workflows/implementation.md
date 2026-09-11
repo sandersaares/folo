@@ -276,6 +276,8 @@ their plan, result and raw evidence, not just a job conclusion.
 The scheduled Just recipes invoke standalone entrypoints as native PowerShell processes.
 Their nonzero status must cross every wrapper boundary into the calling workflow; preserving
 artifacts or successfully reporting a failure is independent of the check's pass/fail signal.
+Recipes explicitly exit with the child status, including on PowerShell versions without native
+error-preference support.
 
 ### Complete evidence and reuse
 

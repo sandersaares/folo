@@ -47,9 +47,18 @@ function Invoke-ScheduledPlanning {
 }
 Export-ModuleMember -Function Invoke-ScheduledPlanning
 '@ | Set-Content -LiteralPath (Join-Path $entryRoot 'ScheduledWorkflow.psm1')
+    # PowerShell 7 versions without native-error preference support still need the recipe's
+    # explicit exit. Disable only that feature in a copy of the actual recipe configuration.
+    $justfile = Get-Content -LiteralPath (Join-Path $fixtureRoot justfile) -Raw
+    $justfile.Replace("import 'justfiles/just_scheduled.just'", "import 'justfiles/just_scheduled_legacy.just'") |
+        Set-Content -LiteralPath (Join-Path $fixtureRoot justfile-legacy)
+    $recipes = Get-Content -LiteralPath (Join-Path $fixtureRoot 'justfiles\just_scheduled.just') -Raw
+    $recipes.Replace('$PSNativeCommandUseErrorActionPreference = $true', '$PSNativeCommandUseErrorActionPreference = $false') |
+        Set-Content -LiteralPath (Join-Path $fixtureRoot 'justfiles\just_scheduled_legacy.just')
 
     function Invoke-EntryPointFixture {
-        param([string] $Name, [string] $Outcome, [string[]] $Arguments = @(), [string] $Recipe = '')
+        param([string] $Name, [string] $Outcome, [string[]] $Arguments = @(), [string] $Recipe = '',
+            [switch] $WithoutNativeErrors)
         $start = [Diagnostics.ProcessStartInfo]::new()
         $start.FileName = (Get-Command pwsh).Source
         $start.UseShellExecute = $false
@@ -64,8 +73,9 @@ Export-ModuleMember -Function Invoke-ScheduledPlanning
             else {
                 # The workflow's pwsh step invokes Just, whose [script] recipe invokes the
                 # entrypoint. Keep both process boundaries, not a rewritten recipe stand-in.
+                $justArguments = if ($WithoutNativeErrors) { '--justfile justfile-legacy' } else { '' }
                 @('-Command', "Set-StrictMode -Version Latest; `$ErrorActionPreference = 'Stop'; " +
-                    "`$PSNativeCommandUseErrorActionPreference = `$true; just $Recipe; exit `$LASTEXITCODE")
+                    "`$PSNativeCommandUseErrorActionPreference = `$true; just $justArguments $Recipe; exit `$LASTEXITCODE")
             }
         foreach ($argument in @('-NoProfile') + $invocation) {
             $start.ArgumentList.Add($argument)
@@ -87,6 +97,21 @@ Export-ModuleMember -Function Invoke-ScheduledPlanning
 }
 
 Describe 'Hosted entrypoint exit contracts' {
+    It 'propagates <Recipe> outcome <Outcome> without native-error preference support' -TestCases @(
+        @{ Recipe = 'scheduled-check'; Outcome = 'passed'; Code = 0 }
+        @{ Recipe = 'scheduled-check'; Outcome = 'findings'; Code = 1 }
+        @{ Recipe = 'scheduled-check'; Outcome = 'incomplete'; Code = 1 }
+        @{ Recipe = 'scheduled-check'; Outcome = 'blocked'; Code = 1 }
+        @{ Recipe = 'scheduled-check'; Outcome = 'execution-error'; Code = 1 }
+        @{ Recipe = 'scheduled-check'; Outcome = 'not-applicable'; Code = 1 }
+        @{ Recipe = 'scheduled-report'; Outcome = 'reported'; Code = 0 }
+        @{ Recipe = 'scheduled-report'; Outcome = 'incomplete'; Code = 1 }
+        @{ Recipe = 'scheduled-plan'; Outcome = 'planned'; Code = 0 }
+        @{ Recipe = 'scheduled-plan'; Outcome = 'incomplete'; Code = 1 }
+    ) {
+        param($Recipe, $Outcome, $Code)
+        (Invoke-EntryPointFixture -Recipe $Recipe -Outcome $Outcome -WithoutNativeErrors).code | Should -Be $Code
+    }
     It 'propagates <Outcome> through workflow PowerShell and the actual scheduled-check recipe' -TestCases @(
         @{ Outcome = 'passed'; Code = 0 }
         @{ Outcome = 'findings'; Code = 1 }

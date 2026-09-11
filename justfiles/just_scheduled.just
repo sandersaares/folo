@@ -9,6 +9,8 @@ scheduled-check:
     $PSNativeCommandUseErrorActionPreference = $true
     # A child script's exit does not terminate this Just script; use a native process boundary.
     pwsh -NoLogo -NoProfile -NonInteractive -File ./scripts/scheduled/Invoke-ScheduledCheck.ps1
+    # Propagate explicitly even on PowerShell versions without native-error preference support.
+    exit $LASTEXITCODE
 
 # Ref: .github/workflows/implementation.md#complete-evidence-and-reuse.
 # Fix expected scope before execution without renewing reused evidence.
@@ -19,6 +21,7 @@ scheduled-plan:
     $ErrorActionPreference = 'Stop'
     $PSNativeCommandUseErrorActionPreference = $true
     pwsh -NoLogo -NoProfile -NonInteractive -File ./scripts/scheduled/Invoke-ScheduledPlan.ps1
+    exit $LASTEXITCODE
 
 # Ref: .github/workflows/implementation.md#serialized-reporting.
 # Evaluate downloaded evidence as data; write authority belongs to the hosted caller.
@@ -29,6 +32,7 @@ scheduled-report:
     $ErrorActionPreference = 'Stop'
     $PSNativeCommandUseErrorActionPreference = $true
     pwsh -NoLogo -NoProfile -NonInteractive -File ./scripts/scheduled/Invoke-ScheduledReport.ps1
+    exit $LASTEXITCODE
 
 # Ref: docs/scheduled-validation.md#durable-ownership-and-native-calls.
 # Persist short transactions around native App calls without process-held claims.
