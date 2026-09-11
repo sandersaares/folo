@@ -1,6 +1,7 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
+Import-Module (Join-Path $PSScriptRoot 'ScheduledJson.psm1')
 
 Import-Module (Join-Path $PSScriptRoot 'ScheduledContracts.psm1')
 Import-Module (Join-Path $PSScriptRoot 'LocalTriageState.psm1')
@@ -419,7 +420,7 @@ function Invoke-ScheduledLocalAction {
         $checkpointValidation = Get-ScheduledTriageCheckpointValidation $Data.checkpoint
     }
     if ($Action -ceq 'triage-claim') {
-        $claimState = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json -AsHashtable
+        $claimState = Get-Content -LiteralPath $path -Raw | ConvertFrom-ScheduledJson
         Assert-ScheduledLocalState $claimState
         $claimValidation = Get-ScheduledTriageClaimValidation $StateRoot $claimState.triage.scan $Data
         $claimData = @{}
@@ -433,7 +434,7 @@ function Invoke-ScheduledLocalAction {
         [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
     try {
         if (Test-Path -LiteralPath $path) {
-            $state = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json -AsHashtable
+            $state = Get-Content -LiteralPath $path -Raw | ConvertFrom-ScheduledJson
             Assert-ScheduledLocalState $state
             if ($state.repository_id -ne $Policy.repository_id -or $state.repository -cne $Policy.repository -or
                 $state.executor_id -cne $ExecutorId -or $state.login -cne $Login) {
@@ -549,7 +550,7 @@ function Get-ScheduledRepairRecord {
 function Invoke-ScheduledLocalRequest {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string] $RequestPath)
-    $request = Get-Content -LiteralPath $RequestPath -Raw | ConvertFrom-Json -AsHashtable
+    $request = Get-Content -LiteralPath $RequestPath -Raw | ConvertFrom-ScheduledJson
     Assert-LocalField $request @('policy_path', 'executor_id', 'login', 'action', 'data')
     $policy = Get-ScheduledPolicy -Path $request.policy_path
     $root = Get-ScheduledStateRoot -RepositoryId $policy.repository_id

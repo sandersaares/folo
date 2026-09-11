@@ -9,6 +9,7 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
+Import-Module (Join-Path $PSScriptRoot 'ScheduledJson.psm1')
 Import-Module (Join-Path $PSScriptRoot 'ScheduledContracts.psm1')
 Import-Module (Join-Path $PSScriptRoot 'ScheduledPlan.psm1')
 
@@ -52,7 +53,7 @@ function Merge-ScheduledObservation {
         throw [FormatException]::new('Observation lacks execution identity.')
     }
     Assert-ScheduledSha $Incoming.source_sha
-    $next = $Incoming | ConvertTo-Json -Depth 100 | ConvertFrom-Json -AsHashtable
+    $next = $Incoming | ConvertTo-Json -Depth 100 | ConvertFrom-ScheduledJson
     if ($null -eq $Existing) {
         if ($Incoming.observation.outcome -cne 'findings') { return $null }
         $next.generation = 1
@@ -130,7 +131,7 @@ function Merge-ScheduledCoverage {
 
     $next = if ($null -eq $Coverage) {
         @{ schema_version = 1; repository = $Manifest.repository; receipt = $null; invalidation = $null }
-    } else { $Coverage | ConvertTo-Json -Depth 100 | ConvertFrom-Json -AsHashtable }
+    } else { $Coverage | ConvertTo-Json -Depth 100 | ConvertFrom-ScheduledJson }
     if ($Skipped) { return $next }
     if ($next.ContainsKey('observation') -and $null -ne $next.observation) {
         if ((Compare-ScheduledObservation $Context $next.observation) -le 0 -or

@@ -139,8 +139,9 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
 Import-Module .\scripts\scheduled\LocalLifecycle.psm1 -Force
-$state = Get-Content -LiteralPath "{{STATE_PATH}}" -Raw | ConvertFrom-Json -AsHashtable
-$snapshot = Get-Content -LiteralPath "{{SNAPSHOT_PATH}}" -Raw | ConvertFrom-Json -AsHashtable
+Import-Module .\scripts\scheduled\ScheduledJson.psm1
+$state = Get-Content -LiteralPath "{{STATE_PATH}}" -Raw | ConvertFrom-ScheduledJson
+$snapshot = Get-Content -LiteralPath "{{SNAPSHOT_PATH}}" -Raw | ConvertFrom-ScheduledJson
 $attempt = $state.attempts['{{ATTEMPT_ID}}']
 Get-ScheduledPullRequestDecision -Attempt $attempt -PullRequest $snapshot.pull_request `
     -MainSha $snapshot.main_sha -ContainsMain $snapshot.contains_main `
@@ -253,7 +254,8 @@ $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
 Import-Module .\scripts\scheduled\ScheduledContracts.psm1 -Force
 Import-Module .\scripts\scheduled\LocalHealth.psm1 -Force
-$state = Get-Content -LiteralPath "{{STATE_PATH}}" -Raw | ConvertFrom-Json -AsHashtable
+Import-Module .\scripts\scheduled\ScheduledJson.psm1
+$state = Get-Content -LiteralPath "{{STATE_PATH}}" -Raw | ConvertFrom-ScheduledJson
 Sync-ScheduledRoleHealth -Context @{
     state_root = Split-Path -Parent "{{STATE_PATH}}"
     policy = Get-ScheduledPolicy

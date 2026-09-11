@@ -10,6 +10,7 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
+Import-Module (Join-Path $PSScriptRoot 'ScheduledJson.psm1')
 Import-Module (Join-Path $PSScriptRoot 'ScheduledContracts.psm1')
 
 function Assert-ScheduledVersionArtifact {
@@ -147,7 +148,7 @@ function Assert-ScheduledCanonicalVersion {
             # Export only after resolution reaches its fixed point: an initial group expansion
             # may omit binary lockfile effects. Apply still consumes the full captured artifact.
             & $ReleasePlanExecutable expand --plan $resolvedPath --out $expandedPath
-            $expanded = Get-Content -LiteralPath $expandedPath -Raw | ConvertFrom-Json -AsHashtable
+            $expanded = Get-Content -LiteralPath $expandedPath -Raw | ConvertFrom-ScheduledJson
             Assert-ScheduledVersionArtifact -Evidence $Evidence -BaseSha $BaseSha -Expanded $expanded
             & $AssertPublished $resolvedPath
             & $ReleasePlanExecutable apply --plan $resolvedPath
@@ -200,7 +201,7 @@ function Remove-ScheduledVersionReference {
 function Invoke-ScheduledVersionVerification {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string] $PlanPath)
-    $plan = Get-Content -LiteralPath $PlanPath -Raw | ConvertFrom-Json -AsHashtable
+    $plan = Get-Content -LiteralPath $PlanPath -Raw | ConvertFrom-ScheduledJson
     if (-not $plan.managed) { throw 'Canonical repair verification requires a managed candidate.' }
     $root = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
     $target = Join-Path $root 'target/scheduled-version'

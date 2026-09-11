@@ -6,6 +6,7 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
+Import-Module (Join-Path $PSScriptRoot 'ScheduledJson.psm1')
 Import-Module (Join-Path $PSScriptRoot 'ScheduledContracts.psm1')
 Import-Module (Join-Path $PSScriptRoot 'LocalTriagePolicy.psm1')
 Import-Module (Join-Path $PSScriptRoot 'LocalTriageInbox.psm1')
@@ -51,7 +52,7 @@ function Invoke-ScheduledTriageRequest {
         [Parameter(Mandatory)][string] $RequestPath,
         [DateTimeOffset] $Now = [DateTimeOffset]::UtcNow
     )
-    $request = Get-Content -LiteralPath $RequestPath -Raw | ConvertFrom-Json -AsHashtable
+    $request = Get-Content -LiteralPath $RequestPath -Raw | ConvertFrom-ScheduledJson
     foreach ($field in @('action', 'executor_id', 'data')) {
         if (-not $request.ContainsKey($field)) { throw "Missing triage request field: $field" }
     }

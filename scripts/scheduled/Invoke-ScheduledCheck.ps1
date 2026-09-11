@@ -26,8 +26,9 @@ $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
 $VerbosePreference = 'Continue'
 Import-Module (Join-Path $PSScriptRoot 'ScheduledExecution.psm1') -Force
-$check = ConvertFrom-Json -InputObject $CheckJson -AsHashtable
-$manifest = ConvertFrom-Json -InputObject $ManifestJson -AsHashtable
+Import-Module (Join-Path $PSScriptRoot 'ScheduledJson.psm1')
+$check = ConvertFrom-ScheduledJson -InputObject $CheckJson
+$manifest = ConvertFrom-ScheduledJson -InputObject $ManifestJson
 $context = @{
     source_sha = $manifest.source_sha; controller_sha = $manifest.controller_sha
     check_contract_digest = $manifest.check_contract_digest

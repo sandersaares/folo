@@ -273,6 +273,9 @@ Each execution leg runs independently with fail-fast disabled so a failed shard 
 evidence from the rest of the manifest. The shared timeout accommodates mutation work and
 cold-cache setup. Always-upload steps include hidden artifact directories: failures still need
 their plan, result and raw evidence, not just a job conclusion.
+The scheduled Just recipes invoke standalone entrypoints as native PowerShell processes.
+Their nonzero status must cross every wrapper boundary into the calling workflow; preserving
+artifacts or successfully reporting a failure is independent of the check's pass/fail signal.
 
 ### Complete evidence and reuse
 
@@ -330,6 +333,13 @@ visible; successful intake of failures does not turn the source check green.
 Raw mutation outcomes come from `mutants.out`, not from a full-run `--json` option.
 An unmutated baseline is mandatory and a replay that matches no mutation is an error.
 Timeouts remain findings.
+The pinned cargo-mutants `Failure(i32)` status accepts any nonzero signed native exit code,
+including Windows exception statuses. Build failures, test failures and timeouts retain their
+distinct phase meanings; only a successful unmutated baseline establishes actionable mutations.
+Miri target discovery retains unsupported proc-macro unit harnesses as explicit not-applicable
+evidence, without invoking them. Supported integration targets in those packages still run.
+Unsupported-only selections do not establish tested coverage, and missing summaries for
+supported targets remain incomplete evidence.
 Ordinary empty mutation shards carry successful exact-scope discovery and explicit unmutated
 baseline evidence because the mutation tool does not run its baseline for an empty selection.
 The parser validates both before the leg can pass; zero-match exact replays remain failures.
@@ -388,6 +398,11 @@ before any checker result exists. Both reporting utilities are built from the
 trusted controller with its pinned toolchain and separate per-platform target
 directories, never from a candidate checkout or artifact.
 
+Hosted reporter serialization does not serialize Local triage's shared issue-body and state
+writes. Read/merge/PATCH sequences cannot atomically preserve concurrent owned-root updates or
+prevent stale closure of expanded scope. The issue PATCH endpoint does not document conditional
+write support. Safe cross-writer ownership remains a prerequisite to new repair admission.
+
 The per-run publication journal also fences creation of the shared coverage issue.
 Its `coverage_creation` intent is persisted after label bootstrap but before the
 issue POST, even when clean run intake itself remains in `prepared` state.
@@ -396,6 +411,17 @@ by the unique reporter-owned coverage record. Without a confirmed matching recor
 the reporter retains the fence instead of posting a duplicate. A fresh reporter
 attempt restores this same journal; repeating run intake preserves the coverage
 intent. Unique label names remain independently retryable before this issue fence.
+
+#### Lossless evidence transport
+
+`ScheduledJson.psm1` owns JSON-to-PowerShell conversion across native tools, GitHub readers,
+embedded records, publication journals, cache files and Local state/checkpoint copies.
+JSON strings remain strings with their exact content, including date-looking values in opaque
+checker and planner payloads. System.Text.Json is available in the supported PowerShell 7
+runtime and needs neither a Rust bootstrap nor the newer `ConvertFrom-Json -DateKind` option.
+Only numeric tokens use PowerShell's numeric conversion. Consumers still validate the original
+revision, publication-index and checkpoint digests; transport must not rehash changed evidence
+or normalize timestamp spelling to make verification succeed.
 
 #### Run-level failure intake
 

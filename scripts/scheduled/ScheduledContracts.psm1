@@ -10,6 +10,7 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
+Import-Module (Join-Path $PSScriptRoot 'ScheduledJson.psm1')
 
 function ConvertTo-ScheduledCanonicalValue {
     [CmdletBinding()]
@@ -81,7 +82,7 @@ function Read-ScheduledRecord {
     $records = [regex]::Matches($Text, "<!-- scheduled-${Kind}:v1 (\{[^\r\n]*\}) -->")
     if ($records.Count -ne 1) { throw [FormatException]::new("Expected exactly one scheduled $Kind record.") }
     try {
-        $record = ConvertFrom-Json -InputObject $records[0].Groups[1].Value -AsHashtable
+        $record = ConvertFrom-ScheduledJson -InputObject $records[0].Groups[1].Value
     } catch [ArgumentException] {
         throw [FormatException]::new('Invalid scheduled record JSON.', $_.Exception)
     }
@@ -139,7 +140,7 @@ function Get-ScheduledPolicy {
     [OutputType([hashtable])]
     param([string] $Path = (Join-Path $PSScriptRoot 'policy.json'))
 
-    $policy = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json -AsHashtable
+    $policy = Get-Content -LiteralPath $Path -Raw | ConvertFrom-ScheduledJson
     if ($policy.schema_version -ne 1 -or $policy.repository_id -le 0) {
         throw 'Unsupported scheduled policy or missing repository identity.'
     }

@@ -6,6 +6,7 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
+Import-Module (Join-Path $PSScriptRoot 'ScheduledJson.psm1')
 Import-Module (Join-Path $PSScriptRoot 'ScheduledContracts.psm1')
 Import-Module (Join-Path $PSScriptRoot 'LocalTriagePolicy.psm1')
 Import-Module (Join-Path $PSScriptRoot 'ScheduledRecordTool.psm1')
@@ -153,7 +154,7 @@ function Assert-TriageOperation {
         ($null -ne $Operation.target_id -and [string]$Operation.target_id -cnotmatch '^[1-9][0-9]*$')) {
         throw 'Corrupt triage publication identity, kind, or stage.'
     }
-    $specification = $Operation | ConvertTo-Json -Depth 100 | ConvertFrom-Json -AsHashtable
+    $specification = $Operation | ConvertTo-Json -Depth 100 | ConvertFrom-ScheduledJson
     foreach ($field in @('id', 'stage', 'spec_digest', 'receipt', 'superseded_by_index')) {
         $specification.Remove($field)
     }
@@ -463,7 +464,7 @@ function Invoke-ScheduledTriageStateChange {
             $analysis.checkpoint_digest = $CheckpointValidation.digest
             $analysis.completion = $null; $analysis.completion_digest = $null
             $analysis.phase = 'analyzing'
-            $comparisonIndex = $Data.checkpoint.index | ConvertTo-Json -Depth 100 | ConvertFrom-Json -AsHashtable
+            $comparisonIndex = $Data.checkpoint.index | ConvertTo-Json -Depth 100 | ConvertFrom-ScheduledJson
             foreach ($entry in $comparisonIndex.entries) { $entry.full_read_digest = $null }
             $analysis.comparison = @{ index = $comparisonIndex; requires_reanalysis = $false; reason = $null }
             $analysis.comparison_digest = Get-ScheduledDigest $analysis.comparison
@@ -572,7 +573,7 @@ function Invoke-ScheduledTriageStateChange {
             Assert-TriageAdmission $State $Policy $TriagePolicy $Data
             $analysis = Get-TriageOwnedAnalysis $triage $Data
             Assert-TriageField $Data @('operation')
-            $operation = $Data.operation | ConvertTo-Json -Depth 100 | ConvertFrom-Json -AsHashtable
+            $operation = $Data.operation | ConvertTo-Json -Depth 100 | ConvertFrom-ScheduledJson
             Assert-TriageField $operation @('key', 'kind', 'issue_number', 'target_id', 'payload',
                 'preimage', 'checkpoint', 'purpose')
             if ($null -eq $analysis.checkpoint -or

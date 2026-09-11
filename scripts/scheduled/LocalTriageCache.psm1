@@ -5,6 +5,7 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
+Import-Module (Join-Path $PSScriptRoot 'ScheduledJson.psm1')
 Import-Module (Join-Path $PSScriptRoot 'ScheduledContracts.psm1')
 
 function Get-ScheduledTriageCacheProjection {
@@ -33,7 +34,7 @@ function Get-ScheduledTriageSnapshotPath {
 function Read-ScheduledTriageSnapshot {
     param([string] $StateRoot, [string] $Id)
     $snapshot = Get-Content -LiteralPath (Get-ScheduledTriageSnapshotPath $StateRoot $Id) -Raw |
-        ConvertFrom-Json -AsHashtable
+        ConvertFrom-ScheduledJson
     if ((Get-ScheduledDigest $snapshot) -cne $Id) { throw 'Cached triage observation changed; repeat the complete scan.' }
     return $snapshot
 }

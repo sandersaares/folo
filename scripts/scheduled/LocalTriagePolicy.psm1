@@ -6,6 +6,7 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
+Import-Module (Join-Path $PSScriptRoot 'ScheduledJson.psm1')
 Import-Module (Join-Path $PSScriptRoot 'ScheduledContracts.psm1')
 Import-Module (Join-Path $PSScriptRoot 'ScheduledTransport.psm1')
 
@@ -13,7 +14,7 @@ function Get-ScheduledTriagePolicy {
     [CmdletBinding()]
     [OutputType([hashtable])]
     param([string] $Path = (Join-Path $PSScriptRoot 'triage-policy.json'))
-    $policy = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json -AsHashtable
+    $policy = Get-Content -LiteralPath $Path -Raw | ConvertFrom-ScheduledJson
     foreach ($field in @('schema_version', 'automation_name', 'automation_marker', 'cadence_cron',
             'mode', 'enrolled_machine_id', 'model', 'reasoning_effort', 'max_active_analyses',
             'max_starts_per_day', 'max_continuations_per_day', 'max_continuations_per_analysis',

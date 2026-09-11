@@ -621,6 +621,8 @@ Describe 'Pinned cargo-mutants output classification' {
 
     It 'classifies an unmutated test failure or timeout as blocked, never as a mutant defect' -ForEach @(
         @{ Status = @{ Failure = 101 }; Summary = 'Failure'; Baseline = 'failed' },
+        @{ Status = @{ Failure = -1073740791 }; Summary = 'Failure'; Baseline = 'failed' },
+        @{ Status = @{ Failure = -1073741571 }; Summary = 'Failure'; Baseline = 'failed' },
         @{ Status = 'Timeout'; Summary = 'Timeout'; Baseline = 'timeout' }
     ) {
         $check = New-Check
@@ -655,19 +657,61 @@ Describe 'Pinned cargo-mutants output classification' {
         $result.findings.Count | Should -Be 0
     }
 
-    It 'accepts caught and unviable mutants when phase results and exit code agree' {
+    It 'accepts caught and unviable mutants with native failure status <FailureCode>' -ForEach @(
+        @{ FailureCode = 101 }, @{ FailureCode = -1073740791 }, @{ FailureCode = -1073741571 }
+    ) {
         $check = New-Check
         $path = New-Evidence $check 0
         Set-Lab $path {
             param($lab)
             $lab.outcomes[1].summary = 'CaughtMutant'
-            $lab.outcomes[1].phase_results[1].process_status = @{ Failure = 101 }
+            $lab.outcomes[1].phase_results[1].process_status = @{ Failure = $FailureCode }
             $lab.outcomes[2].summary = 'Unviable'
             $lab.outcomes[2].phase_results = @($lab.outcomes[2].phase_results[0])
-            $lab.outcomes[2].phase_results[0].process_status = @{ Failure = 101 }
+            $lab.outcomes[2].phase_results[0].process_status = @{ Failure = $FailureCode }
             $lab.missed = 0; $lab.timeout = 0; $lab.caught = 1; $lab.unviable = 1
         }
         (Get-ScheduledCheckResult $check $path $script:context).outcome | Should -Be 'passed'
+    }
+
+    It 'retains missed mutants beside signed Windows test failures from the pinned wire format' -ForEach @(
+        @{ FailureCode = -1073740791 }, @{ FailureCode = -1073741571 }
+    ) {
+        # These native status values occur in run 34574480961, attempt 1, Windows shard 8.
+        $check = New-Check
+        $path = New-Evidence $check 2
+        Set-Lab $path {
+            param($lab)
+            $lab.outcomes[2].summary = 'CaughtMutant'
+            $lab.outcomes[2].phase_results[1].process_status = @{ Failure = $FailureCode }
+            $lab.timeout = 0; $lab.caught = 1
+        }
+        $result = Get-ScheduledCheckResult $check $path $script:context
+        $result.outcome | Should -Be findings
+        $result.baseline | Should -Be passed
+        $result.findings.Count | Should -Be 1
+        $result.findings[0].summary | Should -Match '^MissedMutant:'
+    }
+
+    It 'rejects zero failure status and incomplete phase provenance' -ForEach @(
+        @{ Damage = 'zero' }, @{ Damage = 'missing-build' }, @{ Damage = 'failed-build-before-test' }
+    ) {
+        $check = New-Check
+        $path = New-Evidence $check 2
+        Set-Lab $path {
+            param($lab)
+            $scenario = $lab.outcomes[2]
+            $scenario.summary = 'CaughtMutant'; $lab.timeout = 0; $lab.caught = 1
+            $scenario.phase_results[1].process_status = @{ Failure = -1073740791 }
+            switch ($Damage) {
+                zero { $scenario.phase_results[1].process_status.Failure = 0 }
+                missing-build { $scenario.phase_results = @($scenario.phase_results[1]) }
+                failed-build-before-test { $scenario.phase_results[0].process_status = @{ Failure = -1073741571 } }
+            }
+        }
+        $result = Get-ScheduledCheckResult $check $path $script:context
+        $result.outcome | Should -Be incomplete
+        $result.findings.Count | Should -Be 0
     }
 
     It 'does not trust candidate evidence labels or command scope' {
@@ -1033,6 +1077,61 @@ Describe 'Miri and careful evidence' {
 }
 
 Describe 'Cargo test target scope' {
+    It 'retains unsupported proc-macro scope without executing its harness for <CheckKind>' -ForEach @(
+        @{ CheckKind = 'miri' }, @{ CheckKind = 'miri-many' }
+    ) {
+        # Source-shaped metadata and Miri output from run 34574480961/1, check-74.
+        Mock -ModuleName ScheduledExecution Invoke-ScheduledProcess {
+            param($OutputDirectory, $Name)
+            if ($Name -ne 'metadata') { throw 'Unsupported proc-macro harness was invoked.' }
+            $stdout = Join-Path $OutputDirectory "$Name.stdout"
+            $stderr = Join-Path $OutputDirectory "$Name.stderr"
+            Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'fixtures\execution\proc-macro-metadata.json') -Destination $stdout
+            Set-Content -LiteralPath $stderr -Value ''
+            return @{ exit_code = 0; stdout_path = $stdout; stderr_path = $stderr }
+        }
+        $check = New-Check $CheckKind
+        $check.packages = @('linked_macros')
+        $path = New-Output
+        $result = Invoke-ScheduledCheck $check $script:root $path $script:toolchain $script:context
+        $result.outcome | Should -Be not-applicable
+        $result.findings.Count | Should -Be 0
+        $result.unsupported_targets.Count | Should -Be 1
+        $result.unsupported_targets[0].package | Should -Be linked_macros
+        $result.unsupported_targets[0].target.kind | Should -Be lib
+        $result.unsupported_targets[0].outcome | Should -Be not-applicable
+        $result.unsupported_targets[0].summary | Should -Not -BeNullOrEmpty
+        (Get-ScheduledCheckResult $check $path $script:context).unsupported_targets |
+            ConvertTo-Json -Depth 10 | Should -BeExactly ($result.unsupported_targets | ConvertTo-Json -Depth 10)
+        Should -Invoke -ModuleName ScheduledExecution Invoke-ScheduledProcess -Exactly -Times 1
+    }
+
+    It 'runs supported integration targets in a proc-macro package and still requires their summaries' {
+        $check = New-Check miri
+        $check.packages = @('linked_macros')
+        $path = New-TestEvidence $check 0
+        $metadata = Get-Content (Join-Path $script:fixtures 'proc-macro-metadata.json') -Raw | ConvertFrom-Json -AsHashtable
+        $metadata.packages[0].targets += @{ kind = @('test'); name = 'macro_expansion'; test = $true }
+        Write-Json $metadata (Join-Path $path 'metadata.stdout')
+        $execution = Get-Content (Join-Path $path 'execution.json') -Raw | ConvertFrom-Json -AsHashtable
+        $execution.commands[0].target = @{ kind = 'test'; name = 'macro_expansion' }
+        $scope = $check.Clone(); $scope.target = $execution.commands[0].target
+        $execution.commands[0].command = Get-ScheduledCommand $scope $script:root $path $script:toolchain
+        Write-Json $execution (Join-Path $path 'execution.json')
+        Set-Content (Join-Path $path 'check-0.stdout') 'test result: ok. 1 passed; 0 failed;'
+        Set-Content (Join-Path $path 'check-0.stderr') ''
+        $result = Get-ScheduledCheckResult $check $path $script:context
+        $result.outcome | Should -Be passed
+        $result.unsupported_targets.Count | Should -Be 1
+        Set-Content (Join-Path $path 'check-0.stdout') ''
+        Copy-Item (Join-Path $script:fixtures 'proc-macro.stderr') (Join-Path $path 'check-0.stderr')
+        (Get-ScheduledCheckResult $check $path $script:context).outcome | Should -Be incomplete
+        # A scope missing the supported integration target must not inherit its package's skip.
+        $execution.commands = @()
+        Write-Json $execution (Join-Path $path 'execution.json')
+        (Get-ScheduledCheckResult $check $path $script:context).outcome | Should -Be incomplete
+    }
+
     It 'validates cpulist and rejects unknown crate names using the tested workspace metadata' {
         $path = New-Output
         & cargo metadata --manifest-path (Join-Path $script:root 'Cargo.toml') --format-version=1 --no-deps --locked |

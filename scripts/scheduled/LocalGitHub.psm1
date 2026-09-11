@@ -1,6 +1,7 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
+Import-Module (Join-Path $PSScriptRoot 'ScheduledJson.psm1')
 
 # Read-side GitHub adapter for the personal Local App executor (LocalInbox.psm1 and the
 # `scheduled-intake`/`scheduled-repair` skills call it between durable-state transactions; see
@@ -25,7 +26,7 @@ function Invoke-ScheduledApi {
     }
     $output = & gh @arguments
     if ($LASTEXITCODE -ne 0) { throw "GitHub read failed for $Endpoint." }
-    $value = ConvertFrom-Json -InputObject ($output -join "`n") -AsHashtable -NoEnumerate
+    $value = ConvertFrom-ScheduledJson -InputObject ($output -join "`n") -NoEnumerate
     if ($value -is [System.Collections.IDictionary] -and $value.Contains('errors')) {
         throw 'GraphQL returned incomplete data with errors.'
     }

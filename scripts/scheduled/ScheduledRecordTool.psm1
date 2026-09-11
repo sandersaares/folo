@@ -6,6 +6,7 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
+Import-Module (Join-Path $PSScriptRoot 'ScheduledJson.psm1')
 Import-Module (Join-Path $PSScriptRoot 'ScheduledTransport.psm1')
 Import-Module (Join-Path $PSScriptRoot 'ScheduledExecution.psm1')
 Import-Module (Join-Path $PSScriptRoot '..\build\CargoExecutable.psm1')
@@ -42,7 +43,7 @@ function Invoke-ScheduledRecordTool {
     }
     $json = Invoke-ScheduledJsonExecutable -Executable $script:executables[$Package] -Directory $root `
         -InputText ($Request | ConvertTo-Json -Depth 100 -Compress)
-    return ConvertFrom-Json -InputObject $json -AsHashtable
+    return ConvertFrom-ScheduledJson -InputObject $json
 }
 
 Export-ModuleMember -Function Invoke-ScheduledRecordTool

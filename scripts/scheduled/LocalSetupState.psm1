@@ -6,6 +6,7 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
+Import-Module (Join-Path $PSScriptRoot 'ScheduledJson.psm1')
 Import-Module (Join-Path $PSScriptRoot 'LocalState.psm1')
 Import-Module (Join-Path $PSScriptRoot 'ScheduledRunGitHub.psm1')
 Import-Module (Join-Path $PSScriptRoot 'ScheduledContracts.psm1')
@@ -90,7 +91,7 @@ function Invoke-ScheduledSetupJournal {
     $lock = [IO.File]::Open("$Path.lock", [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
     try {
         $journal = if (Test-Path -LiteralPath $Path) {
-            Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json -AsHashtable
+            Get-Content -LiteralPath $Path -Raw | ConvertFrom-ScheduledJson
         } else { @{ schema_version = 1; repository_id = $RepositoryId; roles = @{} } }
         Assert-ScheduledSetupJournal $journal $RepositoryId
         if ($Action -ceq 'read') { return $journal }

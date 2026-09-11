@@ -8,6 +8,7 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
+Import-Module (Join-Path $PSScriptRoot 'ScheduledJson.psm1')
 Import-Module (Join-Path $PSScriptRoot '..\build\Mutants.psm1')
 Import-Module (Join-Path $PSScriptRoot '..\build\Miri.psm1')
 Import-Module (Join-Path $PSScriptRoot '..\build\CargoExecutable.psm1')
@@ -393,7 +394,7 @@ function Get-ScheduledMutationConfig {
         throw [FormatException]::new('Empty-shard baseline configuration differs from the controller.')
     }
     $json = Invoke-ScheduledMutationDecoder -Executable (Get-ScheduledMutationDecoder) -Text $Text
-    return ConvertFrom-Json -InputObject $json -AsHashtable
+    return ConvertFrom-ScheduledJson -InputObject $json
 }
 
 function Invoke-ScheduledMutationDecoder {
@@ -519,7 +520,9 @@ function Get-ScheduledPhaseSummary {
         $status = $phase.process_status
         if ($status -ceq 'Timeout') { $timeout = $true }
         elseif ($status -is [hashtable] -and $status.ContainsKey('Failure')) {
-            if ($status.Failure -le 0) { throw [FormatException]::new('Invalid failure exit code.') }
+            # Failure(i32) preserves native Windows statuses as signed values. The sign does
+            # not distinguish a completed test failure from a timeout or a build failure.
+            if ($status.Failure -eq 0) { throw [FormatException]::new('Invalid failure exit code.') }
             if ($phase.phase -cne 'Test') { $buildFailed = $true }
         } elseif ($status -cne 'Success') {
             throw [FormatException]::new('Unclassified process termination.')
@@ -565,12 +568,12 @@ function Get-ScheduledMutationResult {
         $Result.summary = 'Mutation output or selected-mutant inventory is missing.'
         return
     }
-    $lab = Get-Content -LiteralPath $outcomesPath -Raw | ConvertFrom-Json -AsHashtable
+    $lab = Get-Content -LiteralPath $outcomesPath -Raw | ConvertFrom-ScheduledJson
     $run = @($Execution.commands | Where-Object { $_.name -ceq 'check' })[0]
     if ($run.exit_code -ne $Execution.exit_code) {
         throw [FormatException]::new('Mutation command and aggregate exit code disagree.')
     }
-    $inventory = @(Get-Content -LiteralPath $inventoryPath -Raw | ConvertFrom-Json -AsHashtable)
+    $inventory = @(Get-Content -LiteralPath $inventoryPath -Raw | ConvertFrom-ScheduledJson)
     foreach ($name in @('outcomes', 'total_mutants', 'missed', 'caught', 'timeout', 'unviable',
             'success', 'end_time', 'cargo_mutants_version')) {
         if (-not $lab.ContainsKey($name)) { throw [FormatException]::new("Missing lab field: $name") }
@@ -614,7 +617,7 @@ function Get-ScheduledMutationResult {
         if (-not (Test-Path -LiteralPath $discoveryPath)) {
             throw [FormatException]::new('Replay discovery output is missing.')
         }
-        $discovered = @(Get-Content -LiteralPath $discoveryPath -Raw | ConvertFrom-Json -AsHashtable)
+        $discovered = @(Get-Content -LiteralPath $discoveryPath -Raw | ConvertFrom-ScheduledJson)
         if ($discovered.Count -ne 1 -or (Get-ScheduledMutantKey $discovered[0]) -cne $key) {
             throw [FormatException]::new('Replay discovery did not select the intended mutant.')
         }
@@ -905,7 +908,7 @@ function Get-ScheduledTestScope {
     )
 
     $metadata = Get-Content -LiteralPath (Join-Path $OutputDirectory 'metadata.stdout') -Raw |
-        ConvertFrom-Json -AsHashtable
+        ConvertFrom-ScheduledJson
     foreach ($key in @('version', 'packages', 'workspace_members')) {
         if (-not $metadata.ContainsKey($key)) { throw [FormatException]::new("Missing metadata field: $key") }
     }
@@ -922,7 +925,7 @@ function Get-ScheduledTestScope {
         if ($Check.packages.Count -gt 0 -and $package.name -cnotin $Check.packages) { continue }
         if ($Check.kind -eq 'careful') {
             if ($selected.ContainsKey($package.name)) { throw [FormatException]::new('Duplicate workspace package.') }
-            $selected.Add($package.name, @{ package = $package.name; target = $null })
+            $selected.Add($package.name, @{ package = $package.name; target = $null; unsupported_reason = '' })
             continue
         }
         foreach ($cargoTarget in $package.targets) {
@@ -945,7 +948,11 @@ function Get-ScheduledTestScope {
                 $targetKey -cne (Get-ScheduledTargetKey -Target $Check.target)) { continue }
             $key = ConvertTo-Json -InputObject @($package.name, $kind, $target.name) -Compress
             if ($selected.ContainsKey($key)) { throw [FormatException]::new('Duplicate Cargo test target.') }
-            $selected.Add($key, @{ package = $package.name; target = $target })
+            # Miri cannot run proc-macro unit-test harnesses. Keep their metadata identity
+            # visible without launching a command that cannot produce test-suite evidence.
+            # Integration tests in the same package remain independently supported targets.
+            $reason = if ($kinds -ccontains 'proc-macro') { 'Miri does not support proc-macro unit tests.' } else { '' }
+            $selected.Add($key, @{ package = $package.name; target = $target; unsupported_reason = $reason })
         }
     }
     if ($Check.ContainsKey('target') -and $selected.Count -ne 1) {
@@ -968,7 +975,11 @@ function Get-ScheduledPackageResult {
         $Result.summary = 'Workspace package inventory is missing.'
         return
     }
-    $scopes = @(Get-ScheduledTestScope -Check $Check -OutputDirectory $OutputDirectory)
+    $inventory = @(Get-ScheduledTestScope -Check $Check -OutputDirectory $OutputDirectory)
+    $Result.unsupported_targets = @($inventory | Where-Object { $_.unsupported_reason -ne '' } | ForEach-Object {
+        @{ package = $_.package; target = $_.target; outcome = 'not-applicable'; summary = $_.unsupported_reason }
+    })
+    $scopes = @($inventory | Where-Object { $_.unsupported_reason -eq '' })
     $runs = @($Execution.commands | Where-Object { $_.name -like 'check-*' })
     if ($scopes.Count -ne $runs.Count) {
         $Result.summary = 'Not every selected test target has completed evidence.'
@@ -1006,9 +1017,10 @@ function Get-ScheduledPackageResult {
     $Result.outcome = if ('execution-error' -in $outcomes) { 'execution-error' }
         elseif ('incomplete' -in $outcomes) { 'incomplete' }
         elseif ('findings' -in $outcomes) { 'findings' }
-        elseif ('passed' -in $outcomes -or ($scopes.Count -eq 0 -and $Check.kind -eq 'miri')) { 'passed' }
+        elseif ('passed' -in $outcomes -or ($scopes.Count -eq 0 -and
+                $Result.unsupported_targets.Count -eq 0 -and $Check.kind -eq 'miri')) { 'passed' }
         else { 'not-applicable' }
-    $Result.summary = "Test scope outcomes: $($outcomes -join ', ')."
+    $Result.summary = "Test scope outcomes: $($outcomes -join ', '). Unsupported targets: $($Result.unsupported_targets.Count)."
 }
 
 function Assert-ScheduledRecordedCommand {
@@ -1059,7 +1071,7 @@ function Get-ScheduledCheckResult {
     if (-not (Test-Path -LiteralPath $executionPath)) { return $result }
     try {
         $toolchain = Get-ScheduledExpectedToolchain -Kind $Check.kind -RunContext $RunContext
-        $execution = Get-Content -LiteralPath $executionPath -Raw | ConvertFrom-Json -AsHashtable
+        $execution = Get-Content -LiteralPath $executionPath -Raw | ConvertFrom-ScheduledJson
         foreach ($name in @('schema_version', 'stage', 'exit_code', 'completed', 'commands',
                 'source_root', 'output_directory', 'toolchain')) {
             if (-not $execution.ContainsKey($name)) { throw [FormatException]::new("Missing execution $name.") }
@@ -1181,7 +1193,7 @@ function Invoke-ScheduledCheck {
             $execution.exit_code = $step.exit_code
             Get-Content -LiteralPath $step.stdout_path, $step.stderr_path | Add-Content -LiteralPath $logPath
             if ($step.exit_code -ne 0) { $execution.completed = $true; return }
-            $selected = @(Get-Content -LiteralPath $step.stdout_path -Raw | ConvertFrom-Json -AsHashtable)
+            $selected = @(Get-Content -LiteralPath $step.stdout_path -Raw | ConvertFrom-ScheduledJson)
             if ($selected.Count -ne 1 -or
                 (Get-ScheduledMutantKey $selected[0]) -cne (Get-ScheduledMutantKey $Check.replay_mutant)) {
                 $execution.stage = 'replay-selection-mismatch'
@@ -1250,7 +1262,8 @@ function Invoke-ScheduledCheck {
             $execution.exit_code = $step.exit_code
             Get-Content -LiteralPath $step.stdout_path, $step.stderr_path | Add-Content -LiteralPath $logPath
             if ($step.exit_code -ne 0) { $execution.completed = $true; return }
-            $scopes = @(Get-ScheduledTestScope -Check $Check -OutputDirectory $OutputDirectory)
+            $scopes = @(Get-ScheduledTestScope -Check $Check -OutputDirectory $OutputDirectory |
+                Where-Object { $_.unsupported_reason -eq '' })
             $execution.stage = 'check'
             for ($index = 0; $index -lt $scopes.Count; $index++) {
                 $selected = $scopes[$index]

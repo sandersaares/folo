@@ -8,13 +8,14 @@ $PSNativeCommandUseErrorActionPreference = $true
 Import-Module (Join-Path $PSScriptRoot '..\LocalState.psm1')
 Import-Module (Join-Path $PSScriptRoot '..\LocalTriagePolicy.psm1')
 Import-Module (Join-Path $PSScriptRoot '..\ScheduledContracts.psm1')
+Import-Module (Join-Path $PSScriptRoot '..\ScheduledJson.psm1')
 Import-Module (Join-Path $PSScriptRoot '..\ScheduledRecordTool.psm1')
 Import-Module (Join-Path $PSScriptRoot '..\LocalTriageInbox.psm1')
 Import-Module (Join-Path $PSScriptRoot '..\LocalTriagePublication.psm1')
 
 function Copy-TriageFixtureValue {
     param($Value)
-    return $Value | ConvertTo-Json -Depth 100 | ConvertFrom-Json -AsHashtable
+    return $Value | ConvertTo-Json -Depth 100 | ConvertFrom-ScheduledJson
 }
 
 function Initialize-TriageFixture {
@@ -24,7 +25,8 @@ function Initialize-TriageFixture {
         [ValidateRange(1, 2)][int] $ProblemCount = 1,
         [ValidateSet('', 'cancelled', 'failure')][string] $EmptyWorkflowConclusion = '',
         [switch] $PartialWithSupport,
-        [switch] $Unclaimed
+        [switch] $Unclaimed,
+        [hashtable] $Plan = @{ run = $true }
     )
     $policy = Get-ScheduledPolicy
     $policy.repository = 'owner/repository'; $policy.repository_id = 123
@@ -62,7 +64,7 @@ function Initialize-TriageFixture {
             run_attempt = 1; run_number = 42; created_at = '2026-09-09T01:00:00Z'
             started_at = '2026-09-09T01:00:01Z'; completed_at = '2026-09-09T01:00:02Z'
             workflow_conclusion = 'failure'; run_sha = 'a' * 40; controller_sha = 'a' * 40
-            manifest = @{ source_sha = 'a' * 40 }; plan = @{ run = $true }
+            manifest = @{ source_sha = 'a' * 40 }; plan = $Plan
             results = @(@{ check_id = 'setup'; outcome = 'execution-error' }); evidence_gaps = @()
             jobs = @(@{
                 id = 101; name = 'Setup'; status = 'completed'; conclusion = 'failure'
