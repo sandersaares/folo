@@ -44,6 +44,9 @@ Describe 'Durable disabled setup intent' {
 
     It 'rejects a well-formed journal from another independently identified repository' {
         $foreign = $desired.Clone(); $foreign.repository_id = 124; $foreign.repository = 'owner/another'
+        { Invoke-ScheduledSetupJournal (Join-Path $TestDrive 'wrong-desired.json') 123 begin-create triage @{
+            operator_approved = $true; desired = $foreign
+        } } | Should -Throw
         $journal = Invoke-ScheduledSetupJournal $path 124 begin-create triage @{
             operator_approved = $true; desired = $foreign
         }

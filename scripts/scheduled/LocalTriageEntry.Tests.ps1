@@ -77,6 +77,9 @@ Describe 'Local triage JSON entry point' {
     }
 
     It 'rejects collection-valued native facts before state or identity access' {
+        { Invoke-EntryFixtureRequest state @{
+            action = 'triage-read'; fields = 'not-an-object'
+        } } | Should -Throw -ExceptionType ([FormatException])
         foreach ($field in @('native_verified', 'native_idle_verified', 'ownership_verified', 'operator_approved',
                 'successful', 'hosted_confirmation')) {
             { Invoke-EntryFixtureRequest state @{

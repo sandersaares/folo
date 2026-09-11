@@ -50,7 +50,9 @@ Describe 'Restored triage publication authority' {
             missing-receipt { $operation.stage = 'confirmed' }
             receipt-digest {
                 $operation.stage = 'confirmed'; $operation.target_id = 900
-                $operation.receipt = @{ target_id = 900; operation_id = $operation.id; payload_digest = 'different' }
+                $target = @{ id = 900; body = $operation.payload.body }
+                $operation.receipt = @{ target_id = 900; operation_id = $operation.id; payload_digest = 'different'
+                    target = $target; target_digest = Get-ScheduledDigest $target }
             }
         }
         $state | ConvertTo-Json -Depth 100 | Set-Content -LiteralPath $path
