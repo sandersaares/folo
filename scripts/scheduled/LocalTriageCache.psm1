@@ -46,7 +46,7 @@ function Get-ScheduledTriageClaimValidation {
     }
     $snapshot = Read-ScheduledTriageSnapshot $StateRoot $Scan.snapshot_id
     $fields = @('repository_id', 'workflow_id', 'run_id', 'run_attempt', 'digest', 'issue_number')
-    if ($Data['revision'] -isnot [hashtable] -or $Data.revision.Count -ne $fields.Count) {
+    if ($Data['revision'] -isnot [hashtable] -or $Data.revision.PSBase.Count -ne $fields.Count) {
         throw [FormatException]::new('Claim revision must contain exactly its identity fields.')
     }
     $revisionDigest = Get-ScheduledDigest $Data.revision

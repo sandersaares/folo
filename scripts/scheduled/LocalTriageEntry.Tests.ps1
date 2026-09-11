@@ -148,6 +148,14 @@ Describe 'Local triage JSON entry point' {
             } } } | Should -Throw
             (Get-Content -LiteralPath $path -Raw) | Should -BeExactly $before
         }
+        $revision = Copy-TriageFixtureValue $fixture.revision
+        $revision['Count'] = $fixture.revision.PSBase.Count
+        $revision['Keys'] = @($fixture.revision.PSBase.Keys)
+        { Invoke-EntryFixtureRequest state @{ action = 'triage-claim'; fields = @{
+            scan_token = $fixture.context.scan_token; session_id = $fixture.context.session_id
+            native_verified = $true; revision = $revision
+        } } } | Should -Throw
+        (Get-Content -LiteralPath $path -Raw) | Should -BeExactly $before
         $state = Invoke-TriageTransaction $fixture.context read
         $state.triage.active_analysis_id | Should -BeNullOrEmpty
         $state.triage.analyses.Count | Should -Be 0

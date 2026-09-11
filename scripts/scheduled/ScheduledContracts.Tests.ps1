@@ -27,6 +27,16 @@ Describe 'Scheduled records' {
         (Get-ScheduledDigest @('a', 'b')) | Should -Not -Be (Get-ScheduledDigest @('b', 'a'))
         (Get-ScheduledDigest 'Path') | Should -Not -Be (Get-ScheduledDigest 'path')
     }
+    It 'preserves dictionary-member names as ordinary evidence keys' {
+        # Count deliberately differs from the payload cardinality; neither name is metadata.
+        $record = @{ schema_version = 1; payload = @{ Keys = @('a'); Count = 2; a = 'first'; b = 'visible' } }
+        $parsed = Read-ScheduledRecord -Kind reporter -Text (Write-ScheduledRecord -Kind reporter -Record $record)
+        $parsed.payload['Keys'] | Should -Be @('a')
+        $parsed.payload['Count'] | Should -Be 2
+        $parsed.payload.b | Should -Be visible
+        $changed = $record.Clone(); $changed.payload = $record.payload.Clone(); $changed.payload.b = 'different'
+        (Get-ScheduledDigest $record) | Should -Not -Be (Get-ScheduledDigest $changed)
+    }
     It 'preserves pipeline-wrapped primitives through record and JSON round trips' {
         $name = 'scheduled-finding' | ForEach-Object { $_ }
         $null = $name.PSObject.Properties

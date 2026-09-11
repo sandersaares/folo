@@ -18,7 +18,8 @@ function ConvertTo-ScheduledCanonicalValue {
     if ($null -eq $Value) { return $null }
     if ($Value -is [System.Collections.IDictionary]) {
         $result = [ordered]@{}
-        $keys = [string[]]@($Value.Keys)
+        # JSON member names are data, including Keys; they must not control enumeration.
+        $keys = [string[]]@($Value.PSBase.Keys)
         [Array]::Sort($keys, [StringComparer]::Ordinal)
         foreach ($key in $keys) {
             $result[$key] = ConvertTo-ScheduledCanonicalValue $Value[$key]
