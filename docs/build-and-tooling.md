@@ -220,6 +220,9 @@ The wrapper retains runtime/module metadata, full managed/inner exception diagno
 and the analyzer's file/rule trace under `target/script-analysis/`. Standard validation
 uploads those diagnostics even when the analyzer itself fails. Diagnostic collection
 does not retry, suppress rules or turn an engine failure into a successful result.
+Before the full scan, one rule initializes the analyzer's shared exported-command
+metadata serially. This avoids concurrent lazy initialization in PowerShell's
+runspace event manager; every configured rule still runs on the repository.
 
 PSScriptAnalyzer can only see `.ps1`/`.psm1` files, so **nontrivial** inline PowerShell
 is not linted where it sits. Keep justfile `[script]` blocks and workflow `pwsh`

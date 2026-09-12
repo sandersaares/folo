@@ -15,6 +15,7 @@ Describe 'Bounded GitHub downloads' {
             $script:path = Join-Path $script:directory 'response'
             $script:executable = (Get-Command pwsh -CommandType Application | Select-Object -First 1).Source
             $script:fixture = Join-Path $PSScriptRoot 'fixtures\Write-ReporterBytes.ps1'
+            $script:realRetryCommand = Get-Command Invoke-WithRetry
         }
         AfterAll { Remove-Item -LiteralPath $script:directory -Recurse -Force }
         BeforeEach {
@@ -23,8 +24,14 @@ Describe 'Bounded GitHub downloads' {
             $script:responseErrorText = ''
             $script:failedTransfers = 0
             $script:downloadStarts = 0
-            Mock Start-Sleep -ModuleName Retry {}
-            Mock Write-Warning -ModuleName Retry {}
+            # Exercise real retry decisions without depending on a globally selected Retry
+            # module instance or allowing a real delay in the full script suite.
+            Mock Invoke-WithRetry {
+                param($Action, $Attempt, $DelaySeconds, $BackoffMultiplier, $MaxDelaySeconds, $RetryOn)
+                $DelaySeconds | Should -Be 3
+                & $script:realRetryCommand -Action $Action -Attempt $Attempt -DelaySeconds 0 `
+                    -BackoffMultiplier $BackoffMultiplier -MaxDelaySeconds $MaxDelaySeconds -RetryOn $RetryOn
+            }
             Mock Get-ScheduledDownloadStartInfo {
                 $script:downloadStarts++
                 $start = [Diagnostics.ProcessStartInfo]::new()
@@ -82,7 +89,9 @@ Describe 'Bounded GitHub downloads' {
             Save-ScheduledGitHubFile repos/example/repo/response $script:path -ByteLimit 16 | Should -BeFalse
             $script:downloadStarts | Should -Be 2
             [IO.File]::ReadAllText($script:path) | Should -BeExactly ('x' * 16)
-            Should -Invoke Start-Sleep -ModuleName Retry -Times 1 -Exactly -ParameterFilter { $Seconds -eq 3 }
+            Should -Invoke Invoke-WithRetry -Times 1 -Exactly -ParameterFilter {
+                $Attempt -eq 4 -and $DelaySeconds -eq 3 -and $BackoffMultiplier -eq 2 -and $MaxDelaySeconds -eq 30
+            }
         }
         It 'does not retry deterministic transfer refusals and preserves their diagnostic' {
             $script:responseExitCode = 1
@@ -91,7 +100,6 @@ Describe 'Bounded GitHub downloads' {
                 Should -Throw -PassThru
             $failure.Exception.Message | Should -Match 'Not Found \(HTTP 404\)'
             $script:downloadStarts | Should -Be 1
-            Should -Invoke Start-Sleep -ModuleName Retry -Times 0 -Exactly
         }
         It 'bounds stderr while stdout is waiting and cleans the interrupted transfer' {
             $savedLimit = $script:ErrorTextLimit

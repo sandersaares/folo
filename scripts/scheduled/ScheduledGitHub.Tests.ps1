@@ -641,11 +641,20 @@ Describe 'Artifact summary reading' {
 
     Describe 'GitHub command boundary' {
         InModuleScope ScheduledGitHub {
+            BeforeAll {
+                $script:realRetryCommand = Get-Command Invoke-WithRetry
+            }
             BeforeEach {
                 $script:savedExitCode = Get-Variable LASTEXITCODE -Scope Global -ValueOnly -ErrorAction SilentlyContinue
                 $script:requestCount = 0
-                Mock Start-Sleep -ModuleName Retry {}
-                Mock Write-Warning -ModuleName Retry {}
+                # Other script suites load their own nested Retry modules. Mock our direct
+                # dependency, not whichever module named Retry Pester happens to find.
+                Mock Invoke-WithRetry {
+                    param($Action, $Attempt, $DelaySeconds, $BackoffMultiplier, $MaxDelaySeconds, $RetryOn)
+                    $DelaySeconds | Should -Be 3
+                    & $script:realRetryCommand -Action $Action -Attempt $Attempt -DelaySeconds 0 `
+                        -BackoffMultiplier $BackoffMultiplier -MaxDelaySeconds $MaxDelaySeconds -RetryOn $RetryOn
+                }
             }
             AfterEach { $global:LASTEXITCODE = $script:savedExitCode }
             It 'preserves empty and singleton API arrays for collection pagination' {
@@ -660,7 +669,6 @@ Describe 'Artifact summary reading' {
                 Mock gh { $global:LASTEXITCODE = 0; 'HTTP 503 is not JSON' }
                 { Invoke-ScheduledGitHubJson 'repos/example/repo/issues' } | Should -Throw
                 Should -Invoke gh -Times 1 -Exactly
-                Should -Invoke Start-Sleep -ModuleName Retry -Times 0 -Exactly
             }
             It 'propagates a failed GitHub command even if it emitted valid JSON' {
                 Mock gh { $global:LASTEXITCODE = 1; '[]' }
@@ -681,7 +689,7 @@ Describe 'Artifact summary reading' {
                 }
                 (Invoke-ScheduledGitHubJson 'repos/example/repo/issues').ok | Should -BeTrue
                 Should -Invoke gh -Times 2 -Exactly
-                Should -Invoke Start-Sleep -ModuleName Retry -Times 1 -Exactly -ParameterFilter { $Seconds -eq 3 }
+                Should -Invoke Invoke-WithRetry -Times 1 -Exactly
             }
             It 'does not retry <FailureText> and preserves the original diagnostic' -ForEach @(
                 @{ FailureText = 'gh: Requires authentication (HTTP 401)' }
@@ -696,7 +704,6 @@ Describe 'Artifact summary reading' {
                 $failure = { Invoke-ScheduledGitHubJson 'repos/example/repo/issues' } | Should -Throw -PassThru
                 $failure.Exception.Message | Should -Match ([regex]::Escape($FailureText))
                 Should -Invoke gh -Times 1 -Exactly
-                Should -Invoke Start-Sleep -ModuleName Retry -Times 0 -Exactly
             }
             It 'keeps <Method> single-shot even when the failure looks transient' -ForEach @(
                 @{ Method = 'POST' }, @{ Method = 'PATCH' }
@@ -708,15 +715,15 @@ Describe 'Artifact summary reading' {
                 { Invoke-ScheduledGitHubJson 'repos/example/repo/issues' -Method $Method -Body @{ body = 'test' } } |
                     Should -Throw
                 Should -Invoke gh -Times 1 -Exactly
-                Should -Invoke Start-Sleep -ModuleName Retry -Times 0 -Exactly
+                Should -Invoke Invoke-WithRetry -Times 0 -Exactly
             }
             It 'uses the existing bounded backoff and rethrows the final read failure' {
                 Mock gh { $global:LASTEXITCODE = 1; 'gh: Service unavailable (HTTP 503)' }
                 $failure = { Invoke-ScheduledGitHubJson 'repos/example/repo/issues' } | Should -Throw -PassThru
                 $failure.Exception.Message | Should -Match 'HTTP 503'
                 Should -Invoke gh -Times 4 -Exactly
-                foreach ($delay in @(3, 6, 12)) {
-                    Should -Invoke Start-Sleep -ModuleName Retry -Times 1 -Exactly -ParameterFilter { $Seconds -eq $delay }
+                Should -Invoke Invoke-WithRetry -Times 1 -Exactly -ParameterFilter {
+                    $Attempt -eq 4 -and $DelaySeconds -eq 3 -and $BackoffMultiplier -eq 2 -and $MaxDelaySeconds -eq 30
                 }
             }
             It 'does not mix successful stderr notes into JSON or retry them' {

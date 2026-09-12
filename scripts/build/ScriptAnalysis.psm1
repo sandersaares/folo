@@ -26,10 +26,20 @@ function Invoke-WorkspaceScriptAnalysis {
         module_path = $env:PSModulePath; repository = $RepositoryRoot
     } | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $directory environment.json)
     try {
+        # Parallel rules share lazily initialized Export-ModuleMember parameter metadata.
+        # Initialize it through one rule first so PowerShell's runspace event setup is serial.
+        # The real scan below still runs every configured default/custom rule.
+        # Ref: docs/build-and-tooling.md#powershell-linting.
+        $initialization = @(Invoke-ScriptAnalyzer `
+            -ScriptDefinition "function Get-AnalysisInitialization { }`nExport-ModuleMember -Function Get-AnalysisInitialization" `
+            -IncludeRule PSReservedCmdletChar -Verbose 4> $trace)
+        if ($initialization.Count -gt 0) {
+            throw 'Script analyzer metadata initialization returned unexpected diagnostics.'
+        }
         $results = @(Invoke-ScriptAnalyzer -Path (Join-Path $RepositoryRoot scripts) -Recurse `
             -Settings (Join-Path $RepositoryRoot PSScriptAnalyzerSettings.psd1) `
             -CustomRulePath (Join-Path $RepositoryRoot 'scripts\analyzer\FoloAnalyzerRules.psm1') `
-            -IncludeDefaultRules -Verbose 4> $trace)
+            -IncludeDefaultRules -Verbose 4>> $trace)
     } catch [System.Management.Automation.RuntimeException], [System.NullReferenceException] {
         # Preserve the original failure. The normal formatter omits managed/inner stacks,
         # while the trace identifies the last files and rules the engine started.
