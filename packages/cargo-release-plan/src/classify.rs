@@ -1,6 +1,7 @@
 // Classification of publishable packages against their anchors.
 
 use std::borrow::Cow;
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{MAIN_SEPARATOR, Path, PathBuf};
 use std::rc::Rc;
@@ -263,6 +264,28 @@ pub(crate) enum PackageStatus {
     PendingRelease,
     NeedsIncrement,
     Unchanged,
+}
+
+impl PackageStatus {
+    /// Derives the status shared by classification and report validation.
+    ///
+    /// Missing anchors have no comparison evidence; anchored versions must not regress.
+    pub(crate) fn from_evidence(
+        declared: &Version,
+        anchor: Option<&Version>,
+        has_changes: bool,
+    ) -> Option<Self> {
+        match anchor {
+            None if has_changes => None,
+            None => Some(Self::PendingRelease),
+            Some(anchor) => match declared.cmp(anchor) {
+                Ordering::Less => None,
+                Ordering::Greater => Some(Self::PendingRelease),
+                Ordering::Equal if has_changes => Some(Self::NeedsIncrement),
+                Ordering::Equal => Some(Self::Unchanged),
+            },
+        }
+    }
 }
 
 /// A released-content, inherited-value or locked-dependency change.
@@ -592,20 +615,24 @@ fn classify_one(
     }
 
     let version_increased = package.manifest.version > anchor.version;
-    let verdict = if version_increased {
-        Verdict::PendingRelease {
+    let status = PackageStatus::from_evidence(
+        &package.manifest.version,
+        Some(&anchor.version),
+        !changed.is_empty(),
+    )
+    .expect("the anchor is present and version regression was rejected");
+    let verdict = match status {
+        PackageStatus::PendingRelease => Verdict::PendingRelease {
             anchor,
             changed,
             patch,
-        }
-    } else if changed.is_empty() {
-        Verdict::Unchanged { anchor }
-    } else {
-        Verdict::NeedsIncrement {
+        },
+        PackageStatus::Unchanged => Verdict::Unchanged { anchor },
+        PackageStatus::NeedsIncrement => Verdict::NeedsIncrement {
             anchor,
             changed,
             patch,
-        }
+        },
     };
     let class = PackageClass {
         name: name.clone(),
@@ -1942,6 +1969,51 @@ mod tests {
     use super::*;
     use crate::inherited::InheritedKeys;
     use crate::manifest::{InstallationDependencies, TargetDiscovery};
+
+    #[test]
+    fn status_requires_consistent_anchor_version_and_change_evidence() {
+        let anchor = Version::new(1, 0, 0);
+        for (declared, previous, changed, expected) in [
+            (
+                Version::new(1, 0, 0),
+                None,
+                false,
+                Some(PackageStatus::PendingRelease),
+            ),
+            (Version::new(1, 0, 0), None, true, None),
+            (
+                Version::new(1, 0, 0),
+                Some(&anchor),
+                false,
+                Some(PackageStatus::Unchanged),
+            ),
+            (
+                Version::new(1, 0, 0),
+                Some(&anchor),
+                true,
+                Some(PackageStatus::NeedsIncrement),
+            ),
+            (
+                Version::new(1, 0, 1),
+                Some(&anchor),
+                false,
+                Some(PackageStatus::PendingRelease),
+            ),
+            (
+                Version::new(1, 0, 1),
+                Some(&anchor),
+                true,
+                Some(PackageStatus::PendingRelease),
+            ),
+            (Version::new(0, 9, 0), Some(&anchor), false, None),
+            (Version::new(0, 9, 0), Some(&anchor), true, None),
+        ] {
+            assert_eq!(
+                PackageStatus::from_evidence(&declared, previous, changed),
+                expected
+            );
+        }
+    }
 
     #[test]
     fn workspace_relative_dir_rebases_onto_the_workspace_root() {

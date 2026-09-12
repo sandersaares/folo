@@ -6,6 +6,7 @@ use std::path::Path;
 use ohno::AppError;
 use semver::Version;
 
+use crate::classify::PackageStatus;
 use crate::groups::Groups;
 use crate::plan::SCHEMA_VERSION;
 use crate::report::ReportFile;
@@ -40,14 +41,24 @@ impl ReportFile {
                     .map(|package| (&package.name, &package.declared_version, &package.group)),
             )
         {
-            if name.trim().is_empty() || targets.insert(name, group).is_some() {
+            if name.trim().is_empty() || targets.contains_key(name) {
                 return Err(InvalidReportPackage::new(name).into());
             }
-            _ = parse_version(name, version)?;
+            targets.insert(name, (group, parse_version(name, version)?));
         }
         for package in &self.packages {
-            if let Some(anchor) = &package.anchor {
-                _ = parse_version(&package.name, &anchor.version)?;
+            let anchor = package
+                .anchor
+                .as_ref()
+                .map(|anchor| parse_version(&package.name, &anchor.version))
+                .transpose()?;
+            let (_, declared) = targets
+                .get(&package.name)
+                .expect("every report package was indexed with its declared version");
+            if PackageStatus::from_evidence(declared, anchor.as_ref(), !package.changed.is_empty())
+                != Some(package.status)
+            {
+                return Err(InconsistentReportStatus::new(&package.name).into());
             }
             for reference in package
                 .dependencies
@@ -77,13 +88,13 @@ impl ReportFile {
                 if !grouped.insert(member)
                     || targets
                         .get(member)
-                        .is_none_or(|reference| reference.as_deref() != Some(name.as_str()))
+                        .is_none_or(|(reference, _)| reference.as_deref() != Some(name.as_str()))
                 {
                     return Err(InvalidReportGroup::new(name).into());
                 }
             }
         }
-        for (name, group) in targets {
+        for (name, (group, _)) in targets {
             if group.is_some() && !grouped.contains(name) {
                 return Err(InvalidReportPackage::new(name).into());
             }
@@ -144,6 +155,13 @@ struct InvalidReportPackage {
     name: String,
 }
 
+/// Status cannot contradict the producer's anchor, version and change evidence.
+#[ohno::error]
+#[display("Report package {} has inconsistent status, anchor, version or change evidence", name.quoted())]
+struct InconsistentReportStatus {
+    name: String,
+}
+
 /// Reported workspace relationships must retain their referenced version targets.
 #[ohno::error]
 #[display("Report package {} references missing workspace package {}", package.quoted(), target.quoted())]
@@ -169,6 +187,41 @@ mod tests {
 
     use super::*;
     use crate::report::fixture::{package, report};
+
+    #[test]
+    fn anchored_reports_cannot_claim_pending_release_without_a_version_increase() {
+        let mut data = report(vec![package("api", "needs-increment", true)]);
+        data.packages.first_mut().unwrap().status = PackageStatus::PendingRelease;
+        assert!(
+            data.validate()
+                .unwrap_err()
+                .find_source::<InconsistentReportStatus>()
+                .is_some()
+        );
+        data.packages.first_mut().unwrap().declared_version = "0.9.0".to_owned();
+        assert!(
+            data.validate()
+                .unwrap_err()
+                .find_source::<InconsistentReportStatus>()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn anchorless_reports_have_no_comparison_evidence() {
+        let mut data = report(vec![package("api", "needs-increment", true)]);
+        let package = data.packages.first_mut().unwrap();
+        package.anchor = None;
+        package.status = PackageStatus::PendingRelease;
+        assert!(
+            data.validate()
+                .unwrap_err()
+                .find_source::<InconsistentReportStatus>()
+                .is_some()
+        );
+        data.packages.first_mut().unwrap().changed.clear();
+        data.validate().unwrap();
+    }
 
     #[test]
     fn in_memory_reports_must_use_the_current_schema() {

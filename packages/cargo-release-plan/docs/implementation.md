@@ -40,6 +40,9 @@ than exact-version grouping. Compatibility selection follows group closure but
 emits only packages declaring a consumer contract.
 Dependency and dependent references must name a reported workspace target; an
 incomplete report cannot silently remove a relationship from release assessment.
+Classification and report validation share the status derivation from anchor,
+declared version, and change evidence. Deserialization cannot manufacture a pending
+release without a version increase or comparison evidence for an anchorless package.
 
 ## Subprocess boundaries
 
@@ -306,6 +309,10 @@ publication eligibility from package naming.
 Proposal and preview output guards resolve existing path ancestors before
 normalizing missing components. Creating an output directory therefore cannot
 turn an accepted destination into an alias of the input evidence.
+The PowerShell preview wrapper leaves initial directory creation and marker
+invalidation to Rust. It may invalidate a successfully produced preview if later
+compatibility evidence fails, but a rejected native invocation grants no ownership
+over the requested output path.
 
 `plan` owns both planning stages and the resolution shared between them. It first
 resolves package and group entries into one target version per tracked version

@@ -8,6 +8,13 @@ use crate::plan::SCHEMA_VERSION;
 use crate::report::{ReportFile, ReportGroup, ReportPackage, ReportVersionTarget};
 
 pub(crate) fn package(name: &str, version: &str, anchor: Option<&str>) -> ReportPackage {
+    // Identical fixture literals establish equality without repeated version parsing under Miri.
+    let status = if anchor == Some(version) {
+        PackageStatus::Unchanged
+    } else {
+        let previous = anchor.map(|version| version.parse::<Version>().unwrap());
+        PackageStatus::from_evidence(&version.parse().unwrap(), previous.as_ref(), false).unwrap()
+    };
     ReportPackage {
         name: name.to_owned(),
         declared_version: version.to_owned(),
@@ -16,7 +23,7 @@ pub(crate) fn package(name: &str, version: &str, anchor: Option<&str>) -> Report
             commit: "release".to_owned(),
             version: version.to_owned(),
         }),
-        status: PackageStatus::Unchanged,
+        status,
         changed: Vec::new(),
         stat: DiffStat {
             files: 0,

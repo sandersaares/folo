@@ -369,16 +369,16 @@ function Invoke-ExpandReleasePlan {
         throw 'expand-release-plan output must not overwrite its input artifact.'
     }
     $expandedDirectory = Split-Path -Parent ([IO.Path]::GetFullPath($ExpandedPath))
-    New-Item -ItemType Directory -Path $expandedDirectory -Force | Out-Null
     $stagingPath = Join-Path $expandedDirectory "$(Split-Path -Leaf $ExpandedPath).$(New-Guid).staging"
-    Remove-Item -LiteralPath $ExpandedPath -Force -ErrorAction SilentlyContinue
     try {
         Invoke-ReleasePlanCargo -Command @(
             'expand', '--plan', $PlanPath, '--out', $stagingPath
         ) -Cargo $Cargo
         Move-Item -LiteralPath $stagingPath -Destination $ExpandedPath -Force
     } finally {
-        Remove-Item -LiteralPath $stagingPath -Force -ErrorAction SilentlyContinue
+        if (Test-Path -LiteralPath $stagingPath) {
+            Remove-Item -LiteralPath $stagingPath -Force
+        }
     }
 }
 
@@ -393,18 +393,15 @@ function Invoke-PreviewReleasePlan {
     )
 
     $expandedPath = Join-Path $OutDir 'plan.json'
-    foreach ($inputPath in @($PreparedPath, $PlanPath)) {
-        if ([IO.Path]::GetFullPath($inputPath) -eq [IO.Path]::GetFullPath($expandedPath)) {
-            throw 'preview-release-plan output must not overwrite an input artifact.'
-        }
-    }
-    New-Item -ItemType Directory -Path $OutDir -Force | Out-Null
-    Remove-Item -LiteralPath $expandedPath -Force -ErrorAction SilentlyContinue
+    # Rust validates filesystem aliases before creating directories or invalidating a marker.
+    # Only a successful preview grants this wrapper ownership for later evidence cleanup.
+    $produced = $false
     $completed = $false
     try {
         Invoke-ReleasePlanCargo -Command @(
             'preview', '--prepared', $PreparedPath, '--plan', $PlanPath, '--output', $OutDir
         ) -Cargo $Cargo
+        $produced = $true
         $inspection = Get-ReleasePlanJson -Command @(
             'inspect-plan', '--plan', $expandedPath, '--require-resolved'
         ) -Cargo $Cargo
@@ -423,8 +420,8 @@ function Invoke-PreviewReleasePlan {
         ) -Cargo $Cargo
         $completed = $true
     } finally {
-        if (-not $completed) {
-            Remove-Item -LiteralPath $expandedPath -Force -ErrorAction SilentlyContinue
+        if ($produced -and -not $completed -and (Test-Path -LiteralPath $expandedPath)) {
+            Remove-Item -LiteralPath $expandedPath -Force
         }
     }
 }

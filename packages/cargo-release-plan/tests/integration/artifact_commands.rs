@@ -10,6 +10,50 @@ use tempfile::tempdir;
 #[test]
 #[cfg_attr(
     miri,
+    ignore = "executes proposal generation against report state combinations"
+)]
+fn pending_reports_require_version_increases_but_not_extra_decisions() {
+    let directory = tempdir().unwrap();
+    write_report(directory.path());
+    let path = directory.path().join("report.json");
+    let mut report: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    *report.pointer_mut("/packages/0/status").unwrap() = json!("pending-release");
+    fs::write(
+        directory.path().join("decisions.json"),
+        r#"{"schema_version":1,"changes":[]}"#,
+    )
+    .unwrap();
+    for (version, accepted) in [("1.0.0", false), ("0.9.0", false), ("1.0.1", true)] {
+        *report.pointer_mut("/packages/0/declared_version").unwrap() = json!(version);
+        fs::write(&path, report.to_string()).unwrap();
+        let output_path = directory.path().join("proposal.json");
+        fs::write(&output_path, "stale").unwrap();
+        let output = command(
+            directory.path(),
+            &[
+                "propose",
+                "--report",
+                "report.json",
+                "--decisions",
+                "decisions.json",
+                "--out",
+                "proposal.json",
+            ],
+        );
+        assert_eq!(output.status.success(), accepted);
+        if accepted {
+            let plan: Value = serde_json::from_slice(&fs::read(output_path).unwrap()).unwrap();
+            assert_eq!(plan.get("increments").unwrap(), &json!([]));
+        } else {
+            assert!(output.stdout.is_empty());
+            assert!(!output_path.exists());
+        }
+    }
+}
+
+#[test]
+#[cfg_attr(
+    miri,
     ignore = "executes artifact commands on inconsistent report identities"
 )]
 fn dangling_workspace_dependencies_fail_every_report_consumer() {

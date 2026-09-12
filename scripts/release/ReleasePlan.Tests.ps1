@@ -399,7 +399,7 @@ Describe 'Semver target directory lifecycle' {
 }
 
 Describe 'Staged expansion and captured preview' {
-    It 'removes stale and staged expansion after <Failure>' -ForEach @(
+    It 'preserves the destination and removes staged expansion after <Failure>' -ForEach @(
         @{ Failure = 'exit' }, @{ Failure = 'throw' }, @{ Failure = 'missing output' }
     ) {
         $expanded = Join-Path $TestDrive 'expanded.json'
@@ -411,13 +411,14 @@ Describe 'Staged expansion and captured preview' {
                     $global:LASTEXITCODE = 0
                     $Argument[5] | Should -Be 'expand'
                     $Argument | Should -Not -Contain '--base'
+                    Get-Content $expanded | Should -Be 'stale'
                     if ($Failure -eq 'missing output') { return }
                     Set-Content $Argument[9] 'partial'
                     if ($Failure -eq 'throw') { throw [IO.IOException]::new('expansion canary') }
                     $global:LASTEXITCODE = 2
                 }
         } | Should -Throw
-        Test-Path $expanded | Should -BeFalse
+        Get-Content $expanded | Should -Be 'stale'
         @(Get-ChildItem $TestDrive -Filter '*.staging').Count | Should -Be 0
     }
 
@@ -448,7 +449,7 @@ Describe 'Staged expansion and captured preview' {
         @{ Failure = 'comparison' }, @{ Failure = 'changed artifact' },
         @{ Failure = 'verification' }
     ) {
-        $output = Join-Path $TestDrive 'output'
+        $output = Join-Path $TestDrive "output-$Failure"
         $manifest = Join-Path $TestDrive 'Cargo.toml'
         Set-Content $manifest 'prospective manifest'
         $expanded = Join-Path $output 'plan.json'
@@ -463,8 +464,12 @@ Describe 'Staged expansion and captured preview' {
                     $Argument | Should -Not -Contain '--base'
                     switch ($command) {
                         'preview' {
+                            if ($Failure -eq 'preview') {
+                                $global:LASTEXITCODE = 2
+                                return
+                            }
+                            New-Item -ItemType Directory -Path $output -Force | Out-Null
                             Set-Content $expanded 'captured artifact'
-                            if ($Failure -eq 'preview') { $global:LASTEXITCODE = 2 }
                         }
                         'inspect-plan' {
                             $Argument | Should -Contain '--require-resolved'
@@ -525,14 +530,53 @@ Describe 'Staged expansion and captured preview' {
         $script:commands | Should -Be @('preview', 'inspect-plan', 'semver-targets', 'verify-preview')
     }
 
-    It 'does not delete a preview input aliased by the output path' {
-        $plan = Join-Path $TestDrive 'plan.json'
+    It 'preserves aliased inputs when Rust rejects preview via <Failure>' -ForEach @(
+        @{ Failure = 'exit' }, @{ Failure = 'throw' }
+    ) {
+        $real = Join-Path $TestDrive "input-$Failure"
+        $alias = Join-Path $TestDrive "alias-$Failure"
+        New-Item -ItemType Directory -Path $real | Out-Null
+        # Junctions preserve directory-alias semantics without Windows symlink privileges.
+        $linkKind = if ($IsWindows) { 'Junction' } else { 'SymbolicLink' }
+        New-Item -ItemType $linkKind -Path $alias -Target $real | Out-Null
+        $plan = Join-Path $real 'plan.json'
         Set-Content $plan 'input'
+        $script:invoked = $false
         {
             Invoke-PreviewReleasePlan -PreparedPath 'prepared.json' -PlanPath $plan `
-                -OutDir $TestDrive -Cargo { throw 'must not execute' }
+                -OutDir $alias -Cargo {
+                    param($Argument)
+                    $script:invoked = $true
+                    $Argument[5] | Should -Be 'preview'
+                    Get-Content $plan | Should -Be 'input'
+                    if ($Failure -eq 'throw') { throw [IO.IOException]::new('input collision') }
+                    $global:LASTEXITCODE = 2
+                }
         } | Should -Throw
+        $script:invoked | Should -BeTrue
         Get-Content $plan | Should -Be 'input'
+    }
+
+    It 'does not create output directories before Rust validates <Operation> inputs' -ForEach @(
+        @{ Operation = 'preview' }, @{ Operation = 'expand' }
+    ) {
+        $output = Join-Path $TestDrive 'not-created'
+        $cargo = {
+            param($Argument)
+            $Argument[5] | Should -Be $Operation
+            Test-Path $output | Should -BeFalse
+            $global:LASTEXITCODE = 2
+        }
+        {
+            if ($Operation -eq 'preview') {
+                Invoke-PreviewReleasePlan -PreparedPath 'prepared.json' -PlanPath 'plan.json' `
+                    -OutDir $output -Cargo $cargo
+            } else {
+                Invoke-ExpandReleasePlan -PlanPath 'plan.json' `
+                    -ExpandedPath (Join-Path $output 'expanded.json') -Cargo $cargo
+            }
+        } | Should -Throw
+        Test-Path $output | Should -BeFalse
     }
 }
 

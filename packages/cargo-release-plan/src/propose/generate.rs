@@ -655,9 +655,15 @@ mod tests {
     }
 
     #[test]
-    fn insufficient_decisions_from_regressed_evidence_fail_closed() {
-        let report = report(vec![package("lib", "1.0.0", Some("3.0.0"))], vec![], &[]);
-        let error = generate(&report, &[("lib", "breaking")]).unwrap_err();
+    fn resolved_versions_must_satisfy_the_supplied_semantic_level() {
+        let report = report(vec![package("lib", "1.0.0", Some("1.0.0"))], vec![], &[]);
+        let resolved = ResolvedVersions {
+            packages: BTreeMap::from([("lib".to_owned(), Version::new(1, 0, 1))]),
+        };
+        let levels = BTreeMap::from([("lib".to_owned(), ChangeLevel::Breaking)]);
+        let error = Proposal::new(&report)
+            .validate_result(&resolved, &levels)
+            .unwrap_err();
         assert!(error.find_source::<InsufficientIncrement>().is_some());
     }
 
