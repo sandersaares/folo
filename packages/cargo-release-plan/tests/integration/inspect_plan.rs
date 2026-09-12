@@ -1,12 +1,94 @@
 //! Expanded-plan inspection validates the same tracked targets application accepts.
 
 use std::fs;
+use std::path::PathBuf;
 
 use cargo_release_plan::{RunInput, RunOutcome, run};
 use serde_json::{Value, json};
 
 use crate::fixture::{Fixture, write_package};
 use crate::harness::resolved_plan;
+
+#[test]
+#[cfg_attr(
+    miri,
+    ignore = "uses captured Git workspaces and modified evidence artifacts"
+)]
+fn inspection_checks_candidate_metadata_before_returning_it() {
+    let fixture = Fixture::new("");
+    write_package(&fixture, "api", "1.0.0", "");
+    fixture.commit("package");
+    fixture.write(
+        "proposal.json",
+        r#"{"schema_version":4,"increments":[{"name":"api","level":"patch"}]}"#,
+    );
+    let path = resolved_plan(&fixture, &fixture.path().join("proposal.json"));
+    let original: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    let candidate = PathBuf::from(
+        original
+            .pointer("/resolved/evidence_manifest_path")
+            .unwrap()
+            .as_str()
+            .unwrap(),
+    );
+    _ = run(&RunInput::Apply {
+        plan: path.clone(),
+        dry_run: false,
+        manifest_path: fixture.manifest(),
+        verbose: false,
+    })
+    .unwrap();
+    let other = Fixture::new("");
+    write_package(&other, "other", "1.0.0", "");
+    other.commit("different workspace");
+    for wrong in [
+        other.manifest(),
+        fixture.manifest(),
+        fixture.path().join("absent/Cargo.toml"),
+    ] {
+        let mut edited = original.clone();
+        *edited
+            .pointer_mut("/resolved/evidence_manifest_path")
+            .unwrap() = json!(wrong);
+        fs::write(&path, serde_json::to_vec(&edited).unwrap()).unwrap();
+        // The captured application is valid; inspection must additionally verify its metadata.
+        _ = run(&RunInput::Apply {
+            plan: path.clone(),
+            dry_run: true,
+            manifest_path: fixture.manifest(),
+            verbose: false,
+        })
+        .unwrap();
+        _ = run(&RunInput::InspectPlan {
+            plan: path.clone(),
+            require_resolved: true,
+            manifest_path: fixture.manifest(),
+            verbose: false,
+        })
+        .unwrap_err();
+    }
+    fs::write(&path, serde_json::to_vec(&original).unwrap()).unwrap();
+    let inspection = RunInput::InspectPlan {
+        plan: path.clone(),
+        require_resolved: true,
+        manifest_path: fixture.manifest(),
+        verbose: false,
+    };
+    _ = run(&inspection).unwrap();
+    fs::write(
+        candidate.parent().unwrap().join("packages/api/src/lib.rs"),
+        "pub fn changed() {}\n",
+    )
+    .unwrap();
+    _ = run(&inspection).unwrap_err();
+    _ = run(&RunInput::Apply {
+        plan: path,
+        dry_run: true,
+        manifest_path: fixture.manifest(),
+        verbose: false,
+    })
+    .unwrap();
+}
 
 #[test]
 #[cfg_attr(miri, ignore = "uses Git, Cargo metadata and a filesystem workspace")]

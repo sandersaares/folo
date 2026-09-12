@@ -235,6 +235,18 @@ pub(crate) struct ResolvedState {
     pub(crate) evidence_manifest_path: PathBuf,
 }
 
+impl ResolvedState {
+    pub(crate) fn verify_candidate(&self, manifest: &Path) -> Result<(), AppError> {
+        let manifest = canonical(manifest)?;
+        if manifest != canonical(&self.evidence_manifest_path)?
+            || manifest == canonical(&self.inputs.root.join(&self.inputs.manifest))?
+        {
+            return Err(WrongEvidenceWorkspace::new().into());
+        }
+        self.inputs.verify_candidate(&manifest, &self.final_digest)
+    }
+}
+
 /// Exact UTF-8 bytes of one resolved manifest or workspace lockfile.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct Artifact {
@@ -255,21 +267,13 @@ pub(crate) fn run_verify_preview(
 ) -> Result<String, AppError> {
     let plan: PlanFile = read_json(plan_path)?;
     let state = plan.resolved.as_ref().ok_or_else(ResolutionRequired::new)?;
-    let manifest = canonical(manifest)?;
-    if manifest != canonical(&state.evidence_manifest_path)?
-        || manifest == canonical(&state.inputs.root.join(&state.inputs.manifest))?
-    {
-        return Err(WrongEvidenceWorkspace::new().into());
-    }
     _ = apply_resolved(
         &plan,
         &state.inputs.root.join(&state.inputs.manifest),
         true,
         verbose,
     )?;
-    state
-        .inputs
-        .verify_candidate(&manifest, &state.final_digest)?;
+    state.verify_candidate(manifest)?;
     Ok("Compatibility workspace matches the captured source, versions, and lockfile.".to_owned())
 }
 

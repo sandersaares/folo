@@ -306,6 +306,8 @@ Expanded-plan inspection uses the shared target resolver and application dry-run
 validation to return publication-eligible names and the evidence manifest. Workflow
 adapters therefore do not maintain another plan-schema validator or rediscover
 publication eligibility from package naming.
+Inspection and compatibility verification share the candidate-location and
+captured-state checks, so metadata cannot direct a caller to an unchecked workspace.
 Proposal and preview output guards resolve existing path ancestors before
 normalizing missing components. Creating an output directory therefore cannot
 turn an accepted destination into an alias of the input evidence.

@@ -31,6 +31,10 @@ pub(crate) fn run_inspect_plan(
         // The registry probe must see the same target set that application will accept.
         _ = apply_resolved(&plan, manifest, true, verbose)?;
     }
+    if let Some(state) = &plan.resolved {
+        // Callers may run compatibility tooling immediately after consuming this path.
+        state.verify_candidate(&state.evidence_manifest_path)?;
+    }
     let (work_tree, _) = load_tracked_work_tree(manifest)?;
     let resolved = resolve_plan(
         &plan,

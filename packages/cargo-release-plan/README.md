@@ -210,6 +210,8 @@ The command does not contact a registry or change workspace files.
 
 `--require-resolved` requires a captured preview valid for application. Captured
 plans undergo the same read-only input and artifact checks as `apply --dry-run`.
+Their retained compatibility workspace is also verified before its manifest path
+is returned.
 Use this inspection before external publication checks; use `verify-preview`
 to validate the retained compatibility workspace.
 

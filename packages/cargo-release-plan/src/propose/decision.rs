@@ -207,7 +207,7 @@ struct UnknownDecisionTarget {
 
 /// First publication requires the release process rather than an inferred anchor.
 #[ohno::error]
-#[display("package {} has no published version anchor. Publish the package manually first; follow RELEASING.md#first-publish-of-a-new-crate and complete the full procedure, including Trusted Publishing and binary-release follow-up", name.quoted())]
+#[display("package {} has no release anchor; omit it from increment decisions and handle its initial publication through your release process", name.quoted())]
 struct FirstPublicationRequired {
     name: String,
 }
