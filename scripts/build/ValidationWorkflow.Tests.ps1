@@ -47,6 +47,13 @@ Describe 'Standard validation integration' {
         Get-WorkflowJob $standard 'validate-versions' | Should -Not -Match '(?m)^    if:'
     }
 
+    It 'describes only Standard validation checks in its failure issue' {
+        $alert = Get-WorkflowJob $standard 'alert'
+        $alert | Should -Not -Match '\bARM\b|\btest-arm\b|\bhack\b|\bmachete\b'
+        $alert | Should -Match 'macOS doctest/docs runs'
+        $alert | Should -Match 'clippy-release'
+    }
+
     It 'uses normal repository and event conditions for <_> regardless of branch names' -ForEach @('test-azure', 'test-azure-gh') {
         $job = Get-WorkflowJob $standard $_
         $job | Should -Not -Match 'scheduled-repair|github\.head_ref'

@@ -105,7 +105,7 @@ Describe 'Same-workflow reporting' {
     It 'reports dependency failures as a job of Deep validation' {
         $workflow | Should -Match '(?m)^name: Deep validation\r?$'
         $workflow | Should -Match '(?m)^  report:'
-        $workflow | Should -Match 'needs: \[plan, checks\]'
+        $workflow | Should -Match 'needs: \[plan, checks, hack, machete, test-arm\]'
         $workflow | Should -Match 'if: failure\(\)'
         $workflow | Should -Match '\./scripts/scheduled/Invoke-ScheduledReport.ps1'
         $workflow | Should -Not -Match 'workflow_run:|path: controller|path: candidate'

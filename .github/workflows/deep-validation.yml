@@ -73,10 +73,100 @@ jobs:
           if-no-files-found: ignore
           retention-days: 30
 
+  # Low-yield checks run at full workspace scope after the main-only plan gate.
+  # Ref: .github/workflows/design.md#shallow-and-deep-validation.
+  hack:
+    needs: plan
+    # Work budget (~90 min) plus up to 90 min for a cold-cache setup-environment.
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-environment
+      - name: Run hack on ${{ matrix.platform }}
+        shell: pwsh
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          just hack
+
+  machete:
+    needs: plan
+    strategy:
+      fail-fast: false
+      matrix:
+        # macOS is excluded because maintainers lack a local PC for dependency trial and error.
+        platform: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-environment
+      - name: Run machete on ${{ matrix.platform }}
+        shell: pwsh
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          just machete
+
+  # ARM64 exercises architecture-gated paths and supplies the MSRV runtime pass.
+  # macOS belongs here because its hosted runner is Apple Silicon.
+  # Ref: .github/workflows/design.md#platform-strategy.
+  test-arm:
+    needs: plan
+    # Preserve panic diagnostics in job logs used by the failure reporter.
+    # Ref: .github/workflows/design.md#failure-diagnostics.
+    env:
+      RUST_BACKTRACE: "1"
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [ubuntu-24.04-arm, windows-11-arm, macos-latest]
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-environment
+        # Linux benchmark smoke tests execute Gungraun harnesses under Valgrind.
+        with:
+          install-valgrind: "true"
+      - name: Run tests on ${{ matrix.platform }}
+        shell: pwsh
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          just test
+      - name: Upload test results to Codecov
+        if: ${{ !cancelled() }}
+        uses: codecov/codecov-action@v7
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: target/nextest/default/junit.xml
+          flags: ${{ matrix.platform }}
+          report_type: test_results
+      - name: Run benchmark targets on ${{ matrix.platform }}
+        shell: pwsh
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          just test-benches
+
   report:
     # This is a normal failure-reporting job in the same run, including planning/setup failures.
     # Ref: .github/workflows/implementation.md#failure-reporting.
-    needs: [plan, checks]
+    needs: [plan, checks, hack, machete, test-arm]
     if: failure()
     runs-on: ubuntu-latest
     permissions:
