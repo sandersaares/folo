@@ -90,6 +90,61 @@ Describe 'Scheduled App entry-point routing' {
         $setup | Should -Match '`save_workflow`'
     }
 
+    It 'carries explicit shared model and effort settings into new repair-session kickoff' {
+        $setupText = $setup -replace '\s+', ' '
+        $setupText | Should -Match 'model/effort choice for triage, repair coordination and new repair sessions'
+        $setupText | Should -Match 'actual operator choice, including a shared selection'
+        $setupText | Should -Match 'For explicit overrides, instruct `scheduled-intake` in that saved prompt to pass them through `kickoff\.model` and `kickoff\.reasoning_effort`'
+        $setupText | Should -Match 'when opening a new repair session with `open_issue_session` or `open_pr_session`'
+        $setupText | Should -Match "following the skill's waiting bootstrap rules"
+        $intake = $skills['scheduled-intake'] -replace '\s+', ' '
+        $intake | Should -Match 'explicit operator-selected model/effort needs the supported kickoff fields'
+        $intake | Should -Match 'Use `kickoff\.mode: interactive` for this waiting bootstrap'
+    }
+
+    It 'omits kickoff for App defaults without opening repair sessions during setup' {
+        $setupText = $setup -replace '\s+', ' '
+        $setupText | Should -Match 'For App defaults, instruct it to omit kickoff'
+        $setupText | Should -Match 'Setup itself must not open repair sessions'
+        $setupText | Should -Match 'preserve existing session settings'
+        $intake = $skills['scheduled-intake'] -replace '\s+', ' '
+        $intake | Should -Match 'For a new session, omit kickoff when the operator chose App defaults'
+        $intake | Should -Match 'Preserve existing session settings'
+    }
+
+    It 'hands interrupted dialog interaction to the operator without running an automation' {
+        $setupText = $setup -replace '\s+', ' '
+        $setupText | Should -Match 'Prefer asking the operator to review and save the dialog over driving it with Computer Use'
+        $setupText | Should -Match 'repeated active-input interruptions require an operator handoff rather than further retries'
+        $setupText | Should -Match 'save disabled without using \*\*Create and run\*\*'
+        $setupText | Should -Match 'Opening the dialog does not establish that it was saved'
+    }
+
+    It 'reuses only a verified Local host ID for the same environment' {
+        $setupText = $setup -replace '\s+', ' '
+        $setupText | Should -Match 'direct create instead requires the actual observed `host_id`'
+        $setupText | Should -Match 'never substitute a project ID or a machine name'
+        $setupText | Should -Match 'After verifying a saved entry, reuse its observed Local host ID to prefill later dialogs targeting the same environment'
+    }
+
+    It 'separates operator confirmations from metadata and reconciles conflicting settings' {
+        $setupText = $setup -replace '\s+', ' '
+        $setupText | Should -Match 'If timezone or next-run information is not exposed, ask the operator to confirm the intended local-time interpretation'
+        $setupText | Should -Match 'Do not assume UTC, invent an environment ID or require UI fields the App does not expose'
+        $setupText | Should -Match 'Reread `list_workflows` to verify the persisted repository, Local environment, prompt, selected model/effort, mode, schedule and disabled state'
+        $setupText | Should -Match 'distinguish metadata-verified settings from operator confirmations'
+        $setupText | Should -Match 'If confirmation conflicts with saved metadata, reconcile the discrepancy before declaring setup complete'
+    }
+
+    It 'limits smoke-check claims without authorizing live setup exercises' {
+        $setupText = $setup -replace '\s+', ' '
+        $setupText | Should -Match 'Saving an entry does not prove unattended permissions, machine availability or successful execution'
+        $setupText | Should -Match 'empty-backlog run is only a smoke check; it does not demonstrate issue claiming, repair-session creation or PR publication'
+        $setupText | Should -Match 'Do not perform a live exercise to close those evidence gaps during setup'
+        $setupText | Should -Match 'Enabling is a separate explicit decision'
+        $setupText | Should -Match 'Do not invoke `run_workflow`, create a per-PR timer or perform a live exercise'
+    }
+
     It 'does not route work through the removed Local protocol' {
         $allText = ($skills.Values -join "`n") + $setup
         $allText | Should -Not -Match 'Local\w+\.psm1|triage-policy\.json|scheduled-local'
