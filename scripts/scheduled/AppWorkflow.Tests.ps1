@@ -90,6 +90,28 @@ Describe 'Scheduled App entry-point routing' {
         $setup | Should -Match '`save_workflow`'
     }
 
+    It 'carries explicit shared model and effort settings into new repair-session kickoff' {
+        $setupText = $setup -replace '\s+', ' '
+        $setupText | Should -Match 'model/effort choice for triage, repair coordination and new repair sessions'
+        $setupText | Should -Match 'actual operator choice, including a shared selection'
+        $setupText | Should -Match 'For explicit overrides, instruct `scheduled-intake` in that saved prompt to pass them through `kickoff\.model` and `kickoff\.reasoning_effort`'
+        $setupText | Should -Match 'when opening a new repair session with `open_issue_session` or `open_pr_session`'
+        $setupText | Should -Match "following the skill's waiting bootstrap rules"
+        $intake = $skills['scheduled-intake'] -replace '\s+', ' '
+        $intake | Should -Match 'explicit operator-selected model/effort needs the supported kickoff fields'
+        $intake | Should -Match 'Use `kickoff\.mode: interactive` for this waiting bootstrap'
+    }
+
+    It 'omits kickoff for App defaults without opening repair sessions during setup' {
+        $setupText = $setup -replace '\s+', ' '
+        $setupText | Should -Match 'For App defaults, instruct it to omit kickoff'
+        $setupText | Should -Match 'Setup itself must not open repair sessions'
+        $setupText | Should -Match 'preserve existing session settings'
+        $intake = $skills['scheduled-intake'] -replace '\s+', ' '
+        $intake | Should -Match 'For a new session, omit kickoff when the operator chose App defaults'
+        $intake | Should -Match 'Preserve existing session settings'
+    }
+
     It 'does not route work through the removed Local protocol' {
         $allText = ($skills.Values -join "`n") + $setup
         $allText | Should -Not -Match 'Local\w+\.psm1|triage-policy\.json|scheduled-local'
