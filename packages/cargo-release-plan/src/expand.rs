@@ -13,11 +13,10 @@ use serde::Serialize;
 
 use crate::metadata::load_tracked_work_tree;
 use crate::plan::{PlanFile, SCHEMA_VERSION, resolve_plan};
+use crate::resolved::read_json;
 use crate::text::plural;
 use crate::verbose::Verbose;
-use crate::{
-    CreateOutputDirectoryError, ParsePlanError, ReadFileError, WriteFileError, quote_path,
-};
+use crate::{CreateOutputDirectoryError, WriteFileError, quote_path};
 
 /// On-disk body of an expanded plan.
 ///
@@ -47,11 +46,7 @@ pub(crate) fn run_expand(
     manifest_path: &Path,
     verbose: Verbose,
 ) -> Result<String, AppError> {
-    let plan = fs::read_to_string(plan_path)
-        .map_err(|error| ReadFileError::caused_by(plan_path, error))?;
-    let plan: PlanFile =
-        serde_json::from_str(&plan).map_err(|error| ParsePlanError::caused_by(plan_path, error))?;
-    plan.validate_schema()?;
+    let plan: PlanFile = read_json(plan_path)?;
 
     let (work_tree, _) = load_tracked_work_tree(manifest_path)?;
     // Every Git-tracked member is a valid version target, and a group increments

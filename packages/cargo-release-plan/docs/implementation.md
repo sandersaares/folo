@@ -15,6 +15,9 @@ Cli -> RunInput -> run()
                     +-> classify -> check diagnostics
                     |           \-> report JSON + patches
                     |
+                    +-> report artifact -> analysis batches / compatibility targets
+                    |                 \-> semantic decisions -> proposed plan
+                    |
                     +-> prepare -> offline workspace resolution -> evidence + input snapshot
                     |
                     +-> preview -> normalize plan -> disposable prospective workspace
@@ -29,6 +32,12 @@ Modules own subjects rather than syntactic categories. `metadata` and `manifest`
 build the work-tree model, `git` owns repository facts, `anchor` resolves release
 history, `classify` combines those inputs, `groups` and `plan` expand release
 decisions, and the command-specific modules own preparation, preview, application, and reporting.
+
+Artifact-only planning shares the report producer's serde model. Report loading
+validates the schema and cross-package identities before consumers build dependency
+graphs or version targets. Analysis ordering follows recorded dependencies rather
+than exact-version grouping. Compatibility selection follows group closure but
+emits only packages declaring a consumer contract.
 
 ## Subprocess boundaries
 
@@ -276,6 +285,22 @@ staging file after every patch succeeds. A failed rerun therefore cannot present
 stale JSON and a partial patch set as one complete assessment.
 
 ## Plan resolution and application
+
+Proposal generation turns caller-supplied semantic change decisions into ordinary
+plan increments. It uses the shared group and plan resolver for version algebra
+and target expansion rather than reproducing those rules in workflow scripts.
+Group realignment and dependent release propagation settle together before final
+plan invariants are checked. Pure Rust scenario tests exercise the generated
+outcome, including no regression, complete group alignment, and release coverage
+for rewritten dependent requirements.
+
+The repository's PowerShell boundary invokes artifact commands and handles
+compatibility subprocesses and registry publication probes. Registry availability
+is not evidence for the Rust tool's offline release decision.
+Expanded-plan inspection uses the shared target resolver and application dry-run
+validation to return publication-eligible names and the evidence manifest. Workflow
+adapters therefore do not maintain another plan-schema validator or rediscover
+publication eligibility from package naming.
 
 `plan` owns both planning stages and the resolution shared between them. It first
 resolves package and group entries into one target version per tracked version

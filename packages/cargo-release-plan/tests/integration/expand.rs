@@ -8,6 +8,45 @@ use serde_json::Value;
 use crate::fixture::{Fixture, write_package};
 use crate::harness::{check, resolved_plan};
 
+#[test]
+#[cfg_attr(miri, ignore = "uses Git, Cargo metadata and encoded plan files")]
+fn utf8_bom_is_accepted_by_expansion_and_application() {
+    let fixture = Fixture::new("");
+    write_package(&fixture, "api", "1.0.0", "");
+    fixture.commit("package");
+    let plan = fixture.path().join("plan.json");
+    fs::write(
+        &plan,
+        concat!(
+            "\u{feff}",
+            r#"{"schema_version":4,"increments":[{"name":"api","level":"patch"}]}"#
+        ),
+    )
+    .unwrap();
+    let out = fixture.path().join("expanded.json");
+    _ = run(&RunInput::Expand {
+        plan: plan.clone(),
+        out: out.clone(),
+        manifest_path: fixture.manifest(),
+        verbose: false,
+    })
+    .unwrap();
+    let expanded: Value = serde_json::from_slice(&fs::read(out).unwrap()).unwrap();
+    assert_eq!(expanded.pointer("/increments/0/version").unwrap(), "1.0.1");
+    _ = run(&RunInput::Apply {
+        plan,
+        dry_run: false,
+        manifest_path: fixture.manifest(),
+        verbose: false,
+    })
+    .unwrap();
+    assert!(
+        fixture
+            .read("packages/api/Cargo.toml")
+            .contains("version = \"1.0.1\"")
+    );
+}
+
 /// Read-only expansion names group effects; preview completes dependency effects before apply.
 #[cfg_attr(miri, ignore)] // Spawns git and cargo, which Miri cannot emulate.
 #[test]

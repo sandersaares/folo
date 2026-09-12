@@ -9,7 +9,7 @@ use std::{fs, io, str};
 use ohno::AppError;
 use semver::Version;
 use serde::ser::SerializeStruct;
-use serde::{Serialize, Serializer};
+use serde::{Deserialize, Serialize, Serializer};
 use toml_edit::DocumentMut;
 
 use crate::anchor::{Anchor, Presence, TimelineEntry, resolve_anchor};
@@ -257,7 +257,7 @@ enum Verdict {
 }
 
 /// Classification status of one publishable package.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum PackageStatus {
     PendingRelease,
@@ -270,7 +270,8 @@ pub(crate) enum PackageStatus {
 /// Serialized as the report.json object with `path`/`change`, `field`, or
 /// `dependency`/`change`, plus `source`, so callers keep a stable JSON shape
 /// without optional nulls.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(tag = "source", rename_all = "kebab-case")]
 pub(crate) enum ChangedItem {
     Package { path: String, change: String },
     Inherited { field: String },
@@ -308,7 +309,7 @@ impl Serialize for ChangedItem {
 }
 
 /// Insertion/deletion counts for one package in `report.json`.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct DiffStat {
     pub(crate) files: usize,
     pub(crate) insertions: usize,
@@ -316,7 +317,7 @@ pub(crate) struct DiffStat {
 }
 
 /// Anchor identity as serialized in `report.json`.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct AnchorJson {
     pub(crate) commit: String,
     pub(crate) version: String,

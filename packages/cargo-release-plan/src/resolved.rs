@@ -346,6 +346,8 @@ pub(crate) fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T, 
 }
 
 fn parse_artifact<T: for<'de> Deserialize<'de>>(path: &Path, text: &str) -> Result<T, AppError> {
+    // A UTF-8 byte-order mark is encoding metadata, not part of the JSON document.
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let schema: ArtifactSchema =
         serde_json::from_str(text).map_err(|error| ParsePlanError::caused_by(path, error))?;
     if schema.schema_version != SCHEMA_VERSION {

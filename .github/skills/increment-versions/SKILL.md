@@ -163,6 +163,9 @@ Write the dependency-first analysis batches:
 
 Stop and report if the command exits non-zero.
 
+The recipe delegates to `cargo-release-plan analysis-order`. Rust validates the
+captured report and computes its dependency batches without inspecting the live workspace.
+
 `analysis-order.json` is a JSON array. Every release-assessment entry in
 `report.json.packages` appears in exactly one batch; `non_publishable_packages` never appear:
 
@@ -263,7 +266,10 @@ Write the proposed plan, then preview its resolved effects:
 >
 > just preview-release-plan "{{WORK_DIR}}/prepared.json" "{{WORK_DIR}}/plan.json" "{{WORK_DIR}}/preview"
 
-Stop and report if either command exits non-zero. `create-release-plan` retains sufficient
+Stop and report if either command exits non-zero. `create-release-plan` delegates report and
+decision validation and mechanical version resolution to `cargo-release-plan propose`.
+The Rust tool consumes the supplied change levels; this skill remains responsible for choosing
+them. Proposal generation retains sufficient
 existing pending-release increments, raises insufficient ones, raises any package whose public
 API exposes a dependency that releases a breaking change, and realigns any group with unequal
 declared versions that the decisions leave unnamed. Realignment usually targets the highest

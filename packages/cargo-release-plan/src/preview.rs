@@ -321,14 +321,14 @@ fn explicit_plan(resolved: &ResolvedVersions) -> PlanFile {
     )
 }
 
-fn remove_marker(path: &Path) -> Result<(), AppError> {
+pub(crate) fn remove_marker(path: &Path) -> Result<(), AppError> {
     if path.exists() {
         fs::remove_file(path).map_err(|error| WriteFileError::caused_by(path, error))?;
     }
     Ok(())
 }
 
-fn same_path(left: &Path, right: &Path) -> bool {
+pub(crate) fn same_path(left: &Path, right: &Path) -> bool {
     match (fs::canonicalize(left), fs::canonicalize(right)) {
         (Ok(left), Ok(right)) => left == right,
         _ => absolute(left)

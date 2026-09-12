@@ -347,7 +347,7 @@ pub(crate) fn releases_breaking_change(package: &PackageClass) -> bool {
 }
 
 /// The components that must agree for two versions to be semver-compatible.
-fn compatibility_key(version: &Version) -> (u64, u64, u64) {
+pub(crate) fn compatibility_key(version: &Version) -> (u64, u64, u64) {
     if version.major > 0 {
         return (version.major, 0, 0);
     }

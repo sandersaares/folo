@@ -58,6 +58,28 @@ impl Cli {
     #[must_use]
     pub fn into_input(self) -> RunInput {
         match self.command {
+            Command::InspectPlan(args) => RunInput::InspectPlan {
+                plan: args.plan,
+                require_resolved: args.require_resolved,
+                manifest_path: args
+                    .manifest_path
+                    .unwrap_or_else(|| PathBuf::from("Cargo.toml")),
+                verbose: args.verbose,
+            },
+            Command::AnalysisOrder(args) => RunInput::AnalysisOrder {
+                report: args.report,
+                verbose: args.verbose,
+            },
+            Command::SemverTargets(args) => RunInput::SemverTargets {
+                report: args.report,
+                verbose: args.verbose,
+            },
+            Command::Propose(args) => RunInput::Propose {
+                report: args.report,
+                decisions: args.decisions,
+                out: args.out,
+                verbose: args.verbose,
+            },
             Command::VerifyPreview(args) => RunInput::VerifyPreview {
                 plan: args.plan,
                 manifest_path: args.manifest_path,
@@ -152,6 +174,14 @@ impl EarlyExit {
 /// Clap grammar for the subcommands.
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Validate an expanded plan and print publication and evidence facts as JSON.
+    InspectPlan(InspectPlanArgs),
+    /// Print dependency-ordered analysis batches from a report as JSON.
+    AnalysisOrder(ArtifactReportArgs),
+    /// Print affected consumer-contract package names as a JSON array.
+    SemverTargets(ArtifactReportArgs),
+    /// Complete mechanical version decisions without inspecting a workspace.
+    Propose(ProposeArgs),
     /// Refresh the live lockfile offline and capture evidence before semantic grading.
     Prepare(PrepareArgs),
     /// Resolve all prospective plan effects offline and capture the state for application.
@@ -172,6 +202,51 @@ enum Command {
     Expand(ExpandArgs),
     /// Install captured files without resolution, or make proposed manifest-only edits.
     Apply(ApplyArgs),
+}
+
+/// Report-only commands never discover or resolve a workspace.
+#[derive(Debug, Parser)]
+struct ArtifactReportArgs {
+    /// Report JSON file or directory containing report.json.
+    #[arg(long)]
+    report: PathBuf,
+    /// Print explanatory selection notes to stderr.
+    #[arg(long)]
+    verbose: bool,
+}
+
+/// Semantic decisions are supplied by the caller, not inferred from report evidence.
+#[derive(Debug, Parser)]
+struct ProposeArgs {
+    /// Report JSON file or directory containing report.json.
+    #[arg(long)]
+    report: PathBuf,
+    /// Change decisions JSON file.
+    #[arg(long)]
+    decisions: PathBuf,
+    /// Destination for the proposed plan JSON.
+    #[arg(long)]
+    out: PathBuf,
+    /// Print explanatory version-resolution notes to stderr.
+    #[arg(long)]
+    verbose: bool,
+}
+
+/// Inspection keeps expanded-plan validation out of workflow adapters.
+#[derive(Debug, Parser)]
+struct InspectPlanArgs {
+    /// Expanded plan to validate before publication checks or evidence collection.
+    #[arg(long)]
+    plan: PathBuf,
+    /// Require a captured preview valid for application to the selected workspace.
+    #[arg(long)]
+    require_resolved: bool,
+    /// Path to the workspace Cargo.toml.
+    #[arg(long)]
+    manifest_path: Option<PathBuf>,
+    /// Print explanatory validation notes to stderr.
+    #[arg(long)]
+    verbose: bool,
 }
 
 /// Arguments for explicit pre-grading preparation.
