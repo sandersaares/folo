@@ -123,6 +123,10 @@ jobs:
   # Ref: .github/workflows/design.md#platform-strategy.
   test-arm:
     needs: plan
+    # Preserve panic diagnostics in job logs used by the failure reporter.
+    # Ref: .github/workflows/design.md#failure-diagnostics.
+    env:
+      RUST_BACKTRACE: "1"
     strategy:
       fail-fast: false
       matrix:

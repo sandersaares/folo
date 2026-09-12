@@ -307,8 +307,8 @@ jobs:
         run: just default-features-check
 
   # Fails when a library's public API exposes an external type that is not on its allow-list, so an
-  # accidental addition to the external surface is caught in review. Uses a
-  # ubuntu + windows matrix, because the public surface is platform-dependent (cfg-gated items) and
+  # accidental addition to the external surface is caught in review. Uses an
+  # Ubuntu + Windows matrix, because the public surface is platform-dependent (cfg-gated items) and
   # macOS (also cfg(unix)) is redundant with ubuntu here. Delta-scoped like the other package jobs.
   check-external-types:
     needs: [delta]
@@ -956,7 +956,7 @@ jobs:
           The Standard validation workflow failed on a push to ``main``.
 
           Push-to-``main`` validation is the backstop for the checks pruned from PR validation
-          (ARM and macOS test/docs runs and ``clippy-release``), so this failure may be
+          (macOS doctest/docs runs and ``clippy-release``), so this failure may be
           in a check a PR never ran.
 
           Failed run: $env:RUN_URL

@@ -54,8 +54,9 @@ Describe 'Hosted deep validation wiring' {
         $standard | Should -Not -Match ('(?m)^      - ' + [regex]::Escape($job) + '\r?$')
     }
 
-    It 'retains ARM benchmark prerequisites and test-result publishing' {
+    It 'retains ARM panic diagnostics, benchmark prerequisites and test-result publishing' {
         $arm = [regex]::Match($workflow, '(?ms)^  test-arm:\r?\n(?<body>.*?)(?=^  report:)').Groups['body'].Value
+        $arm | Should -Match '(?m)^    env:\r?\n      RUST_BACKTRACE: "1"\r?$'
         $arm | Should -Match 'install-valgrind: "true"'
         $arm | Should -Match 'uses: codecov/codecov-action@'
         $arm | Should -Match 'files: target/nextest/default/junit.xml'
