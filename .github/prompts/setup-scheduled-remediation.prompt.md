@@ -26,7 +26,7 @@ model/effort choice for triage, repair coordination and new repair sessions; ask
 for role-specific choices only if requested. The operator may explicitly choose
 App model defaults instead of an override. Preserve existing settings unless a
 change is requested; never select a paid model on the operator's behalf. Record
-the chosen repair-session model in the repair prompt as ordinary prose, or
+the chosen repair-session model and reasoning effort in the repair prompt as ordinary prose, or
 explicitly say to use the App defaults.
 
 Review the App's available schedule description, timezone and next-run preview.
@@ -42,10 +42,15 @@ The entries are:
 | Suggested name | Saved prompt |
 |---|---|
 | Folo scheduled failure triage | Run the repository's `scheduled-triage` skill in this Local App project. Process open run reports oldest first using the selected model. Do not edit source, start repairs or change automation/account/billing settings. |
-| Folo scheduled repair | Run the repository's `scheduled-intake` skill in this Local App project. Follow existing repairs and PRs first, then start at most one new repair. Use the operator-selected repair-session model settings described below; preserve existing session settings. Do not create per-PR automations or change automation/account/billing settings. |
+| Folo scheduled repair | Run the repository's `scheduled-intake` skill in this Local App project. Follow existing repairs and PRs first, then start at most one new repair. Use the operator-selected repair-session model and reasoning effort described below; preserve existing session settings. Do not create per-PR automations or change automation/account/billing settings. |
 
-Expand the repair prompt's model sentence with the actual operator choice, not a
-placeholder or inferred model. Keep the prompts short and refer to the checked-in
+Expand the repair prompt's model/effort sentence with the actual operator choice,
+including a shared selection, not a placeholder or inferred setting. For explicit
+overrides, instruct `scheduled-intake` in that saved prompt to pass them through
+`kickoff.model` and `kickoff.reasoning_effort` when opening a new repair session
+with `open_issue_session` or `open_pr_session`, following the skill's waiting
+bootstrap rules. For App defaults, instruct it to omit kickoff. Setup itself must
+not open repair sessions. Keep the prompts short and refer to the checked-in
 skills rather than copying their procedures. There is no installation marker,
 enrollment, policy file, profile registration or local-state migration.
 
@@ -86,7 +91,7 @@ example, not a file to persist or a schema for issues:
 |---|---|
 | `PROJECT_ID` | Actual repository project ID returned by `list_projects`. |
 | `ROLE_NAME` | Operator-approved name for this role. |
-| `ROLE_PROMPT` | The role's short prompt, with the operator's model choice included where needed. |
+| `ROLE_PROMPT` | The role's short prompt, with the operator's model/effort choice and new-session propagation instruction included where needed. |
 | `OPERATOR_CRON` | Operator-selected schedule, reviewed against the available App preview with local-time interpretation confirmed as described in Stage 1. |
 
 Ask the operator to verify the actual **Local** environment, project, prompt,
