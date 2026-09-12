@@ -258,6 +258,10 @@ reach its members is how such a plan is written.
 Structural expansion alone is not a complete resolved artifact. A release
 proposal must also account for the actual lockfile effects of those versions.
 
+Input-preserving expansion rejects destinations that alias the proposal and leaves
+an existing destination unchanged if expansion fails. Callers can request this
+behavior without giving up the general command's supported in-place expansion.
+
 ### Inspect an expanded plan
 
 `inspect-plan` validates an expansion against the selected workspace and provides

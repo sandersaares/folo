@@ -357,7 +357,7 @@ function Invoke-SemverCheck {
 }
 
 function Invoke-ExpandReleasePlan {
-    # Stage output so a failed structural expansion never exposes a partial artifact.
+    # Rust owns final-path alias validation and staged promotion.
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string] $PlanPath,
@@ -365,21 +365,9 @@ function Invoke-ExpandReleasePlan {
         [scriptblock] $Cargo = { param([string[]] $Argument) & cargo @Argument }
     )
 
-    if ([IO.Path]::GetFullPath($PlanPath) -eq [IO.Path]::GetFullPath($ExpandedPath)) {
-        throw 'expand-release-plan output must not overwrite its input artifact.'
-    }
-    $expandedDirectory = Split-Path -Parent ([IO.Path]::GetFullPath($ExpandedPath))
-    $stagingPath = Join-Path $expandedDirectory "$(Split-Path -Leaf $ExpandedPath).$(New-Guid).staging"
-    try {
-        Invoke-ReleasePlanCargo -Command @(
-            'expand', '--plan', $PlanPath, '--out', $stagingPath
-        ) -Cargo $Cargo
-        Move-Item -LiteralPath $stagingPath -Destination $ExpandedPath -Force
-    } finally {
-        if (Test-Path -LiteralPath $stagingPath) {
-            Remove-Item -LiteralPath $stagingPath -Force
-        }
-    }
+    Invoke-ReleasePlanCargo -Command @(
+        'expand', '--plan', $PlanPath, '--out', $ExpandedPath, '--preserve-input'
+    ) -Cargo $Cargo
 }
 
 function Invoke-PreviewReleasePlan {

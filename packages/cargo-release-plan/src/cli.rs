@@ -122,6 +122,7 @@ impl Cli {
             Command::Expand(args) => RunInput::Expand {
                 plan: args.plan,
                 out: args.out,
+                preserve_input: args.preserve_input,
                 manifest_path: args
                     .manifest_path
                     .unwrap_or_else(|| PathBuf::from("Cargo.toml")),
@@ -360,6 +361,10 @@ struct ExpandArgs {
     /// Path that receives the expanded plan JSON.
     #[arg(long)]
     out: PathBuf,
+
+    /// Reject input/output aliases and stage the output before replacing it.
+    #[arg(long)]
+    preserve_input: bool,
 
     /// Path to the workspace `Cargo.toml`.
     #[arg(long)]

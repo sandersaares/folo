@@ -546,6 +546,7 @@ fn plain_expansion_is_read_only_and_cannot_bypass_resolution() {
     let lock = fixture.read("Cargo.lock");
     let expanded = fixture.path().join("expanded.json");
     run(&RunInput::Expand {
+        preserve_input: false,
         plan: fixture.path().join("proposal.json"),
         out: expanded.clone(),
         manifest_path: fixture.manifest(),

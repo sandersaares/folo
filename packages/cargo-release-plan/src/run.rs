@@ -132,6 +132,8 @@ pub enum RunInput {
         out: PathBuf,
         /// Workspace manifest supplying members and dependency-derived groups. Used verbatim.
         manifest_path: PathBuf,
+        /// Protect input aliases and stage output before replacing the destination.
+        preserve_input: bool,
         /// When set, print explanatory decision notes to stderr.
         verbose: bool,
     },
@@ -327,9 +329,16 @@ pub fn run(input: &RunInput) -> Result<RunOutcome, AppError> {
             plan,
             out,
             manifest_path,
+            preserve_input,
             verbose,
         } => {
-            let message = run_expand(plan, out, manifest_path, Verbose::new(*verbose))?;
+            let message = run_expand(
+                plan,
+                out,
+                manifest_path,
+                *preserve_input,
+                Verbose::new(*verbose),
+            )?;
             Ok(RunOutcome::Expand { message })
         }
         RunInput::Apply {

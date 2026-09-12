@@ -200,7 +200,7 @@ struct InvalidDecisionName {
 
 /// Only publishable packages can receive semantic assessments.
 #[ohno::error]
-#[display("change decision names unknown or non-publishable package {}", name.quoted())]
+#[display("change decision names an unknown or non-publishable package {}", name.quoted())]
 struct UnknownDecisionTarget {
     name: String,
 }

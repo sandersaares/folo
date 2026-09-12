@@ -398,9 +398,9 @@ Describe 'Semver target directory lifecycle' {
     }
 }
 
-Describe 'Staged expansion and captured preview' {
-    It 'preserves the destination and removes staged expansion after <Failure>' -ForEach @(
-        @{ Failure = 'exit' }, @{ Failure = 'throw' }, @{ Failure = 'missing output' }
+Describe 'Rust-owned expansion and captured preview' {
+    It 'delegates protected expansion and preserves the destination after <Failure>' -ForEach @(
+        @{ Failure = 'exit' }, @{ Failure = 'throw' }
     ) {
         $expanded = Join-Path $TestDrive 'expanded.json'
         Set-Content $expanded 'stale'
@@ -411,35 +411,50 @@ Describe 'Staged expansion and captured preview' {
                     $global:LASTEXITCODE = 0
                     $Argument[5] | Should -Be 'expand'
                     $Argument | Should -Not -Contain '--base'
+                    $Argument | Should -Contain '--preserve-input'
+                    $Argument[9] | Should -Be $expanded
                     Get-Content $expanded | Should -Be 'stale'
-                    if ($Failure -eq 'missing output') { return }
-                    Set-Content $Argument[9] 'partial'
                     if ($Failure -eq 'throw') { throw [IO.IOException]::new('expansion canary') }
                     $global:LASTEXITCODE = 2
                 }
         } | Should -Throw
         Get-Content $expanded | Should -Be 'stale'
-        @(Get-ChildItem $TestDrive -Filter '*.staging').Count | Should -Be 0
     }
 
-    It 'promotes successful expansion without rewriting trusted output' {
+    It 'delegates protected expansion without rewriting trusted output' {
         $expanded = Join-Path $TestDrive 'expanded.json'
         Invoke-ExpandReleasePlan -PlanPath (Join-Path $TestDrive 'input.json') `
             -ExpandedPath $expanded -Cargo {
                 param($Argument)
                 $global:LASTEXITCODE = 0
+                $Argument | Should -Contain '--preserve-input'
                 Set-Content $Argument[9] 'trusted expanded artifact'
             }
         Get-Content $expanded | Should -Be 'trusted expanded artifact'
     }
 
-    It 'rejects expansion that would overwrite its input' {
-        $path = Join-Path $TestDrive 'input.json'
+    It 'passes the final aliased expansion path to Rust without touching its input' {
+        $real = Join-Path $TestDrive 'expansion-input'
+        $alias = Join-Path $TestDrive 'expansion-alias'
+        New-Item -ItemType Directory -Path $real | Out-Null
+        # Junctions preserve directory-alias semantics without Windows symlink privileges.
+        $linkKind = if ($IsWindows) { 'Junction' } else { 'SymbolicLink' }
+        New-Item -ItemType $linkKind -Path $alias -Target $real | Out-Null
+        $path = Join-Path $real 'plan.json'
+        $output = Join-Path $alias 'plan.json'
         Set-Content $path 'original'
+        $script:invoked = $false
         {
-            Invoke-ExpandReleasePlan -PlanPath $path -ExpandedPath $path `
-                -Cargo { throw 'must not execute' }
+            Invoke-ExpandReleasePlan -PlanPath $path -ExpandedPath $output -Cargo {
+                param($Argument)
+                $script:invoked = $true
+                $Argument | Should -Contain '--preserve-input'
+                $Argument[9] | Should -Be $output
+                Get-Content $path | Should -Be 'original'
+                $global:LASTEXITCODE = 2
+            }
         } | Should -Throw
+        $script:invoked | Should -BeTrue
         Get-Content $path | Should -Be 'original'
     }
 

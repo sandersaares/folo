@@ -13,6 +13,24 @@ fn parse(args: &[&str]) -> Result<Cli, EarlyExit> {
 }
 
 #[test]
+fn expansion_input_protection_is_explicit() {
+    let input = parse(&[
+        "expand",
+        "--plan",
+        "plan.json",
+        "--out",
+        "expanded.json",
+        "--preserve-input",
+    ])
+    .unwrap()
+    .into_input();
+    let RunInput::Expand { preserve_input, .. } = input else {
+        panic!()
+    };
+    assert!(preserve_input);
+}
+
+#[test]
 fn inspection_requires_a_plan_and_preserves_workspace_selection() {
     assert!(parse(&["inspect-plan"]).unwrap_err().status.is_err());
     let input = parse(&[
@@ -230,10 +248,12 @@ fn expand_defaults_the_manifest_path() {
             plan,
             out,
             manifest_path,
+            preserve_input,
             verbose,
         } => {
             assert_eq!(plan, PathBuf::from("plan.json"));
             assert_eq!(out, PathBuf::from("expanded.json"));
+            assert!(!preserve_input);
             assert_eq!(manifest_path, PathBuf::from("Cargo.toml"));
             assert!(!verbose);
         }

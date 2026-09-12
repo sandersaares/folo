@@ -29,7 +29,7 @@ cargo release-plan preview --prepared <prepared.json> --plan <plan.json> --outpu
 cargo release-plan verify-preview --plan <plan.json> --manifest-path <prospective-manifest>
     [--verbose]
 cargo release-plan expand --plan <plan.json> --out <expanded.json>
-    [--manifest-path <path>] [--verbose]
+    [--manifest-path <path>] [--preserve-input] [--verbose]
 cargo release-plan inspect-plan --plan <expanded.json> [--require-resolved]
     [--manifest-path <path>] [--verbose]
 cargo release-plan apply --plan <plan.json> [--dry-run] [--manifest-path <path>] [--verbose]
@@ -146,6 +146,10 @@ that evidence for further assessment.
 
 Resolves a plan's version groups and increment levels into one explicit entry
 per package, written to `--out`.
+
+`--preserve-input` rejects input/output aliases and stages the complete expansion
+before replacing the destination. Use it when the original proposal must remain
+available. Without this option, in-place expansion remains supported.
 
 An input plan may omit version-group members that `apply` will update. `expand`
 writes the explicit package/version set for review, naming every tracked member

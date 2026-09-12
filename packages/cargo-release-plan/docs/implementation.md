@@ -315,6 +315,10 @@ The PowerShell preview wrapper leaves initial directory creation and marker
 invalidation to Rust. It may invalidate a successfully produced preview if later
 compatibility evidence fails, but a rejected native invocation grants no ownership
 over the requested output path.
+The expansion wrapper requests Rust's input-preserving mode and supplies the final
+destination directly. Rust checks aliases and promotes an exclusively created
+temporary file only after a complete write. General expansion retains its separate
+in-place behavior when that mode is not selected.
 
 `plan` owns both planning stages and the resolution shared between them. It first
 resolves package and group entries into one target version per tracked version

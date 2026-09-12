@@ -62,13 +62,13 @@ ohno = { workspace = true, features = ["app-err"] }
 semver = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+tempfile = { workspace = true }
 toml_edit = { workspace = true, features = ["parse", "display"] }
 
 [dev-dependencies]
 criterion = { workspace = true }
 mutants = { workspace = true }
 static_assertions = { workspace = true }
-tempfile = { workspace = true }
 
 [[bench]]
 name = "cargo_release_plan_algorithms"
