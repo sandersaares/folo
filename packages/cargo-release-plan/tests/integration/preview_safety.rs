@@ -118,15 +118,20 @@ fn preview_output_cannot_destroy_an_input_document() {
     );
     let plan = fixture.path().join("preview/plan.json");
     let before = fs::read(&plan).unwrap();
-    run(&RunInput::Preview {
-        plan: plan.clone(),
-        prepared,
-        output: fixture.path().join("preview"),
-        manifest_path: fixture.manifest(),
-        verbose: false,
-    })
-    .unwrap_err();
-    assert_eq!(fs::read(plan).unwrap(), before);
+    for output in [
+        fixture.path().join("preview"),
+        fixture.path().join("missing").join("..").join("preview"),
+    ] {
+        run(&RunInput::Preview {
+            plan: plan.clone(),
+            prepared: prepared.clone(),
+            output,
+            manifest_path: fixture.manifest(),
+            verbose: false,
+        })
+        .unwrap_err();
+        assert_eq!(fs::read(&plan).unwrap(), before);
+    }
 
     fixture.write(
         "preview/report.json.tmp",

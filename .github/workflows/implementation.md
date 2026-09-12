@@ -94,8 +94,8 @@ from, which is not the branch a pull request targets, so the workflow passes the
 on a pull request and the merge-group base commit on a queue run.
 
 `scripts/release/ReleasePlan.psm1` is the PowerShell boundary between that report and hosted
-validation. It accepts only the report schema revision it understands and keeps separate lookups
-for publishable release assessments and all tracked version targets. The report's `packages`
+validation. Rust artifact commands validate the report and distinguish publishable release
+assessments from all tracked version targets. The report's `packages`
 array supplies released-content evidence and consumer-contract selection for publishable members;
 `non_publishable_packages` supplies only names, declared versions, and derived group membership.
 SemVer analysis and change-level decisions use the former, while grouping and alignment use their
@@ -103,10 +103,12 @@ union. The pre-apply publication gate resolves every planned target against curr
 metadata and queries crates.io only for targets Cargo says are publishable. Package-name patterns
 do not determine whether a crate has a consumer contract or is publishable.
 
-The module also owns the skill's deterministic mechanics: dependency-order presentation,
-publication eligibility, change-level validation, version-group realignment, and
-conversion to `cargo-release-plan apply` input. The just recipes remain thin command-line entry
-points. Pester tests in `scripts/release/ReleasePlan.Tests.ps1` lock these boundaries.
+`cargo-release-plan analysis-order`, `semver-targets`, and `propose` own dependency-order
+presentation, consumer-contract selection, change-level validation, version-group realignment,
+and release propagation. These operations consume captured artifacts without discovering the
+workspace or contacting a registry. The module retains process orchestration and the crates.io
+publication probe; the just recipes remain thin command-line entry points. Pester tests protect
+argument forwarding, subprocess failures, publication checks, and the evidence lifecycle.
 
 The guided release workflow collects its decision evidence after explicit offline preparation.
 It then sends semantic choices to Rust's prospective resolution preview, which completes the
@@ -127,13 +129,12 @@ workspace. Release-target and archive-shape obligations follow Cargo's discovere
 targets, including source additions that do not edit a manifest. The version report still runs
 after a binstall failure so semantic-version analysis can consume its output in the same run.
 
-Plan generation is verified by asserting properties of the generated plan over a matrix of report
+Rust plan-generation tests assert properties of the generated plan over a matrix of report
 states, not only by testing individual guards. The properties are that every entry is well formed
 and names a known target, that no target receives two decision kinds, that no version moves
 backwards, that every version group ends on one version, and that no package keeps an
-already-published version while a requirement inside it is rewritten. That last one had been
-analyzed incompletely several times in review — once per release state that reached it — so it is
-checked as an outcome, where an incomplete analysis fails whatever form it takes. A scenario
+already-published version while a requirement inside it is rewritten. These are checked as
+outcomes rather than isolated implementation guards. A scenario
 passes either by refusing to generate a plan or by generating one that holds every property.
 
 On Windows, the module scopes `CARGO_TARGET_DIR` for direct `cargo-semver-checks`

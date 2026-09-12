@@ -15,10 +15,10 @@ use crate::manifest::{
 };
 use crate::metadata::{WorkTree, load_tracked_work_tree};
 use crate::plan::{PlanFile, PlanStage, ResolvedVersions, resolve_plan};
-use crate::resolved::apply_resolved;
+use crate::resolved::{apply_resolved, read_json};
 use crate::text::plural;
 use crate::verbose::Verbose;
-use crate::{ParsePlanError, ReadFileError, WriteFileError, quote_path};
+use crate::{ReadFileError, WriteFileError, quote_path};
 
 /// One on-disk manifest after an in-memory rewrite, waiting to be written.
 pub(crate) struct ManifestEdit {
@@ -85,11 +85,7 @@ pub(crate) fn run_apply(
     manifest_path: &Path,
     verbose: Verbose,
 ) -> Result<String, AppError> {
-    let plan = fs::read_to_string(plan_path)
-        .map_err(|error| ReadFileError::caused_by(plan_path, error))?;
-    let plan: PlanFile =
-        serde_json::from_str(&plan).map_err(|error| ParsePlanError::caused_by(plan_path, error))?;
-    plan.validate_schema()?;
+    let plan: PlanFile = read_json(plan_path)?;
 
     if plan.stage() == PlanStage::Expanded || plan.resolved.is_some() {
         return apply_resolved(&plan, manifest_path, dry_run, verbose);

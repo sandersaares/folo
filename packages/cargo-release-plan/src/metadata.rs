@@ -122,7 +122,7 @@ pub(crate) struct WorkPackage {
 }
 
 /// Intra-workspace dependency as exposed in `report.json`.
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+#[derive(Clone, Debug, serde::Deserialize, Eq, PartialEq, serde::Serialize)]
 pub(crate) struct ReportedDep {
     pub(crate) name: String,
     pub(crate) req: String,

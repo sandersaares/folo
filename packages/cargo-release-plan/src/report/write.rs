@@ -5,7 +5,7 @@ use std::fs;
 use std::path::Path;
 
 use ohno::AppError;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::WriteFileError;
 use crate::classify::{
@@ -17,55 +17,55 @@ use crate::text::quote_path;
 use crate::verbose::Verbose;
 
 /// On-disk `report.json` body.
-#[derive(Serialize)]
-struct ReportFile {
-    schema_version: u32,
-    head: String,
-    packages: Vec<ReportPackage>,
-    non_publishable_packages: Vec<ReportVersionTarget>,
-    groups: BTreeMap<String, ReportGroup>,
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub(crate) struct ReportFile {
+    pub(crate) schema_version: u32,
+    pub(crate) head: String,
+    pub(crate) packages: Vec<ReportPackage>,
+    pub(crate) non_publishable_packages: Vec<ReportVersionTarget>,
+    pub(crate) groups: BTreeMap<String, ReportGroup>,
 }
 
 /// One publishable package in `report.json`.
-#[derive(Serialize)]
-struct ReportPackage {
-    name: String,
-    declared_version: String,
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub(crate) struct ReportPackage {
+    pub(crate) name: String,
+    pub(crate) declared_version: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    group: Option<String>,
-    status: PackageStatus,
+    pub(crate) group: Option<String>,
+    pub(crate) status: PackageStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
-    anchor: Option<AnchorJson>,
-    changed: Vec<ChangedItem>,
-    stat: DiffStat,
+    pub(crate) anchor: Option<AnchorJson>,
+    pub(crate) changed: Vec<ChangedItem>,
+    pub(crate) stat: DiffStat,
     #[serde(skip_serializing_if = "Option::is_none")]
-    diff_path: Option<String>,
-    dependencies: Vec<ReportedDep>,
-    dependents: Vec<String>,
+    pub(crate) diff_path: Option<String>,
+    pub(crate) dependencies: Vec<ReportedDep>,
+    pub(crate) dependents: Vec<String>,
     /// Whether the package's library is what consumers are meant to use.
     ///
     /// False for a package with no library target, and for one declaring
     /// `[package.metadata.release-plan] private-api = true`.
-    consumer_contract: bool,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    untracked: Vec<String>,
+    pub(crate) consumer_contract: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) untracked: Vec<String>,
 }
 
 /// One non-publishable version target in `report.json`.
-#[derive(Serialize)]
-struct ReportVersionTarget {
-    name: String,
-    declared_version: String,
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub(crate) struct ReportVersionTarget {
+    pub(crate) name: String,
+    pub(crate) declared_version: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    group: Option<String>,
+    pub(crate) group: Option<String>,
 }
 
 /// Version-group consistency as recorded in `report.json`.
-#[derive(Serialize)]
-struct ReportGroup {
-    members: Vec<String>,
-    consistent: bool,
-    version: String,
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub(crate) struct ReportGroup {
+    pub(crate) members: Vec<String>,
+    pub(crate) consistent: bool,
+    pub(crate) version: String,
 }
 
 pub(crate) fn run_report(

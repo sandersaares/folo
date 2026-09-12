@@ -293,6 +293,7 @@ fn malformed_exact_requirements_fail_all_commands_before_writes() {
             verbose: false,
         },
         RunInput::Expand {
+            preserve_input: false,
             plan: plan.clone(),
             out: fixture.path().join("expanded.json"),
             manifest_path: fixture.manifest(),

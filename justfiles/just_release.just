@@ -127,8 +127,9 @@ semver-checks:
 # The recipes below are the guided increment workflow, in the order the increment-versions skill
 # runs them: prepare resolution and evidence, determine analysis order, create the plan, preview
 # its resolved effects, confirm the publishable targets are published, and apply the captured
-# state. Each is a thin entry point; the decisions
-# live in `scripts/release/ReleasePlan.psm1` and in `cargo-release-plan`.
+# state. Rust owns mechanical release resolution and artifact validation; the skill supplies
+# semantic judgments, and the module owns process and evidence orchestration.
+# Ref: docs/build-and-tooling.md#automation-language-and-boundaries.
 
 # Resolves the intended offline workspace lockfile refresh before collecting evidence. This is
 # explicit preparation, not part of read-only release-report or validate-versions.
@@ -145,8 +146,8 @@ release-prepare DIR:
     Invoke-PrepareReleasePlan -OutDir "{{ DIR }}"
 
 # Target selection matches the CI SemVer job exactly, so local evidence and hosted validation
-# cannot disagree about which packages have a supported consumer contract. The module owns
-# validation, target selection, and exit handling.
+# cannot disagree about which packages have a supported consumer contract. Rust validates and
+# selects targets; the module owns compatibility execution and exit handling.
 #
 # Writes the release-plan report, per-package diffs, and cargo-semver-checks evidence under DIR.
 [group('release')]
@@ -163,7 +164,7 @@ release-report DIR:
 # its dependents. Mutually dependent packages share a batch and are analyzed to a fixed point.
 # The increment-versions skill redirects the output to a working file and documents the fields.
 #
-# Prints the dependency-first analysis batches from the release-plan report REPORT as a JSON array.
+# Prints the dependency-first analysis batch records from report REPORT as a JSON array.
 [group('release')]
 [script]
 release-analysis-order REPORT:
@@ -216,7 +217,7 @@ preview-release-plan PREPARED PLAN DIR:
     Import-Module "{{ justfile_directory() }}/scripts/release/ReleasePlan.psm1" -Force
     Invoke-PreviewReleasePlan -PreparedPath "{{ PREPARED }}" -PlanPath "{{ PLAN }}" -OutDir "{{ DIR }}"
 
-# Reads the expanded plan and resolves every target against current Git-tracked workspace
+# Rust validates the expanded plan and resolves every target against current Git-tracked workspace
 # membership. Applying cannot create a crate on crates.io, so a never-published publishable
 # package has to be published by hand first; alignment-only helpers do not require a registry
 # lookup.

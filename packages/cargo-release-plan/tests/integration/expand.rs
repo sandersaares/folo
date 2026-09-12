@@ -1,12 +1,128 @@
 //! Resolving a plan's version groups into an explicit per-package plan.
 
 use std::fs;
+#[cfg(unix)]
+use std::os::unix::fs::symlink;
 
 use cargo_release_plan::{RunInput, RunOutcome, run};
 use serde_json::Value;
 
 use crate::fixture::{Fixture, write_package};
 use crate::harness::{check, resolved_plan};
+
+#[test]
+#[cfg_attr(miri, ignore = "expands plans in a real workspace")]
+fn protected_expansion_preserves_inputs_and_default_expansion_remains_in_place() {
+    let fixture = Fixture::new("");
+    write_package(&fixture, "api", "1.0.0", "");
+    fixture.commit("package");
+    let input = fixture.path().join("proposal.json");
+    fs::write(
+        &input,
+        r#"{"schema_version":4,"increments":[{"name":"api","level":"patch"}]}"#,
+    )
+    .unwrap();
+    let original = fs::read(&input).unwrap();
+    for output in [
+        input.clone(),
+        fixture.path().join("missing/../proposal.json"),
+    ] {
+        _ = run(&RunInput::Expand {
+            plan: input.clone(),
+            out: output,
+            preserve_input: true,
+            manifest_path: fixture.manifest(),
+            verbose: false,
+        })
+        .unwrap_err();
+        assert_eq!(fs::read(&input).unwrap(), original);
+    }
+    let output = fixture.path().join("expanded/plan.json");
+    _ = run(&RunInput::Expand {
+        plan: input.clone(),
+        out: output.clone(),
+        preserve_input: true,
+        manifest_path: fixture.manifest(),
+        verbose: false,
+    })
+    .unwrap();
+    assert_eq!(fs::read(&input).unwrap(), original);
+    let expanded: Value = serde_json::from_slice(&fs::read(output).unwrap()).unwrap();
+    assert_eq!(expanded.pointer("/increments/0/version").unwrap(), "1.0.1");
+    _ = run(&RunInput::Expand {
+        plan: input.clone(),
+        out: input.clone(),
+        preserve_input: false,
+        manifest_path: fixture.manifest(),
+        verbose: false,
+    })
+    .unwrap();
+    let expanded: Value = serde_json::from_slice(&fs::read(input).unwrap()).unwrap();
+    assert_eq!(expanded.get("expanded").unwrap(), true);
+}
+
+#[cfg(unix)]
+#[test]
+#[cfg_attr(miri, ignore = "creates a directory symlink")]
+fn protected_expansion_rejects_a_symlinked_final_destination() {
+    let fixture = Fixture::new("");
+    write_package(&fixture, "api", "1.0.0", "");
+    fixture.commit("package");
+    let input = fixture.path().join("proposal.json");
+    fs::write(&input, r#"{"schema_version":4,"increments":[]}"#).unwrap();
+    let original = fs::read(&input).unwrap();
+    let alias = fixture.path().join("alias");
+    symlink(fixture.path(), &alias).unwrap();
+    _ = run(&RunInput::Expand {
+        plan: input.clone(),
+        out: alias.join("proposal.json"),
+        preserve_input: true,
+        manifest_path: fixture.manifest(),
+        verbose: false,
+    })
+    .unwrap_err();
+    assert_eq!(fs::read(input).unwrap(), original);
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "uses Git, Cargo metadata and encoded plan files")]
+fn utf8_bom_is_accepted_by_expansion_and_application() {
+    let fixture = Fixture::new("");
+    write_package(&fixture, "api", "1.0.0", "");
+    fixture.commit("package");
+    let plan = fixture.path().join("plan.json");
+    fs::write(
+        &plan,
+        concat!(
+            "\u{feff}",
+            r#"{"schema_version":4,"increments":[{"name":"api","level":"patch"}]}"#
+        ),
+    )
+    .unwrap();
+    let out = fixture.path().join("expanded.json");
+    _ = run(&RunInput::Expand {
+        preserve_input: false,
+        plan: plan.clone(),
+        out: out.clone(),
+        manifest_path: fixture.manifest(),
+        verbose: false,
+    })
+    .unwrap();
+    let expanded: Value = serde_json::from_slice(&fs::read(out).unwrap()).unwrap();
+    assert_eq!(expanded.pointer("/increments/0/version").unwrap(), "1.0.1");
+    _ = run(&RunInput::Apply {
+        plan,
+        dry_run: false,
+        manifest_path: fixture.manifest(),
+        verbose: false,
+    })
+    .unwrap();
+    assert!(
+        fixture
+            .read("packages/api/Cargo.toml")
+            .contains("version = \"1.0.1\"")
+    );
+}
 
 /// Read-only expansion names group effects; preview completes dependency effects before apply.
 #[cfg_attr(miri, ignore)] // Spawns git and cargo, which Miri cannot emulate.
@@ -34,6 +150,7 @@ helper = { path = "../helper", version = "1.0.0" }
     let expanded_path = fixture.path().join("expanded.json");
 
     run(&RunInput::Expand {
+        preserve_input: false,
         plan: plan_path,
         out: expanded_path.clone(),
         manifest_path: fixture.manifest(),
@@ -106,6 +223,7 @@ shell_impl = { workspace = true }
     let expanded_path = fixture.path().join("expanded/plan.json");
 
     let outcome = run(&RunInput::Expand {
+        preserve_input: false,
         plan: plan_path,
         out: expanded_path.clone(),
         manifest_path: fixture.manifest(),
@@ -174,6 +292,7 @@ fn a_helper_directly_targets_an_all_non_publishable_group() {
     let expanded_path = fixture.path().join("expanded.json");
 
     run(&RunInput::Expand {
+        preserve_input: false,
         plan: plan_path,
         out: expanded_path.clone(),
         manifest_path: fixture.manifest(),
@@ -231,6 +350,7 @@ fn apply_rejects_an_expanded_plan_whose_group_gained_a_member() {
     .unwrap();
     let expanded_path = fixture.path().join("expanded.json");
     run(&RunInput::Expand {
+        preserve_input: false,
         plan: plan_path.clone(),
         out: expanded_path.clone(),
         manifest_path: fixture.manifest(),
@@ -358,6 +478,7 @@ fn expand_rejects_disagreeing_versions_within_one_group() {
     .unwrap();
 
     let error = run(&RunInput::Expand {
+        preserve_input: false,
         plan: plan_path,
         out: fixture.path().join("expanded.json"),
         manifest_path: fixture.manifest(),
@@ -400,6 +521,7 @@ fn a_patch_increment_level_realigns_an_inconsistent_group() {
     .unwrap();
     let expanded_path = fixture.path().join("expanded.json");
     run(&RunInput::Expand {
+        preserve_input: false,
         plan: plan_path,
         out: expanded_path.clone(),
         manifest_path: fixture.manifest(),
@@ -459,6 +581,7 @@ fn an_exact_target_aligns_a_group_without_advancing_its_leader() {
     .unwrap();
     let expanded_path = fixture.path().join("expanded.json");
     run(&RunInput::Expand {
+        preserve_input: false,
         plan: plan_path,
         out: expanded_path.clone(),
         manifest_path: fixture.manifest(),

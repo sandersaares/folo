@@ -20,11 +20,17 @@ elsewhere), or `cargo install cargo-release-plan` to always build from source. T
 cargo release-plan report --out-dir <dir> [--base <rev>] [--manifest-path <path>] [--verbose]
 cargo release-plan check [--base <rev>] [--manifest-path <path>] [--format text|github] [--verify-packaging] [--verbose]
 cargo release-plan prepare --output <dir> [--base <rev>] [--manifest-path <path>] [--verbose]
+cargo release-plan analysis-order --report <file-or-dir> [--verbose]
+cargo release-plan semver-targets --report <file-or-dir> [--verbose]
+cargo release-plan propose --report <file-or-dir> --decisions <decisions.json>
+    --out <plan.json> [--verbose]
 cargo release-plan preview --prepared <prepared.json> --plan <plan.json> --output <dir>
     [--manifest-path <path>] [--verbose]
 cargo release-plan verify-preview --plan <plan.json> --manifest-path <prospective-manifest>
     [--verbose]
 cargo release-plan expand --plan <plan.json> --out <expanded.json>
+    [--manifest-path <path>] [--preserve-input] [--verbose]
+cargo release-plan inspect-plan --plan <expanded.json> [--require-resolved]
     [--manifest-path <path>] [--verbose]
 cargo release-plan apply --plan <plan.json> [--dry-run] [--manifest-path <path>] [--verbose]
 ```
@@ -85,10 +91,65 @@ Preparation can modify the workspace lockfile. It writes `prepared.json`,
 `report.json`, and per-package `diffs/` beneath the output directory. Read-only
 `report` and `check` never perform this refresh.
 
+### Artifact-only planning
+
+`analysis-order`, `semver-targets`, and `propose` consume a report file, or a
+directory containing `report.json`. They do not inspect the current workspace,
+invoke Cargo or Git, or contact a registry. Relative paths resolve from the
+current directory. These commands require the supported report schema.
+`analysis-order` and `semver-targets` print JSON to stdout; `propose` writes its
+JSON plan to `--out` and prints a human-readable summary. `--verbose` writes
+explanatory decisions to stderr without changing those outputs.
+
+`analysis-order` prints dependency-first batches as a JSON array:
+
+```json
+[
+  { "order": 1, "packages": ["implementation"], "cyclic": false },
+  { "order": 2, "packages": ["api"], "cyclic": false }
+]
+```
+
+Every publishable package appears once, including unchanged packages.
+Dependencies outside a batch precede it. All ready batches in a dependency wave
+are emitted before proceeding to the next wave, with ordinal package-name ordering.
+A cyclic batch contains mutually dependent packages; version-group membership
+alone does not make a cycle. Non-publishable helpers are not assessment targets.
+
+`semver-targets` prints an ordinally sorted JSON array of package names. Changed
+released content selects the consumer contracts in that package's version group,
+or the package itself when ungrouped. Private APIs and packages without a library
+contract are not compared directly. An empty selection is `[]`. The command
+selects targets only; the caller runs its compatibility tooling.
+
+`propose` consumes caller-decided change levels:
+
+```json
+{
+  "schema_version": 1,
+  "changes": [
+    { "name": "api", "level": "breaking" }
+  ]
+}
+```
+
+The decision format has its own schema revision. Levels are `breaking`,
+`nonbreaking`, and `patch`; omit packages requiring no semantic increment.
+The tool does not choose these levels. It retains sufficient pending increments,
+resolves version-group alignment, and propagates required releases through
+workspace dependencies. The proposed plan written to `--out` uses the ordinary
+plan schema and must pass through `preview` before complete release application.
+The report cannot predict new lockfile effects of a proposal; preview supplies
+that evidence for further assessment.
+
 ### `expand`
 
 Resolves a plan's version groups and increment levels into one explicit entry
 per package, written to `--out`.
+
+`--preserve-input` rejects input/output aliases and stages the complete expansion
+before replacing the destination. Use it when the original proposal must remain
+available. Without this option, in-place expansion remains supported.
 
 An input plan may omit version-group members that `apply` will update. `expand`
 writes the explicit package/version set for review, naming every tracked member
@@ -133,6 +194,30 @@ configuration, or lockfile changes made during that analysis.
 
 This evidence path does not become the application destination: `apply` remains
 bound to the original post-preparation workspace inputs.
+
+### `inspect-plan`
+
+Validates an expanded plan against the selected workspace's tracked members and
+prints JSON facts for external tooling:
+
+```json
+{
+  "publication_targets": ["api"],
+  "evidence_manifest_path": null
+}
+```
+
+`publication_targets` contains the ordinally sorted publishable packages named by
+the expansion, excluding alignment-only helpers. `evidence_manifest_path` is the
+captured preview's compatibility manifest, or `null` for structural expansion.
+The command does not contact a registry or change workspace files.
+
+`--require-resolved` requires a captured preview valid for application. Captured
+plans undergo the same read-only input and artifact checks as `apply --dry-run`.
+Their retained compatibility workspace is also verified before its manifest path
+is returned.
+Use this inspection before external publication checks; use `verify-preview`
+to validate the retained compatibility workspace.
 
 ### `apply`
 

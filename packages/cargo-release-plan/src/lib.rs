@@ -17,8 +17,10 @@ pub mod __private {
     pub use crate::lockfile::benchmark_lockfile_closures;
 }
 
+mod analysis_order;
 mod anchor;
 mod apply;
+mod artifact_path;
 mod check;
 mod classify;
 mod cli;
@@ -29,15 +31,18 @@ mod expand;
 mod git;
 mod groups;
 mod inherited;
+mod inspect_plan;
 mod lockfile;
 mod manifest;
 mod metadata;
 mod packaging;
 mod plan;
 mod preview;
+mod propose;
 mod prospective;
 mod report;
 mod resolved;
 mod run;
+mod semver_targets;
 mod text;
 mod verbose;

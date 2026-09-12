@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::WriteFileError;
 use crate::apply::compute_edits;
+use crate::artifact_path::{resolve_path, same_path};
 use crate::check::{CheckFormat, releases_breaking_change, run_check};
 use crate::classify::{ChangedItem, Classification, PackageStatus, classify};
 use crate::command::hash_bytes;
@@ -82,8 +83,10 @@ pub(crate) fn run_preview(
     let output = absolute(output).map_err(|error| WriteFileError::caused_by(output, error))?;
     let marker = output.join("plan.json");
     let inputs = [plan, prepared, manifest];
-    if inputs.iter().any(|input| same_path(input, &marker)) {
-        return Err(OutputInputCollision::new().into());
+    for input in inputs {
+        if same_path(input, &marker)? {
+            return Err(OutputInputCollision::new().into());
+        }
     }
     // The completion marker belongs to this invocation from its first fallible input read.
     // A failed standalone rerun must not leave an earlier resolved plan looking current.
@@ -321,35 +324,22 @@ fn explicit_plan(resolved: &ResolvedVersions) -> PlanFile {
     )
 }
 
-fn remove_marker(path: &Path) -> Result<(), AppError> {
+pub(crate) fn remove_marker(path: &Path) -> Result<(), AppError> {
     if path.exists() {
         fs::remove_file(path).map_err(|error| WriteFileError::caused_by(path, error))?;
     }
     Ok(())
 }
 
-fn same_path(left: &Path, right: &Path) -> bool {
-    match (fs::canonicalize(left), fs::canonicalize(right)) {
-        (Ok(left), Ok(right)) => left == right,
-        _ => absolute(left)
-            .ok()
-            .zip(absolute(right).ok())
-            .is_some_and(|(left, right)| left == right),
-    }
-}
-
 fn guard_output_inputs(output: &Path, inputs: &[&Path]) -> Result<(), AppError> {
-    let output = fs::canonicalize(output).unwrap_or_else(|_| output.to_path_buf());
+    let output = resolve_path(output)?;
     for input in inputs {
-        if ["report.json", "report.json.tmp"]
-            .iter()
-            .any(|name| same_path(input, &output.join(name)))
-        {
-            return Err(OutputInputCollision::new().into());
+        for name in ["report.json", "report.json.tmp"] {
+            if same_path(input, &output.join(name))? {
+                return Err(OutputInputCollision::new().into());
+            }
         }
-        let input = fs::canonicalize(input)
-            .or_else(|_| absolute(input))
-            .map_err(|error| WriteFileError::caused_by(input, error))?;
+        let input = resolve_path(input)?;
         for directory in ["diffs", "workspace", ".prospective"] {
             if input.starts_with(output.join(directory)) {
                 return Err(OutputInputCollision::new().into());

@@ -51,9 +51,9 @@ contents release-relevant.
 
 The tool determines whether an increment is required and records the evidence.
 It does not infer API compatibility. A maintainer or automation with knowledge of
-the package's promises chooses semantic increment levels. Resolution preview
-completes their mechanical release effects and exposes the resulting evidence
-before application.
+the package's promises chooses semantic increment levels. Proposal generation
+completes their mechanical version effects from captured evidence. Resolution
+preview exposes additional dependency-resolution effects before application.
 
 ### Consumer contracts
 
@@ -210,6 +210,33 @@ The expanded plan is applied unchanged, so the documented package/version set
 and applied document are the same artifact. Review and approval policy belong
 to the caller, not the tool.
 
+### Plan from captured evidence
+
+`analysis-order`, `semver-targets`, and `propose` operate entirely on report
+artifacts. Their answers do not depend on a checkout, a registry, or installed
+compatibility tools.
+
+Semantic assessment is dependency-first. Every publishable package appears in an
+analysis batch, with mutually dependent packages assessed together. Version groups
+do not create artificial dependency cycles, and non-publishable members do not
+receive semantic assessments.
+
+Compatibility target selection follows consumer contracts. A changed package
+selects the public contracts in its version group rather than demanding a
+comparison of private implementation APIs. Packages without changed released
+content do not independently select a comparison.
+
+Proposal generation consumes explicit `breaking`, `nonbreaking`, or `patch`
+decisions. It retains adequate pending version increases, aligns version groups
+without regression, and propagates required dependent releases. Public dependency
+breaks use the same compatibility rule as the release gate. Requirements rewritten
+by the proposal cannot leave a dependent at an already-published version.
+These mechanical requirements do not replace semantic judgement.
+
+The proposal is based on the report's declared versions and release anchors.
+Preview remains responsible for resolving prospective manifests and lockfiles;
+its additional evidence can require a fresh semantic decision.
+
 ### Expand version choices with `expand`
 
 `expand --plan <plan.json> --out <expanded.json>` resolves a proposed plan's
@@ -230,6 +257,19 @@ reach its members is how such a plan is written.
 
 Structural expansion alone is not a complete resolved artifact. A release
 proposal must also account for the actual lockfile effects of those versions.
+
+Input-preserving expansion rejects destinations that alias the proposal and leaves
+an existing destination unchanged if expansion fails. Callers can request this
+behavior without giving up the general command's supported in-place expansion.
+
+### Inspect an expanded plan
+
+`inspect-plan` validates an expansion against the selected workspace and provides
+publication-eligible target names and any retained compatibility manifest.
+Non-publishable alignment targets remain part of validation but not publication.
+Requiring resolved evidence applies the same captured-state checks as a dry-run
+application. Inspection performs no writes or registry queries; external callers
+own publication availability checks.
 
 ### Prepare evidence and preview resolution
 
@@ -278,7 +318,8 @@ rewrites requirements that must follow, and resolves the lockfile before the
 complete result is applied. Post-application verification confirms that result;
 it is not a routine source of additional lockfile-only release decisions.
 
-All commands use the workspace selected by `--manifest-path`. `report` and
+Workspace commands use the workspace selected by `--manifest-path`. Artifact-only
+planning commands instead use their supplied reports and decisions. `report` and
 `check` accept `--base` to name the shared release baseline.
 
 ## The release baseline

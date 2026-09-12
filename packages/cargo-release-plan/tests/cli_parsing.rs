@@ -13,6 +13,129 @@ fn parse(args: &[&str]) -> Result<Cli, EarlyExit> {
 }
 
 #[test]
+fn expansion_input_protection_is_explicit() {
+    let input = parse(&[
+        "expand",
+        "--plan",
+        "plan.json",
+        "--out",
+        "expanded.json",
+        "--preserve-input",
+    ])
+    .unwrap()
+    .into_input();
+    let RunInput::Expand { preserve_input, .. } = input else {
+        panic!()
+    };
+    assert!(preserve_input);
+}
+
+#[test]
+fn inspection_requires_a_plan_and_preserves_workspace_selection() {
+    assert!(parse(&["inspect-plan"]).unwrap_err().status.is_err());
+    let input = parse(&[
+        "inspect-plan",
+        "--plan",
+        "plan.json",
+        "--require-resolved",
+        "--manifest-path",
+        "workspace.toml",
+        "--verbose",
+    ])
+    .unwrap()
+    .into_input();
+    match input {
+        RunInput::InspectPlan {
+            plan,
+            require_resolved,
+            manifest_path,
+            verbose,
+        } => {
+            assert_eq!(plan, PathBuf::from("plan.json"));
+            assert_eq!(manifest_path, PathBuf::from("workspace.toml"));
+            assert!(require_resolved);
+            assert!(verbose);
+        }
+        other => panic!("unexpected input {other:?}"),
+    }
+}
+
+#[test]
+fn artifact_commands_require_inputs_and_do_not_accept_workspace_options() {
+    for command in ["analysis-order", "semver-targets"] {
+        assert!(parse(&[command]).unwrap_err().status.is_err());
+        for option in ["--base", "--manifest-path"] {
+            assert!(
+                parse(&[command, "--report", "report.json", option, "other"])
+                    .unwrap_err()
+                    .status
+                    .is_err()
+            );
+        }
+        let input = parse(&[command, "--report", "report.json", "--verbose"])
+            .unwrap()
+            .into_input();
+        match input {
+            RunInput::AnalysisOrder { report, verbose }
+            | RunInput::SemverTargets { report, verbose } => {
+                assert_eq!(report, PathBuf::from("report.json"));
+                assert!(verbose);
+            }
+            other => panic!("unexpected input {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn proposal_requires_report_decisions_and_output() {
+    for args in [
+        vec![
+            "propose",
+            "--report",
+            "evidence",
+            "--decisions",
+            "decisions.json",
+        ],
+        vec!["propose", "--report", "evidence", "--out", "plan.json"],
+        vec![
+            "propose",
+            "--decisions",
+            "decisions.json",
+            "--out",
+            "plan.json",
+        ],
+    ] {
+        assert!(parse(&args).unwrap_err().status.is_err());
+    }
+    let input = parse(&[
+        "propose",
+        "--report",
+        "evidence",
+        "--decisions",
+        "decisions.json",
+        "--out",
+        "plan.json",
+        "--verbose",
+    ])
+    .unwrap()
+    .into_input();
+    match input {
+        RunInput::Propose {
+            report,
+            decisions,
+            out,
+            verbose,
+        } => {
+            assert_eq!(report, PathBuf::from("evidence"));
+            assert_eq!(decisions, PathBuf::from("decisions.json"));
+            assert_eq!(out, PathBuf::from("plan.json"));
+            assert!(verbose);
+        }
+        other => panic!("unexpected input {other:?}"),
+    }
+}
+
+#[test]
 fn missing_subcommand_prints_help() {
     let early = parse(&[]).unwrap_err();
     assert!(
@@ -125,10 +248,12 @@ fn expand_defaults_the_manifest_path() {
             plan,
             out,
             manifest_path,
+            preserve_input,
             verbose,
         } => {
             assert_eq!(plan, PathBuf::from("plan.json"));
             assert_eq!(out, PathBuf::from("expanded.json"));
+            assert!(!preserve_input);
             assert_eq!(manifest_path, PathBuf::from("Cargo.toml"));
             assert!(!verbose);
         }

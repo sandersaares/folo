@@ -3,7 +3,7 @@
 name = "cargo-release-plan"
 description = "A Cargo subcommand that classifies publishable packages against their version anchors and applies increment plans"
 publish = true
-version = "0.3.1"
+version = "0.3.2"
 
 authors.workspace = true
 edition.workspace = true
@@ -62,13 +62,13 @@ ohno = { workspace = true, features = ["app-err"] }
 semver = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+tempfile = { workspace = true }
 toml_edit = { workspace = true, features = ["parse", "display"] }
 
 [dev-dependencies]
 criterion = { workspace = true }
 mutants = { workspace = true }
 static_assertions = { workspace = true }
-tempfile = { workspace = true }
 
 [[bench]]
 name = "cargo_release_plan_algorithms"
