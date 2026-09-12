@@ -141,3 +141,61 @@ fn patch_alignment(name: &str) -> PlanIncrement {
         version: None,
     }
 }
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use super::*;
+    use crate::propose::tests::{depends, helper, package, report};
+
+    #[test]
+    fn verbose_alignment_explains_retaining_the_highest_version() {
+        let report = report(
+            vec![
+                package("a", "1.1.0", Some("1.1.0")),
+                package("b", "1.0.0", Some("1.0.0")),
+            ],
+            vec![],
+            &[&["a", "b"]],
+        );
+        report.validate().unwrap();
+        let increment =
+            Proposal::new(&report).alignment_increment("a", &BTreeSet::new(), Verbose::new(true));
+        assert_eq!(increment.name, "a");
+        assert_eq!(increment.version.as_deref(), Some("1.1.0"));
+        assert!(increment.level.is_none());
+    }
+
+    #[test]
+    fn verbose_alignment_explains_rewritten_published_requirements() {
+        let report = report(
+            vec![
+                depends(package("a", "1.1.0", Some("1.1.0")), "b", false),
+                package("b", "1.0.0", Some("1.0.0")),
+            ],
+            vec![],
+            &[&["a", "b"]],
+        );
+        report.validate().unwrap();
+        let increment =
+            Proposal::new(&report).alignment_increment("a", &BTreeSet::new(), Verbose::new(true));
+        assert_eq!(increment.name, "a");
+        assert_eq!(increment.level.as_deref(), Some("patch"));
+        assert!(increment.version.is_none());
+    }
+
+    #[test]
+    fn verbose_alignment_explains_plain_version_normalization() {
+        let report = report(
+            vec![],
+            vec![helper("a", "1.2.3+build"), helper("b", "1.2.2")],
+            &[&["a", "b"]],
+        );
+        report.validate().unwrap();
+        let increment =
+            Proposal::new(&report).alignment_increment("a", &BTreeSet::new(), Verbose::new(true));
+        assert_eq!(increment.name, "a");
+        assert_eq!(increment.level.as_deref(), Some("patch"));
+        assert!(increment.version.is_none());
+    }
+}

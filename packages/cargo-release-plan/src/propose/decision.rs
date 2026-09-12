@@ -229,6 +229,43 @@ mod tests {
     use crate::propose::tests::{generate, helper, package, report};
 
     #[test]
+    fn verbose_decisions_explain_emitted_and_retained_versions() {
+        let report = report(
+            vec![
+                package("breaking", "1.0.0", Some("1.0.0")),
+                package("feature", "1.0.0", Some("1.0.0")),
+                package("pending", "1.0.1", Some("1.0.0")),
+            ],
+            vec![],
+            &[],
+        );
+        report.validate().unwrap();
+        let levels = BTreeMap::from([
+            ("breaking".to_owned(), ChangeLevel::Breaking),
+            ("feature".to_owned(), ChangeLevel::Nonbreaking),
+            ("pending".to_owned(), ChangeLevel::Patch),
+        ]);
+        let increments = Proposal::new(&report)
+            .decision_increments(&levels, Verbose::new(true))
+            .unwrap();
+        assert_eq!(
+            increments,
+            [
+                PlanIncrement {
+                    name: "breaking".to_owned(),
+                    level: Some("major".to_owned()),
+                    version: None,
+                },
+                PlanIncrement {
+                    name: "feature".to_owned(),
+                    level: Some("minor".to_owned()),
+                    version: None,
+                },
+            ]
+        );
+    }
+
+    #[test]
     fn malformed_decision_shapes_fail_typed_parsing() {
         for value in [
             json!(null),

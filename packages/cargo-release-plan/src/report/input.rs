@@ -152,6 +152,19 @@ mod tests {
     use super::*;
     use crate::report::fixture::{package, report};
 
+    #[test]
+    fn in_memory_reports_must_use_the_current_schema() {
+        let mut report = report(Vec::new());
+        report.schema_version = SCHEMA_VERSION.checked_add(1).unwrap();
+        assert!(
+            report
+                .validate()
+                .unwrap_err()
+                .find_source::<UnsupportedPlanSchemaError>()
+                .is_some()
+        );
+    }
+
     fn grouped() -> ReportFile {
         let mut report = report(vec![package("api", "needs-increment", true)]);
         report.packages.first_mut().unwrap().group = Some("api".to_owned());

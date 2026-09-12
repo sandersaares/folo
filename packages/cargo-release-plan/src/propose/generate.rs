@@ -457,6 +457,48 @@ mod tests {
     };
 
     #[test]
+    fn verbose_public_propagation_explains_the_dependency_anchor() {
+        let report = report(
+            vec![
+                depends(package("app", "1.0.0", Some("1.0.0")), "lib", true),
+                package("lib", "2.0.0", Some("1.0.0")),
+            ],
+            vec![],
+            &[],
+        );
+        report.validate().unwrap();
+        let levels = Proposal::new(&report)
+            .public_levels(&BTreeMap::new(), &BTreeMap::new(), Verbose::new(true))
+            .unwrap();
+        assert_eq!(
+            levels,
+            BTreeMap::from([("app".to_owned(), ChangeLevel::Breaking)])
+        );
+    }
+
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "reads proposal inputs and attempts a real filesystem write"
+    )]
+    fn output_write_failure_is_returned_without_a_completed_proposal() {
+        let directory = tempdir_in(".").unwrap();
+        let report_path = directory.path().join("report.json");
+        let decisions_path = directory.path().join("decisions.json");
+        // A NUL cannot form a filesystem filename on either supported platform. This reaches
+        // the write-failure cleanup without permission assumptions or a concurrent mutation.
+        let output = directory.path().join("invalid\0.json");
+        write_json(&report_path, &report(vec![], vec![], &[])).unwrap();
+        fs::write(&decisions_path, r#"{"schema_version":1,"changes":[]}"#).unwrap();
+        let error =
+            run_propose(&report_path, &decisions_path, &output, Verbose::new(false)).unwrap_err();
+        assert!(error.find_source::<WriteFileError>().is_some());
+        assert!(!output.exists());
+        assert!(report_path.is_file());
+        assert!(decisions_path.is_file());
+    }
+
+    #[test]
     fn a_propagated_semantic_level_supersedes_an_earlier_exact_group_alignment() {
         let report = report(
             vec![

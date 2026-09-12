@@ -87,7 +87,7 @@ mod tests {
         data.packages
             .push(serde_json::from_value(no_content).unwrap());
         assert_eq!(
-            semver_targets(&data, Verbose::new(false)),
+            semver_targets(&data, Verbose::new(true)),
             ["A", "a", "z"].map(str::to_owned).into_iter().collect()
         );
     }
