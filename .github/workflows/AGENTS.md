@@ -70,15 +70,11 @@ high-level design in `design.md` and per-job mechanics in inline YAML comments.
 - Merge-queue runs use the same pruned job set as pull requests. A `github.event_name ==
   'push'` guard that means "full matrix" must stay keyed on `push`, not on
   `!= 'pull_request'`, or a `merge_group` run would take the full matrix.
-- Keep `scheduled-repair-gate` unconditional and in the fan-in's must-succeed list. Read managed
-  scope from the trusted default-branch policy and registered issue/attempt/head metadata.
-  A personal account's unmarked PR is not a managed repair.
-- Preserve independent hosted execution, reporting and Local admission controls; documentation
-  or setup changes must not activate them. Keep shallow/deep local recipes policy-independent.
-  Ordinary PR/push CI stays shallow; managed repairs retain their relevant deep gate.
-  See [Operating policy](implementation.md#operating-policy).
-- Privileged scheduled reporting must check out the default-branch controller, not a triggering
-  candidate. Treat downloaded evidence as data and preserve reporter/worker record ownership.
-- Build scheduled evidence utilities only from the trusted controller, never candidate source
-  or downloaded artifacts. Include the Rust decoder and `.cargo/mutants.toml` in the checker
-  contract digest; see [Evidence decoding](implementation.md#evidence-decoding).
+- Keep PR/push CI shallow. Repair PRs use ordinary required checks and human review of relevant
+  deep-check results; do not introduce a repair registry or special merge gate.
+- Keep deep validation full-scope and main-only, with failure reporting in the same workflow.
+- Run checks through the existing developer Just recipes. Keep toolchain, runner, argument and
+  pass/fail behavior in those recipes rather than in a separate scheduled implementation.
+- Treat repair branches like other same-repository branches; do not add naming-based gates.
+- Keep issue handoffs human-readable and all ownership on GitHub. App setup must not implicitly
+  enable or run automations. See [Scheduled validation](../../docs/scheduled-validation.md).

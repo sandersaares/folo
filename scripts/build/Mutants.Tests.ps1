@@ -3,17 +3,17 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
 
-# Pester suite for Mutants.psm1. Both functions are pure, so the exclusion set and the shard
-# translation are asserted directly across platforms. The exclusions are position-sensitive
+# Pester suite for the pure Mutants.psm1 exclusion and sharding helpers, asserted directly
+# across platforms. The exclusions are position-sensitive
 # (`-e` immediately precedes its value), so the tests check that pairing as well as the
-# platform-conditional entries and the Linux-only single-quoting.
+# platform-conditional entries and literal wildcard arguments on every platform.
 
 BeforeAll {
     Import-Module (Join-Path $PSScriptRoot 'Mutants.psm1') -Force
 
     function Get-ExcludeValue($arguments) {
         # Extract the value that follows each `-e` flag so tests can assert on the exclusion set
-        # independently of quoting.
+        # independently of the calling recipe.
         $values = @()
         for ($i = 0; $i -lt $arguments.Length; $i++) {
             if ($arguments[$i] -eq '-e') { $values += $arguments[$i + 1] }
@@ -51,7 +51,7 @@ Describe 'Get-MutantsExcludeArgument' {
 
     It 'excludes the whole Windows-only dure package off Windows' {
         $values = Get-ExcludeValue (Get-MutantsExcludeArgument -IsWindowsPlatform $false -IsLinuxPlatform $true)
-        $values | Should -Contain "'packages/dure/**/*.rs'"
+        $values | Should -Contain 'packages/dure/**/*.rs'
     }
 
     It 'keeps the dure package in scope on Windows' {
@@ -65,10 +65,10 @@ Describe 'Get-MutantsExcludeArgument' {
         $values | Should -Not -Contain '**/*windows.rs'
     }
 
-    It 'single-quotes the always-excluded dure paths off Windows' {
+    It 'keeps the always-excluded dure paths literal off Windows' {
         $values = Get-ExcludeValue (Get-MutantsExcludeArgument -IsWindowsPlatform $false -IsLinuxPlatform $true)
-        $values | Should -Contain "'packages/dure/src/pal/raw_handle.rs'"
-        $values | Should -Contain "'packages/dure/src/outbox.rs'"
+        $values | Should -Contain 'packages/dure/src/pal/raw_handle.rs'
+        $values | Should -Contain 'packages/dure/src/outbox.rs'
     }
 
     It 'excludes windows and linux sources on a third platform (e.g. macOS)' {
@@ -83,20 +83,17 @@ Describe 'Get-MutantsExcludeArgument' {
         $values | Should -Not -Contain 'windows'
     }
 
-    It 'does not single-quote glob patterns on Windows' {
-        $values = Get-ExcludeValue (Get-MutantsExcludeArgument -IsWindowsPlatform $true -IsLinuxPlatform $false)
+    It 'passes literal glob patterns on <platform>' -ForEach @(
+        @{ platform = 'Windows'; windows = $true; linux = $false }
+        @{ platform = 'Linux'; windows = $false; linux = $true }
+        @{ platform = 'other platforms'; windows = $false; linux = $false }
+    ) {
+        $values = Get-ExcludeValue (Get-MutantsExcludeArgument -IsWindowsPlatform $windows -IsLinuxPlatform $linux)
         $values | Should -Contain '**/*facade.rs'
+        $values | Should -Contain 'packages/testing/**'
+        $values | Should -Contain 'packages/cargo-bench-history-figures/**'
+        $values | Should -Contain 'packages/dure/src/pal/**/windows.rs'
         $values | ForEach-Object { $_ | Should -Not -Match "^'" }
-    }
-
-    It 'single-quotes glob patterns off Windows so PowerShell does not expand them' {
-        $values = Get-ExcludeValue (Get-MutantsExcludeArgument -IsWindowsPlatform $false -IsLinuxPlatform $true)
-        $values | Should -Contain "'**/*facade.rs'"
-        $values | Should -Contain "'packages/testing/**'"
-        $values | Should -Contain "'packages/cargo-bench-history-figures/**'"
-        $values | Should -Contain "'packages/dure/src/pal/**/windows.rs'"
-        # Plain package names are still passed literally, without quoting.
-        $values | Should -Contain 'many_cpus_benchmarking'
     }
 }
 
@@ -111,24 +108,6 @@ Describe 'Get-MutantsShardArgument' {
     }
 
     It 'propagates a malformed spec as a failure' {
-        { Get-MutantsShardArgument -Spec '9/8' } | Should -Throw '*1 <= N <= M*'
-    }
-}
-
-Describe 'Typed mutation arguments' {
-    It 'keeps wildcard exclusions literal on Linux when passed as argv' {
-        $values = Get-ExcludeValue (Get-MutantsExcludeArgument -IsWindowsPlatform $false -IsLinuxPlatform $true -Literal)
-        $values | Should -Contain '**/*facade.rs'
-        $values | Should -Contain 'packages/dure/**/*.rs'
-        $values | ForEach-Object { $_ | Should -Not -Match "^'" }
-    }
-
-    It 'anchors the complete mutant name without interpreting shell syntax' {
-        $name = 'src/lib.rs:1:2: replace a$();[x] -> u8 with 0'
-        $arguments = Get-MutantsReplayArgument -Mutant @{ name = $name }
-        $arguments.Count | Should -Be 2
-        $arguments[0] | Should -Be '--re'
-        $name | Should -Match $arguments[1]
-        "$name suffix" | Should -Not -Match $arguments[1]
+        { Get-MutantsShardArgument -Spec '9/8' } | Should -Throw
     }
 }

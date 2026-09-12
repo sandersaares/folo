@@ -1,380 +1,120 @@
 #Requires -Modules @{ ModuleName = 'Pester'; ModuleVersion = '5.0' }
-# Protects coverage and compatibility handling for existing repair records: newer, weaker
-# evidence must not supersede a stronger reproduction or falsely confirm an existing repair.
+# Protects human-readable reporting: preserve every failure, exclude successful-job noise,
+# and continue large diagnostic lists as ordinary comments without encoded records.
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
 $VerbosePreference = 'Continue'
 
 BeforeAll {
-    Import-Module (Join-Path $PSScriptRoot 'ScheduledContracts.psm1') -Force
-    Import-Module (Join-Path $PSScriptRoot 'ScheduledPlan.psm1')
     Import-Module (Join-Path $PSScriptRoot 'ScheduledReport.psm1') -Force
-    function Get-ReportTestRecord {
-        @{
-            schema_version = 1; repository = 'folo-rs/folo'; repository_id = 850321188
-            finding_id = 'f' * 64
-            generation = 1; status = 'open'; check_id = 'miri-ubuntu-latest'; package = 'events'
-            platform = 'ubuntu-latest'; applicability = @{}; source_sha = 'a' * 40
-            controller_sha = 'a' * 40; check_contract_digest = 'c' * 64
-            observation = @{
-                workflow_id = 100; run_id = 10; run_number = 10; run_attempt = 1
-                workflow_path = '.github/workflows/full-deep-validation.yml'
-                created_at = '2026-09-08T09:00:00Z'; run_started_at = '2026-09-08T09:00:00Z'
-                completed_at = '2026-09-08T10:00:00Z'; outcome = 'findings'
-            }
-            evidence = @{ manifest = @{ id = 'miri-ubuntu-latest' }; replay = @{ test_filter = 'example' }; summary = 'Example' }
-            confirmation = $null
-        }
-    }
-    function Get-ReportTestManifest {
-        @{
-            schema_version = 1; repository = 'folo-rs/folo'; source_sha = 'a' * 40
-            controller_sha = 'a' * 40; check_contract_digest = 'c' * 64; scope = 'full'
-            checks = @(@{ id = 'miri-ubuntu-latest'; kind = 'miri'; platform = 'ubuntu-latest'; packages = @() })
-        }
-    }
-    function Get-ReportTestResult($manifest, $context) {
-        @{
-            schema_version = 1; check_id = $manifest.checks[0].id; actual_scope = $manifest.checks[0]
-            source_sha = $manifest.source_sha; controller_sha = $manifest.controller_sha
-            check_contract_digest = $manifest.check_contract_digest; outcome = 'passed'
-            run_id = $context.run_id; run_attempt = $context.run_attempt; run_number = $context.run_number
-        }
-    }
 }
 
-Describe 'Reporter state transitions' {
+Describe 'Readable failure rendering' {
     BeforeEach {
-        $script:existing = Get-ReportTestRecord
-        $incoming = Get-ReportTestRecord
-        $incoming.observation.run_id = 11
-        $incoming.observation.run_number = 11
-        $incoming.observation.created_at = '2026-09-08T10:00:00Z'
-        $incoming.observation.run_started_at = '2026-09-08T10:00:00Z'
-        $incoming.observation.completed_at = '2026-09-08T11:00:00Z'
-        $incoming.source_sha = 'b' * 40
-        $script:ancestor = { param($old, $new) $old -ceq $new -or ($old -ceq ('a' * 40) -and $new -ceq ('b' * 40)) }
-    }
-    It 'opens failures and cannot create an incident from a pass' {
-        (Merge-ScheduledObservation -Existing $null -Incoming $incoming -IsAncestor $ancestor).status | Should -Be open
-        $incoming.observation.outcome = 'passed'
-        Merge-ScheduledObservation -Existing $null -Incoming $incoming -IsAncestor $ancestor | Should -BeNullOrEmpty
-    }
-    It 'is idempotent for the same run attempt' {
-        $actual = Merge-ScheduledObservation $existing $existing $ancestor
-        Get-ScheduledDigest $actual | Should -BeExactly (Get-ScheduledDigest $existing)
-    }
-    It 'rejects delayed failures passes and older generations' {
-        foreach ($outcome in @('findings', 'passed')) {
-            $incoming.observation.outcome = $outcome
-            $incoming.observation.run_number = 9
-            $incoming.observation.run_started_at = '2026-09-08T08:00:00Z'
-            (Merge-ScheduledObservation $existing $incoming $ancestor).observation.run_id | Should -Be 10
+        $script:run = @{
+            name = 'Deep validation'; run_started_at = '2026-09-11T01:02:03Z'
+            status = 'in_progress'; head_sha = 'a' * 40
         }
-        $incoming.observation.run_number = 11
-        $incoming.observation.run_started_at = '2026-09-08T10:00:00Z'
-        $existing.generation = 2
-        (Merge-ScheduledObservation $existing $incoming $ancestor).generation | Should -Be 2
-    }
-    It 'orders reruns by attempt rather than completion timestamp' {
-        $incoming.observation.run_id = 10
-        $incoming.observation.run_number = 10
-        $incoming.observation.run_attempt = 2
-        (Merge-ScheduledObservation $existing $incoming $ancestor).observation.run_attempt | Should -Be 2
-    }
-    It 'rejects newer observations on older or unrelated source branches' {
-        $incoming.source_sha = 'd' * 40
-        (Merge-ScheduledObservation $existing $incoming $ancestor).source_sha | Should -BeExactly ('a' * 40)
-    }
-    It 'does not compare run numbers belonging to different workflows' {
-        $incoming.observation.workflow_id = 200
-        $incoming.observation.run_number = 1
-        (Merge-ScheduledObservation $existing $incoming $ancestor).observation.workflow_id | Should -Be 200
-    }
-    It 'does not reopen a confirmed incident for older selected deep validation that finishes later on the same source' {
-        $existing.status = 'confirmed'
-        $incoming.source_sha = $existing.source_sha
-        $incoming.observation.workflow_id = 200
-        $incoming.observation.workflow_path = '.github/workflows/selected-deep-validation.yml'
-        $incoming.observation.run_number = 100
-        $incoming.observation.created_at = '2026-09-08T08:00:00Z'
-        $incoming.observation.run_started_at = '2026-09-08T08:00:00Z'
-        $incoming.observation.completed_at = '2026-09-08T12:00:00Z'
-        (Merge-ScheduledObservation $existing $incoming $ancestor).status | Should -Be confirmed
-    }
-    It 'does not invent cross-workflow order when creation evidence is unavailable' {
-        $incoming.observation.workflow_id = 200
-        $incoming.observation.Remove('created_at')
-        { Merge-ScheduledObservation $existing $incoming $ancestor } | Should -Throw
-    }
-    It 'reopens recurrence from a newly executed attempt of an older run' {
-        $existing.status = 'confirmed'
-        $incoming.source_sha = $existing.source_sha
-        $incoming.observation.run_id = 9
-        $incoming.observation.run_number = 9
-        $incoming.observation.run_attempt = 2
-        $incoming.observation.created_at = '2026-09-08T08:00:00Z'
-        $incoming.observation.run_started_at = '2026-09-08T11:00:00Z'
-        $reopened = Merge-ScheduledObservation $existing $incoming $ancestor
-        $reopened.status | Should -Be open
-        $reopened.generation | Should -Be 2
-    }
-    It 'requires an explanation instead of closing after a single clean rerun' {
-        $incoming.observation.outcome = 'passed'
-        (Merge-ScheduledObservation $existing $incoming $ancestor).status | Should -Be needs-human
-    }
-    It 'confirms only the actual reachable squash merge commit' {
-        $incoming.observation.outcome = 'passed'
-        $incoming.confirmation = @{
-            authoritative = $true; generation = 1; merge_commit_sha = 'b' * 40
-            explained = $true; scope_complete = $true; successful = $true
-        }
-        $confirmed = Merge-ScheduledObservation $existing $incoming $ancestor
-        $confirmed.status | Should -Be confirmed
-        $confirmed.evidence.replay.test_filter | Should -Be example
-        $incoming.confirmation.merge_commit_sha = 'd' * 40
-        (Merge-ScheduledObservation $existing $incoming $ancestor).status | Should -Be needs-human
-    }
-    It 'rejects artifact assertions and incomplete or unexplained confirmations' {
-        $incoming.observation.outcome = 'passed'
-        foreach ($field in @('authoritative', 'explained', 'scope_complete', 'successful')) {
-            $incoming.confirmation = @{
-                authoritative = $true; generation = 1; merge_commit_sha = 'b' * 40
-                explained = $true; scope_complete = $true; successful = $true
-            }
-            $incoming.confirmation[$field] = $false
-            (Merge-ScheduledObservation $existing $incoming $ancestor).status | Should -Be needs-human
+        $script:attempt = 'https://github.com/example/repo/actions/runs/10/attempts/1'
+        $script:failure = @{
+            name = 'miri-linux'; url = "$attempt/jobs/20"
+            conclusion = 'failure'; summary = 'error: test failed'
+            diagnostics = @("test example::failed_test ... FAILED`nseed: 17`nReplay: just package=events miri")
         }
     }
-    It 'creates a new generation for recurrence after confirmed resolution' {
-        $existing.status = 'confirmed'
-        (Merge-ScheduledObservation $existing $incoming $ancestor).generation | Should -Be 2
+    It 'renders identity, linked failed-job table and useful diagnostics' {
+        $text = @(Format-ScheduledReport $run $attempt @($failure)) -join "`n"
+        $text | Should -Match '^\[Copilot speaking\]'
+        $text | Should -Match ([regex]::Escape($attempt))
+        $text | Should -Match 'UTC start: 2026-09-11 01:02:03'
+        $text | Should -Match 'a{40}'
+        $text | Should -Match '\| Job / check \| Conclusion \| Observed error summary \|'
+        $text | Should -Match 'Workflow status: in_progress'
+        $text | Should -Match 'example::failed_test'
+        $text | Should -Match 'seed: 17'
+        $text | Should -Match 'Replay: just package=events miri'
+        $text | Should -Not -Match '<!--|base64|schema_version'
     }
-    It 'does not use incompatible check contracts to confirm absence' {
-        $incoming.observation.outcome = 'passed'
-        $incoming.check_contract_digest = 'd' * 64
-        (Merge-ScheduledObservation $existing $incoming $ancestor).status | Should -Be open
-    }
-    It 'preserves reproduction when execution is incomplete' {
-        $incoming.observation.outcome = 'incomplete'
-        $incoming.evidence = @{}
-        (Merge-ScheduledObservation $existing $incoming $ancestor).evidence.summary | Should -Be Example
-        $existing.source_sha | Should -BeExactly ('a' * 40)
-    }
-    It 'retains the actual merge and attempt disposition for retries failures and unexplained passes' {
-        foreach ($outcome in @('passed', 'findings', 'incomplete')) {
-            $incoming.observation.outcome = $outcome
-            $incoming.confirmation = @{
-                authoritative = $true; generation = 1; merge_commit_sha = 'b' * 40
-                explained = $false; successful = $outcome -ceq 'passed'; scope_complete = $outcome -cne 'incomplete'
-                status = if ($outcome -ceq 'incomplete') { 'retry' } elseif ($outcome -ceq 'findings') { 'failed' } else { 'needs-human' }
-            }
-            $merged = Merge-ScheduledObservation $existing $incoming $ancestor
-            $merged.confirmation.merge_commit_sha | Should -BeExactly ('b' * 40)
-            $merged.confirmation.status | Should -BeExactly $incoming.confirmation.status
+    It 'retains the first and last failures in lengthy ordinary continuation comments' {
+        $failure.diagnostics = @((1..2000 | ForEach-Object {
+            "MISSED mutant $_ in example::operation - replace return expression with a different value"
+        }) -join "`n")
+        $messages = @(Format-ScheduledReport $run $attempt @($failure))
+        $messages.Count | Should -BeGreaterThan 1
+        foreach ($message in $messages) {
+            $message.Length | Should -BeLessOrEqual 60000
+            $message | Should -Match '^\[Copilot speaking\]'
+            $message | Should -Match ([regex]::Escape($attempt))
         }
+        $text = $messages -join "`n"
+        @([regex]::Matches($text, 'MISSED mutant (\d+) in') | ForEach-Object {
+            [int]$_.Groups[1].Value
+        }) | Should -Be (1..2000)
+        $text | Should -Not -Match '<!--|base64|schema_version'
+    }
+    It 'escapes table content and keeps artifact HTML visible rather than active' {
+        $failure.name = 'miri | <script>'
+        $failure.diagnostics = @('<!-- not an ownership marker -->')
+        $text = @(Format-ScheduledReport $run $attempt @($failure)) -join "`n"
+        $text | Should -Match 'miri &#124; &lt;script&gt;'
+        $text | Should -Match '(?m)^    <!-- not an ownership marker -->'
+    }
+    It 'keeps every failed job when the unsuccessful-job table spans comments' {
+        $failures = @(1..250 | ForEach-Object { @{
+            name = "check-$_"; url = "$attempt/jobs/$_"
+            conclusion = 'failure'; summary = 'An unsuccessful step was observed.'
+            diagnostics = @("Observed error for check $_")
+        } })
+        $messages = @(Format-ScheduledReport $run $attempt $failures)
+        $messages.Count | Should -BeGreaterThan 1
+        @([regex]::Matches(($messages -join "`n"), '\| \[check-(\d+)\]') | ForEach-Object {
+            [int]$_.Groups[1].Value
+        }) | Should -Be (1..250)
     }
 }
 
-Describe 'Coverage receipts' {
-    BeforeEach {
-        $manifest = Get-ReportTestManifest
-        $context = (Get-ReportTestRecord).observation
-        $result = Get-ReportTestResult $manifest $context
-        $ancestor = { param($old, $new) $old -ceq $new }
-        $script:coverage = Merge-ScheduledCoverage -Coverage $null -Manifest $manifest -Results @($result) -Context $context -IsAncestor $ancestor
+Describe 'Failure log excerpts' {
+    It 'keeps distant error contexts without copying entire successful steps' {
+        $lines = @('useful setup context', '##[error]toolchain download failed', 'HTTP 503')
+        $lines += @(1..50 | ForEach-Object { "successful dependency $_" })
+        $lines += @('test example::late_failure', 'thread panicked: undefined behavior', 'seed 37')
+        $text = Get-ScheduledLogExcerpt ($lines -join "`n")
+        $text | Should -Match 'HTTP 503'
+        $text | Should -Match 'late_failure'
+        $text | Should -Match 'seed 37'
+        $text | Should -Not -Match 'successful dependency 25'
+        $text | Should -Match 'Other log lines omitted'
     }
-    It 'records exact full successful scope and originating attempt time' {
-        $coverage.receipt.complete | Should -BeTrue
-        $coverage.receipt.run_attempt | Should -Be 1
-        $coverage.receipt.completed_at | Should -Be $context.completed_at
-        $coverage.receipt.manifest_digest | Should -BeExactly (Get-ScheduledDigest $manifest)
+    It 'retains an unfamiliar failure tail and strips terminal control sequences' {
+        $text = Get-ScheduledLogExcerpt ("`e[31munknown termination`e[0m")
+        $text | Should -BeExactly 'unknown termination'
     }
-    It 'does not refresh coverage on unchanged skips' {
-        $context.run_id = 11
-        $context.run_number = 11
-        $context.completed_at = '2026-09-09T10:00:00Z'
-        $skipped = Merge-ScheduledCoverage $coverage $manifest @() $context $ancestor -Skipped
-        Get-ScheduledDigest $skipped | Should -BeExactly (Get-ScheduledDigest $coverage)
-    }
-    It 'invalidates success on newer missing results or a failed rerun' {
-        $context.run_attempt = 2
-        $invalidated = Merge-ScheduledCoverage $coverage $manifest @() $context $ancestor
-        $invalidated.invalidation.run_attempt | Should -Be 2
-        $invalidated.invalidation.outcome | Should -Be incomplete
-        $invalidated.receipt.run_attempt | Should -Be 1
-    }
-    It 'never lets delayed success replace a newer failure' {
-        $context.run_attempt = 2
-        $invalidated = Merge-ScheduledCoverage $coverage $manifest @() $context $ancestor
-        $context.run_attempt = 1
-        $delayed = Merge-ScheduledCoverage $invalidated $manifest @($result) $context $ancestor
-        $delayed.invalidation.run_attempt | Should -Be 2
-    }
-    It 'invalidates reuse after a later selected deep validation failure with a lower workflow-local run number' {
-        $context.workflow_id = 200
-        $context.run_id = 11
-        $context.run_number = 1
-        $context.workflow_path = '.github/workflows/selected-deep-validation.yml'
-        $context.created_at = '2026-09-08T10:00:00Z'
-        $context.completed_at = '2026-09-08T11:00:00Z'
-        $invalidated = Merge-ScheduledCoverage $coverage $manifest @() $context $ancestor
-        $invalidated.invalidation.run_number | Should -Be 1
-        $invalidated.receipt.run_number | Should -Be 10
-        (Get-ScheduledRunDecision -Manifest $manifest -Coverage $invalidated `
-            -Now ([datetimeoffset]'2026-09-08T12:00:00Z')).run | Should -BeTrue
-        $invalidated.invalidation.created_at | Should -Be $context.created_at
-        $invalidated.invalidation.workflow_path | Should -Be $context.workflow_path
-    }
-    It 'keeps an older selected deep validation failure historical when it finishes after newer full coverage' {
-        $context.workflow_id = 200
-        $context.run_id = 9
-        $context.run_number = 100
-        $context.created_at = '2026-09-08T08:00:00Z'
-        $context.completed_at = '2026-09-08T12:00:00Z'
-        $historical = Merge-ScheduledCoverage $coverage $manifest @() $context $ancestor
-        $historical.invalidation | Should -BeNullOrEmpty
-        $historical.receipt.run_id | Should -Be 10
-    }
-    It 'retains current invalidation through partial success and clears it only with newer full success' {
-        $context.run_attempt = 2
-        $invalidated = Merge-ScheduledCoverage $coverage $manifest @() $context $ancestor
-        $context.run_attempt = 3
-        $manifest.scope = 'repair'
-        $partialResult = Get-ReportTestResult $manifest $context
-        $partial = Merge-ScheduledCoverage $invalidated $manifest @($partialResult) $context $ancestor
-        $partial.invalidation.run_attempt | Should -Be 2
-        $partial.receipt.run_attempt | Should -Be 1
-        $manifest.scope = 'full'
-        (Get-ScheduledRunDecision -Manifest $manifest -Coverage $partial `
-            -Now ([datetimeoffset]'2026-09-08T12:00:00Z')).run | Should -BeTrue
-        $context.run_attempt = 4
-        $fullResult = Get-ReportTestResult $manifest $context
-        $restored = Merge-ScheduledCoverage $partial $manifest @($fullResult) $context $ancestor
-        $restored.invalidation | Should -BeNullOrEmpty
-        (Get-ScheduledRunDecision -Manifest $manifest -Coverage $restored `
-            -Now ([datetimeoffset]'2026-09-08T12:00:00Z')).run | Should -BeFalse
-        $context.run_attempt = 2
-        (Merge-ScheduledCoverage $restored $manifest @() $context $ancestor).invalidation | Should -BeNullOrEmpty
-    }
-    It 'does not accept another run result or partial success as full coverage' {
-        $result.run_id = 999
-        (Merge-ScheduledCoverage -Coverage $null -Manifest $manifest -Results @($result) -Context $context -IsAncestor $ancestor).receipt |
-            Should -BeNullOrEmpty
-        $result.run_id = $context.run_id
-        $manifest.scope = 'repair'
-        (Merge-ScheduledCoverage -Coverage $null -Manifest $manifest -Results @($result) -Context $context -IsAncestor $ancestor).receipt |
-            Should -BeNullOrEmpty
+    It 'does not clip a long error list to its first matches' {
+        $text = Get-ScheduledLogExcerpt ((1..300 | ForEach-Object { "MISSED mutant $_" }) -join "`n")
+        $text | Should -Match 'MISSED mutant 1'
+        $text | Should -Match 'MISSED mutant 300'
     }
 }
 
-Describe 'Reporter-owned text' {
-    It 'updates one exact span without overwriting human prose or worker state' {
-        $record = Get-ReportTestRecord
-        $worker = Write-ScheduledRecord -Record @{ schema_version = 1; note = 'keep' } -Kind worker
-        $text = "Human before`n$(Write-ScheduledRecord -Record $record -Kind reporter)`n$worker`nHuman after"
-        $record.status = 'needs-human'
-        $updated = ConvertTo-ScheduledOwnedText -Text $text -Record $record -Kind reporter
-        $updated | Should -BeExactly "Human before`n$(Write-ScheduledRecord -Record $record -Kind reporter)`n$worker`nHuman after"
+Describe 'Same-workflow reporting' {
+    BeforeAll {
+        $script:workflowDirectory = Join-Path $PSScriptRoot '..\..\.github\workflows'
+        $script:workflow = Get-Content -LiteralPath (Join-Path $script:workflowDirectory 'deep-validation.yml') -Raw
     }
-    It 'refuses ambiguous or missing owned blocks' {
-        $record = Get-ReportTestRecord
-        $marker = Write-ScheduledRecord -Record $record -Kind reporter
-        { ConvertTo-ScheduledOwnedText "$marker`n$marker" $record reporter } | Should -Throw
-        { ConvertTo-ScheduledOwnedText 'Human body' $record reporter } | Should -Throw
+    It 'reports dependency failures as a job of Deep validation' {
+        $workflow | Should -Match '(?m)^name: Deep validation\r?$'
+        $workflow | Should -Match '(?m)^  report:'
+        $workflow | Should -Match 'needs: \[plan, checks\]'
+        $workflow | Should -Match 'if: failure\(\)'
+        $workflow | Should -Match '\./scripts/scheduled/Invoke-ScheduledReport.ps1'
+        $workflow | Should -Not -Match 'workflow_run:|path: controller|path: candidate'
     }
-    It 'retains minimal reproduction without executable evidence markup' {
-        $record = Get-ReportTestRecord
-        $record.evidence.summary = '</pre><script>danger</script>'
-        $body = Get-ScheduledFindingBody $record
-        $body.StartsWith('[Copilot speaking]') | Should -BeTrue
-        $body.Contains('<script>') | Should -BeFalse
-        (Read-ScheduledRecord $body reporter).evidence.replay.test_filter | Should -Be example
-    }
-}
-
-Describe 'Deterministic health' {
-    BeforeEach {
-        $script:now = [datetimeoffset]'2026-09-08T12:00:00Z'
-        $script:fresh = @{ outcome = 'passed'; completed_at = '2026-09-08T10:00:00Z' }
-        $manifest = Get-ReportTestManifest
-        $context = (Get-ReportTestRecord).observation
-        $result = Get-ReportTestResult $manifest $context
-        $script:coverage = Merge-ScheduledCoverage -Coverage $null -Manifest $manifest -Results @($result) -Context $context `
-            -IsAncestor { param($old, $new) $old -ceq $new }
-    }
-    It 'reports independent fresh components' {
-        $health = Get-ScheduledHealth -Scheduler @{ state = 'active' } -Coverage $coverage -Manifest $manifest `
-            -Planning $fresh -Reporting $fresh -RepairScan $fresh -TriageScan $fresh -Now $now
-        $health.healthy | Should -BeTrue
-        $health.components.coverage.status | Should -Be fresh
-    }
-    It 'distinguishes reused coverage from fresh execution' {
-        $planning = @{ outcome = 'not-run-unchanged'; completed_at = $fresh.completed_at }
-        $health = Get-ScheduledHealth -Coverage $coverage -Manifest $manifest -Planning $planning -Now $now
-        $health.components.coverage.status | Should -Be reused
-        $health.components.repair_scan.status | Should -Be unavailable
-        $health.healthy | Should -BeFalse
-    }
-    It 'does not require disabled Local scans but still requires genuine hosted coverage and scheduling' {
-        $arguments = @{
-            Scheduler = @{ state = 'active' }; Coverage = $coverage; Manifest = $manifest
-            Planning = $fresh; Reporting = $fresh; Now = $now; RepairDisabled = $true; TriageDisabled = $true
+    It 'uses ordinary Actions issue permission without separate reporting workflows' {
+        $workflow | Should -Match 'issues: write'
+        $workflow | Should -Match 'GH_TOKEN: \$\{\{ github.token \}\}'
+        foreach ($name in @('full-deep-validation.yml', 'selected-deep-validation.yml', 'deep-checks.yml', 'scheduled-report.yml')) {
+            Test-Path -LiteralPath (Join-Path $script:workflowDirectory $name) | Should -BeFalse
         }
-        $health = Get-ScheduledHealth @arguments
-        $health.healthy | Should -BeTrue
-        $health.components.repair_scan.status | Should -Be disabled
-        $arguments.Coverage = $null
-        $health = Get-ScheduledHealth @arguments
-        $health.healthy | Should -BeFalse
-        $health.components.coverage.status | Should -Be unavailable
-        $arguments.Coverage = $coverage
-        $arguments.Planning = @{ outcome = 'passed'; completed_at = '2026-09-01T00:00:00Z' }
-        (Get-ScheduledHealth @arguments).healthy | Should -BeFalse
-        $arguments.Planning = $fresh
-        $arguments.Scheduler.state = 'disabled_inactivity'
-        $health = Get-ScheduledHealth @arguments
-        $health.components.scheduler.status | Should -Be failed
-        $health.healthy | Should -BeFalse
-    }
-    It 'uses independent freshness thresholds for hosted planning and local scans' {
-        $observation = @{ outcome = 'passed'; completed_at = '2026-09-08T02:00:00Z' }
-        $health = Get-ScheduledHealth -Planning $observation -Reporting $observation -RepairScan $observation `
-            -Now $now -ExpectedPlanGapHours 30 -ExpectedLocalGapMinutes 420
-        $health.components.planning.status | Should -Be fresh
-        $health.components.reporting.status | Should -Be fresh
-        $health.components.repair_scan.status | Should -Be unavailable
-        $health = Get-ScheduledHealth -Planning $observation -RepairScan $observation `
-            -Now $now -ExpectedPlanGapHours 8 -ExpectedLocalGapMinutes 720
-        $health.components.planning.status | Should -Be unavailable
-        $health.components.repair_scan.status | Should -Be fresh
-    }
-    It 'does not treat unavailable malformed stale or failed observations as healthy' {
-        foreach ($observation in @(@{}, @{ outcome = 'passed'; completed_at = 'invalid' },
-                @{ outcome = 'passed'; completed_at = '2026-08-01T00:00:00Z' },
-                @{ outcome = 'failed'; completed_at = '2026-09-08T11:00:00Z' })) {
-            $health = Get-ScheduledHealth -Planning $observation -Now $now
-            $health.components.planning.status | Should -BeIn @('failed', 'unavailable')
-        }
-    }
-    It 'separates scheduler inactivity from a complete coverage receipt' {
-        $health = Get-ScheduledHealth -Scheduler @{ state = 'disabled_inactivity' } -Coverage $coverage -Manifest $manifest -Now $now
-        $health.components.scheduler.status | Should -Be failed
-        $health.components.coverage.status | Should -Be fresh
-    }
-    It 'identifies deliberate staging without declaring missing evidence healthy or hiding failures' {
-        $health = Get-ScheduledHealth -Scheduler @{ state = 'active' } -Now $now -Staged
-        $health.status | Should -Be staged
-        $health.healthy | Should -BeFalse
-        $health.components.coverage.status | Should -Be unavailable
-        $health = Get-ScheduledHealth -Scheduler @{ state = 'disabled_inactivity' } -Now $now -Staged
-        $health.status | Should -Be failed
-    }
-    It 'accepts JSON-deserialized DateTime observations without culture-sensitive string conversion' {
-        $observation = '{"outcome":"passed","completed_at":"2026-09-08T10:00:00Z"}' | ConvertFrom-Json -AsHashtable
-        $health = Get-ScheduledHealth -Planning $observation -RepairScan $observation -Now $now
-        $health.components.planning.status | Should -Be fresh
-        $health.components.repair_scan.status | Should -Be fresh
     }
 }

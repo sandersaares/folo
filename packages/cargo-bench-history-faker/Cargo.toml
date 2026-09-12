@@ -4,7 +4,7 @@
 name = "cargo-bench-history-faker"
 description = "Unsupported synthetic benchmark-output generator for validating cargo-bench-history end to end; no stable API or CLI"
 publish = true
-version = "0.2.8"
+version = "0.2.9"
 
 authors.workspace = true
 edition.workspace = true

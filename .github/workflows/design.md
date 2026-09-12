@@ -5,120 +5,67 @@ the tenets behind them, and how the pieces relate. Per-job mechanics live in inl
 YAML comments and in the `just` recipes the steps call; this document stays high-level.
 Ownership of the release-validation pipeline is in [implementation.md](implementation.md).
 
-## Scheduled correctness and personal remediation
+## Scheduled validation
 
-The [deep validation contract](../../docs/scheduled-validation.md) separates deterministic
-hosted evidence collection from personally authorized Local Copilot App AI. Hosted reporting
-files run-level **Deep validation failed** intake issues without depending on App availability.
-Hosted workflows stop at that durable intake. AI diagnosis, causal deduplication
-and new source repairs are downstream responsibilities, not deterministic reporter
-decisions. The Local boundary rejects new repair admissions; configuration alone
-cannot turn raw run evidence into repair authority. Existing registered repairs
-retain their sessions and confirmation path. Only a human approves and merges.
+The [scheduled validation contract](../../docs/scheduled-validation.md) separates
+check execution, failure triage and repair. Each handoff is an ordinary GitHub issue
+that a human or Local Copilot App agent can understand and act on.
 
-### Problem tracking
+The **Deep validation** workflow runs the full suite against merged `main` on its
+schedule, or when started manually on `main`. It is not triggered by PRs or forks.
+Its failure-reporting job files a readable **Scheduled validation failed on &lt;date&gt;**
+issue when planning or checks fail. A triager investigates all reported
+failures and creates or updates separate problem issues. The report closes when its
+failures have been accounted for; the problem issues stay open until resolved.
 
-A problem is an independently diagnosable failure, not a workflow,
-job, package or period of red validation. Repeated evidence of the same problem
-update its existing issue; unrelated problems in the same run have separate lifecycles.
-A confirmed recurrence reopens its issue with a new occurrence number. One active
-problem has at most one repair session and one PR, independently of repository capacity.
+Problem grouping follows the cause or independently actionable symptom, not job
+boundaries or log fingerprints. Infrastructure failures are problems too; checks
+blocked by a failed prerequisite are not themselves evidence of source defects.
+Existing human-filed issues can serve as the problem issues.
 
-An AI triage consumer must analyze every unsuccessful job and relevant failed step
-before reconciling problem issues. It extracts all supported problems, groups established
-duplicates across jobs and runs, and creates a problem issue only for an unmatched problem. This includes
-infrastructure failures and failed prerequisites, not just test defects. A package
-blocked by a dependency-download failure is affected scope, not another defect.
-
-Problem identity preserves distinguishing failure reasons; a shared Miri target or
-package does not establish a shared cause. Unknown causes remain explicit and receive
-further diagnosis rather than being lost or placed in a universal red-workflow bucket.
-Compatible problem-specific evidence governs resolution, not aggregate workflow color.
-The [problem and triage contract](../../docs/scheduled-validation.md#problems-and-triage)
-defines grouping, recurrence and ownership. The canonical GitHub issue supplies
-identity; AI compares evidence and causes, not just log fingerprints.
-
-Run-level intake issues and problem issues are separate queues. Several failing runs
-can describe the same problem, and one run can describe several unrelated problems.
-Closing a run issue as triaged only acknowledges complete analysis and issue linkage;
-it does not claim that its problems are resolved. Repair admission requires a completed,
-actionable triage result and never consumes an unexamined workflow-failure issue.
-The Local triage skill and deterministic helpers implement that analysis and
-publication handoff with independent claims, budgets and health. Installation and
-activation remain operator actions; the new repair-admission path stays unavailable.
+GitHub assignees, labels, comments and linked PRs record ownership and progress.
+There is no off-GitHub coordination store or encoded issue protocol. Claims are
+ordinary collaboration, with explicit release or handoff rather than time-based
+takeover. Personally operated Local App automations perform triage and repair;
+GitHub-hosted workflows do not invoke AI. Final approval and merge remain human.
 
 ### Shallow and deep validation
 
 **Standard validation** runs the ordinary shallow PR, push and merge-queue checks.
-**Full deep validation** runs the full deep suite on immutable main; **Selected deep
-validation** runs selected checks and crates, either requested manually or needed
-to confirm registered merged repairs. Deep validation covers ordinary Miri,
-many-seed Miri, mutation testing and careful checks through declared manifests.
-**Deep checks** is their reusable execution helper, not a separate user-started
-validation workflow. Standard validation also calls it for a managed repair's deep scope.
+**Deep validation** runs the full deep suite at the main commit selected by its event.
+Deep validation covers ordinary Miri, many-seed Miri, mutation testing and careful checks.
+Planning, check jobs and failure reporting belong to that same workflow.
 The local entry points have fixed meanings: `validate-local` is shallow and
-`validate-deep-local` is deep. Neither reads operating policy. Managed repair PRs
-add the relevant deep checks as proof of their proposed fix, not the full deep suite.
+`validate-deep-local` is deep. Repair authors run relevant local deep checks against the
+reviewed commit and link their results for human review. Repair PRs use the same
+required checks and version validation as other PRs, without a special merge gate.
 
-Hosted execution, run reporting, Local AI triage and repair admission have independent authorization.
-Hosted checks and reporting can operate without Local automation. Disabling scheduled
-execution does not alter the local recipes or insert deep checks into ordinary CI;
-it leaves automatic recurring deep coverage disabled.
+Local and scheduled deep validation share the same Just recipes. Scheduling chooses
+scope and captures diagnostics; it does not implement different checker commands or
+pass/fail rules. Necessary check behavior belongs in the shared recipes.
 
-The reviewed policy authorizes nightly full checks and failure reporting independently of
-Local readiness. Hosted reporting creates missing reporting labels when publishing, retaining
-operator-managed metadata on existing labels. Local triage is implemented but inactive,
-and new repair admission is rejected; operators handle intake manually until they
-install and authorize triage. Installing or reconciling
-a Local automation does not activate it or change hosted authorization.
+Nightly runs execute the entire deep suite even on unchanged source. Build caches
+remain ordinary performance aids, not receipts used to skip validation. Hosted
+execution and reporting do not depend on the availability of a Local App.
 
-Manual **Run workflow** requests authorize fresh checks independently of automatic
-execution or AI repair settings. Targeted checks accept workspace crates rather than
-repair allowlists. Their results remain diagnostics: they cannot update authoritative
-main coverage or confirm a repair. Issue reporting requires its own existing
-authorization and may publish run-level intake for manual failures, never repair
-closure. The [manual instructions](../../docs/scheduled-validation.md#running-checks-manually)
-describe the inputs and supported checks.
+### Failure diagnostics
 
-### Scheduled evidence
+Checker findings and execution failures make the Actions job and workflow fail.
+Independent matrix jobs continue so one failed shard does not cancel the others.
+Readable reports include useful diagnostics, source and direct job links; full logs
+and tool artifacts supplement rather than replace the explanation. Setup failures
+are reported even when no checker artifact exists.
+Successful runs and cancellation without a failed job do not create failure issues.
 
-Complete coverage is evidence for an immutable source and check contract, not merely a green
-workflow or an empty defect list. Compatible full successes can be reused for unchanged `main`
-within the reviewed maximum age. A skip preserves the age of that success; a newer failed or
-incomplete attempt invalidates it. Setup failures are execution problems, not a defect in each
-package that setup prevented from running.
-Missing initial coverage remains unavailable, not a passing baseline. Nightly planning
-freshness belongs to automatic full checks; unrelated selected plans cannot refresh it.
-Checker failures remain failures through command wrappers independently of successful evidence
-preservation and reporting. Unsupported test targets are visible exclusions, not tests that
-passed. Consuming persisted evidence preserves its exact JSON string values and verifies its
-original identity rather than accepting a rewritten payload under a new checksum.
-An intentionally inactive, unenrolled Local executor is not an expected hosted-health component,
-while enrolled executors still require fresh successful heartbeats.
-Actual Actions jobs and steps are inventoried independently of checker artifacts.
-Failed jobs retain bounded log excerpts, original-log references and explicit
-capture gaps. Run evidence is paginated into durable issue comments rather than
-discarded to fit an issue-body limit. Recording a failed execution successfully
-is reporting success, not passing validation.
-An empty mutation shard can establish coverage only through successful exact-scope discovery and
-an unmutated baseline. Missing output and a zero-match requested replay are not empty-shard proof.
-Reproductions preserve the observed invocation scope; an unattributed Miri failure must not be
-presented as a specific failing test or seed inferred from interleaved output.
+An empty mutation shard is explicitly reported as no work, not a passing baseline.
+The shared mutation recipe runs cargo-mutants' baseline for nonempty shards.
+Missing output is not proof of an empty shard. Reproduction instructions preserve
+known invocation scope; interleaved Miri output does not justify inventing a failing
+test or seed. An unexplained intermittent failure is not resolved by a green retry.
 
-### Managed publication
-
-Managed repair identity joins the problem issue and occurrence, registered executor/session/attempt, reserved
-branch, PR and exact head. A personal account's ordinary PR remains ordinary. Managed candidates
-receive package-scoped deep checks and an unconditional gate feeding `required-checks`; absent,
-skipped or stale evidence cannot pass. Merge queue scope follows actual synthetic candidate
-ancestry and API membership rather than a PR number parsed from a queue ref. Confirmation checks
-use the actual post-merge main commit, including squash merges. Unexplained nondeterminism remains
-unresolved rather than being erased by a single passing replay.
-
-Managed PRs are excluded from production-backed advisory benchmarks and credentialed Azure tests
-on the initial opening event, including drafts. Emulator and other ordinary validation remain.
-The required managed gate enforces publication prerequisites independently of those conservative
-credential exclusions. Excluding credentials does not establish that a local worktree is a sandbox.
+Repair branches follow the same validation and benchmark conditions as other
+same-repository branches. Ordinary repository/event conditions apply; branch names
+do not select permissions or opt out of jobs.
 
 ## Job granularity and gating
 
@@ -151,8 +98,7 @@ reporting does not depend on GitHub's workflow-level path filters.
 Release-plan generation (`validate-versions`) remains unconditional: it compares every
 publishable package's released content to that package's version anchor, not just to the PR
 base. Live binstall metadata validation accompanies it because Cargo target discovery can
-change release obligations without a manifest edit. Managed-repair context and its gate also
-remain unconditional because their inputs include registered state and PR metadata.
+change release obligations without a manifest edit.
 
 ## Platform strategy
 

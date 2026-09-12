@@ -47,15 +47,9 @@ jobs:
   # like bench-history.yml's fork gate they are skipped silently; because every downstream job
   # `needs` this one, a skipped delta cascades to skip them too.
   delta:
-    # Conservative first-event exclusion: missing/corrupt managed metadata still never grants
-    # a candidate production-backed benchmark credentials. The required repair gate owns
-    # full issue/attempt/head validation, not this advisory workflow.
-    # Ref: .github/workflows/design.md#managed-publication.
     if: >-
       github.repository == 'folo-rs/folo'
       && github.event.pull_request.head.repo.full_name == github.repository
-      && !startsWith(github.head_ref, 'sandersaares-scheduled-repair-')
-      && !contains(github.event.pull_request.body, '<!-- scheduled-repair:')
     runs-on: ubuntu-latest
     outputs:
       packages: ${{ steps.compute.outputs.packages }}

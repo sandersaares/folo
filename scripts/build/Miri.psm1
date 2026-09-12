@@ -50,41 +50,4 @@ function Get-MiriSeedRange {
     return "$start..$end"
 }
 
-function Get-MiriFlag {
-    # An explicit single seed describes a replay and takes precedence over the catalog's shard.
-    # Never append a many-seeds flag to it: Miri would run a different experiment.
-    [CmdletBinding()]
-    [OutputType([string[]])]
-    param(
-        [string[]] $Flags = @(),
-        [AllowEmptyString()][string] $SeedRange = '',
-        [AllowEmptyString()][string] $Shard = '',
-        [switch] $Many
-    )
-
-    $single = @($Flags | Where-Object { $_ -match '^-Zmiri-seed=' })
-    $ranges = @($Flags | Where-Object { $_ -match '^-Zmiri-many-seeds=' })
-    if ($single.Count -gt 1 -or $ranges.Count -gt 1 -or ($single.Count -gt 0 -and $ranges.Count -gt 0)) {
-        throw [ArgumentException]::new('Miri seed selection must be unambiguous.')
-    }
-    if ($single.Count -gt 0) {
-        if ($single[0] -notmatch '^-Zmiri-seed=\d+$') {
-            throw [ArgumentException]::new('Invalid Miri seed.')
-        }
-        return $Flags
-    }
-    if ($ranges.Count -gt 0) { $SeedRange = $ranges[0].Substring('-Zmiri-many-seeds='.Length) }
-    if (-not $Many -and $ranges.Count -eq 0) { return $Flags }
-    if ($SeedRange -eq '') { $SeedRange = Get-MiriSeedRange -Spec $Shard }
-    if ($SeedRange -notmatch '^\d*\.\.\d+$') {
-        throw [ArgumentException]::new('Invalid Miri seed range.')
-    }
-    $bounds = $SeedRange -split '\.\.'
-    if ([long]$bounds[0] -ge [long]$bounds[1]) {
-        throw [ArgumentException]::new('The Miri seed range must be nonempty.')
-    }
-    if ($ranges.Count -gt 0) { return $Flags }
-    return @($Flags) + "-Zmiri-many-seeds=$SeedRange"
-}
-
-Export-ModuleMember -Function Get-MiriSeedRange, Get-MiriFlag
+Export-ModuleMember -Function Get-MiriSeedRange

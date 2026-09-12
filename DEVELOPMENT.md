@@ -76,22 +76,19 @@ Validation:
 
 # Scheduled deep validation and Local App remediation
 
-The [scheduled-validation chapter](docs/scheduled-validation.md) describes deep
-checking, durable run-level evidence intake, and retention of existing Local repair
-sessions. New repair admission is blocked until evidence-bound AI triage is supported.
-Setup is reproducible from
-`.github\prompts\setup-scheduled-remediation.prompt.md`; new entries remain
-disabled/observe-only and setup does not run repairs or change account settings.
+The [scheduled-validation chapter](docs/scheduled-validation.md) describes nightly
+deep checks, readable failure reports, issue triage and repair PR follow-up.
+Humans and Local App agents use the same GitHub issues, claims and linked PRs.
+Setup is reproducible from `.github\prompts\setup-scheduled-remediation.prompt.md`;
+entries remain disabled until explicitly enabled by the operator.
 
 `just validate-local` always runs shallow validation.
 `just package="foo bar" validate-deep-local` always runs deep validation on the
-current platform. Neither depends on scheduling policy. PR/push workflows stay
-shallow, while scheduled workflows own recurring deep checks. With scheduled
-execution disabled there is no automatic recurring deep coverage.
-The ordinary `just test-scripts` and
-`just validate-scripts` commands cover the deterministic local helpers; native
-account, host, scheduling, reuse and consent behavior still requires an operator
-pilot. See the chapter for credential safeguards before any real repair PR.
+current platform. PR/push workflows stay shallow, while scheduled workflows own
+recurring deep checks. Repair authors link relevant deep-check results for review.
+The ordinary `just test-scripts` and `just validate-scripts` commands cover the
+workflow helpers. The App uses supported native operations and no local
+coordination database. See the chapter for setup and GitHub issue handoffs.
 
 # Testing Azure functionality
 

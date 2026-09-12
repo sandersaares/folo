@@ -3,7 +3,7 @@
 name = "cargo-bench-history-figures"
 description = "Generates the figures, tables and report excerpts embedded in the cargo-bench-history book's data pipeline appendix"
 publish = false
-version = "0.2.10"
+version = "0.2.11"
 
 authors.workspace = true
 edition.workspace = true

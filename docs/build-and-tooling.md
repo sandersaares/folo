@@ -59,24 +59,31 @@ distinction between local and combined CI benchmark smoke passes.
 `just validate-local` is always shallow validation. Use
 `just package="foo bar" validate-deep-local` to run Miri, mutation testing,
 many-seed Miri and careful checking on the current platform. These recipes are
-independent: neither reads scheduling policy, and deep validation does not
-implicitly rerun the shallow suite.
+independent: deep validation does not implicitly rerun the shallow suite.
 
 The **Standard validation** workflow performs shallow PR/push/merge-queue checks;
-**Full deep validation** and **Selected deep validation** perform deep checks.
-CI composes their constituent commands into separately reported jobs
-and evidence-producing matrix entries rather than running one monolithic local
-recipe. Managed repair PRs also run the particular deep checks needed to verify
-their repair. Scheduling and authorization belong to workflow orchestration, not
+**Deep validation** runs the full deep suite on merged `main`.
+Scheduled checks invoke the same `just miri`, `just miri-harder`, `just mutants`
+and `just careful` recipes used locally. Recipes own the toolchains, test runners,
+helper preparation and check behavior; scheduling only selects platform, packages
+and shards and captures diagnostics.
+CI composes these commands into separately reported jobs
+and diagnostic-producing matrix entries rather than running one monolithic local
+recipe. Repair authors also run the particular deep checks needed to verify
+their repair locally and link the results for review. Scheduling belongs to workflow orchestration, not
 to the definitions of the local recipes. To run just mutation testing, use
-`just package="foo bar" mutants`. Mutation timeouts and missed mutations remain
+`just package="foo bar" mutants`. It runs the unmutated baseline before testing
+mutants, without assuming shallow validation already ran. The optional final
+`OUTPUT` argument selects the native tool-output directory; for example,
+`just package=foo mutants 1/8 false mutation-results` saves a shard's output
+there. The intervening `CAREFUL` argument retains its normal default.
+Mutation timeouts and missed mutations remain
 anomalies; changing enforcement cadence does not relax test-quality requirements.
 
-See [deep validation and local remediation](scheduled-validation.md) for the
-hosted/local responsibility split, exact-head repair gates, reproducible Local App
-setup, admission limits and recovery. The local coordinator needs only the existing
-PowerShell/GitHub tooling on empty scans; prepare Rust/WSL tooling in repair sessions
-when applicable rather than on every polling-session creation.
+See [scheduled validation](scheduled-validation.md) for readable failure reporting,
+GitHub issue triage, repair ownership and reproducible Local App setup. Empty App
+scans need only GitHub access; prepare Rust/WSL tooling in repair sessions when
+applicable rather than on every polling-session creation.
 
 We operate under a **zero warnings allowed** requirement - fix all warnings that
 validation generates.
@@ -144,21 +151,14 @@ than treating familiarity with shell scripting as justification.
 Keep the distinction between logic and process orchestration clear. A thin
 PowerShell wrapper can prepare command arguments, invoke a trusted Rust utility and
 propagate its outcome. Parsing and semantic decisions belong in the utility when
-that environment can execute it. Tool identity follows the workflow's authority:
-a reporter with issue-write permission executes automation code from the reviewed
-default branch, not code supplied by the run it is reporting.
+that environment can execute it.
 
-For example, `scheduled-report.yml` checks out the repository's default branch
-into its controller directory and records that checkout's SHA. It imports
-`ScheduledGitHub.psm1` and builds `scheduled-mutation-config` from that checkout,
-using its manifest, lockfile and pinned toolchain. It downloads the triggering
-run's logs/results into a separate evidence directory and passes them to the
-controller as data. It must not check out the triggering run's SHA as its automation
-code, import a script from an artifact, execute an artifact-supplied decoder, or
-let artifact extraction overwrite the controller directory. A repair's edits to
-reporting code therefore cannot grant themselves issue-write authority.
-See [immutable execution](../.github/workflows/implementation.md#immutable-execution)
-for the controller/candidate separation.
+For example, the failure-reporting job inside `deep-validation.yml` must work even
+when Rust setup failed. It uses the runner's existing PowerShell and GitHub CLI
+rather than building a reporting executable. Like the check jobs, it runs from the
+workflow's main checkout; it simply needs Actions-read and issue-write permissions
+to collect diagnostics and file an issue. See
+[failure reporting](../.github/workflows/implementation.md#failure-reporting).
 
 ## Scripting
 
@@ -220,6 +220,9 @@ The wrapper retains runtime/module metadata, full managed/inner exception diagno
 and the analyzer's file/rule trace under `target/script-analysis/`. Standard validation
 uploads those diagnostics even when the analyzer itself fails. Diagnostic collection
 does not retry, suppress rules or turn an engine failure into a successful result.
+Before the full scan, one rule initializes the analyzer's shared exported-command
+metadata serially. This avoids concurrent lazy initialization in PowerShell's
+runspace event manager; every configured rule still runs on the repository.
 
 PSScriptAnalyzer can only see `.ps1`/`.psm1` files, so **nontrivial** inline PowerShell
 is not linted where it sits. Keep justfile `[script]` blocks and workflow `pwsh`

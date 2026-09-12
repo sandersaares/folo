@@ -24,18 +24,21 @@ Describe 'Non-Cargo change domains' {
         @{ Path = 'scripts/bench-history/fixtures/result.json'; Domains = @('bench-history'); Analysis = $false; Workflows = $false },
         @{ Path = 'scripts/build/Miri.psm1'; Domains = @('build', 'scheduled'); Analysis = $true; Workflows = $false },
         @{ Path = 'scripts/build/CargoExecutable.psm1'; Domains = @('build', 'release', 'scheduled'); Analysis = $true; Workflows = $false },
-        @{ Path = 'scripts/release/ReleasePlan.psm1'; Domains = @('release', 'scheduled'); Analysis = $true; Workflows = $false },
+        @{ Path = 'scripts/release/ReleasePlan.psm1'; Domains = @('release'); Analysis = $true; Workflows = $false },
         @{ Path = 'PSScriptAnalyzerSettings.psd1'; Domains = @('analyzer'); Analysis = $true; Workflows = $false },
-        @{ Path = '.github/workflows/release.yml'; Domains = @('release', 'scheduled'); Analysis = $false; Workflows = $true },
-        @{ Path = '.github/actionlint.yaml'; Domains = @('scheduled'); Analysis = $false; Workflows = $true },
-        @{ Path = '.github/actions/setup-workflow-lint/action.yml'; Domains = @('scheduled'); Analysis = $false; Workflows = $true },
+        @{ Path = '.github/workflows/release.yml'; Domains = @('build', 'release', 'scheduled'); Analysis = $false; Workflows = $true },
+        @{ Path = '.github/actionlint.yaml'; Domains = @('build', 'scheduled'); Analysis = $false; Workflows = $true },
+        @{ Path = '.github/actions/setup-workflow-lint/action.yml'; Domains = @('build', 'scheduled'); Analysis = $false; Workflows = $true },
         @{ Path = 'justfiles/just_bench_history.just'; Domains = @('bench-history'); Analysis = $false; Workflows = $false },
-        @{ Path = 'justfiles/just_release.just'; Domains = @('release', 'scheduled'); Analysis = $false; Workflows = $false },
+        @{ Path = 'justfiles/just_release.just'; Domains = @('release'); Analysis = $false; Workflows = $false },
         @{ Path = 'justfiles/just_quality.just'; Domains = @('build', 'scheduled'); Analysis = $true; Workflows = $true },
         @{ Path = '.cargo/mutants.toml'; Domains = @('build', 'scheduled'); Analysis = $false; Workflows = $false },
         @{ Path = 'Cargo.toml'; Domains = @('scheduled'); Analysis = $false; Workflows = $false },
         @{ Path = 'packages/cpulist/Cargo.toml'; Domains = @('scheduled'); Analysis = $false; Workflows = $false },
-        @{ Path = 'packages/scheduled-mutation-config/dependency-contract.json'; Domains = @('scheduled'); Analysis = $false; Workflows = $false }
+        @{ Path = '.github/skills/scheduled-triage/SKILL.md'; Domains = @('scheduled'); Analysis = $false; Workflows = $false },
+        @{ Path = '.github/skills/scheduled-intake/SKILL.md'; Domains = @('scheduled'); Analysis = $false; Workflows = $false },
+        @{ Path = '.github/skills/scheduled-repair/SKILL.md'; Domains = @('scheduled'); Analysis = $false; Workflows = $false },
+        @{ Path = '.github/prompts/setup-scheduled-remediation.prompt.md'; Domains = @('scheduled'); Analysis = $false; Workflows = $false }
     ) {
         $plan = Get-ValidationPlan -ChangedPath @($Path)
         $plan.script_domains | Should -Be $Domains
@@ -84,22 +87,13 @@ Describe 'Non-Cargo change domains' {
 }
 
 Describe 'Cargo helper integration selection' {
-    It 'adds scheduled tests for affected helper <_>' -ForEach @(
-        'scheduled-mutation-config', 'scheduled-run-record', 'scheduled-triage-record'
-    ) {
-        $plan = ConvertTo-PlanJson (Get-ValidationPlan -ChangedPath @('scripts/book/BookSite.psm1'))
-        $packages = ConvertTo-Json -InputObject @($_) -Compress
-        @(Get-ValidationScriptDomain -PlanJson $plan -AffectedPackageJson $packages) |
-            Should -Be @('book', 'scheduled')
-    }
-
-    It 'adds release and dependent tests for affected helper <_>' -ForEach @(
+    It 'adds release tests for affected helper <_>' -ForEach @(
         'cargo-release-plan', 'release-target-check'
     ) {
         $plan = ConvertTo-PlanJson (Get-ValidationPlan -ChangedPath @('scripts/book/BookSite.psm1'))
         $packages = ConvertTo-Json -InputObject @($_) -Compress
         @(Get-ValidationScriptDomain -PlanJson $plan -AffectedPackageJson $packages) |
-            Should -Be @('book', 'release', 'scheduled')
+            Should -Be @('book', 'release')
     }
 
     It 'does not select scripts for unrelated Cargo dependency impact' {

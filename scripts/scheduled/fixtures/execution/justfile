@@ -1,0 +1,16 @@
+# ScheduledExecution.Tests.ps1 drives this stand-in through the real Just executable.
+# Exported parameters preserve the argument values received from the capture wrapper.
+set shell := ["pwsh", "-NoProfile", "-Command"]
+package := ""
+
+miri:
+    @pwsh -NoProfile -File Record-Recipe.ps1 miri "{{package}}"; exit $LASTEXITCODE
+
+miri-harder $SHARD="":
+    @pwsh -NoProfile -File Record-Recipe.ps1 miri-harder "{{package}}"; exit $LASTEXITCODE
+
+mutants $SHARD="" $CAREFUL="false" $OUTPUT="":
+    @pwsh -NoProfile -File Record-Recipe.ps1 mutants "{{package}}"; exit $LASTEXITCODE
+
+careful:
+    @pwsh -NoProfile -File Record-Recipe.ps1 careful "{{package}}"; exit $LASTEXITCODE
