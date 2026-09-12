@@ -59,17 +59,25 @@ distinction between local and combined CI benchmark smoke passes.
 `just validate-local` is always shallow validation. Use
 `just package="foo bar" validate-deep-local` to run Miri, mutation testing,
 many-seed Miri and careful checking on the current platform. These recipes are
-independent: deep validation does not
-implicitly rerun the shallow suite.
+independent: deep validation does not implicitly rerun the shallow suite.
 
 The **Standard validation** workflow performs shallow PR/push/merge-queue checks;
 **Deep validation** runs the full deep suite on merged `main`.
-CI composes their constituent commands into separately reported jobs
+Scheduled checks invoke the same `just miri`, `just miri-harder`, `just mutants`
+and `just careful` recipes used locally. Recipes own the toolchains, test runners,
+helper preparation and check behavior; scheduling only selects platform, packages
+and shards and captures diagnostics.
+CI composes these commands into separately reported jobs
 and diagnostic-producing matrix entries rather than running one monolithic local
 recipe. Repair authors also run the particular deep checks needed to verify
 their repair locally and link the results for review. Scheduling belongs to workflow orchestration, not
 to the definitions of the local recipes. To run just mutation testing, use
-`just package="foo bar" mutants`. Mutation timeouts and missed mutations remain
+`just package="foo bar" mutants`. It runs the unmutated baseline before testing
+mutants, without assuming shallow validation already ran. The optional final
+`OUTPUT` argument selects the native tool-output directory; for example,
+`just package=foo mutants 1/8 false mutation-results` saves a shard's output
+there. The intervening `CAREFUL` argument retains its normal default.
+Mutation timeouts and missed mutations remain
 anomalies; changing enforcement cadence does not relax test-quality requirements.
 
 See [scheduled validation](scheduled-validation.md) for readable failure reporting,

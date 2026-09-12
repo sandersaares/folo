@@ -1,7 +1,7 @@
 #requires -Version 7
 
 # The checker writes readable diagnostic excerpts for the reporter, without a private result
-# schema. Ordinary cargo-mutants JSON supplies missed-mutation descriptions and completion checks.
+# schema. Ordinary cargo-mutants JSON supplies descriptions; the shared Just recipe owns the verdict.
 # Ref: .github/workflows/implementation.md#failure-reporting.
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -42,41 +42,38 @@ function Write-ScheduledLogExcerpt {
 
 function Write-ScheduledMutationSummary {
     [CmdletBinding()]
-    [OutputType([int])]
-    param(
-        [Parameter(Mandatory)][string] $OutputDirectory,
-        [Parameter(Mandatory)][AllowEmptyCollection()][object[]] $Inventory
-    )
+    param([Parameter(Mandatory)][string] $OutputDirectory)
 
     $summary = Join-Path $OutputDirectory 'summary.md'
     $path = Join-Path $OutputDirectory 'mutants.out\outcomes.json'
-    if (-not (Test-Path -LiteralPath $path)) { throw 'Mutation outcomes are missing; execution is incomplete.' }
-    $lab = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json -AsHashtable
-    $baselines = @($lab.outcomes | Where-Object { $_.scenario -ceq 'Baseline' })
-    $baselinePassed = $baselines.Count -eq 1 -and $baselines[0].summary -ceq 'Success'
-    if ($baselinePassed) {
-        # A baseline requires completed unmutated build and test phases, not merely a label.
-        foreach ($phase in @('Build', 'Test')) {
-            $completed = @($baselines[0].phase_results | Where-Object { $_.phase -ceq $phase })
-            if ($completed.Count -ne 1 -or $completed[0].process_status -cne 'Success') {
-                $baselinePassed = $false
+    if (-not (Test-Path -LiteralPath $path)) {
+        # Empty shards do not write outcomes. Recipe setup failures can leave no tool output;
+        # neither case is an invitation for the reporter to invent a second checker verdict.
+        $inventoryPath = Join-Path $OutputDirectory 'mutants.out\mutants.json'
+        if (Test-Path -LiteralPath $inventoryPath) {
+            $inventory = Get-Content -LiteralPath $inventoryPath -Raw | ConvertFrom-Json -AsHashtable -NoEnumerate
+            if ($inventory -is [array] -and $inventory.Count -eq 0) {
+                Add-Content -LiteralPath $summary -Value "`nNo mutants selected for this shard; no mutation tests or baseline were run."
+                return
             }
         }
+        Add-Content -LiteralPath $summary -Value "`nMutation outcome details are unavailable; see the recipe output."
+        return
     }
-    if (-not $baselinePassed) {
-        Add-Content -LiteralPath $summary -Value "`nUnmutated baseline failed or did not complete. Mutant results do not establish source defects."
-        foreach ($baseline in $baselines) {
+    $lab = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json -AsHashtable
+    $baselines = @($lab.outcomes | Where-Object { $_.scenario -ceq 'Baseline' })
+    Add-Content -LiteralPath $summary -Value "`n## Mutation results"
+    foreach ($baseline in $baselines) {
+        Add-Content -LiteralPath $summary -Value "`nUnmutated baseline: $($baseline.summary)."
+        if ($baseline.summary -cne 'Success') {
             Write-ScheduledMutationLog -OutputDirectory $OutputDirectory -RelativePath $baseline.log_path
+            return
         }
-        return 1
     }
     $mutants = @($lab.outcomes | Where-Object { $_.scenario -is [hashtable] -and $_.scenario.ContainsKey('Mutant') })
-    $failed = $false
-    Add-Content -LiteralPath $summary -Value "`n## Mutation results`n`nUnmutated baseline: passed."
     foreach ($scenario in $mutants) {
         $timedOut = @($scenario.phase_results | Where-Object { $_.process_status -ceq 'Timeout' }).Count -gt 0
         if (-not $timedOut -and $scenario.summary -cin @('CaughtMutant', 'Unviable')) { continue }
-        $failed = $true
         $mutant = $scenario.scenario.Mutant
         $conclusion = if ($timedOut) { 'Timeout' } else { $scenario.summary }
         @(
@@ -88,13 +85,7 @@ function Write-ScheduledMutationSummary {
         ) | Add-Content -LiteralPath $summary
         Write-ScheduledMutationLog -OutputDirectory $OutputDirectory -RelativePath $scenario.log_path
     }
-    if ($null -eq $lab.end_time -or $mutants.Count -ne $Inventory.Count -or $mutants.Count -ne $lab.total_mutants) {
-        Add-Content -LiteralPath $summary -Value "`nMutation execution did not complete every selected mutant."
-        return 1
-    }
-    if ($failed -or $lab.missed -gt 0 -or $lab.timeout -gt 0) { return 1 }
-    Add-Content -LiteralPath $summary -Value "`nEvery selected mutant was caught or unviable."
-    return 0
+    Add-Content -LiteralPath $summary -Value "`nTool totals: $($lab.total_mutants) mutations, $($lab.missed) missed, $($lab.timeout) timed out."
 }
 
 function Write-ScheduledMutationLog {

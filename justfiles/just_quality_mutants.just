@@ -1,6 +1,7 @@
 [group('quality')]
+[env('MUTANTS_PACKAGES', package)]
 [script]
-mutants SHARD="" CAREFUL='false':
+mutants $SHARD="" $CAREFUL='false' $OUTPUT='':
     Set-StrictMode -Version Latest
     $ErrorActionPreference = "Stop"
     $PSNativeCommandUseErrorActionPreference = $true
@@ -12,7 +13,9 @@ mutants SHARD="" CAREFUL='false':
     # (environment tweaks and the cargo-mutants invocation).
     Import-Module "{{ justfile_directory() }}/scripts/build/Mutants.psm1" -Force
 
-    $careful = '{{ CAREFUL }}' -eq 'true'
+    # Exported parameters remain data instead of becoming PowerShell source. In particular,
+    # output paths may contain spaces, apostrophes and dollar signs.
+    $careful = $env:CAREFUL -eq 'true'
 
     # Two mechanisms keep mutation runs fast and meaningful:
     #   * Path/package exclusions (the `-e` args from Get-MutantsExcludeArgument) drop whole files
@@ -37,10 +40,10 @@ mutants SHARD="" CAREFUL='false':
     # the same 1-based "N/M" format as `miri-harder` (so `1/8 .. 8/8` for 8 shards); the module
     # converts it to cargo-mutants' native 0-based form. Without a SHARD argument, cargo-mutants
     # runs every mutant in a single job (the original behavior).
-    $mutantArgs += Get-MutantsShardArgument -Spec "{{ SHARD }}"
-
-    # We must use Invoke-Expression to preserve the quotes around the wildcarded arguments on Linux.
-    $expanded_args = [String]::join(" ", $mutantArgs)
+    $mutantArgs += Get-MutantsShardArgument -Spec $env:SHARD
+    if ($env:OUTPUT) {
+        $mutantArgs += @('--output', $env:OUTPUT)
+    }
 
     # If the user has overridden `CARGO_TARGET_DIR`, we need to un-override it here because it is
     # critical that different mutations be emitted into different target directories, otherwise
@@ -99,18 +102,27 @@ mutants SHARD="" CAREFUL='false':
         $env:RUST_TEST_THREADS = "1"
     }
 
-    # --baseline=skip - We assume that regular tests have already been executed
-    #     and are not failing, for mutation speedup.
+    # --baseline=run - This command serves standalone local and scheduled deep validation,
+    #     so it must establish that unmutated tests pass without relying on another suite.
+    #     Ref: docs/build-and-tooling.md, "Validating changes".
     # --no-shuffle - We do not care about shuffling, that is something rarely useful.
     # --caught --unviable - We want to see a list of all the mutations tried, as it helps us
     #     understand what is covered by mutation testing and how successfully.
-    # --timeout - as we skip the baseline tests, we need to manually define a timeout.
-    #     This needs to be long enough to run a full package test suite (for all jobs in parallel)
+    # --timeout - Keep a fixed test budget rather than deriving it from baseline timing.
+    #     This must be long enough to run a full package test suite (for all jobs in parallel)
     #     but short enough to call a timeout and avoid things going on forever.
     #     This should only be reached if a mutation causes a serious issue (and may need to be
     #     skipped or the test improved).
-    Invoke-Expression "cargo mutants {{ target_package }} --baseline=skip --timeout=60 --no-shuffle --caught --unviable $expanded_args"
-    exit $LASTEXITCODE
+    $packageNames = @($env:MUTANTS_PACKAGES -split '\s+' | Where-Object { $_ })
+    $packageArguments = @()
+    if ($packageNames.Count -eq 0) { $packageArguments += '--workspace' }
+    foreach ($packageName in $packageNames) { $packageArguments += @('-p', $packageName) }
+
+    # ProcessStartInfo preserves literal argv: PowerShell expands wildcard strings in native
+    # array arguments on Unix even when no shell expression is involved.
+    $arguments = @('mutants') + $packageArguments +
+        @('--baseline=run', '--timeout=60', '--no-shuffle', '--caught', '--unviable') + $mutantArgs
+    exit (Invoke-MutantsCommand -Arguments $arguments)
 
 # Run mutation tests like `mutants` (mutation jobs still run in parallel) but with test concurrency disabled, so only one test runs at a time within each mutation job. Slower, but surfaces per-test timeouts that concurrent test execution can hide.
 [group('quality')]

@@ -48,10 +48,13 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-environment
-      - name: Execute the deep check
+      - name: Run just ${{ matrix.recipe }}
         shell: pwsh
         env:
           SCHEDULED_CHECK: ${{ toJSON(matrix) }}
+          # Plain output keeps captured diagnostic excerpts readable without changing check behavior.
+          NO_COLOR: "1"
+          CARGO_TERM_COLOR: never
         run: |
           Set-StrictMode -Version Latest
           $ErrorActionPreference = 'Stop'

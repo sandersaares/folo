@@ -73,6 +73,8 @@ high-level design in `design.md` and per-job mechanics in inline YAML comments.
 - Keep PR/push CI shallow. Repair PRs use ordinary required checks and human review of relevant
   deep-check results; do not introduce a repair registry or special merge gate.
 - Keep deep validation full-scope and main-only, with failure reporting in the same workflow.
+- Run checks through the existing developer Just recipes. Keep toolchain, runner, argument and
+  pass/fail behavior in those recipes rather than in a separate scheduled implementation.
 - Treat repair branches like other same-repository branches; do not add naming-based gates.
 - Keep issue handoffs human-readable and all ownership on GitHub. App setup must not implicitly
   enable or run automations. See [Scheduled validation](../../docs/scheduled-validation.md).

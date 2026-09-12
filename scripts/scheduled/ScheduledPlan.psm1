@@ -6,7 +6,6 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
-Import-Module (Join-Path $PSScriptRoot '..\build\Miri.psm1')
 
 function Get-ScheduledCheck {
     [CmdletBinding()]
@@ -15,21 +14,21 @@ function Get-ScheduledCheck {
     $checks = @()
     foreach ($platform in @('ubuntu-latest', 'windows-latest', 'ubuntu-24.04-arm', 'windows-11-arm')) {
         $checks += @{
-            id = "miri-$platform"; kind = 'miri'; platform = $platform; packages = @()
-            shard = ''; seed_range = ''
+            id = "miri-$platform"; recipe = 'miri'; platform = $platform; packages = @()
+            shard = ''
         }
     }
     foreach ($platform in @('ubuntu-latest', 'windows-latest')) {
         # Mutation shards bound each runner's workload; tests remain serial within each leg.
         foreach ($index in 1..8) {
             $checks += @{
-                id = "mutants-$platform-$index"; kind = 'mutants'; platform = $platform
-                packages = @(); shard = "$index/8"; seed_range = ''
+                id = "mutants-$platform-$index"; recipe = 'mutants'; platform = $platform
+                packages = @(); shard = "$index/8"
             }
         }
         $checks += @{
-            id = "careful-$platform"; kind = 'careful'; platform = $platform
-            packages = @(); shard = ''; seed_range = ''
+            id = "careful-$platform"; recipe = 'careful'; platform = $platform
+            packages = @(); shard = ''
         }
     }
     # These synchronization-heavy families benefit from seed exploration rather than mutations.
@@ -41,9 +40,8 @@ function Get-ScheduledCheck {
         foreach ($index in 1..$family.shards) {
             $shard = "$index/$($family.shards)"
             $checks += @{
-                id = "miri-many-$($family.package)-$index"; kind = 'miri-many'
+                id = "miri-many-$($family.package)-$index"; recipe = 'miri-harder'
                 platform = 'ubuntu-latest'; packages = @($family.package); shard = $shard
-                seed_range = Get-MiriSeedRange -Spec $shard
             }
         }
     }

@@ -1,7 +1,8 @@
 #requires -Version 7
 
 # Deep validation invokes this entrypoint in its main checkout and propagates its exit code.
-# The matrix supplies the check; GitHub supplies the run's commit. Summary.md feeds reporting.
+# The matrix supplies a Just recipe and its scope; GitHub supplies the run's commit.
+# Summary.md feeds reporting.
 # Ref: .github/workflows/implementation.md#deep-execution.
 [CmdletBinding()]
 param(

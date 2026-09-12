@@ -208,16 +208,23 @@ machine connecting these components; their handoffs are GitHub reports and issue
 
 The workflow's `plan` job reads the full check catalog and supplies the matrix as
 a job output. Each `checks` job uses an ordinary checkout of the workflow's main
-commit, installs the environment and invokes its checker in that checkout.
-The catalog defines the platforms, mutation shards and many-seed families; there
+commit, installs the environment and invokes the same Just recipe used locally.
+The catalog defines recipes, platforms, packages and shards; there
 is no hosted selection of a different source commit or reduced scope.
 
 Each execution leg runs independently with fail-fast disabled. Always-upload steps
-preserve its readable summary and raw diagnostics even after failure. A native
-command's failure status must reach Actions; successful artifact
+preserve its readable summary and raw diagnostics even after failure. The thin
+capture wrapper records the exact Just command and preserves its exit status.
+Generic process capture owns stream handling and child cleanup, not checker behavior.
+Successful artifact
 preservation does not turn failed validation green.
 
-Cargo-mutants reads its own configuration and runs its own unmutated baseline.
+The Just recipes own toolchain selection, test runners, helper preparation and
+configuration. Ordinary Miri therefore uses nextest and its `default-miri` profile
+in both development and CI. The many-seed recipe computes its own shard range.
+`just mutants` runs cargo-mutants with its native unmutated baseline and accepts an
+output directory for collecting artifacts. There is no scheduled-only Cargo
+argument builder, target enumeration or mutation verdict derived from result files.
 A successful empty shard is reported as no mutation work; the wrapper does not
 reconstruct a test invocation or claim that a baseline ran.
 

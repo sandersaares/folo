@@ -42,6 +42,12 @@ Miri platform matrix, many-seed Miri cases, mutation shards and careful checks
 nightly on main. Every nightly run executes the checks; previous success does not
 skip a night. Ordinary dependency/build caches remain available.
 
+The scheduled matrix invokes the same `just miri`, `just miri-harder`, `just mutants`
+and `just careful` recipes available to developers, with the relevant package and
+shard arguments. Each summary records the exact Just command. Check behavior and
+exit status belong to those recipes; the scheduled wrapper only captures output
+and formats diagnostics.
+
 A checker finding fails its Actions job and the validation run. Missed mutations,
 mutation timeouts, setup failures and incomplete execution remain failures.
 Independent matrix jobs continue after another job fails, and diagnostic uploads

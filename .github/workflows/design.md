@@ -40,6 +40,10 @@ The local entry points have fixed meanings: `validate-local` is shallow and
 reviewed commit and link their results for human review. Repair PRs use the same
 required checks and version validation as other PRs, without a special merge gate.
 
+Local and scheduled deep validation share the same Just recipes. Scheduling chooses
+scope and captures diagnostics; it does not implement different checker commands or
+pass/fail rules. Necessary check behavior belongs in the shared recipes.
+
 Nightly runs execute the entire deep suite even on unchanged source. Build caches
 remain ordinary performance aids, not receipts used to skip validation. Hosted
 execution and reporting do not depend on the availability of a Local App.
@@ -54,7 +58,7 @@ are reported even when no checker artifact exists.
 Successful runs and cancellation without a failed job do not create failure issues.
 
 An empty mutation shard is explicitly reported as no work, not a passing baseline.
-Cargo-mutants owns configuration and baseline execution for nonempty shards.
+The shared mutation recipe runs cargo-mutants' baseline for nonempty shards.
 Missing output is not proof of an empty shard. Reproduction instructions preserve
 known invocation scope; interleaved Miri output does not justify inventing a failing
 test or seed. An unexplained intermittent failure is not resolved by a green retry.
