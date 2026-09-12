@@ -4,13 +4,15 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)][int] $ByteCount,
-    [int] $ExitCode = 0
+    [int] $ExitCode = 0,
+    [string] $ErrorText = ''
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
 $VerbosePreference = 'Continue'
 
+[Console]::Error.Write($ErrorText)
 $bytes = [Text.Encoding]::ASCII.GetBytes('x' * $ByteCount)
 $stream = [Console]::OpenStandardOutput()
 try { $stream.Write($bytes, 0, $bytes.Length) } finally { $stream.Dispose() }

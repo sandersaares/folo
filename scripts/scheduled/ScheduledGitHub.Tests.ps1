@@ -643,6 +643,9 @@ Describe 'Artifact summary reading' {
         InModuleScope ScheduledGitHub {
             BeforeEach {
                 $script:savedExitCode = Get-Variable LASTEXITCODE -Scope Global -ValueOnly -ErrorAction SilentlyContinue
+                $script:requestCount = 0
+                Mock Start-Sleep -ModuleName Retry {}
+                Mock Write-Warning -ModuleName Retry {}
             }
             AfterEach { $global:LASTEXITCODE = $script:savedExitCode }
             It 'preserves empty and singleton API arrays for collection pagination' {
@@ -654,12 +657,76 @@ Describe 'Artifact summary reading' {
                 $items[0].number | Should -Be 42
             }
             It 'rejects malformed successful API output rather than assuming an empty collection' {
-                Mock gh { $global:LASTEXITCODE = 0; 'not JSON' }
+                Mock gh { $global:LASTEXITCODE = 0; 'HTTP 503 is not JSON' }
                 { Invoke-ScheduledGitHubJson 'repos/example/repo/issues' } | Should -Throw
+                Should -Invoke gh -Times 1 -Exactly
+                Should -Invoke Start-Sleep -ModuleName Retry -Times 0 -Exactly
             }
             It 'propagates a failed GitHub command even if it emitted valid JSON' {
                 Mock gh { $global:LASTEXITCODE = 1; '[]' }
                 { Invoke-ScheduledGitHubJson 'repos/example/repo/issues' } | Should -Throw
+            }
+            It 'retries an idempotent GET after <FailureText>' -ForEach @(
+                @{ FailureText = 'gh: Service unavailable (HTTP 503)' }
+                @{ FailureText = 'gh: API rate limit exceeded (HTTP 403)' }
+                @{ FailureText = 'connection reset by peer' }
+            ) {
+                $script:failureText = $FailureText
+                Mock gh {
+                    $script:requestCount++
+                    if ($script:requestCount -eq 1) {
+                        $global:LASTEXITCODE = 1
+                        Write-Error $script:failureText -ErrorAction Continue
+                    } else { $global:LASTEXITCODE = 0; '{"ok":true}' }
+                }
+                (Invoke-ScheduledGitHubJson 'repos/example/repo/issues').ok | Should -BeTrue
+                Should -Invoke gh -Times 2 -Exactly
+                Should -Invoke Start-Sleep -ModuleName Retry -Times 1 -Exactly -ParameterFilter { $Seconds -eq 3 }
+            }
+            It 'does not retry <FailureText> and preserves the original diagnostic' -ForEach @(
+                @{ FailureText = 'gh: Requires authentication (HTTP 401)' }
+                @{ FailureText = 'gh: Forbidden (HTTP 403)' }
+                @{ FailureText = 'gh: Not Found (HTTP 404)' }
+            ) {
+                $script:failureText = $FailureText
+                Mock gh {
+                    $global:LASTEXITCODE = 1
+                    Write-Error $script:failureText -ErrorAction Continue
+                }
+                $failure = { Invoke-ScheduledGitHubJson 'repos/example/repo/issues' } | Should -Throw -PassThru
+                $failure.Exception.Message | Should -Match ([regex]::Escape($FailureText))
+                Should -Invoke gh -Times 1 -Exactly
+                Should -Invoke Start-Sleep -ModuleName Retry -Times 0 -Exactly
+            }
+            It 'keeps <Method> single-shot even when the failure looks transient' -ForEach @(
+                @{ Method = 'POST' }, @{ Method = 'PATCH' }
+            ) {
+                Mock gh {
+                    $global:LASTEXITCODE = 1
+                    Write-Error 'gh: Service unavailable (HTTP 503)' -ErrorAction Continue
+                }
+                { Invoke-ScheduledGitHubJson 'repos/example/repo/issues' -Method $Method -Body @{ body = 'test' } } |
+                    Should -Throw
+                Should -Invoke gh -Times 1 -Exactly
+                Should -Invoke Start-Sleep -ModuleName Retry -Times 0 -Exactly
+            }
+            It 'uses the existing bounded backoff and rethrows the final read failure' {
+                Mock gh { $global:LASTEXITCODE = 1; 'gh: Service unavailable (HTTP 503)' }
+                $failure = { Invoke-ScheduledGitHubJson 'repos/example/repo/issues' } | Should -Throw -PassThru
+                $failure.Exception.Message | Should -Match 'HTTP 503'
+                Should -Invoke gh -Times 4 -Exactly
+                foreach ($delay in @(3, 6, 12)) {
+                    Should -Invoke Start-Sleep -ModuleName Retry -Times 1 -Exactly -ParameterFilter { $Seconds -eq $delay }
+                }
+            }
+            It 'does not mix successful stderr notes into JSON or retry them' {
+                Mock gh {
+                    Write-Error 'gh: rate limit information' -ErrorAction Continue
+                    $global:LASTEXITCODE = 0
+                    '{"ok":true}'
+                }
+                (Invoke-ScheduledGitHubJson 'repos/example/repo/issues').ok | Should -BeTrue
+                Should -Invoke gh -Times 1 -Exactly
             }
         }
 

@@ -7,6 +7,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
 Import-Module (Join-Path $PSScriptRoot 'ScheduledReport.psm1')
+Import-Module (Join-Path $PSScriptRoot '..\utility\Retry.psm1')
 
 # Result archives include raw tool output as well as summaries. Bound their transfer and disk
 # footprint so an ordinary verbose check cannot consume the reporter's available storage.
@@ -14,6 +15,9 @@ $script:ArchiveByteLimit = 64MB
 # Decode only bounded log prefixes and selected ZIP entries into memory for issue assembly.
 # Longer diagnostics remain available through the original job/artifact links.
 $script:TextByteLimit = 4MB
+# gh failure messages contain status and connection diagnostics, not checker output.
+# Keep enough text for classification without allowing stderr to grow without a bound.
+$script:ErrorTextLimit = 16KB
 
 function Invoke-ScheduledGitHubJson {
     [CmdletBinding()]
@@ -22,11 +26,26 @@ function Invoke-ScheduledGitHubJson {
         [ValidateSet('GET', 'POST', 'PATCH')][string] $Method = 'GET',
         [hashtable] $Body
     )
-    $arguments = @('api', $Endpoint, '--method', $Method)
-    $response = if ($null -ne $Body) {
-        $Body | ConvertTo-Json -Depth 20 -Compress | & gh @arguments --input -
-    } else { & gh @arguments }
-    if ($LASTEXITCODE -ne 0) { throw "GitHub API request failed: $Method $Endpoint" }
+    $request = @{ arguments = @('api', $Endpoint, '--method', $Method); body = $Body }
+    $invoke = {
+        # Capture native stderr records without mixing successful CLI warnings into JSON.
+        $PSNativeCommandUseErrorActionPreference = $false
+        $arguments = $request.arguments
+        $output = @(if ($null -ne $request.body) {
+            $request.body | ConvertTo-Json -Depth 20 -Compress | & gh @arguments --input - 2>&1
+        } else { & gh @arguments 2>&1 })
+        if ($LASTEXITCODE -ne 0) {
+            throw "GitHub API request failed (exit $LASTEXITCODE): $($arguments -join ' '): $($output -join "`n")"
+        }
+        return ($output | Where-Object { $_ -isnot [Management.Automation.ErrorRecord] }) -join "`n"
+    }
+    # Match the read-side gh retry settings used by the benchmark-history helpers.
+    # Parsing stays outside the retry: malformed successful JSON is not a network fault.
+    # Ref: ../../.github/workflows/design.md#transient-fault-handling.
+    $response = if ($Method -eq 'GET') {
+        Invoke-WithRetry -Attempt 4 -DelaySeconds 3 -BackoffMultiplier 2 -MaxDelaySeconds 30 `
+            -RetryOn { param($failure) Test-TransientFailure $failure.Exception.Message } -Action $invoke
+    } else { & $invoke }
     return ,($response -join "`n" | ConvertFrom-Json -AsHashtable -NoEnumerate)
 }
 
@@ -55,12 +74,13 @@ function Get-ScheduledDownloadStartInfo {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string] $Endpoint)
 
-    # Binary responses bypass PowerShell's text pipeline. gh errors go directly to the runner
-    # log rather than an accumulating stderr buffer; no downloaded code is executed.
+    # Binary responses bypass PowerShell's text pipeline. Bounded stderr capture preserves
+    # the actual HTTP/network error needed to decide whether a GET can be retried.
     $start = [Diagnostics.ProcessStartInfo]::new()
     $start.FileName = (Get-Command gh -CommandType Application | Select-Object -First 1).Source
     $start.UseShellExecute = $false
     $start.RedirectStandardOutput = $true
+    $start.RedirectStandardError = $true
     foreach ($argument in @('api', $Endpoint, '--allow-escape-sequences')) { $start.ArgumentList.Add($argument) }
     return $start
 }
@@ -70,19 +90,30 @@ function Copy-ScheduledLimitedStream {
     param(
         [Parameter(Mandatory)][IO.Stream] $Source,
         [Parameter(Mandatory)][IO.Stream] $Destination,
-        [Parameter(Mandatory)][ValidateRange(1, [long]::MaxValue)][long] $ByteLimit
+        [Parameter(Mandatory)][ValidateRange(1, [long]::MaxValue)][long] $ByteLimit,
+        [Threading.Tasks.Task[int]] $ErrorRead,
+        [char[]] $ErrorBuffer
     )
     # Count bytes actually read, not HTTP headers or ZIP entry metadata. One extra byte
     # distinguishes a complete response exactly at the limit from a truncated response.
     $buffer = [byte[]]::new([int][Math]::Min(81920L, $ByteLimit)) # .NET's normal copy buffer size.
     $remaining = $ByteLimit
-    while ($remaining -gt 0) {
-        $count = $Source.Read($buffer, 0, [int][Math]::Min($buffer.Length, $remaining))
+    while ($true) {
+        $requested = if ($remaining -eq 0) { 1 } else { [int][Math]::Min($buffer.Length, $remaining) }
+        $read = $Source.ReadAsync($buffer, 0, $requested)
+        if ($null -ne $ErrorRead) {
+            # A full stderr buffer must interrupt a blocked stdout read, not deadlock gh.
+            $null = [Threading.Tasks.Task]::WhenAny([Threading.Tasks.Task[]]@($read, $ErrorRead)).GetAwaiter().GetResult()
+            if ($ErrorRead.IsCompleted -and $ErrorRead.GetAwaiter().GetResult() -eq $ErrorBuffer.Length) {
+                throw "GitHub error output exceeded its limit: $([string]::new($ErrorBuffer, 0, $ErrorBuffer.Length - 1))"
+            }
+        }
+        $count = $read.GetAwaiter().GetResult()
         if ($count -eq 0) { return $false }
+        if ($remaining -eq 0) { return $true }
         $Destination.Write($buffer, 0, $count)
         $remaining -= $count
     }
-    return $Source.ReadByte() -ne -1
 }
 
 function Save-ScheduledGitHubFile {
@@ -91,6 +122,22 @@ function Save-ScheduledGitHubFile {
         [Parameter(Mandatory)][string] $Endpoint,
         [Parameter(Mandatory)][string] $Path,
         [ValidateRange(1, [long]::MaxValue)][long] $ByteLimit = $script:ArchiveByteLimit,
+        [switch] $AllowPartial
+    )
+    $request = @{ Endpoint = $Endpoint; Path = $Path; ByteLimit = $ByteLimit; AllowPartial = $AllowPartial }
+    # Retry only this idempotent transfer, never archive parsing or issue publication.
+    # Ref: ../../.github/workflows/design.md#transient-fault-handling.
+    return Invoke-WithRetry -Attempt 4 -DelaySeconds 3 -BackoffMultiplier 2 -MaxDelaySeconds 30 `
+        -RetryOn { param($failure) Test-TransientFailure $failure.Exception.Message } `
+        -Action { Invoke-ScheduledDownload @request }
+}
+
+function Invoke-ScheduledDownload {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string] $Endpoint,
+        [Parameter(Mandatory)][string] $Path,
+        [Parameter(Mandatory)][long] $ByteLimit,
         [switch] $AllowPartial
     )
     $process = [Diagnostics.Process]::new()
@@ -104,14 +151,21 @@ function Save-ScheduledGitHubFile {
         $file = [IO.File]::Create($Path)
         $started = $process.Start()
         if (-not $started) { throw 'Could not start the GitHub download.' }
-        $truncated = Copy-ScheduledLimitedStream $process.StandardOutput.BaseStream $file $ByteLimit
+        $errorBuffer = [char[]]::new($script:ErrorTextLimit + 1)
+        $errorRead = $process.StandardError.ReadBlockAsync($errorBuffer, 0, $errorBuffer.Length)
+        $truncated = Copy-ScheduledLimitedStream $process.StandardOutput.BaseStream $file $ByteLimit `
+            -ErrorRead $errorRead -ErrorBuffer $errorBuffer
         if ($truncated -and -not $process.HasExited) { $process.Kill($true) }
+        $errorCount = $errorRead.GetAwaiter().GetResult()
+        if ($errorCount -eq $errorBuffer.Length) {
+            throw "GitHub error output exceeded its limit: $([string]::new($errorBuffer, 0, $errorBuffer.Length - 1))"
+        }
         $process.WaitForExit()
         if ($truncated -and -not $AllowPartial) {
             throw "Download exceeded the $ByteLimit byte limit; the complete artifact is unavailable."
         }
         if (-not $truncated -and $process.ExitCode -ne 0) {
-            throw "GitHub download failed for $Endpoint (exit $($process.ExitCode)); see the reporter's Actions log."
+            throw "GitHub download failed for $Endpoint (exit $($process.ExitCode)): $([string]::new($errorBuffer, 0, $errorCount))"
         }
         $keepFile = $true
         return $truncated

@@ -20,13 +20,26 @@ Describe 'Bounded GitHub downloads' {
         BeforeEach {
             $script:responseBytes = 16
             $script:responseExitCode = 0
+            $script:responseErrorText = ''
+            $script:failedTransfers = 0
+            $script:downloadStarts = 0
+            Mock Start-Sleep -ModuleName Retry {}
+            Mock Write-Warning -ModuleName Retry {}
             Mock Get-ScheduledDownloadStartInfo {
+                $script:downloadStarts++
                 $start = [Diagnostics.ProcessStartInfo]::new()
                 $start.FileName = $script:executable
                 $start.UseShellExecute = $false
                 $start.RedirectStandardOutput = $true
+                $start.RedirectStandardError = $true
+                $exitCode = $script:responseExitCode
+                $errorText = $script:responseErrorText
+                if ($script:failedTransfers -gt 0 -and $script:downloadStarts -gt $script:failedTransfers) {
+                    $exitCode = 0
+                    $errorText = ''
+                }
                 foreach ($argument in @('-NoProfile', '-File', $script:fixture, '-ByteCount',
-                        "$script:responseBytes", '-ExitCode', "$script:responseExitCode")) {
+                        "$script:responseBytes", '-ExitCode', "$exitCode", '-ErrorText', $errorText)) {
                     $start.ArgumentList.Add($argument)
                 }
                 return $start
@@ -57,6 +70,38 @@ Describe 'Bounded GitHub downloads' {
             $script:responseExitCode = 1
             { Save-ScheduledGitHubFile repos/example/repo/response $script:path -ByteLimit 16 } | Should -Throw
             Test-Path -LiteralPath $script:path | Should -BeFalse
+        }
+        It 'retries a transfer after <FailureText> without retaining its partial output' -ForEach @(
+            @{ FailureText = 'gh: Service unavailable (HTTP 503)' }
+            @{ FailureText = 'gh: API rate limit exceeded (HTTP 403)' }
+            @{ FailureText = 'connection reset by peer' }
+        ) {
+            $script:responseExitCode = 1
+            $script:responseErrorText = $FailureText
+            $script:failedTransfers = 1
+            Save-ScheduledGitHubFile repos/example/repo/response $script:path -ByteLimit 16 | Should -BeFalse
+            $script:downloadStarts | Should -Be 2
+            [IO.File]::ReadAllText($script:path) | Should -BeExactly ('x' * 16)
+            Should -Invoke Start-Sleep -ModuleName Retry -Times 1 -Exactly -ParameterFilter { $Seconds -eq 3 }
+        }
+        It 'does not retry deterministic transfer refusals and preserves their diagnostic' {
+            $script:responseExitCode = 1
+            $script:responseErrorText = 'gh: Not Found (HTTP 404)'
+            $failure = { Save-ScheduledGitHubFile repos/example/repo/response $script:path -ByteLimit 16 } |
+                Should -Throw -PassThru
+            $failure.Exception.Message | Should -Match 'Not Found \(HTTP 404\)'
+            $script:downloadStarts | Should -Be 1
+            Should -Invoke Start-Sleep -ModuleName Retry -Times 0 -Exactly
+        }
+        It 'bounds stderr while stdout is waiting and cleans the interrupted transfer' {
+            $savedLimit = $script:ErrorTextLimit
+            try {
+                $script:ErrorTextLimit = 64
+                $script:responseErrorText = 'x' * 10000
+                { Save-ScheduledGitHubFile repos/example/repo/response $script:path -ByteLimit 16 } | Should -Throw
+                Test-Path -LiteralPath $script:path | Should -BeFalse
+                $script:downloadStarts | Should -Be 1
+            } finally { $script:ErrorTextLimit = $savedLimit }
         }
         It 'cleans partial output when reading the pipe fails' {
             Mock Copy-ScheduledLimitedStream { throw [IO.IOException]::new() }
