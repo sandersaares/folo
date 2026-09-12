@@ -146,7 +146,10 @@ mod tests {
             }],
             "unrelated": true
         });
-        let metadata = Metadata::parse(&serde_json::to_vec(&input).unwrap()).unwrap();
+        // Intentional deep-validation canary: leak only this test's small JSON fixture.
+        // Repair by retaining buffer ownership, not by suppressing Miri's leak detection.
+        let input = Box::leak(serde_json::to_vec(&input).unwrap().into_boxed_slice());
+        let metadata = Metadata::parse(input).unwrap();
         assert_eq!(metadata.workspace_root, PathBuf::from("workspace"));
         assert_eq!(
             metadata.packages.first().unwrap().manifest_path,
