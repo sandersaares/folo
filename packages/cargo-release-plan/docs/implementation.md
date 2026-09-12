@@ -38,6 +38,8 @@ validates the schema and cross-package identities before consumers build depende
 graphs or version targets. Analysis ordering follows recorded dependencies rather
 than exact-version grouping. Compatibility selection follows group closure but
 emits only packages declaring a consumer contract.
+Dependency and dependent references must name a reported workspace target; an
+incomplete report cannot silently remove a relationship from release assessment.
 
 ## Subprocess boundaries
 
@@ -301,6 +303,9 @@ Expanded-plan inspection uses the shared target resolver and application dry-run
 validation to return publication-eligible names and the evidence manifest. Workflow
 adapters therefore do not maintain another plan-schema validator or rediscover
 publication eligibility from package naming.
+Proposal and preview output guards resolve existing path ancestors before
+normalizing missing components. Creating an output directory therefore cannot
+turn an accepted destination into an alias of the input evidence.
 
 `plan` owns both planning stages and the resolution shared between them. It first
 resolves package and group entries into one target version per tracked version

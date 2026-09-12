@@ -49,6 +49,16 @@ impl ReportFile {
             if let Some(anchor) = &package.anchor {
                 _ = parse_version(&package.name, &anchor.version)?;
             }
+            for reference in package
+                .dependencies
+                .iter()
+                .map(|dependency| &dependency.name)
+                .chain(&package.dependents)
+            {
+                if !targets.contains_key(reference) {
+                    return Err(InvalidReportReference::new(&package.name, reference).into());
+                }
+            }
         }
 
         let mut grouped = BTreeSet::new();
@@ -134,6 +144,14 @@ struct InvalidReportPackage {
     name: String,
 }
 
+/// Reported workspace relationships must retain their referenced version targets.
+#[ohno::error]
+#[display("Report package {} references missing workspace package {}", package.quoted(), target.quoted())]
+struct InvalidReportReference {
+    package: String,
+    target: String,
+}
+
 /// A group must be a sorted, disjoint set keyed by its smallest member.
 #[ohno::error]
 #[display("Invalid version group in report: {}", name.quoted())]
@@ -163,6 +181,40 @@ mod tests {
                 .find_source::<UnsupportedPlanSchemaError>()
                 .is_some()
         );
+    }
+
+    #[test]
+    fn workspace_dependencies_must_reference_known_targets() {
+        let mut data = grouped();
+        let package = data.packages.first_mut().unwrap();
+        package.dependencies = serde_json::from_value(json!([
+            {"name": "absent", "req": "1.0.0", "public": true, "exact_pin": false}
+        ]))
+        .unwrap();
+        let error = data.validate().unwrap_err();
+        assert!(error.find_source::<InvalidReportReference>().is_some());
+        data.packages
+            .first_mut()
+            .unwrap()
+            .dependencies
+            .first_mut()
+            .unwrap()
+            .name = "helper".to_owned();
+        data.validate().unwrap();
+    }
+
+    #[test]
+    fn reported_dependents_use_exact_workspace_identities() {
+        let mut data = grouped();
+        data.packages.first_mut().unwrap().dependents = vec!["API".to_owned()];
+        assert!(
+            data.validate()
+                .unwrap_err()
+                .find_source::<InvalidReportReference>()
+                .is_some()
+        );
+        data.packages.first_mut().unwrap().dependents = vec!["api".to_owned()];
+        data.validate().unwrap();
     }
 
     fn grouped() -> ReportFile {

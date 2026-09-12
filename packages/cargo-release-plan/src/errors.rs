@@ -150,9 +150,9 @@ pub(crate) struct ParseMetadataError;
 impl UnwindSafe for ParseMetadataError {}
 impl RefUnwindSafe for ParseMetadataError {}
 
-/// A plan file is not valid JSON.
+/// A release artifact cannot be decoded as the supported JSON document.
 #[ohno::error]
-#[display("Failed to parse plan '{}'", path.quoted())]
+#[display("Failed to parse release artifact '{}'", path.quoted())]
 pub(crate) struct ParsePlanError {
     path: PathBuf,
 }
@@ -160,11 +160,12 @@ pub(crate) struct ParsePlanError {
 impl UnwindSafe for ParsePlanError {}
 impl RefUnwindSafe for ParsePlanError {}
 
-/// The plan uses a schema version this tool does not implement.
+/// A plan or report uses a schema version this tool does not implement.
 #[ohno::error]
 #[display(
-    "Unsupported plan schema_version {version}; regenerate evidence with \
-     `cargo release-plan prepare` and the reviewed plan with `cargo release-plan preview`"
+    "Unsupported release artifact schema_version {version}; regenerate reports with \
+     `cargo release-plan report` or prepared evidence with `cargo release-plan prepare`, \
+     then regenerate plans with the current tool"
 )]
 pub(crate) struct UnsupportedPlanSchemaError {
     version: u32,

@@ -20,6 +20,7 @@ pub mod __private {
 mod analysis_order;
 mod anchor;
 mod apply;
+mod artifact_path;
 mod check;
 mod classify;
 mod cli;

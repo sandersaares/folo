@@ -96,8 +96,10 @@ Preparation can modify the workspace lockfile. It writes `prepared.json`,
 `analysis-order`, `semver-targets`, and `propose` consume a report file, or a
 directory containing `report.json`. They do not inspect the current workspace,
 invoke Cargo or Git, or contact a registry. Relative paths resolve from the
-current directory. These commands require the supported report schema;
-`--verbose` writes explanatory decisions to stderr without changing JSON stdout.
+current directory. These commands require the supported report schema.
+`analysis-order` and `semver-targets` print JSON to stdout; `propose` writes its
+JSON plan to `--out` and prints a human-readable summary. `--verbose` writes
+explanatory decisions to stderr without changing those outputs.
 
 `analysis-order` prints dependency-first batches as a JSON array:
 

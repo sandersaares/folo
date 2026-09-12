@@ -205,7 +205,9 @@ mod tests {
         let mut report = graph(&[
             ("api", &["implementation"]),
             ("implementation", &["helper"]),
+            ("helper", &[]),
         ]);
+        report.packages.retain(|package| package.name != "helper");
         for package in &mut report.packages {
             package.group = Some("api".to_owned());
         }

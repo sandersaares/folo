@@ -7,6 +7,49 @@ use std::process::{Command, Output};
 use serde_json::{Value, json};
 use tempfile::tempdir;
 
+#[test]
+#[cfg_attr(
+    miri,
+    ignore = "executes artifact commands on inconsistent report identities"
+)]
+fn dangling_workspace_dependencies_fail_every_report_consumer() {
+    let directory = tempdir().unwrap();
+    write_report(directory.path());
+    let path = directory.path().join("report.json");
+    let mut report: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    *report.pointer_mut("/packages/0/dependencies").unwrap() = json!([
+        {"name": "missing", "req": "1.0.0", "public": true, "exact_pin": false}
+    ]);
+    fs::write(&path, report.to_string()).unwrap();
+    for subcommand in ["analysis-order", "semver-targets"] {
+        let output = command(directory.path(), &[subcommand, "--report", "report.json"]);
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+    }
+    fs::write(
+        directory.path().join("decisions.json"),
+        r#"{"schema_version":1,"changes":[]}"#,
+    )
+    .unwrap();
+    let output_path = directory.path().join("proposal.json");
+    fs::write(&output_path, "stale proposal").unwrap();
+    let output = command(
+        directory.path(),
+        &[
+            "propose",
+            "--report",
+            "report.json",
+            "--decisions",
+            "decisions.json",
+            "--out",
+            "proposal.json",
+        ],
+    );
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(!output_path.exists());
+}
+
 fn command(directory: &Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_cargo-release-plan"))
         .args(args)

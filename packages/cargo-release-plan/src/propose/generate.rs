@@ -12,11 +12,12 @@ use semver::Version;
 use serde::Serialize;
 
 use crate::WriteFileError;
+use crate::artifact_path::same_path;
 use crate::check::compatibility_key;
 use crate::classify::PackageStatus;
 use crate::groups::Groups;
 use crate::plan::{PlanFile, PlanIncrement, PlanStage, ResolvedVersions, resolve_plan};
-use crate::preview::{remove_marker, same_path};
+use crate::preview::remove_marker;
 use crate::propose::decision::{ChangeLevel, Decisions};
 use crate::report::{ReportFile, ReportPackage, read_report};
 use crate::resolved::write_json;
@@ -36,11 +37,10 @@ pub(crate) fn run_propose(
     };
     // An invalid rerun invalidates its previous proposal, but never its own source evidence.
     // Canonical comparison also protects inputs addressed through a symlink or a relative path.
-    if [&report, decisions]
-        .iter()
-        .any(|input| same_path(input, out))
-    {
-        return Err(ProposalInputCollision::new().into());
+    for input in [&report, decisions] {
+        if same_path(input, out)? {
+            return Err(ProposalInputCollision::new().into());
+        }
     }
     remove_marker(out)?;
     let report = read_report(&report)?;
@@ -455,6 +455,32 @@ mod tests {
     use crate::propose::tests::{
         assert_versions, depends, entries, generate, needs, package, report,
     };
+
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "resolves missing output directories around real input artifacts"
+    )]
+    fn missing_output_parents_cannot_make_an_input_writable_as_a_proposal() {
+        let directory = tempdir_in(".").unwrap();
+        let report_path = directory.path().join("report.json");
+        let decisions_path = directory.path().join("decisions.json");
+        write_json(&report_path, &report(Vec::new(), Vec::new(), &[])).unwrap();
+        fs::write(&decisions_path, r#"{"schema_version":1,"changes":[]}"#).unwrap();
+        for input in [&report_path, &decisions_path] {
+            let before = fs::read(input).unwrap();
+            let output = directory
+                .path()
+                .join("missing")
+                .join("..")
+                .join(input.file_name().unwrap());
+            let error = run_propose(&report_path, &decisions_path, &output, Verbose::new(false))
+                .unwrap_err();
+            assert!(error.find_source::<ProposalInputCollision>().is_some());
+            assert_eq!(fs::read(input).unwrap(), before);
+            assert!(!directory.path().join("missing").exists());
+        }
+    }
 
     #[test]
     fn verbose_public_propagation_explains_the_dependency_anchor() {

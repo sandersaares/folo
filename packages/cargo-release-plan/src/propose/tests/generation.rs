@@ -33,14 +33,14 @@ fn semantic_member_entries_keep_their_names_and_merge_only_in_the_resolver() {
 }
 
 #[test]
-fn anchorless_dependents_and_external_dependencies_do_not_invent_decisions() {
+fn anchorless_dependents_and_helpers_do_not_invent_decisions() {
     let report = report(
         vec![
             package("lib", "2.0.0", Some("1.0.0")),
             depends(package("new", "0.1.0", None), "lib", true),
-            depends(package("other", "1.0.0", Some("1.0.0")), "external", true),
+            depends(package("other", "1.0.0", Some("1.0.0")), "helper", true),
         ],
-        vec![],
+        vec![helper("helper", "1.0.0")],
         &[],
     );
     assert!(generate(&report, &[]).unwrap().increments.is_empty());
