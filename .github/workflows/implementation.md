@@ -16,7 +16,7 @@ the installed App's scheduling controls.
 | `pr-bench-history.yml` / **PR Benchmark history** | PR opened/synchronized/reopened. | Advisory production-backed benchmark feedback for same-repository PRs. |
 
 ```text
-Deep validation on main: plan -> check matrix -> report failures -> run report issue
+Deep validation on main: plan -> check matrices -> report failures -> run report issue
 
 Local App triage -> run report -> existing or new problem issues
 Local App repair -> claimed problem issue -> PR -> human review and merge
@@ -231,6 +231,12 @@ reconstruct a test invocation or claim that a baseline ran.
 The full workflow executes every night, without persistent coverage receipts or
 successful-run reuse. Ordinary dependency/build caches remain available.
 
+The separate `hack`, `machete` and `test-arm` jobs depend on the same main-only plan
+gate and run their Just recipes over the full workspace. They retain independent
+platform matrices; the ARM test job also provisions Valgrind for benchmark smoke
+tests and uploads its JUnit results to Codecov. Their failures are reported from
+Actions job logs rather than the deep-check wrapper's summary artifacts.
+
 ### Manual checks
 
 Manually starting **Deep validation** on `main` runs the same full suite as the
@@ -243,7 +249,7 @@ platform coverage is disclosed for human review, not claimed as a passing result
 
 ### Failure reporting
 
-The `report` job depends on planning and the check matrix and runs on failure.
+The `report` job depends on planning and every check matrix and runs on failure.
 It uses the same main checkout as the other jobs. Its normal GitHub permissions
 allow reading Actions results and writing an issue. Preinstalled PowerShell and
 the GitHub CLI are sufficient, even when checker/toolchain setup failed.

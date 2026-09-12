@@ -307,7 +307,7 @@ jobs:
         run: just default-features-check
 
   # Fails when a library's public API exposes an external type that is not on its allow-list, so an
-  # accidental addition to the external surface is caught in review. Modelled on `machete`: a
+  # accidental addition to the external surface is caught in review. Uses a
   # ubuntu + windows matrix, because the public surface is platform-dependent (cfg-gated items) and
   # macOS (also cfg(unix)) is redundant with ubuntu here. Delta-scoped like the other package jobs.
   check-external-types:
@@ -357,12 +357,12 @@ jobs:
   # panic. Uploads both the coverage report and the test results to Codecov.
   #
   # macOS is deliberately not here: GitHub's `macos-latest` runner is Apple Silicon (arm64),
-  # so macOS is exercised by the `test-arm` job instead. Keeping this job x86_64-only keeps
+  # so macOS is exercised by Deep validation's `test-arm` job. Keeping this job x86_64-only keeps
   # its name accurate and stops the matrix drifting as the `-latest` labels change.
   #
   # Coverage requires the nightly toolchain (llvm-tools-preview is installed only there via
   # `just install-tools`), so this is the nightly test pass. The MSRV test pass runs on the
-  # ARM runners (`test-arm`, push-to-`main` only), and MSRV compilation of every target is
+  # ARM runners in Deep validation, and MSRV compilation of every target is
   # covered by `check-frozen` (which compiles all targets on MSRV against the frozen minimums).
   # Paired with `test-arm`; both carry an explicit `-x64`/`-arm` suffix for symmetry.
   test-x64:
@@ -475,71 +475,6 @@ jobs:
       - name: Run docs-default-features on ${{ matrix.platform }}
         run: just package="${{ needs.delta.outputs.packages }}" docs-default-features
 
-  # The ARM64 test pass (ubuntu-24.04-arm, windows-11-arm and macos-latest). Exercises
-  # ARM-specific code paths (anything gated behind cfg(target_arch = "aarch64") or similar)
-  # which x86_64 runners never compile or execute. macOS lives here too because GitHub's
-  # `macos-latest` runner is Apple Silicon (arm64). Also serves as the MSRV test pass (the
-  # x86_64 `test-x64` job runs on nightly so it can collect coverage). No coverage here:
-  # llvm-tools-preview-based instrumentation is gathered on x86_64 only. Paired with
-  # `test-x64`; both carry an explicit `-x64`/`-arm` suffix.
-  test-arm:
-    needs: [delta]
-    # Push-to-`main` only: every leg here is ARM or macOS, all pruned from PR validation.
-    if: github.event_name == 'push' && needs.delta.outputs.skip_all != 'true'
-    strategy:
-      fail-fast: false
-      matrix:
-        platform: [ubuntu-24.04-arm, windows-11-arm, macos-latest]
-
-    runs-on: ${{ matrix.platform }}
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-
-      - name: Setup environment
-        # The benchmark smoke check below runs every bench target once, and on Linux the
-        # `*_cg` targets are real Gungraun harnesses that execute under Valgrind.
-        uses: ./.github/actions/setup-environment
-        with:
-          install-valgrind: "true"
-
-      - name: Run tests on ${{ matrix.platform }}
-        run: just package="${{ needs.delta.outputs.packages }}" test
-
-      - name: Upload test results to Codecov
-        if: ${{ !cancelled() }}
-        uses: codecov/codecov-action@v7
-        with:
-          token: ${{ secrets.CODECOV_TOKEN }}
-          files: target/nextest/default/junit.xml
-          flags: ${{ matrix.platform }}
-          report_type: test_results
-
-      - name: Run benchmark targets on ${{ matrix.platform }}
-        run: just package="${{ needs.delta.outputs.packages }}" test-benches
-
-  machete:
-    needs: [delta]
-    if: needs.delta.outputs.skip_all != 'true'
-    strategy:
-      fail-fast: false
-      matrix:
-        # macos-latest intentionally excluded because maintainers lack local PC to do the necessary "dependency trial and error" on.
-        platform: [ubuntu-latest, windows-latest]
-
-    runs-on: ${{ matrix.platform }}
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-
-      - name: Setup environment
-        uses: ./.github/actions/setup-environment
-
-      - name: Run machete on ${{ matrix.platform }}
-        run: just machete
-
   clippy-release:
     needs: [delta, clippy-dev]
     # Push-to-`main` only: release-profile Clippy rarely diverges from the dev pass on a PR.
@@ -628,28 +563,6 @@ jobs:
 
       - name: Run examples on ${{ matrix.platform }}
         run: just package="${{ needs.delta.outputs.packages }}" run-examples
-
-  hack:
-    needs: [delta]
-    if: needs.delta.outputs.skip_all != 'true'
-    # Work budget (~90 min) plus up to 90 min for a cold-cache setup-environment.
-    timeout-minutes: 180
-    strategy:
-      fail-fast: false
-      matrix:
-        platform: [ubuntu-latest, macos-latest, windows-latest]
-
-    runs-on: ${{ matrix.platform }}
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-
-      - name: Setup environment
-        uses: ./.github/actions/setup-environment
-
-      - name: Run hack on ${{ matrix.platform }}
-        run: just package="${{ needs.delta.outputs.packages }}" hack
 
   # Azure Blob storage backend tests against the Azurite emulator.
   #
@@ -944,13 +857,10 @@ jobs:
       - test-x64
       - test-docs
       - docs
-      - test-arm
-      - machete
       - clippy-release
       - build-release
       - check-frozen
       - run-examples
-      - hack
       - test-azurite
       - test-azure
       - test-azure-gh
@@ -979,7 +889,7 @@ jobs:
   # File a GitHub issue whenever any job above fails on a push to `main`, so a push-to-main
   # failure is tracked rather than lost. PR runs surface a failure as the red check and need
   # no issue - and this workflow now leans more heavily on push-to-main as the backstop for
-  # the shallow checks pruned from PR validation (ARM, macOS test/docs, clippy-release),
+  # the shallow checks pruned from PR validation (macOS doctests/docs, clippy-release),
   # so a green PR does not imply those passed.
   #
   # A fresh issue is filed per failing run - no dedup, no auto-close - mirroring the release
@@ -1008,13 +918,10 @@ jobs:
       - test-x64
       - test-docs
       - docs
-      - test-arm
-      - machete
       - clippy-release
       - build-release
       - check-frozen
       - run-examples
-      - hack
       - test-azurite
       - test-azure
       - test-azure-gh

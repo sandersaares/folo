@@ -8,6 +8,7 @@ $PSNativeCommandUseErrorActionPreference = $true
 BeforeAll {
     $script:workflows = Join-Path $PSScriptRoot '..\..\.github\workflows'
     $script:workflow = Get-Content -LiteralPath (Join-Path $workflows 'deep-validation.yml') -Raw
+    $script:standard = Get-Content -LiteralPath (Join-Path $workflows 'standard-validation.yml') -Raw
 }
 
 Describe 'Hosted deep validation wiring' {
@@ -27,10 +28,38 @@ Describe 'Hosted deep validation wiring' {
         $workflow | Should -Match '(?m)^  plan:'
         $workflow | Should -Match '(?m)^  checks:'
         $workflow | Should -Match '(?m)^  report:'
-        $workflow | Should -Match 'needs: \[plan, checks\]'
+        $workflow | Should -Match 'needs: \[plan, checks, hack, machete, test-arm\]'
         $workflow | Should -Match 'if: failure\(\)'
         $workflow | Should -Match 'issues: write'
         $workflow | Should -Not -Match 'path: (controller|candidate)|uses: \./\.github/workflows/'
+    }
+
+    It 'runs <job> only in deep validation with its full platform and workspace scope' -ForEach @(
+        @{ job = 'hack'; platforms = 'ubuntu-latest, macos-latest, windows-latest'; recipes = @('hack') },
+        @{ job = 'machete'; platforms = 'ubuntu-latest, windows-latest'; recipes = @('machete') },
+        @{ job = 'test-arm'; platforms = 'ubuntu-24.04-arm, windows-11-arm, macos-latest'; recipes = @('test', 'test-benches') }
+    ) {
+        $pattern = '(?ms)^  ' + [regex]::Escape($job) + ':\r?\n(?<body>.*?)(?=^  [a-z][a-z0-9-]*:\r?$|\z)'
+        $match = [regex]::Match($workflow, $pattern)
+        $match.Success | Should -BeTrue
+        $body = $match.Groups['body'].Value
+        $body | Should -Match '(?m)^    needs: plan\r?$'
+        $body | Should -Not -Match '(?m)^    if:|needs\.delta|package='
+        $body | Should -Match ('platform: \[' + [regex]::Escape($platforms) + '\]')
+        $body | Should -Match 'fail-fast: false'
+        foreach ($recipe in $recipes) {
+            $body | Should -Match ('(?m)^          just ' + [regex]::Escape($recipe) + '\r?$')
+        }
+        $standard | Should -Not -Match ('(?m)^  ' + [regex]::Escape($job) + ':')
+        $standard | Should -Not -Match ('(?m)^      - ' + [regex]::Escape($job) + '\r?$')
+    }
+
+    It 'retains ARM benchmark prerequisites and test-result publishing' {
+        $arm = [regex]::Match($workflow, '(?ms)^  test-arm:\r?\n(?<body>.*?)(?=^  report:)').Groups['body'].Value
+        $arm | Should -Match 'install-valgrind: "true"'
+        $arm | Should -Match 'uses: codecov/codecov-action@'
+        $arm | Should -Match 'files: target/nextest/default/junit.xml'
+        $arm | Should -Match 'report_type: test_results'
     }
 
     It 'continues independent checks and preserves failures and diagnostics' {

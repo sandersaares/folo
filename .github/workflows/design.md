@@ -34,6 +34,9 @@ GitHub-hosted workflows do not invoke AI. Final approval and merge remain human.
 **Standard validation** runs the ordinary shallow PR, push and merge-queue checks.
 **Deep validation** runs the full deep suite at the main commit selected by its event.
 Deep validation covers ordinary Miri, many-seed Miri, mutation testing and careful checks.
+It also runs feature-powerset compilation (`hack`), unused-dependency checks (`machete`)
+and ARM64 tests and benchmark smoke checks (`test-arm`). These lower-yield checks run
+nightly or on manual dispatch rather than on every push.
 Planning, check jobs and failure reporting belong to that same workflow.
 The local entry points have fixed meanings: `validate-local` is shallow and
 `validate-deep-local` is deep. Repair authors run relevant local deep checks against the
@@ -71,8 +74,8 @@ do not select permissions or opt out of jobs.
 
 Standard validation runs each `just` command as its own parallel job rather than one combined
 `validate-local` step. Parallelism gives faster feedback and pinpoints failures by check
-name instead of burying them in a monolithic log. The local recipes define which
-commands are shallow or deep, while workflow jobs own platform selection,
+name instead of burying them in a monolithic log. The local recipes define the local
+check suites, while workflow jobs own execution cadence, platform selection,
 prerequisites and evidence capture. Clippy stands in for a bare `cargo check` here: Clippy compiles the code as a
 prerequisite to linting it, so a standalone `check` job would only re-prove what a green
 Clippy already guarantees.
@@ -105,7 +108,8 @@ change release obligations without a manifest edit.
 Test passes are organised as an x86_64/ARM64 pair. The x64 pass carries coverage
 instrumentation (which needs a nightly-only toolchain component), while the ARM pass
 doubles as the MSRV pass and exists to exercise architecture-gated code that x86_64 runners
-never compile. macOS is Apple Silicon, so it rides the ARM pass. Scheduled Miri
+never compile. The x64 pass runs in Standard validation; the ARM pass runs in Deep
+validation. macOS is Apple Silicon, so it rides the ARM pass. Scheduled Miri
 coverage includes architecture-gated paths as declared by its manifest. Platform-agnostic checks
 (formatting, workflow validation, script tests) run on a single Linux runner because their result cannot
 vary by platform.
@@ -113,21 +117,21 @@ vary by platform.
 Not every shallow check earns its place on every pull request. The
 full shallow matrix runs on each push to `main`, but pull-request validation prunes the rarely-informative
 legs to cut runner cost, leaning on push-to-`main` as the backstop for what it drops. PRs run the
-test and docs suites only on the x86_64 Windows and Linux runners: the whole ARM pass (which carries the
-MSRV *test* run) and the macOS legs of the test and docs jobs wait for `main`, because
-architecture- and OS-gated behaviour rarely diverges on a PR and re-running the
-platform-independent test and doc suites on macOS almost never is informative.
+test and docs suites only on the x86_64 Windows and Linux runners. The macOS doctest and
+docs jobs wait for a push to `main`, because re-running these platform-independent
+suites on macOS is rarely informative.
 The release-profile Clippy pass is also main-only. The
-compile-oriented passes (dev Clippy, release build, frozen-minimum check, feature `hack`)
+compile-oriented passes (dev Clippy, release build, frozen-minimum check)
 deliberately keep their macOS leg on PRs, because a cheap macOS cross-compile still catches
 macOS-specific build breaks that the pruned runtime passes would not. MSRV *compilation*
 therefore stays covered on every PR by `check-frozen`, which compiles all targets on the
 MSRV toolchain against the frozen minimum-version lockfile even though the ARM MSRV test
-pass is `main`-only. Because a push to `main` is the first place the pruned checks can fail,
+pass runs in Deep validation. Because a push to `main` is the first place Standard
+validation's pruned checks can fail,
 that event — unlike a PR — files a tracking issue (see Failure alerting).
 
-The event split is expressed two ways: a job whose every leg is pruned on a PR (the ARM test
-pass or `clippy-release`) carries a whole-job `github.event_name ==
+The event split is expressed two ways: a job whose every leg is pruned on a PR
+(`clippy-release`) carries a whole-job `github.event_name ==
 'push'` guard, while a job that keeps some legs on a PR (macOS-dropping test/docs, the
 platform-specific compilation jobs) selects its platform list with a `fromJSON` conditional matrix
 keyed on the same event. Both reduce to "the full set on push, the pruned set on a PR".
