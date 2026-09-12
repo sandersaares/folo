@@ -21,14 +21,21 @@ disabled entries to update; do not infer ownership from a name alone or create a
 duplicate because a lookup is incomplete.
 
 Confirm the actual Local environment, personal account, model/effort and schedule
-for each role. The operator may explicitly choose App model defaults instead of an
-override. Preserve an existing model unless a change is requested; never select a
-paid model on the operator's behalf. Record the chosen repair-session model in the
-repair prompt as ordinary prose, or explicitly say to use the App defaults.
-Use the App's displayed timezone and schedule preview; do not assume UTC or invent
-an environment ID. GitHub login alone does not establish personal inference billing.
-Missing settings can be selected in the native editor rather than reconstructed
-from private App storage.
+for each role. When model settings need a decision, first offer one shared
+model/effort choice for triage, repair coordination and new repair sessions; ask
+for role-specific choices only if requested. The operator may explicitly choose
+App model defaults instead of an override. Preserve existing settings unless a
+change is requested; never select a paid model on the operator's behalf. Record
+the chosen repair-session model in the repair prompt as ordinary prose, or
+explicitly say to use the App defaults.
+
+Review the App's available schedule description, timezone and next-run preview.
+If timezone or next-run information is not exposed, ask the operator to confirm
+the intended local-time interpretation and report that confirmation separately
+from settings verified through App metadata. Do not assume UTC, invent an
+environment ID or require UI fields the App does not expose. GitHub login alone
+does not establish personal inference billing. Missing settings can be selected
+in the native editor rather than reconstructed from private App storage.
 
 The entries are:
 
@@ -55,8 +62,11 @@ An unresolved existing claim or PR must be handed over explicitly, not discarded
 as part of setup.
 
 For a missing role, use `save_workflow` with `user_confirmation: "dialog"` to open
-the native creation editor. The following is a tool-input example, not a file to
-persist or a schema for issues:
+the native creation editor with the approved settings prefilled. Prefer asking
+the operator to review and save the dialog over driving it with Computer Use.
+Use Computer Use only when needed; repeated active-input interruptions require
+an operator handoff rather than further retries. The following is a tool-input
+example, not a file to persist or a schema for issues:
 
 ```json
 {
@@ -77,13 +87,17 @@ persist or a schema for issues:
 | `PROJECT_ID` | Actual repository project ID returned by `list_projects`. |
 | `ROLE_NAME` | Operator-approved name for this role. |
 | `ROLE_PROMPT` | The role's short prompt, with the operator's model choice included where needed. |
-| `OPERATOR_CRON` | Operator-selected schedule, reviewed in the App's timezone and next-run preview. |
+| `OPERATOR_CRON` | Operator-selected schedule, reviewed against the available App preview with local-time interpretation confirmed as described in Stage 1. |
 
-Select the actual **Local** environment and approved model/effort in the editor,
-and save disabled. The dialog does not require guessing a host ID. A direct create
-instead requires the actual observed `host_id`; never substitute a project ID or
-a machine name. Only pass a `model` or `reasoning_effort` override that the operator
-selected and the native tool supports.
+Ask the operator to verify the actual **Local** environment, project, prompt,
+approved model/effort, mode and schedule in the editor, and save disabled without
+using **Create and run**. Opening the dialog does not establish that it was saved.
+The dialog does not require guessing a host ID. A direct create instead requires
+the actual observed `host_id`; never substitute a project ID or a machine name.
+After verifying a saved entry, reuse its observed Local host ID to prefill later
+dialogs targeting the same environment, rather than rediscovering or guessing it.
+Only pass a `model` or `reasoning_effort` override that the operator selected and
+the native tool supports.
 
 For updates, `user_confirmation` is not supported: use the existing
 `workflow_id` and the already approved changed fields. `interval: "manual"` with
@@ -99,11 +113,19 @@ do not write a setup journal or create another entry blindly.
 
 ## Stage 3: Verify and report
 
-Reread `list_workflows` and use the native editor as needed to verify each entry's
-repository, Local environment, prompt, selected model/effort, schedule and disabled
-state. Report the actual entry names/IDs and any remaining operator decisions.
+Reread `list_workflows` to verify the persisted repository, Local environment,
+prompt, selected model/effort, mode, schedule and disabled state. Use operator
+review of the native editor for settings not exposed by supported metadata.
+Report the actual entry names/IDs, distinguish metadata-verified settings from
+operator confirmations, and state any remaining uncertainty or decisions. If
+confirmation conflicts with saved metadata, reconcile the discrepancy before
+declaring setup complete.
+
 Saving an entry does not prove unattended permissions, machine availability or
-successful execution.
+successful execution. An operator-reported empty-backlog run is only a smoke
+check; it does not demonstrate issue claiming, repair-session creation or PR
+publication. Do not perform a live exercise to close those evidence gaps during
+setup.
 
 Keep one enabled automation per role and avoid overlapping invocations when the
 operator chooses to activate them. Enabling is a separate explicit decision, not
