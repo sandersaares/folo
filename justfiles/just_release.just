@@ -127,8 +127,9 @@ semver-checks:
 # The recipes below are the guided increment workflow, in the order the increment-versions skill
 # runs them: prepare resolution and evidence, determine analysis order, create the plan, preview
 # its resolved effects, confirm the publishable targets are published, and apply the captured
-# state. Rust owns release decisions and artifact validation; the module owns process and
-# evidence orchestration. Ref: docs/build-and-tooling.md#automation-language-and-boundaries.
+# state. Rust owns mechanical release resolution and artifact validation; the skill supplies
+# semantic judgments, and the module owns process and evidence orchestration.
+# Ref: docs/build-and-tooling.md#automation-language-and-boundaries.
 
 # Resolves the intended offline workspace lockfile refresh before collecting evidence. This is
 # explicit preparation, not part of read-only release-report or validate-versions.
